@@ -3865,11 +3865,29 @@ internal static class GatewayEndpoints
         // hold state - it says "this one JUST came back BECAUSE its timer ran out", which the clients render
         // as a distinct "Snooze ended" badge and the phone announces once.
         var nowUtc = DateTime.UtcNow;
+        // ONE SET-BASED READ FOR THE WHOLE FOLD (issue #2323, read-model epic #1159). This used to be three
+        // database reads PER SESSION - HoldStateFor and IsExpired in the loop just below, and SnoozeUntilFor
+        // in the second loop further down - each one taking the registry's process-wide monitor, renting its
+        // own pooled context and running its own query. The 31 July load-test baseline measured exactly that
+        // (1,032 reads for 30 roster polls plus 13 sweeps over 8 sessions, no remainder) and named that
+        // monitor as the resource that gave first, at roughly five concurrent viewers over 800 sessions.
+        //
+        // BOTH LOOPS READ FROM THIS ONE SNAPSHOT, and that is not tidiness. Batching only the first loop
+        // would remove two reads of three and the load test would report a two-thirds improvement that reads
+        // like success - the most expensive kind of false green, because it would be published as the
+        // headline number. If a future change needs a snooze fact in this method, take it from `holds`.
+        //
+        // It is also more consistent than what it replaces: the two loops used to read the store at different
+        // instants, so a snooze written between them could be visible to one and not the other. One snapshot
+        // and one `nowUtc` mean the whole fold answers as of a single moment.
+        var holds = snoozeRegistry is null
+            ? Snooze.SnoozeHoldSnapshot.Empty
+            : snoozeRegistry.HoldSnapshotFor(all.Select(s => s.SessionId));
         if (snoozeRegistry is not null)
             foreach (var s in all)
             {
                 if (string.IsNullOrEmpty(s.SessionId)) continue;
-                s.HoldState = snoozeRegistry.HoldStateFor(s.SessionId, nowUtc);
+                s.HoldState = holds.HoldStateFor(s.SessionId, nowUtc);
                 // Expiry is a REGISTRY fact, not a Director one, and it is ASSIGNED both ways every fold -
                 // never OR-ed in. The DTO reaching this fold can already carry SnoozeExpired=true (the
                 // roster re-serves the store's folded clones), so a one-way "set true when
@@ -3878,7 +3896,7 @@ internal static class GatewayEndpoints
                 // edge), a re-snooze arming a fresh clock, an owner turn - kept a stale badge it never
                 // earned. Assigning = IsExpired makes the badge mean EXACTLY one thing, both directions:
                 // true only while an armed entry's clock has elapsed, false the instant that stops being so.
-                s.SnoozeExpired = snoozeRegistry.IsExpired(s.SessionId, nowUtc);
+                s.SnoozeExpired = holds.IsExpired(s.SessionId, nowUtc);
             }
 
         // Defect 5: the role resolution moved to Fleet.FleetRoleResolver so this roster read and the
@@ -3939,11 +3957,16 @@ internal static class GatewayEndpoints
                 // so the null-to-Local resolution here is never reached for them.
                 s.NeedsYouSince = needsYouStampFor(tenant ?? TenantId.Local, s.SessionId, isRed);
             }
-            // The armed-snooze deadline, so a client can show "Snoozed - wakes in Xh". Read straight from the
-            // registry (the sole timer owner) alongside HoldState above; null when there is no running clock
-            // (no snooze, or a deferred one that has not landed). Folded HERE so the roster, the observer that
-            // pushes this down to the desktop, and the single-session read all emit the same deadline.
-            s.SnoozeUntil = snoozeRegistry?.SnoozeUntilFor(s.SessionId);
+            // The armed-snooze deadline, so a client can show "Snoozed - wakes in Xh". Taken from the SAME
+            // snapshot the hold state above came from (the registry is the sole timer owner); null when there
+            // is no running clock (no snooze, or a deferred one that has not landed). Folded HERE so the
+            // roster, the observer that pushes this down to the desktop, and the single-session read all emit
+            // the same deadline.
+            //
+            // THIS IS THE SECOND LOOP, and it is why the fix had to be a snapshot rather than a batched first
+            // loop: this read is a third of the fold's snooze database traffic and it lives here, out of sight
+            // of the loop above.
+            s.SnoozeUntil = holds.SnoozeUntilFor(s.SessionId);
         }
 
         Diagnostics.LoadTestMetrics.FoldDurationMs.RecordSince(foldStart);

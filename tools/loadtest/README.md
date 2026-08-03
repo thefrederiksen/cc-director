@@ -23,15 +23,29 @@ tenants, only a throwaway database, torn down after every run.
 | `DirectorSim/` | Stage 2 driver: N SignalR connections to `/director-stream`, real `Hello` + `PushSnapshot` + `PushDelta` contract, strictly increasing per-connection sequences. `EVENTS_PER_SEC=0` holds a silent background fleet for Stage 1. |
 | `stage1-roster.js` | Stage 1 driver: k6 ramping viewers polling `GET /sessions` every 2 s (the real client cadence), climbing 100 -> 10,000 viewers. |
 | `scripts/start-postgres.ps1` / `stop-postgres.ps1` | The throwaway Postgres container (`dt-loadtest-pg`, port 55442). Stopping REMOVES it and its data - that is the tenant teardown. |
+| `scripts/run-stage0.ps1` | The floor: resets the metrics window, polls `GET /sessions` 30 times at the real 2 s cadence, writes an artifact with the counts, the client-side latencies, the machine state and a provenance block. **No k6 needed.** |
 | `scripts/run-stage1.ps1` | Wraps k6: resets the metrics window, runs the climb, scrapes `/diag/loadmetrics` every 10 s into a JSONL beside the k6 summary. |
 | `Shared/LoadTargetGuard.cs` | The never-production guard, compiled into both consoles. |
+| `scripts/loadtarget-guard.ps1` | The same guard for the PowerShell side, dot-sourced by both run scripts (one copy, so it cannot be tightened in one place only). |
 
 The Gateway-side instrumentation (Stage 0 of the plan) lives in the product at
 `src/CcDirector.Gateway/Diagnostics/LoadTestMetrics.cs`, served at `GET /diag/loadmetrics`
 (auth-gated; `?reset=true` starts a fresh window). It measures: snooze-gate lock wait, snooze database
-reads (the N+1 counter), fold duration, roster latency, sweep duration + overlap count, DirectorHub
-connection count, push in-flight and duration, device-credential lookups, and process numbers
+reads (the N+1 counter), fold duration, roster latency, sweep duration + overlap count + SKIPPED count,
+DirectorHub connection count, push in-flight and duration, device-credential lookups, and process numbers
 (CPU, working set, GC, thread pool).
+
+Two counters changed meaning when the fixes landed, and both are stated here so a re-run is read
+correctly against the 31 July baseline:
+
+- **`snoozeDbReads` is now ONE PER FOLD**, not three per session per fold. The identity to check is
+  `counters.snoozeDbReads == foldDurationMs.count`, exactly and with no remainder - subject to a fold over
+  zero sessions taking no read at all, which is what an empty tenant does on a multi-tenant rig.
+- **`sweepSkipped` is new**, and `sweepTicks` still means "the timer fired". The display sweep now skips a
+  tick while a pass is still running, so `sweepTicks - sweepSkipped` is how many ran, and `sweepOverlaps`
+  should be ZERO. The overlap counter was deliberately left in place rather than removed: it is the
+  instrument that measured the defect (91 of 98 ticks), and a zero from an instrument that could no longer
+  report anything else would be no evidence at all.
 
 ## How to run (local rig, one machine)
 
@@ -49,6 +63,12 @@ $env:LOADTEST_TENANTS = "20"; $env:LOADTEST_DIRECTORS_PER_TENANT = "5"
 $env:LOADTEST_OUT_DIR = "$env:TEMP\loadtest-out"
 tools\loadtest\LoadRig\bin\Release\net10.0\LoadRig.exe
 # wait for: RIG READY url=http://127.0.0.1:7891 ...
+
+# 2b. Stage 0 - the floor. Needs no k6 and no quiet machine, because what it produces is COUNTS. Run it
+#     on a rig seeded LOADTEST_TENANTS=1 LOADTEST_DIRECTORS_PER_TENANT=1 with a DirectorSim holding
+#     DIRECTORS=1 SESSIONS_PER_DIRECTOR=8 EVENTS_PER_SEC=0 - the shape the 31 July baseline used.
+powershell -NoProfile -File tools/loadtest/scripts/run-stage0.ps1 `
+    -GatewayUrl http://127.0.0.1:7891 -OutDir "$env:TEMP\loadtest-out" -Label "what this run is"
 
 # 3. (second terminal) Background fleet for Stage 1: hold 100 Directors x 8 sessions open.
 dotnet build tools/loadtest/DirectorSim/DirectorSim.csproj -c Release
@@ -82,8 +102,8 @@ Every knob each tool takes is documented at the top of its `Program.cs` (or the 
   plan's thresholds: p95 < 300 ms, p99 < 800 ms, errors < 0.1 percent.
 - The scrape file (`stage1-<stamp>-loadmetrics.jsonl`) has the inside view over time: watch
   `snoozeLockWaitMs.p95Ms` (the shared-gate wait), `counters.snoozeDbReads / counters.rosterRequests`
-  (the N+1 ratio - 3 x sessions-per-tenant when confirmed), `foldDurationMs`, `sweepOverlaps`, and
-  `process.cpuTotalSeconds` deltas.
+  (the N+1 ratio - 3 x sessions-per-tenant before the batched read, roughly 1 per fold after),
+  `foldDurationMs`, `sweepOverlaps` and `sweepSkipped`, and `process.cpuTotalSeconds` deltas.
 - The CEILING is the load step where a threshold crosses; WHICH resource gave first is read from the
   scrape (lock wait vs CPU vs GC vs thread-pool starvation vs sockets).
 - Write the result to `devthrottle_internal/docs/load-test/runs/<date>-<stage>.md` (rig identified as

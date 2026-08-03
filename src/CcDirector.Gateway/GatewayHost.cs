@@ -579,6 +579,7 @@ public sealed class GatewayHost : IAsyncDisposable
     // StopAsync.
     private System.Threading.Timer? _displayStateSweepTimer;
     private static readonly TimeSpan DisplayStateSweepInterval = TimeSpan.FromSeconds(5);
+    private int _displayStateSweepInFlight; // 0 = idle, 1 = a pass is running (overlap guard - see SweepDisplayState)
 
     // Voice-turn upload staging retention. The staging directory for a voice turn is deleted on the SUCCESS
     // path only, so every upload that ends any other way - a size refusal, a dropped connection, an assembly
@@ -3380,21 +3381,7 @@ public sealed class GatewayHost : IAsyncDisposable
         // overlays (voice, transcription, dictation, snooze expiry) that arrive on no Director push. Never
         // throws into the timer.
         _displayStateSweepTimer = new System.Threading.Timer(
-            // One pass per tenant, each inside that tenant's scope (issue #1966), exactly like the auto-dismiss
-            // sweep above. Self-host runs it once (Local); hosted runs it once per live tenant, so the observer's
-            // ambient snapshot and per-tenant gate resolve to each tenant in turn. The try/catch is OUTSIDE the
-            // per-tenant loop only as a backstop - ForEachTenant itself does not isolate a throwing tenant here,
-            // but Sweep is fire-and-forget internally and does not throw on a single bad send.
-            // Load-test Stage 0 (issue #1173): measure each tick's duration and COUNT overlapping ticks -
-            // the read-model review names the missing overlap guard as a suspect, and this proves or
-            // refutes it with a number. Measurement only: no guard is added here (that fix is #1159's).
-            _ =>
-            {
-                var sweepStart = Diagnostics.LoadTestMetrics.SweepStarting();
-                try { _tenantPass.ForEachTenant(() => FleetDisplayState.Sweep()); }
-                catch (Exception ex) { FileLog.Write($"[GatewayHost] display-state sweep error: {ex.Message}"); }
-                finally { Diagnostics.LoadTestMetrics.SweepFinished(sweepStart); }
-            },
+            _ => SweepDisplayState(),
             null, DisplayStateSweepInterval, DisplayStateSweepInterval);
         FileLog.Write($"[GatewayHost] display-state sweep started: every {DisplayStateSweepInterval.TotalSeconds:0}s");
 
@@ -3652,6 +3639,64 @@ public sealed class GatewayHost : IAsyncDisposable
             s.VoiceAudioReady = voiceAudioReadyFor(s.SessionId);
         }
         Api.GatewayEndpoints.StampFleetRolesAndFold(sessions, sessions, needsYouStampFor, snoozeRegistry, tenant);
+    }
+
+    /// <summary>
+    /// The display-state sweep timer callback (a boundary - it owns the try/catch so a sweep failure never
+    /// crashes the timer thread). One pass per tenant, each inside that tenant's scope (issue #1966), exactly
+    /// like the auto-dismiss sweep. Self-host runs it once (Local); hosted runs it once per live tenant, so
+    /// the observer's ambient snapshot and per-tenant gate resolve to each tenant in turn. The try/catch is
+    /// OUTSIDE the per-tenant loop only as a backstop - ForEachTenant itself does not isolate a throwing
+    /// tenant here, but Sweep is fire-and-forget internally and does not throw on a single bad send.
+    /// </summary>
+    /// <remarks>Internal (not private) so a test can drive the REAL pass - the per-tenant fold the timer
+    /// runs - rather than only the guard around it.</remarks>
+    internal void SweepDisplayState()
+        => SweepDisplayStateTick(() => _tenantPass.ForEachTenant(() => FleetDisplayState.Sweep()));
+
+    /// <summary>
+    /// THE OVERLAP GUARD (issue #2323, read-model epic #1159), and the counting that proves it works.
+    ///
+    /// A <see cref="System.Threading.Timer"/> fires on the thread pool every five seconds whether or not the
+    /// last callback finished, so a pass slower than the interval simply gets another one on top of it. The
+    /// 31 July load-test baseline measured what that costs: 91 of 98 ticks overlapped a prior tick, with up
+    /// to 36 sweeps in flight at once, each folding every session of every tenant behind the snooze
+    /// registry's process-wide monitor. SKIPPING is the right behaviour rather than queueing - this sweep is
+    /// a BACKSTOP re-fold, so a tick arriving while the last is still running has nothing to add that the
+    /// running pass will not already carry, and the next tick is five seconds away.
+    ///
+    /// THE GUARD SITS OUTSIDE THE PER-TENANT LOOP deliberately: one whole pass at a time. Guarding per tenant
+    /// would let the next tick start on the other tenants while a slow one was still running, which is the
+    /// same contention wearing a smaller number.
+    ///
+    /// A SKIPPED TICK STAYS COUNTABLE. <c>sweepOverlaps</c> is the instrument that measured this defect, and
+    /// a guard that made a skipped tick invisible would destroy it - the count would fall to zero because
+    /// nothing was being observed, which is indistinguishable from falling to zero because the guard works.
+    /// So a skip is counted as its own fact (<c>sweepSkipped</c>), the tick itself is still counted
+    /// (<c>sweepTicks</c> means "the timer fired", ran or not), and <c>sweepOverlaps</c> is left exactly as it
+    /// was so it can still report a non-zero if this guard ever fails to hold.
+    ///
+    /// <paramref name="pass"/> is the work to do, and it is a parameter only so the guard can be proved where
+    /// it lives: a test holds a pass open and calls this concurrently. Production has exactly one caller,
+    /// <see cref="SweepDisplayState"/>, which supplies the real per-tenant pass.
+    /// </summary>
+    internal void SweepDisplayStateTick(Action pass)
+    {
+        if (Interlocked.CompareExchange(ref _displayStateSweepInFlight, 1, 0) != 0)
+        {
+            Diagnostics.LoadTestMetrics.SweepSkipped();
+            FileLog.Write("[GatewayHost] display-state sweep tick SKIPPED: the previous pass is still running");
+            return;
+        }
+
+        var sweepStart = Diagnostics.LoadTestMetrics.SweepStarting();
+        try { pass(); }
+        catch (Exception ex) { FileLog.Write($"[GatewayHost] display-state sweep error: {ex.Message}"); }
+        finally
+        {
+            Diagnostics.LoadTestMetrics.SweepFinished(sweepStart);
+            Interlocked.Exchange(ref _displayStateSweepInFlight, 0);
+        }
     }
 
     private void SweepCron()
