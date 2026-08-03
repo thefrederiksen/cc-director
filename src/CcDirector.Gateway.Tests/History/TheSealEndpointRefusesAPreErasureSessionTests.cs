@@ -15,10 +15,15 @@ namespace CcDirector.Gateway.Tests.History;
 ///
 /// Its five siblings - the summariser window and its control, the orphaned roll-up, the future-start
 /// refusal, and the failure writer - are pure store facts and live in
-/// <c>CcDirector.Gateway.UnitTests</c>, so they run on EVERY local gate. This one starts a real
-/// <see cref="WebApplication"/> and binds a socket, which is what the split's rule sends to the
-/// machine-wide lock, so it stays here and runs before a release. Splitting the file was the point:
-/// one host-bound fact should not park five that are not.
+/// <c>CcDirector.Gateway.UnitTests</c>. This one starts a real <see cref="WebApplication"/> and binds
+/// a socket, which is what the split's rule sends to the machine-wide lock, so it stays here.
+///
+/// WHAT THAT BUYS TODAY IS LESS THAN IT LOOKS, AND SAYING SO IS THE POINT. This comment first claimed
+/// the five siblings therefore run on every local gate. They do not: the fast project is itself parked
+/// out of the default run (scripts/test-local.ps1), on a measured runtime rather than on principle, so
+/// both projects reach a runner only under -Parked. The placement is still the right one - these five
+/// need nothing machine-global and that stays true whichever list they sit on - but the benefit is
+/// available later, not banked now.
 /// </summary>
 public sealed class TheSealEndpointRefusesAPreErasureSessionTests : IDisposable
 {
