@@ -3602,14 +3602,10 @@ internal static class GatewayEndpoints
             // A device key (the desktop, the phone) is left alone: it acts for the account rather than as
             // a session, so it has no session identity to be pinned to.
             var callingSession = AuthMiddleware.CallingSession(ctx);
-            if (callingSession is not null)
-            {
-                var claimed = (req.FromSessionId ?? "").Trim();
-                var actual = callingSession.SessionId.ToString();
-                if (!string.IsNullOrEmpty(claimed) && !string.Equals(claimed, actual, StringComparison.OrdinalIgnoreCase))
-                    FileLog.Write($"[GatewayEndpoints] fanout sender OVERRIDDEN: key belongs to {actual}, request claimed {claimed}");
-                req.FromSessionId = actual;
-            }
+            var pinned = FanoutSenderPin.Resolve(callingSession?.SessionId.ToString(), req.FromSessionId);
+            if (pinned.Overridden)
+                FileLog.Write($"[GatewayEndpoints] fanout sender OVERRIDDEN: key belongs to {pinned.SessionId}, request claimed {req.FromSessionId}");
+            req.FromSessionId = pinned.SessionId;
 
             // Resolve all directors once up-front, capturing each target's broadcast scope (issue #1229).
             var directorBySession = new Dictionary<string, DirectorDto>();
