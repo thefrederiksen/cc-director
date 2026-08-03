@@ -128,8 +128,9 @@ public sealed class SessionPointerWatcher : IDisposable
     }
 
     /// <summary>
-    /// Read and apply every drop currently in the box. The answer to a signalled event loss, and the
-    /// deterministic entry point a test drives so it never has to wait on watcher timing.
+    /// Read and apply every drop currently in the box. THIS is the delivery path - the short timer calls
+    /// it, and the watcher's notifications only get there sooner. Also the deterministic entry point a
+    /// test drives, so no assertion has to wait on a file-system notification.
     /// </summary>
     /// <returns>How many drops were applied.</returns>
     public int Sweep()
@@ -175,6 +176,14 @@ public sealed class SessionPointerWatcher : IDisposable
         try
         {
             body = File.ReadAllText(path);
+        }
+        catch (FileNotFoundException)
+        {
+            // ROUTINE, and quiet on purpose. Two paths deliver drops and each deletes what it applies, so
+            // the other one having got there first is the normal case, not a fault. Logging it would put a
+            // line in every two-second tick that raced a notification and bury the read failures that
+            // matter - which is why this is caught separately from the clause below rather than folded in.
+            return false;
         }
         catch (Exception ex)
         {

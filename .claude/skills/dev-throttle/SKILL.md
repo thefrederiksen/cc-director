@@ -82,7 +82,12 @@ agent-lifecycle hooks, not for driving sessions:
 | POST | `/reconnect` | Bounce this Director's outbound tunnel |
 | POST | `/shutdown` | Ask this Director to stop |
 | GET/PUT | `/settings` (+ agents/tools/workspaces) | Local config surface (desktop app + cc-settings-api) |
-| GET/POST | `/sessions/{sid}/fleet-preamble`, `/claude-hook` | Agent-lifecycle IPC (the SessionStart hook calls these) |
+
+A session's SessionStart hook used to call three routes here - two to fetch its fleet preamble and one
+to report its transcript pointer after a `/clear` or a compact. **Those three are gone.** The Director
+now maintains a per-session preamble file and watches a per-session drop box, and stamps both paths into
+the session's environment as `CC_SESSION_PREAMBLE_FILE` and `CC_SESSION_POINTER_FILE`. So a hook needs
+no address and no credential, and there is nothing to call.
 
 "Is the app running?" is the one raw call worth knowing:
 

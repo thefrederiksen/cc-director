@@ -135,6 +135,10 @@ drop box, the entire script contract. So a launch-time snapshot would have passe
 five that catch it are the five the brief asked for. That is the measurement behind the correction, not an
 argument for it.
 
+(53 was the suite size when that fault was injected. Two tests were added afterwards, for the defect in the
+next section - so the counts elsewhere in this report are 49 and 8. The ratio is quoted as measured rather
+than restated against a total that did not exist yet.)
+
 Two more faults, both on clean rebuilds:
 
 - **The Windows hook stops landing its drop** (writes to a name nothing watches): exactly the **3**
@@ -195,11 +199,11 @@ time and would mask a sweep that did not work at all.
 
 | Suite | New / changed |
 |---|---|
-| `Core.UnitTests` (default gate) | `SessionPreambleFileTests` 11, `SessionPreambleMaintainerTests` 10, `SessionPointerDropTests` 13, `HookScriptContractTests` 14 - **48 cases** |
+| `Core.UnitTests` (default gate) | `SessionPreambleFileTests` 11, `SessionPreambleMaintainerTests` 10, `SessionPointerDropTests` 14, `HookScriptContractTests` 14 - **49 cases** |
 | `Core.Tests` (parked) | `HookScriptRoundTripTests` 8 - real script, real interpreter, live watcher |
 | `Gateway.Tests` (parked) | `SessionHookRoutesAreGoneTests` 7 new; `ControlApiHostileAccessTests`, `ControlApiAuthReapplyTests`, `ControlApiGuardTests`, `WorkflowSeatTests` repointed |
 
-The default gate gained **48 tests** (Core.UnitTests 89 -> 137), and the phase's heaviest proof - the real
+The default gate gained **49 tests** (Core.UnitTests 89 -> 138), and the phase's heaviest proof - the real
 script under the real interpreter - now runs **outside** the Gateway suite's machine-wide lock, because it
 no longer needs an HTTP host. That is a side benefit of the change itself.
 
@@ -222,10 +226,10 @@ respectively, and the latter is stronger - the old one skipped entirely on Windo
 Run on `881d19d9b` and on its base `e5b1d3447`, the latter in its own worktree, **three times** as the
 Architect required after the previous phase's single green control nearly convicted it wrongly.
 
-| Arm | Run 1 | Run 2 | Run 3 | Run 4 |
-|---|---|---|---|---|
-| **Mine** `881d19d9b` | 0 | **62** | 1 | 0 |
-| **Parent** `e5b1d3447` | **1** | **2** | **1** | - |
+| Arm | Run 1 | Run 2 | Run 3 | Run 4 | Run 5 (`-Parked`) |
+|---|---|---|---|---|---|
+| **Mine** `881d19d9b` | 0 | **62** | 1 | 0 | **1** |
+| **Parent** `e5b1d3447` | **1** | **2** | **1** | - | - |
 
 **No failure is mine.** The evidence, not the assertion:
 
@@ -235,6 +239,9 @@ Architect required after the previous phase's single green control nearly convic
   repeats: `SuggestionEmailComposerTests`, `GatewayInputStatsAggregatorTests` (two), and
   `MorningReportSettingsResolverTests`.
 - **`SuggestionEmailComposerTests` fails on BOTH arms** - the same class, on the parent and on mine.
+- **Across all eight runs on both arms: ten distinct failing tests, zero repeats.** That matches the
+  Architect's own measurement of this gate exactly, and the zero-repeat spread is what rules out the
+  comfortable reading that there is a known bad set to discount.
 - **Every failure on both arms carries one of two messages**:
   `InvalidOperationException: The collection has been marked as complete with regards to additions` or
   `ObjectDisposedException`. That is the signature of a defect **already documented in this repository**:
@@ -242,8 +249,9 @@ Architect required after the previous phase's single green control nearly convic
   names the mechanism - `GatewayDatabase.Dispose` calls `SqliteConnection.ClearAllPools()`, which is
   **process-wide**, while 79 classes in that assembly share `GatewayDbTestHarness` across four concurrent
   collections. It is issue #2414.
-- **`Core.UnitTests`, which is where all 48 new tests live, was `Completed` with 137 of 137 in all four
-  runs on my arm** (89 on the parent - the difference is exactly the new tests).
+- **`Core.UnitTests`, which is where the new fast tests live, was `Completed` with 137 of 137 on my arm in
+  every run** (89 on the parent - the difference is exactly the new tests). Not one failure on either arm,
+  in any run, was in a test this phase wrote or a file it touched.
 
 **On the 62.** It is much larger than the parent's 1 or 2 and should not be waved past, so: the count is a
 property of the named mechanism, not of severity. One process-wide pool clear fails every test in flight at
@@ -258,15 +266,28 @@ injections. And no red is called pre-existing anywhere in this report without th
 ## The parked suites
 
 The default gate flagged the coverage gap itself: this change touches code covered by `Core.Tests` and
-`Gateway.Tests`, and neither runs by default. Both were run.
+`Gateway.Tests`, and neither runs by default. Both were run, in full, on `881d19d9b`
+(`.\scripts\test-local.ps1 -Parked`):
 
-*(See "Parked run" below - filled in from the actual run.)*
+| Parked suite | Result | Duration |
+|---|---|---|
+| `CcDirector.Gateway.Tests` | **2458 passed, 0 failed** (2505 total, 47 skipped) | 29m 53s |
+| `CcDirector.Core.Tests` | **4205 passed, 0 failed** (4213 total, 8 skipped) | 13m 21s |
+
+**Both parked suites are green.** They are where this phase's heaviest proofs live - the real-script round
+trip and the routes-are-gone probe - and they are also where a regression from the deleted routes would
+have surfaced, since those two suites held every test that drove them.
+
+The run's only failure was the same `Gateway.UnitTests` flake: one test,
+`GatewayStatsStoreDatabaseParityTests.StoreNameCollision_ExactlyMatchesOrdinalIgnoreCase_ForEveryPair`,
+carrying the same `collection has been marked as complete` exception, and a sixth distinct test on my arm.
 
 Targeted runs on my commit, all green, on clean rebuilds:
 
-- `Core.UnitTests` new classes: 48 of 48.
+- `Core.UnitTests` new classes: 49 of 49.
 - `Core.Tests` `HookScriptRoundTripTests`: 8 of 8, and 25 consecutive whole-suite runs green.
-- `Core.Tests` installer, storage, pointer and preamble classes: 67 of 67.
+- `Core.Tests` installer, storage, pointer and preamble classes: 67 of 67, and the storage-location pin
+  with the two new folders added: 10 of 10.
 - `Gateway.UnitTests` parser and guard classes: 10 of 10.
 - `Gateway.Tests` affected classes (`ControlApiGuardTests`, `SessionHookRoutesAreGoneTests`,
   `ControlApiHostileAccessTests`, `ControlApiAuthReapplyTests`, `WorkflowSeatTests`): 142 of 142.

@@ -493,6 +493,12 @@ session and read its reply" (`cc-devthrottle message ask`, which needs Transcrip
 Codex yet, even though the reader exists. Wiring the existing reader into a declared
 TranscriptRead capability is a low-risk follow-up. [VERIFIED from source] CodexDriver.cs + README.md
 
+> **STALE BELOW, as of the remove-the-network-port mission's phase 3 (3 August 2026).** The Codex hook no
+> longer fetches the preamble from `GET /sessions/{sid}/fleet-preamble` - that route is DELETED. It prints
+> the file named by `CC_SESSION_PREAMBLE_FILE`, which the Director maintains and which already holds the
+> finished hook-output envelope, so Codex and Claude now receive identical bytes from one file. The hook
+> installer, the merge into `~/.codex/hooks.json` and `--dangerously-bypass-hook-trust` are unchanged.
+
 ### Mechanism family and fleet-preamble plan
 
 Codex is family A (shell-command hook) and is the closest twin to the already-wired Claude

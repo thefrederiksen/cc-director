@@ -133,7 +133,8 @@ public sealed class SessionPointerDropTests : IDisposable
 
     /// <summary>
     /// A drop that is gone by the time it is read - the other delivery path applied and deleted it first.
-    /// A race the two paths make routine, so it must be quiet rather than an error.
+    /// The two paths make that race routine, so it must be quiet rather than an error, and it must not
+    /// disturb the pointer either way.
     /// </summary>
     [Fact]
     public void A_drop_that_has_already_been_applied_and_removed_is_not_an_error()
@@ -143,6 +144,25 @@ public sealed class SessionPointerDropTests : IDisposable
 
         Assert.False(Watcher().Apply(path));
         Assert.Equal("the-id-from-launch", session.ClaudeSessionId);
+    }
+
+    /// <summary>
+    /// The whole point of sweeping: a drop that NO notification ever arrived for is still delivered. This
+    /// is the unit-level statement of the defect that made the sweep the delivery path - the watcher was
+    /// observed to lose a notification for a drop that was present, complete and valid.
+    /// </summary>
+    [Fact]
+    public void A_drop_no_notification_ever_arrived_for_is_still_delivered_by_a_sweep()
+    {
+        var session = Adopt();
+        var rotatedId = Guid.NewGuid().ToString();
+
+        // Nothing is watching this directory - no watcher was ever started, so no event exists.
+        Drop(session.Id, rotatedId, "/tmp/unnotified.jsonl");
+
+        Assert.Equal(1, Watcher().Sweep());
+        Assert.Equal(rotatedId, session.ClaudeSessionId);
+        Assert.Equal("/tmp/unnotified.jsonl", session.ClaudeTranscriptPath);
     }
 
     /// <summary>

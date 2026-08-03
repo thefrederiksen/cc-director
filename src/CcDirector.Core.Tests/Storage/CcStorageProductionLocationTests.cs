@@ -53,6 +53,13 @@ public sealed class CcStorageProductionLocationTests : IDisposable
             (CcStorage.DictationRecordings(), Local("dictation", "recordings"), nameof(CcStorage.DictationRecordings)),
             (CcStorage.DictationSessions(), Local("dictation", "sessions"), nameof(CcStorage.DictationSessions)),
             (CcStorage.PiPreamble(), Local("pi-preamble"), nameof(CcStorage.PiPreamble)),
+            // Remove-the-network-port mission, phase 3. Pinned for the same reason as everything else
+            // here, and with one extra edge: the exact path of a session's drop file is stamped into
+            // that session's ENVIRONMENT at launch and cannot be re-issued while it runs. So moving
+            // either folder does not merely orphan files - it points every already-running session's
+            // hook at a place the Director is no longer looking, silently.
+            (CcStorage.SessionPreambles(), Local("session-preambles"), nameof(CcStorage.SessionPreambles)),
+            (CcStorage.SessionPointers(), Local("session-pointers"), nameof(CcStorage.SessionPointers)),
             (CcStorage.SessionRecordings(), Local("session-recordings"), nameof(CcStorage.SessionRecordings)),
             (CcStorage.StateChanges(), Local("state-changes"), nameof(CcStorage.StateChanges)),
             (CcStorage.VoiceUtterances(), Local("voice-utterances"), nameof(CcStorage.VoiceUtterances)),
