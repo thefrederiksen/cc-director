@@ -42,10 +42,26 @@ end-to-end exercise of the phase-1b credential, and the place the launch-window 
 under a deliberately slow Gateway.
 
 ### 3 - Session hooks stop needing an API
-The Director writes the agent's identity text to a file at session launch; the startup script reads
-it. The report-back after a clear or compact becomes a file the Director watches.
+
+**Correction to the brief: "write it at launch" is WRONG and would ship stale text.**
+`FleetPreamble.BuildForSession` renders from three LIVE stores at the moment it is called - the
+user's own injected text (`InjectedTextStore.ActiveTemplate()`, editable in Settings while sessions
+run), the workflow index, and the skill index (both refreshed from the Gateway). All three change
+during a session's life, and the hook fires again on every resume, clear and compact - possibly hours
+after launch. A file written once at launch would serve a user their old text after they had edited
+it, and would hide newly published skills and workflows.
+
+**The correct design: the Director MAINTAINS a current file per session**, rewriting it when its
+inputs change. The machinery already exists - the Control API host already polls injected text on an
+interval precisely so a change needs no restart. That poll gains a second job: rewrite each live
+session's preamble file. The hook then reads a file that is current, not a snapshot.
+
+The report-back after a clear or compact becomes a file the Director watches.
+
 **Proof:** a fresh session shows its identity block; a clear and a compact still re-discover the
-transcript.
+transcript; AND editing the injected text, or publishing a skill, changes what the NEXT hook fire
+delivers to an already-running session. That last one is the test that would have caught the
+snapshot design.
 
 ### 4 - Lifecycle off HTTP
 
