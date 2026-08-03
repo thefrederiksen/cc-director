@@ -36,7 +36,8 @@ The owner of this repository's test suites. Three duties, in priority order:
 | Action | Command |
 |--------|---------|
 | Run the gate (this is THE gate) | `.\scripts\test-local.ps1` |
-| Run the gate plus parked suites (before a release) | `.\scripts\test-local.ps1 -Parked` |
+| Run the gate plus parked suites | `.\scripts\test-local.ps1 -Parked` |
+| THE RELEASE GATE - on the commit being shipped | `.\scripts\test-local.ps1 -Parked -Configuration Release` |
 | Run only the locked Gateway suite | `.\scripts\test-local.ps1 -Gateway` |
 | Filter within a run | `.\scripts\test-local.ps1 -Filter "FullyQualifiedName~Snooze"` |
 
