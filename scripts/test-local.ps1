@@ -74,7 +74,6 @@ if ($Gateway -and $Parked) {
 #   HostedAgent          36s                      Launcher    2s      Terminal 11s
 # They start together, so the default costs about the slowest one.
 $defaultProjects = @(
-    "src\CcDirector.Gateway.UnitTests\CcDirector.Gateway.UnitTests.csproj",
     "src\CcDirector.Avalonia.Tests\CcDirector.Avalonia.Tests.csproj",
     "src\CcDirector.Engine.Tests\CcDirector.Engine.Tests.csproj",
     "src\CcDirector.HostedAgent.Tests\CcDirector.HostedAgent.Tests.csproj",
@@ -89,8 +88,24 @@ $defaultProjects = @(
 $gatewayProject = "src\CcDirector.Gateway.Tests\CcDirector.Gateway.Tests.csproj"
 $parkedProjects = @(
     $gatewayProject,
-    "src\CcDirector.Core.Tests\CcDirector.Core.Tests.csproj"
+    "src\CcDirector.Core.Tests\CcDirector.Core.Tests.csproj",
+    # Parked on measurement, not on principle - and the measurement is worth keeping because it says what
+    # would bring it back. 2762 tests, about 2 minutes on a quiet machine and 3 to 5 with the fleet busy.
+    # Raising its thread cap does NOT fix it: 24 threads ran it in 149 seconds against 120 at four, and
+    # brought the flakiness back. It uses about ONE core's worth of CPU throughout. It is not compute-bound,
+    # it is SLEEP-bound - the wall clock is Task.Delay and Thread.Sleep inside the tests, which no amount of
+    # hardware shortens. It comes back when those waits are replaced by injected clocks, not before.
+    "src\CcDirector.Gateway.UnitTests\CcDirector.Gateway.UnitTests.csproj"
 )
+
+# THE TWO-MINUTE BUDGET IS ENFORCED, NOT DOCUMENTED. A suite that exceeds it is KILLED and the run is
+# failed, naming it. This is a hard ceiling because the soft version did not hold: the budget was written
+# in a comment, Core.Tests drifted to eleven minutes on a quiet machine and thirty-three on a busy one, and
+# the gate became something people worked around instead of ran. A number that nothing checks is a wish.
+#
+# Exceeding it is not a test failure and must not be read as one - it is a statement that the suite no
+# longer belongs in the default run. Park it, and put it back the day it fits.
+$BudgetSeconds = 120
 
 $toRun = @()
 if ($Gateway) {
@@ -164,8 +179,18 @@ if ($toRun -contains $gatewayProject) {
 Write-Host ""
 
 $failed = @()
+$overBudget = @()
 foreach ($r in $running) {
-    $r.Process.WaitForExit()
+    # Wait only up to the budget. A suite that has not finished by then is over the ceiling: kill it, so a
+    # single slow project cannot hold the whole gate, and record it separately from a real failure.
+    # -Parked deliberately suspends the ceiling: that run is the release gate and is EXPECTED to be slow.
+    if ($Parked -or $Gateway) {
+        $r.Process.WaitForExit()
+    } elseif (-not $r.Process.WaitForExit($BudgetSeconds * 1000)) {
+        $overBudget += $r.Name
+        try { $r.Process.Kill($true) } catch { }
+        try { $r.Process.WaitForExit(10000) | Out-Null } catch { }
+    }
     $summary = ""
     if (Test-Path $r.Log) {
         $summary = (Select-String -Path $r.Log -Pattern "^(Passed!|Failed!)" -ErrorAction SilentlyContinue |
@@ -200,6 +225,17 @@ foreach ($r in $running) {
 Write-Host ""
 Write-Host "TRX files: $logDir"
 Write-Host ""
+
+if ($overBudget.Count -gt 0) {
+    Write-Host ("RESULT: OVER BUDGET - {0} suite(s) exceeded the {1}-second ceiling and were STOPPED:" -f $overBudget.Count, $BudgetSeconds)
+    foreach ($n in $overBudget) { Write-Host "  $n" }
+    Write-Host ""
+    Write-Host "This is NOT a test failure. It means the suite no longer belongs in the default run."
+    Write-Host "Park it in `$parkedProjects, or make it fit. Do not raise the ceiling to make this go away -"
+    Write-Host "the ceiling is the point, and every second added to it is paid by every person and agent"
+    Write-Host "on every change, forever."
+    exit 1
+}
 
 if ($failed.Count -eq 0) {
     Write-Host "RESULT: all projects exited zero. Check the TRX outcome and totals above before calling it green."
