@@ -41,7 +41,7 @@ public sealed class RosterFoldBatchedSnoozeReadTests : IDisposable
     private static SessionDto Session(string sid) => new()
     {
         SessionId = sid,
-        Agent = "ClaudeCode",
+        Agent = "TestAgent",
         RepoPath = "repo",
         ActivityState = "WaitingForInput",
         Status = "Running",

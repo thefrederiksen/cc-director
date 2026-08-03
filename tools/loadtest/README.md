@@ -47,7 +47,63 @@ correctly against the 31 July baseline:
   instrument that measured the defect (91 of 98 ticks), and a zero from an instrument that could no longer
   report anything else would be no evidence at all.
 
-## How to run (local rig, one machine)
+## How to run STAGE 0 - the floor, and the cheapest measurement here
+
+Stage 0 needs **no k6 and no quiet machine**, because what it produces is COUNTS, and a count means the
+same thing on a loaded machine as on an idle one. About fifteen minutes end to end. It is a **complete,
+self-contained sequence** - do not mix it with the Stage 1 recipe below, which seeds a different rig.
+
+```powershell
+# 1. Throwaway database (container dt-loadtest-pg on 127.0.0.1:55442).
+powershell -NoProfile -File tools/loadtest/scripts/start-postgres.ps1
+
+# 2. The rig. DEBUG here, to match the 31 July baseline, which states it measured a Debug build.
+#    Leave LOADTEST_MIRROR_CONSOLE unset - the baseline had the console mirror OFF.
+dotnet build tools/loadtest/LoadRig/LoadRig.csproj -c Debug
+$env:CC_GATEWAY_DB_CONNECTION = "Host=127.0.0.1;Port=55442;Database=gateway_loadtest;Username=loadtest;Password=loadtest"
+$env:LOADTEST_TENANTS = "1"; $env:LOADTEST_DIRECTORS_PER_TENANT = "1"
+$env:LOADTEST_OUT_DIR = "$env:TEMP\loadtest-out"
+Remove-Item Env:LOADTEST_MIRROR_CONSOLE -ErrorAction SilentlyContinue
+tools\loadtest\LoadRig\bin\Debug\net10.0\LoadRig.exe
+# wait for: RIG READY url=http://127.0.0.1:7891 tenants=1 directors=1 ...
+
+# 3. (second terminal) ONE silent Director carrying EIGHT sessions. Stage 0 measures nothing without it:
+#    a viewer that sees zero sessions folds nothing, takes no read, and produces a zero that means the rig
+#    was mis-wired. Wait for the CONNECTED line before step 4.
+dotnet build tools/loadtest/DirectorSim/DirectorSim.csproj -c Debug
+$env:GATEWAY_URL = "http://127.0.0.1:7891"
+$env:KEYS_FILE = "$env:TEMP\loadtest-out\directors.json"
+$env:DIRECTORS = "1"; $env:SESSIONS_PER_DIRECTOR = "8"; $env:EVENTS_PER_SEC = "0"
+tools\loadtest\DirectorSim\bin\Debug\net10.0\DirectorSim.exe
+# wait for: [DirectorSim] CONNECTED 1/1 directors ... 8 sessions pushed
+
+# 4. (third terminal) Stage 0 itself - 30 polls at the real 2-second cadence, about a minute.
+#    EVERY ONE of these arguments is required; the script refuses to run without them, because a run whose
+#    build configuration nobody wrote down is not comparable to a baseline captured under a stated one.
+powershell -NoProfile -File tools/loadtest/scripts/run-stage0.ps1 `
+    -GatewayUrl http://127.0.0.1:7891 -OutDir "$env:TEMP\loadtest-out" `
+    -BuildConfiguration Debug -ConsoleMirror off `
+    -Tenants 1 -DirectorsConnected 1 -SessionsPerDirector 8 `
+    -Label "what this run is"
+
+# 5. TEARDOWN - removes the database and every synthetic tenant. Always do this.
+powershell -NoProfile -File tools/loadtest/scripts/stop-postgres.ps1
+```
+
+**Read the result by the identity, not by the total:** `counters.snoozeDbReads` should equal
+`foldDurationMs.count` exactly, with no remainder - one set-based read per fold. The 31 July baseline
+recorded 1,032 reads for 43 folds, which is 24 per fold.
+
+**On the one-tenant rig, stated honestly.** The seeded tenant count of the rig the baseline's own Stage 0
+ran on is **not recorded anywhere** - its `rig-provenance.json` describes a rig booted three and a half
+minutes AFTER the Stage 0 artifact was captured. One tenant is therefore **this recipe's deliberate
+choice, not a reproduction of a known baseline setting**. It is mechanically harmless for these numbers:
+the display sweep folds `PushedSessionStore.KnownTenants`, the tenants with a tunnel-bound Director, and
+the roster serves only the caller's own tenant - so with ONE Director connected, exactly one tenant is
+folded per sweep whether the rig seeded one tenant or twenty. It also removes an ambiguity, since with one
+tenant the viewer key and the Director key cannot belong to different tenants.
+
+## How to run STAGE 1 and beyond (local rig, one machine)
 
 Prerequisites: .NET 10 SDK, Docker Desktop, and k6 (one static binary -
 `winget install --id GrafanaLabs.k6`, or unzip a release from github.com/grafana/k6/releases onto PATH).
@@ -66,12 +122,6 @@ $env:LOADTEST_TENANTS = "20"; $env:LOADTEST_DIRECTORS_PER_TENANT = "5"
 $env:LOADTEST_OUT_DIR = "$env:TEMP\loadtest-out"
 tools\loadtest\LoadRig\bin\Release\net10.0\LoadRig.exe
 # wait for: RIG READY url=http://127.0.0.1:7891 ...
-
-# 2b. Stage 0 - the floor. Needs no k6 and no quiet machine, because what it produces is COUNTS. Run it
-#     on a rig seeded LOADTEST_TENANTS=1 LOADTEST_DIRECTORS_PER_TENANT=1 with a DirectorSim holding
-#     DIRECTORS=1 SESSIONS_PER_DIRECTOR=8 EVENTS_PER_SEC=0 - the shape the 31 July baseline used.
-powershell -NoProfile -File tools/loadtest/scripts/run-stage0.ps1 `
-    -GatewayUrl http://127.0.0.1:7891 -OutDir "$env:TEMP\loadtest-out" -Label "what this run is"
 
 # 3. (second terminal) Background fleet for Stage 1: hold 100 Directors x 8 sessions open.
 dotnet build tools/loadtest/DirectorSim/DirectorSim.csproj -c Release

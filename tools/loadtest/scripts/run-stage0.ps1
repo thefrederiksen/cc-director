@@ -10,14 +10,25 @@
 # than a similar one, and so it records its own configuration beside its numbers - configuration drift is
 # the one threat to comparability that flatters the new run and is undetectable afterwards.
 #
-# The rig for a comparable Stage 0 (the shape the baseline used):
-#   LoadRig     LOADTEST_TENANTS=1  LOADTEST_DIRECTORS_PER_TENANT=1
+# The rig this script expects - BOTH the rig and the Director must already be up, or a viewer sees no
+# sessions, folds nothing, takes no read, and the zero it produces is meaningless:
+#   LoadRig     LOADTEST_TENANTS=1  LOADTEST_DIRECTORS_PER_TENANT=1   (Debug build, console mirror OFF)
 #   DirectorSim DIRECTORS=1  SESSIONS_PER_DIRECTOR=8  EVENTS_PER_SEC=0
 #   one viewer  = this script, 30 polls at the real 2 s client cadence
+# The full executable sequence, in order, is in tools/loadtest/README.md.
 #
-# Usage:
+# ONE DIRECTOR, EIGHT SESSIONS, ONE VIEWER, 30 POLLS reproduces the 31 July baseline's Stage 0 deliberately.
+# THE SEEDED TENANT COUNT DOES NOT: it is not recorded anywhere for that run - its rig-provenance.json
+# describes a rig booted three and a half minutes AFTER the Stage 0 artifact was captured - so one tenant is
+# THIS recipe's choice rather than a known baseline setting. It is mechanically harmless for these numbers,
+# because the sweep folds only tenants with a tunnel-bound Director and the roster serves only the caller's
+# own tenant: with one Director connected, exactly one tenant is folded per sweep whichever count was seeded.
+#
+# Usage (every configuration argument is REQUIRED - see the parameter block):
 #   powershell -NoProfile -File tools/loadtest/scripts/run-stage0.ps1 `
-#       -GatewayUrl http://127.0.0.1:7891 -OutDir "$env:TEMP\loadtest-out" [-Polls 30] [-IntervalSeconds 2]
+#       -GatewayUrl http://127.0.0.1:7891 -OutDir "$env:TEMP\loadtest-out" `
+#       -BuildConfiguration Debug -ConsoleMirror off `
+#       -Tenants 1 -DirectorsConnected 1 -SessionsPerDirector 8 -Label "what this run is"
 param(
     [Parameter(Mandatory = $true)][string]$GatewayUrl,
     [Parameter(Mandatory = $true)][string]$OutDir,

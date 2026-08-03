@@ -370,3 +370,39 @@ non-zero, so the zero asserted in the test above it is earned. The exactness bel
 this branch does control, not on a count that a background timer can add to.
 
 A test that is only ever watched passing hides this. Four reverts found it in ten minutes.
+
+---
+
+## 12. The three inspection findings, fixed - 3 August 2026
+
+**Finding 1 - the decisive read-count proof did not run on the default gate.** It does now. The four count
+facts moved from the parked suite into `CcDirector.Gateway.UnitTests`, in a collection declared
+`[CollectionDefinition(DisableParallelization = true)]`, so xUnit runs them with no other collection in
+flight and the process-global counter delta is the fold's own reads and nothing else. Other test projects
+are separate processes and cannot reach that counter. **My original placement was wrong and the inspector
+is right about why:** leaving the fact that distinguishes the whole fix from the five-read half-fix on the
+release gate would let an ordinary change restore per-session reads and pass every gate on the way in.
+Verified: all nine fold facts now execute and pass on a default run, and the default project total rose
+from 2,773 to 2,777 - exactly the four facts arriving.
+
+**Finding 2 - the Stage 0 runbook could not reproduce its own run.** Replaced with a self-contained,
+executable sequence in `tools/loadtest/README.md`: its own Debug one-tenant rig with the console mirror
+off, one silent Director carrying eight sessions started BEFORE any polling, and the Stage 0 command
+carrying all five required provenance arguments. The wording is corrected in both the README and the
+script header: one seeded tenant is **this recipe's deliberate and mechanically harmless choice**, not a
+recorded baseline fact - the baseline's own seeded count is unrecorded, which this document established
+in section 3 and the operator instructions now say too.
+
+**Finding 3 - a prohibited identifier in four added lines.** The two fixture values are neutral now
+(nothing in the fold reads `SessionDto.Agent`, so the value it carries changes nothing measured). The two
+log lines are **REDACTED, NOT DELETED**: the offending directory segment is replaced with
+`<redacted-tool-path>` and the file says so at the bottom, with the reason. Evidence quietly altered is
+worse than evidence with a visible hole in it.
+
+**And the same identifier was in the Stage 1 rig boot log, which the inspector never saw** - it inspected
+a tip taken before Stage 1 ran. Both sets are redacted. Worth naming the shape rather than just the
+instance: **nobody typed a vendor name in any of the four sites.** It arrived inside a temporary directory
+path that tooling wrote into a captured log, and a fixture value copied from a neighbouring test. Three
+times on this mission the identifier has been carried and not once was it authored, which is the argument
+for the mechanical check filed as #2385 - a rule that depends on an author noticing cannot catch text no
+author wrote.

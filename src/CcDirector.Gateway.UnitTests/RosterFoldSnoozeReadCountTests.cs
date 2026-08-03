@@ -25,25 +25,25 @@ namespace CcDirector.Gateway.Tests;
 /// "fewer than before": over four sessions the old shape cost twelve, a first-loop-only fix would cost
 /// five, and only a fix reaching both loops costs one.
 ///
-/// WHY THIS FILE IS IN THE LOCKED SUITE AND ITS CORRECTNESS SIBLINGS ARE NOT. Every fact here asserts a
-/// DELTA on <c>LoadTestMetrics.snoozeDbReads</c>, which is process-global static state. The fast
-/// <c>CcDirector.Gateway.UnitTests</c> assembly runs four collections at once and holds a dozen fold tests
-/// that increment that same counter, so an exact delta measured there would be another test's reads added
-/// to mine - a flaky assertion on this work item's headline proof. This suite disables parallelism, which
-/// is what makes the delta meaningful. It is the same rule the suite split applied to the classes that
-/// mutate process-wide environment variables: process-global state stays behind the lock.
+/// WHY THIS FILE RUNS ON EVERY GATE, AND WHAT MAKES THAT SAFE. It was parked at first, on the reasoning
+/// that every fact here asserts a DELTA on <c>LoadTestMetrics.snoozeDbReads</c> - process-global static
+/// state - and that this assembly runs four collections at once beside a dozen fold tests that increment
+/// the same counter. The reasoning about the hazard was right; the conclusion was wrong. Leaving the
+/// decisive regression proof on the release gate means an ordinary change could restore the per-session
+/// reads and pass every default gate on the way in, which is exactly the hole this work item exists to
+/// close. Nothing here needs a host: a throwaway database harness and a direct call to the fold, no port,
+/// no <c>GatewayHost</c>.
 ///
-/// The cost is real and is stated rather than hidden: these run on the <c>-Parked</c> release gate, not on
-/// every default gate. The correctness facts they depend on - that the batched read answers exactly what
-/// the three per-session reads answered - DO run on every gate, in
-/// <c>CcDirector.Gateway.UnitTests/RosterFoldBatchedSnoozeReadTests</c>. And the count itself has a second,
-/// independent instrument: the load test's Stage 0, which measured 42 reads for 42 folds against the
-/// baseline's 1,032.
+/// So the counter is isolated instead of avoided. This class sits in a collection declared
+/// <c>DisableParallelization</c> (see <see cref="SerialMetricCollection"/>), so xUnit runs it with no other
+/// collection in flight and the delta is the fold's own reads and nothing else. Other test PROJECTS are
+/// separate processes and cannot reach this counter at all.
 ///
 /// The counter asserted here is the same one the load test reads at <c>GET /diag/loadmetrics</c>
 /// (<c>counters.snoozeDbReads</c>), read through the same JSON the endpoint serves - so a counter that
 /// stopped being exposed would fail here rather than quietly leaving the load test blind.
 /// </summary>
+[Collection(SerialMetricCollection.Name)]
 public sealed class RosterFoldSnoozeReadCountTests : IDisposable
 {
     private readonly GatewayDbTestHarness _h = new();
@@ -65,7 +65,7 @@ public sealed class RosterFoldSnoozeReadCountTests : IDisposable
     private static SessionDto Session(string sid) => new()
     {
         SessionId = sid,
-        Agent = "ClaudeCode",
+        Agent = "TestAgent",
         RepoPath = "repo",
         ActivityState = "WaitingForInput",
         Status = "Running",
@@ -147,4 +147,16 @@ public sealed class RosterFoldSnoozeReadCountTests : IDisposable
         Assert.Equal(0L, Counter("snoozeDbReads") - before);
         Assert.Null(sessions[0].SnoozeUntil);
     }
+}
+
+/// <summary>
+/// A collection that xUnit runs with NO other collection in flight, for facts that read a process-global
+/// counter and need the delta to be theirs alone. It exists so the exact read-count proof can live on the
+/// default gate instead of the release gate: the hazard is real, and isolating it is cheaper than losing
+/// the guard.
+/// </summary>
+[CollectionDefinition(Name, DisableParallelization = true)]
+public sealed class SerialMetricCollection
+{
+    public const string Name = "serial-process-global-metrics";
 }
