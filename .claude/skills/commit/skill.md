@@ -152,11 +152,18 @@ commit (Step 4), drive it home:
 2. Open the pull request: gh pr create --fill (or with a title/body matching recent PRs).
 
 3. NEVER WAIT FOR A CONTINUOUS INTEGRATION RESULT. Not for "Build & Test (.NET)", which takes
-   roughly FIFTY MINUTES and is the same suite you just ran locally on a far stronger machine,
-   and not for any other check. There is no exception - not a release, not a change to the build
-   or to continuous integration itself, not a cross-platform change. The old rule carried that
-   exception list and it is deliberately gone: every exception was an invitation to pay the fifty
-   minutes again.
+   roughly FIFTY MINUTES, and not for any other check. There is no exception - not a release, not
+   a change to the build or to continuous integration itself, not a cross-platform change. The old
+   rule carried that exception list and it is deliberately gone: every exception was an invitation
+   to pay the fifty minutes again.
+
+   Do NOT justify this by telling yourself the job runs the same tests you just ran. IT DOES NOT,
+   and the difference is the whole reason the gaps above are written down: the .NET job runs the
+   two parked suites and the two installer projects, none of which any local invocation touches.
+   The reason not to wait is that a verdict arriving fifty minutes after everyone has moved on
+   does not get read, so it buys nothing while costing a day - and the coverage it holds is worth
+   having on purpose, by running it locally when your change touches it, rather than by accident,
+   an hour late.
 
    If you want to see the fast checks in passing, look once and move on - do not watch them:
 
@@ -170,9 +177,10 @@ commit (Step 4), drive it home:
 
        cc-devthrottle session spawn <repo> --agent Codex --prompt "<what to review>" --name "review: <what it is>"
 
-   This review replaces the wait, it does not sit alongside it. Waiting bought a second opinion
-   from a machine that runs the same tests; a reviewer reads the change itself, which is the part
-   the tests cannot do.
+   This review replaces the wait, it does not sit alongside it. Waiting bought a slow re-run of
+   mostly the same tests plus some coverage you are better off running deliberately; a reviewer
+   reads the change itself, which is the part no test run can do - including whether the change
+   says something untrue about the code it describes.
 
 5. Merge with squash once the local run is green and the review is clean:
    gh pr merge <number> --squash --delete-branch.
