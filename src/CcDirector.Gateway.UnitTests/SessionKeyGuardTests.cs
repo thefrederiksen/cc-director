@@ -64,6 +64,112 @@ public sealed class SessionKeyGuardTests
     public void The_action_side_of_the_agent_route_set_is_allowed(string method, string path)
         => Assert.True(SessionKeyGuard.Check(method, path).Allowed, $"{method} {path} should be allowed");
 
+    // ---------- Configuration: the owner's ruling of 2026-08-03 ----------
+    //
+    // "An agent may change how the product BEHAVES. It may not change WHO IS ALLOWED IN." Phase 1b refused
+    // the whole /directors surface bar two sub-paths; the ruling reverses that for settings and handovers,
+    // because the point of running agents is not to have to use the interface to configure the product.
+    //
+    // These are written as a matched PAIR with the refusals below. An allow list is only as good as the
+    // refusals sitting next to it: "settings are allowed" is a safe sentence only while "enrolment is not"
+    // is still true and still tested, and the two are one decision, not two.
+
+    [Theory]
+    // A Director's own settings, both directions.
+    [InlineData("GET", "/directors/d-1/settings")]
+    [InlineData("PUT", "/directors/d-1/settings")]
+    // The application's settings - how it reports, snoozes, speaks, and which model it uses.
+    [InlineData("GET", "/gateway/settings")]
+    [InlineData("GET", "/gateway/daily-report")]
+    [InlineData("PUT", "/gateway/daily-report")]
+    [InlineData("GET", "/gateway/snooze-default")]
+    [InlineData("PUT", "/gateway/snooze-default")]
+    [InlineData("PUT", "/gateway/snooze-presets")]
+    [InlineData("GET", "/gateway/time-zone")]
+    [InlineData("PUT", "/gateway/time-zone")]
+    [InlineData("GET", "/gateway/ai-provider")]
+    [InlineData("PUT", "/gateway/ai-provider")]
+    [InlineData("GET", "/gateway/tts-voice")]
+    [InlineData("PUT", "/gateway/tts-voice")]
+    [InlineData("GET", "/gateway/spoken-language")]
+    [InlineData("PUT", "/gateway/spoken-language")]
+    [InlineData("PUT", "/gateway/spoken-language/voice")]
+    [InlineData("GET", "/gateway/injected-text")]
+    [InlineData("PUT", "/gateway/injected-text")]
+    [InlineData("GET", "/gateway/transcription-mode")]
+    [InlineData("PUT", "/gateway/transcription-mode")]
+    // Handovers: list, read one, write one, remove one. Moving a session needs the first three.
+    [InlineData("GET", "/directors/d-1/handovers")]
+    [InlineData("GET", "/directors/d-1/handovers/content")]
+    [InlineData("POST", "/directors/d-1/handovers")]
+    [InlineData("DELETE", "/directors/d-1/handovers")]
+    public void Configuring_the_product_is_allowed(string method, string path)
+        => Assert.True(SessionKeyGuard.Check(method, path).Allowed, $"{method} {path} should be allowed");
+
+    [Fact]
+    public void Settings_are_allowed_but_the_gateway_prefix_they_share_is_not()
+    {
+        // The application settings live under /gateway, and so do the shared catalogue's enable/disable
+        // routes, which are deliberately refused because turning a fleet-wide capability off for everyone is
+        // the owner's call. A guard written as "PUT under /gateway is configuration" would have read as
+        // correct and handed those over. This is the test that would catch that rewrite.
+        Assert.True(SessionKeyGuard.Check("PUT", "/gateway/time-zone").Allowed);
+        Assert.False(SessionKeyGuard.Check("PUT", "/gateway/skills/move-session/disable").Allowed);
+        Assert.False(SessionKeyGuard.Check("PUT", "/gateway/some-setting-invented-next-year").Allowed);
+    }
+
+    [Fact]
+    public void A_sub_path_hung_off_settings_later_is_refused()
+    {
+        // Settings are matched at exactly /directors/{id}/settings. If the match were a prefix, anything a
+        // future release parked underneath - credentials, tokens, enrolment state - would be open on the day
+        // it shipped, which is precisely the deny-list failure this guard is shaped to avoid.
+        Assert.True(SessionKeyGuard.Check("PUT", "/directors/d-1/settings").Allowed);
+        Assert.False(SessionKeyGuard.Check("PUT", "/directors/d-1/settings/credentials").Allowed);
+        Assert.False(SessionKeyGuard.Check("GET", "/directors/d-1/settings/credentials").Allowed);
+    }
+
+    [Fact]
+    public void Voice_settings_are_configuration_but_voice_data_is_not()
+    {
+        // The line the ruling draws is behaviour versus admission, but there is a second distinction inside
+        // the voice surface that is easy to lose: a knob saying HOW to transcribe is configuration, while
+        // what was actually said into the microphone is the owner's and stays refused.
+        Assert.True(SessionKeyGuard.Check("PUT", "/gateway/transcription-mode").Allowed);
+        Assert.True(SessionKeyGuard.Check("PUT", "/gateway/tts-voice").Allowed);
+        Assert.False(SessionKeyGuard.Check("GET", "/gateway/recordings").Allowed);
+        Assert.False(SessionKeyGuard.Check("GET", "/sessions/11111111-1111-1111-1111-111111111111/transcript").Allowed);
+    }
+
+    [Theory]
+    // Device registration and enrolment. The owner named this one himself: a credential that can enrol a
+    // device can admit a NEW device, which is not configuring the product - it is the boundary itself.
+    // These are the routes the Gateway actually maps, not plausible-looking spellings of them, because a
+    // refusal test aimed at a path that does not exist passes on the default-deny and proves nothing about
+    // the route that does.
+    [InlineData("GET", "/devices")]
+    [InlineData("POST", "/devices/enroll-hosted")]
+    [InlineData("POST", "/mobile/enroll")]
+    [InlineData("POST", "/m/enroll")]
+    [InlineData("GET", "/account/devices")]
+    [InlineData("DELETE", "/account/devices/dev-1")]
+    // Account-level identity: who the account belongs to, what it is worth, and signing in or out of it.
+    [InlineData("GET", "/account/status")]
+    [InlineData("GET", "/account/credits")]
+    [InlineData("GET", "/account/trial")]
+    [InlineData("POST", "/account/email")]
+    [InlineData("POST", "/account/logout")]
+    [InlineData("GET", "/account/sign-in-start")]
+    [InlineData("POST", "/account/sign-in-start")]
+    // Force-killing a Director. Agents already have a clean way to end a session in request-deletion, so
+    // this is refused as the blunt instrument rather than as something an agent has no business doing.
+    [InlineData("DELETE", "/directors/d-1")]
+    // Which Directors are in the account at all.
+    [InlineData("POST", "/directors/register")]
+    [InlineData("DELETE", "/directors/d-1/registration")]
+    public void The_admission_boundary_stays_refused_even_though_configuration_opened(string method, string path)
+        => Assert.False(SessionKeyGuard.Check(method, path).Allowed, $"{method} {path} must NOT be allowed");
+
     // ---------- The account surface: what a session key must never reach ----------
 
     [Theory]
@@ -78,12 +184,16 @@ public sealed class SessionKeyGuardTests
     [InlineData("POST", "/devices/enroll")]
     [InlineData("POST", "/devices/enroll-signed-in")]
     [InlineData("DELETE", "/account/devices/some-device")]
-    // Turning the Gateway or a Director off, or repointing its settings.
+    // Turning the Gateway off, force-killing a Director, or changing which Directors are in the account.
+    // Settings USED to sit in this list and no longer do - see the configuration tests above.
     [InlineData("POST", "/shutdown")]
-    [InlineData("GET", "/directors/d-1/settings")]
-    [InlineData("POST", "/directors/d-1/settings")]
+    [InlineData("DELETE", "/directors/d-1")]
     [InlineData("DELETE", "/directors/d-1/registration")]
     [InlineData("POST", "/directors/register")]
+    // The verb still decides: settings are read with GET and written with PUT, and nothing else is a route.
+    // Keeping this here is what stops "settings are allowed" from becoming "the settings path is allowed".
+    [InlineData("POST", "/directors/d-1/settings")]
+    [InlineData("DELETE", "/directors/d-1/settings")]
     // Somebody else's Director process lifecycle on another machine.
     [InlineData("POST", "/machines/SOREN_NORTH/director/stop")]
     [InlineData("POST", "/machines/SOREN_NORTH/director/restart")]

@@ -18,14 +18,34 @@ public readonly record struct SessionKeyVerdict(bool Allowed, string Reason)
 /// until someone remembers to close it. A pure function on the method and path, so there is exactly one place
 /// this rule lives and it is unit-testable without a server.
 ///
-/// THE LINE IT DRAWS. A session key may do the FLEET WORK an agent's command line does - see the roster,
-/// find repositories and worktrees and machines, read a session's terminal, message/prompt/interrupt/hold/
-/// rename another session, spawn one, take a mission or a role, mark itself done, and read and publish the
-/// fleet's shared skills and workflows. It may NOT touch the ACCOUNT: no sign-in or sign-out, no device
-/// enrollment or revocation, no credits or subscription, no Gateway or Director settings, no shutdown, no
-/// Director registration, no diagnostics surface, and no voice/dictation/transcription data. Those are the
-/// owner's, and an agent that is compromised or merely mistaken must not be able to reach them with a
-/// credential that was handed to it automatically.
+/// THE LINE IT DRAWS: AN AGENT MAY CHANGE HOW THE PRODUCT BEHAVES. IT MAY NOT CHANGE WHO IS ALLOWED IN.
+/// That is the owner's ruling of 2026-08-03, and it is the single sentence to reason from when a new route
+/// has to be classified. The point of running agents is not to have to use the interface for most things:
+/// once the agents are set up, the owner maintains and CONFIGURES through them. So configuration is an
+/// agent's work, and admission is not.
+///
+/// BEHAVES - allowed. The FLEET WORK an agent's command line does: see the roster, find repositories and
+/// worktrees and machines, read a session's terminal, message/prompt/interrupt/hold/rename another session,
+/// spawn one, take a mission or a role, mark itself done, and read and publish the fleet's shared skills and
+/// workflows. Plus CONFIGURATION, in both directions: a Director's settings, the application's own settings
+/// (the closed <c>/gateway</c> set in <see cref="IsApplicationSetting"/>), and handovers - which are content
+/// agents produce, and which moving a session needs.
+///
+/// WHO IS ALLOWED IN - refused. Device registration, enrollment and revocation, because a credential that
+/// can admit a NEW device is not configuring the product, it IS the boundary, and an agent holding one could
+/// mint itself an account-wide credential and step straight out of this guard. Account-level identity:
+/// sign-in and sign-out, ownership, billing, credits and subscription. Director registration and
+/// de-registration. Force-killing a Director or shutting the Gateway down - agents already have a clean way
+/// to end a session (<c>request-deletion</c>), and this one is flagged to the owner as a line he may want
+/// moved. Also still refused, for the separate reason that they are not configuration at all: the
+/// diagnostics surface, and voice, dictation and transcription DATA - note the distinction from the voice
+/// SETTINGS above, which say how the product should behave and are therefore allowed.
+///
+/// WHAT CHANGED, AND WHY THIS PARAGRAPH WAS REWRITTEN RATHER THAN AMENDED. Phase 1b refused the whole
+/// <c>/directors</c> surface bar two sub-paths, and said so here in prose. The owner's ruling reverses that
+/// for settings and handovers. The old sentence was not edited around, because an allow list whose stated
+/// reasoning contradicts its contents is worse than a wrong entry: a wrong entry is visible in the code,
+/// whereas prose that no longer describes the list is trusted by the next reader and quietly propagated.
 ///
 /// A NOTE ON WHAT IS DELIBERATELY IN. Spawning a session and launching an application on a machine are both
 /// CODE EXECUTION on a computer, and both are allowed here - because both are what the fleet's agents do all
@@ -58,7 +78,9 @@ public static class SessionKeyGuard
             return SessionKeyVerdict.Allow;
 
         return SessionKeyVerdict.Refuse(
-            $"a session key may not call {verb} {p}; it may call the fleet's agent routes only, never the account surface");
+            $"a session key may not call {verb} {p}; it may run the fleet's agent routes and configure the " +
+            "product - settings and handovers - but never the admission surface: device enrollment, account " +
+            "identity, Director registration, or force-killing a Director");
     }
 
     private static bool IsAllowed(string verb, string[] s)
@@ -112,9 +134,15 @@ public static class SessionKeyGuard
             // version history. This is how an agent reads a capability the fleet holds centrally.
             if (IsCatalogueRead(s)) return true;
 
-            // The automation browsers on one Director's machine. See IsBrowserRoute for why one sub-path of
-            // the otherwise-forbidden /directors surface is open.
+            // The automation browsers on one Director's machine. See IsBrowserRoute for how the /directors
+            // surface is split between configuration and admission.
             if (IsBrowserRoute(s)) return true;
+
+            // Configuration, read side. A Director's settings, the application's own settings, and the
+            // handovers on a Director - all three by the owner's ruling that an agent configures the product.
+            if (IsDirectorSettings(s)) return true;
+            if (IsApplicationSetting(s)) return true;
+            if (IsHandoverRead(s)) return true;
 
             return false;
         }
@@ -171,14 +199,43 @@ public static class SessionKeyGuard
             // Create, start, stop, sign in to or rename an automation browser.
             if (IsBrowserRoute(s)) return true;
 
+            // Write a handover. This is the one that makes moving a session possible without the owner
+            // opening the interface, which is the whole point of the ruling.
+            if (IsHandoverWrite(s)) return true;
+
+            return false;
+        }
+
+        // ---------- Configuration writes ----------
+        // The settings surface is written with PUT, and PUT is allowed for NOTHING ELSE. Listing the settings
+        // paths explicitly rather than opening the verb - or opening /gateway by prefix - is what keeps this
+        // an allow list: a PUT that arrives on a route added next year is refused until somebody classifies
+        // it, and a prefix rule would have handed over /gateway/skills/{id}/disable the day it was written.
+        if (verb == "PUT")
+        {
+            if (IsDirectorSettings(s)) return true;
+            if (IsApplicationSetting(s)) return true;
             return false;
         }
 
         // Rename a session (PATCH /sessions/{sid}).
         if (verb == "PATCH" && s.Length == 2 && s[0] == "sessions") return true;
 
-        // Delete an automation browser.
-        if (verb == "DELETE" && IsBrowserRoute(s)) return true;
+        if (verb == "DELETE")
+        {
+            // Delete an automation browser.
+            if (IsBrowserRoute(s)) return true;
+
+            // Delete a handover. Beyond the literal words of the owner's ruling, which named handovers as
+            // content an agent produces without saying who may remove one - and recorded as a judgement call
+            // in PHASE-2B-REPORT.md rather than slipped in. It is allowed because it is the same class as the
+            // POST that created it: removing a handover changes neither who is admitted nor what identity the
+            // account has, and an agent that can write handovers but must ask the owner to tidy them up is
+            // exactly the trip back to the interface the ruling exists to remove.
+            if (IsHandoverWrite(s)) return true;
+
+            return false;
+        }
 
         return false;
     }
@@ -186,9 +243,13 @@ public static class SessionKeyGuard
     /// <summary>
     /// The automation-browser shapes under <c>/directors/{id}/browsers</c>.
     ///
-    /// THIS AND <c>POST /directors/{id}/sessions</c> ARE THE ONLY SUB-PATHS OF /directors OPEN TO A SESSION
-    /// KEY, and the narrowness is deliberate. The rest of that surface is the owner's - registration,
-    /// settings, handovers, force-kill - and stays refused.
+    /// HOW <c>/directors</c> IS SPLIT. Four shapes are open to a session key - browsers (here), <c>POST
+    /// /directors/{id}/sessions</c>, <c>/directors/{id}/settings</c>, and <c>/directors/{id}/handovers</c> -
+    /// and they are open because each is the product BEHAVING, which the owner's ruling puts in an agent's
+    /// hands. What stays refused on this surface is admission and lifecycle: <c>POST /directors/register</c>,
+    /// <c>DELETE /directors/{id}/registration</c>, and <c>DELETE /directors/{id}</c>, which force-kills the
+    /// Director. Registering or de-registering a Director decides who is in the account; force-killing one is
+    /// the blunt instrument agents already have a clean alternative to in <c>request-deletion</c>.
     /// This sub-path is not Director administration at all: an automation browser is a tool an agent uses,
     /// it was reachable by every agent on the machine before this mission (over the Director's loopback
     /// port, with no credential narrower than the machine secret), and routing it through the Gateway
@@ -210,6 +271,62 @@ public static class SessionKeyGuard
         // /directors/{id}/browsers/{browserId}/{attach|start|stop|signin|rename}
         return s.Length == 5 && s[4] is "attach" or "start" or "stop" or "signin" or "rename";
     }
+
+    /// <summary>
+    /// One Director's settings: <c>/directors/{id}/settings</c>, read with GET and written with PUT.
+    ///
+    /// Matched by structure, and by length exactly 3, so that a sub-path somebody hangs off settings later -
+    /// <c>/directors/{id}/settings/credentials</c>, say - is refused until it is classified here on purpose.
+    /// </summary>
+    private static bool IsDirectorSettings(string[] s)
+        => s.Length == 3 && s[0] == "directors" && s[2] == "settings";
+
+    /// <summary>
+    /// The application's own settings - the closed <c>/gateway</c> set the Settings page writes.
+    ///
+    /// Every one of these says how the product should BEHAVE: when it reports, how long a snooze lasts, which
+    /// time zone and which model, which voice and which language it speaks, what text it injects, how it
+    /// transcribes. None of them says who may sign in or which devices are admitted, which is why the whole
+    /// set moves together under the owner's ruling.
+    ///
+    /// NOTE THE DISTINCTION THAT MATTERS: the voice, language and transcription entries here are SETTINGS,
+    /// not DATA. Recordings, dictation audio and transcripts remain refused - a knob saying how to transcribe
+    /// is configuration, whereas what was actually said into the microphone is the owner's.
+    ///
+    /// Written as a literal list rather than a <c>/gateway</c> prefix on purpose. A prefix would have opened
+    /// the catalogue enable/disable routes that sit under the same segment and are deliberately refused, and
+    /// it would silently swallow every future <c>/gateway</c> route on the day it was added.
+    /// </summary>
+    private static bool IsApplicationSetting(string[] s) => Join(s) switch
+    {
+        "gateway/settings" => true,
+        "gateway/daily-report" => true,
+        "gateway/snooze-default" => true,
+        "gateway/snooze-presets" => true,
+        "gateway/time-zone" => true,
+        "gateway/ai-provider" => true,
+        "gateway/tts-voice" => true,
+        "gateway/spoken-language" => true,
+        "gateway/spoken-language/voice" => true,
+        "gateway/injected-text" => true,
+        "gateway/transcription-mode" => true,
+        _ => false,
+    };
+
+    /// <summary>
+    /// Reading handovers on a Director: the list at <c>/directors/{id}/handovers</c>, and one document's text
+    /// at <c>/directors/{id}/handovers/content</c>. The document is named by query string, which this guard
+    /// deliberately never consults - see <see cref="Check"/>.
+    /// </summary>
+    private static bool IsHandoverRead(string[] s)
+    {
+        if (s.Length < 3 || s[0] != "directors" || s[2] != "handovers") return false;
+        return s.Length == 3 || (s.Length == 4 && s[3] == "content");
+    }
+
+    /// <summary>Creating or removing a handover, both at <c>/directors/{id}/handovers</c> exactly.</summary>
+    private static bool IsHandoverWrite(string[] s)
+        => s.Length == 3 && s[0] == "directors" && s[2] == "handovers";
 
     /// <summary>The read shapes of the shared skill/workflow catalogue.</summary>
     private static bool IsCatalogueRead(string[] s)
