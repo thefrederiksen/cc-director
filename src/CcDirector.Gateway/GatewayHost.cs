@@ -508,6 +508,20 @@ public sealed class GatewayHost : IAsyncDisposable
     // between a tenant's ListAll and MarkFired). 0 = idle, 1 = a sweep is in flight (Interlocked-owned).
     private int _cronSweepInFlight;
 
+    /// <summary>
+    /// Which live Gateway process is serving production (issue #2398, stage 1). A deploy runs TWO full
+    /// Gateways at once for roughly forty-five seconds, and every sweep guard below is per-PROCESS, so
+    /// without this both would fire. Null on a host that did not supply one (tests), which reads as
+    /// production - a lone Gateway must never stop doing its work because a role service is absent.
+    /// </summary>
+    private GatewayInstanceRole? _instanceRole;
+
+    /// <summary>
+    /// Whether this process should ACT on a background tick. Reads true when there is no role service, so
+    /// self-host and every test behave exactly as before this existed.
+    /// </summary>
+    private bool IsProductionInstance => _instanceRole is null || _instanceRole.IsProduction;
+
     // MTR-15 cancellation cutoff (hosted-only): the per-tenant access lease, its device-revoker, and the 60s
     // active-tenant sweep that re-reads entitlement and cuts off a cancelled tenant within the sweep bound.
     private Tenancy.TenantAccessRevoker? _accessRevoker;
@@ -3321,6 +3335,18 @@ public sealed class GatewayHost : IAsyncDisposable
         // per-tenant worker seam (CronTenantSweep / TenantScopedSweep), which enters each tenant's ambient
         // scope before reading, so the sweep runs ON hosted (tenant-isolated) instead of being disabled. On
         // self-host the seam fires once under Local - the same single fire as before.
+        // Decide which live Gateway process is production BEFORE any background timer starts, so a
+        // process that is not production never fires a single sweep (#2398, stage 1). It starts PASSIVE on
+        // hosted and only becomes active once the public address is confirmed to be answering with this
+        // instance, so a warming staging slot and a just-swapped-out old container both stand down without
+        // being told to by anyone.
+        _instanceRole = new GatewayInstanceRole(
+            GatewayInstanceIdentity.Current,
+            Environment.GetEnvironmentVariable(GatewayPublicUrl.PublicBaseUrlEnvVar),
+            GatewayHostedMode.IsHosted);
+        FileLog.Write($"[GatewayHost] instance={GatewayInstanceIdentity.Current}, "
+            + $"production={_instanceRole.IsProduction} ({_instanceRole.Reason})");
+
         _cronTimer = new System.Threading.Timer(_ => SweepCron(), null, CronSweepInterval, CronSweepInterval);
         FileLog.Write($"[GatewayHost] cron sweep started: every {CronSweepInterval.TotalSeconds:0}s ({(GatewayHostedMode.IsHosted ? "hosted, per-tenant via TenantScopedSweep" : "self-host, single Local tenant")})");
 
@@ -3656,6 +3682,9 @@ public sealed class GatewayHost : IAsyncDisposable
 
     private void SweepCron()
     {
+        // Only the production instance acts. The other live Gateway during a deploy would otherwise run
+        // this same sweep against the same database, and the guard below is per-process (#2398).
+        if (!IsProductionInstance) return;
         // Skip this tick if the previous sweep is still fanning out (hosted, many tenants). Overlapping sweeps
         // could double-fire a non-overlap-guarded job; one at a time is correct and a skipped tick simply
         // fires on the next one (cron granularity is a minute, not a second).
@@ -3692,6 +3721,7 @@ public sealed class GatewayHost : IAsyncDisposable
     /// </summary>
     private void SweepActivityRetention()
     {
+        if (!IsProductionInstance) return;
         if (Interlocked.CompareExchange(ref _activityRetentionInFlight, 1, 0) != 0)
             return;
         _ = RunActivityRetentionSweepAsync();
@@ -3721,6 +3751,7 @@ public sealed class GatewayHost : IAsyncDisposable
     /// </summary>
     private void SweepPromptRetention()
     {
+        if (!IsProductionInstance) return;
         if (Interlocked.CompareExchange(ref _promptRetentionInFlight, 1, 0) != 0)
             return;
         try
@@ -3744,6 +3775,7 @@ public sealed class GatewayHost : IAsyncDisposable
     /// </summary>
     private void SweepSuggestions()
     {
+        if (!IsProductionInstance) return;
         if (Interlocked.CompareExchange(ref _suggestionSweepInFlight, 1, 0) != 0)
             return;
         _ = RunSuggestionSweepAsync();
@@ -3773,6 +3805,7 @@ public sealed class GatewayHost : IAsyncDisposable
     /// </summary>
     private void SweepSessionHistory()
     {
+        if (!IsProductionInstance) return;
         if (Interlocked.CompareExchange(ref _sessionHistorySweepInFlight, 1, 0) != 0)
             return;
         _ = RunSessionHistorySweepAsync();
@@ -3992,6 +4025,9 @@ public sealed class GatewayHost : IAsyncDisposable
         _stopped = true;
         FileLog.Write($"[GatewayHost] StopAsync");
 
+        // Stop asking who is production before the rest is torn down: the check is an outbound HTTP call on
+        // a timer, and a process on its way out has no use for the answer (#2398).
+        try { _instanceRole?.Dispose(); } catch (Exception ex) { FileLog.Write($"[GatewayHost] instance role dispose error: {ex.Message}"); }
         try { _cronTimer?.Dispose(); } catch (Exception ex) { FileLog.Write($"[GatewayHost] cron timer dispose error: {ex.Message}"); }
         _cronTimer = null;
         try { _activityRetentionTimer?.Dispose(); } catch (Exception ex) { FileLog.Write($"[GatewayHost] activity retention timer dispose error: {ex.Message}"); }
