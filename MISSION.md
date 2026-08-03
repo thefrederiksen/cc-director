@@ -70,7 +70,7 @@ the Gateway calling in, and can become pushes down the connection it already has
 | # | Phase | State |
 |---|-------|-------|
 | 1 | Gateway parity, proven with a session credential | DONE - finding below |
-| 1b | Session credentials on the Gateway (discovered in Phase 1) | not started |
+| 1b | Session credentials on the Gateway (discovered in Phase 1) | DONE - see PHASE-1B-REPORT.md |
 | 2 | The command line tools talk to the Gateway | not started |
 | 3 | Session hooks stop needing an API | not started |
 | 4 | Lifecycle off HTTP | not started |
@@ -110,6 +110,19 @@ a phase, that is the point it goes to the owner.
 
 - 2026-08-03: mission chartered, worktree cut from origin/main at 214b15819, brief written.
 - 2026-08-03: Phase 1 done. Gateway has no session-scoped credential; Phase 1b added.
+- 2026-08-03: Phase 1b done and pushed. Architect rulings on it:
+  - **Spawn and machine-launch stay in the allowed set.** UPHELD. This mission removes a door; it
+    does not change what an agent may do. Narrowing capability here would break fleet workflows and
+    would be scope the owner did not charter.
+  - **The launch window is accepted for now, and Phase 2 must test it.** The key is registered but not
+    awaited, so a slow Gateway and a fast agent could in principle produce one refused first call. It
+    is refused loudly, never silently downgraded, which is the behaviour we want. Phase 2 exercises
+    this credential end to end for the first time and must fault-inject a slow Gateway. If a refused
+    first command is reachable in practice, it is fixed there - not papered over with a retry that
+    would reintroduce a second path.
+  - The other two recorded gaps - no end-to-end run, and nothing consuming the calling session id -
+    are correct for a phase that builds a credential before anything uses it. Both close in Phase 2.
+  - `MISSION-PLAN.md` written; the dangling reference was the Architect's error, not the Manager's.
 
 ## Carried over, not part of this mission
 
