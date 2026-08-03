@@ -114,6 +114,69 @@ public class GitPresenceTests
     }
 
     /// <summary>
+    /// A DETECTOR WITH A SIDE EFFECT ON THE USER'S MACHINE IS NOT A DETECTOR.
+    ///
+    /// On macOS /usr/bin/git is Apple's Command Line Tools shim. A Mac without those tools still has
+    /// that file, and RUNNING it puts Apple's "install the developer tools?" dialog on the screen -
+    /// so the probe itself would force a prompt the owner's ruling rules out. The assertion that
+    /// matters is not the verdict, it is that the probe IS NEVER CALLED: nothing is launched, so
+    /// nothing can prompt.
+    /// </summary>
+    [Fact]
+    public async Task OnMacOs_TheDeveloperToolsStubIsNeverLaunched()
+    {
+        var probeWasCalled = false;
+
+        var presence = await GitPresenceDetector.DetectAsync(
+            _ => GitPresenceDetector.AppleStubPath,
+            (_, _) => { probeWasCalled = true; return Answers(true, 0, "git version 2.39.5 (Apple Git-154)"); },
+            isMacOs: true,
+            CancellationToken.None);
+
+        Assert.False(probeWasCalled, "the macOS developer-tools stub was executed; that can open Apple's install dialog");
+        Assert.Equal(GitAvailability.Undetermined, presence.Availability);
+        // And therefore the wizard says nothing at all on such a machine.
+        Assert.False(presence.ShouldAdviseInstallingGit);
+    }
+
+    /// <summary>
+    /// The guard is narrow on purpose. A Mac whose git comes from Homebrew resolves somewhere else
+    /// and must still be probed normally, or every Mac would fall into "we could not tell".
+    /// </summary>
+    [Fact]
+    public async Task OnMacOs_AGitThatIsNotTheStubIsStillProbed()
+    {
+        var probeWasCalled = false;
+
+        var presence = await GitPresenceDetector.DetectAsync(
+            _ => "/opt/homebrew/bin/git",
+            (_, _) => { probeWasCalled = true; return Answers(true, 0, "git version 2.45.1"); },
+            isMacOs: true,
+            CancellationToken.None);
+
+        Assert.True(probeWasCalled);
+        Assert.Equal(GitAvailability.Present, presence.Availability);
+    }
+
+    /// <summary>
+    /// The same path on a machine that is not a Mac is not Apple's stub and carries none of its
+    /// behaviour, so it is probed like anything else.
+    /// </summary>
+    [Fact]
+    public async Task OffMacOs_TheSamePathIsProbedNormally()
+    {
+        var probeWasCalled = false;
+
+        await GitPresenceDetector.DetectAsync(
+            _ => GitPresenceDetector.AppleStubPath,
+            (_, _) => { probeWasCalled = true; return Answers(true, 0, "git version 2.45.1"); },
+            isMacOs: false,
+            CancellationToken.None);
+
+        Assert.True(probeWasCalled);
+    }
+
+    /// <summary>
     /// The one ruling the user interface is allowed to read. Stated as a table so that a later change
     /// making Undetermined advise an install fails here rather than on somebody's screen.
     /// </summary>

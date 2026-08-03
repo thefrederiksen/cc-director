@@ -147,15 +147,28 @@ public static class GitPresenceDetector
 
     /// <summary>Detect git on this machine, using the real PATH and a real subprocess.</summary>
     public static Task<GitPresence> DetectAsync(CancellationToken ct = default)
-        => DetectAsync(c => ExecutableResolver.Resolve(c), RunVersionAsync, ct);
+        => DetectAsync(c => ExecutableResolver.Resolve(c), RunVersionAsync, OperatingSystem.IsMacOS(), ct);
 
     /// <summary>
     /// The rule, with the two machine-touching steps injected so every branch is reachable in a
     /// test without needing a machine that genuinely lacks git.
     /// </summary>
+    internal static Task<GitPresence> DetectAsync(
+        Func<string, string?> resolve,
+        Func<string, CancellationToken, Task<GitVersionProbe>> probe,
+        CancellationToken ct)
+        => DetectAsync(resolve, probe, OperatingSystem.IsMacOS(), ct);
+
+    /// <summary>
+    /// The rule with the platform passed in as well. The macOS branch is the reason this exists: it
+    /// is never taken on Windows, so on the machines this suite runs on there would otherwise be NO
+    /// test that can fail if the guard is deleted - and that guard is the one stopping the detector
+    /// from putting an installer dialog on a Mac user's screen.
+    /// </summary>
     internal static async Task<GitPresence> DetectAsync(
         Func<string, string?> resolve,
         Func<string, CancellationToken, Task<GitVersionProbe>> probe,
+        bool isMacOs,
         CancellationToken ct)
     {
         var path = resolve(GitCommand);
@@ -169,7 +182,7 @@ public static class GitPresenceDetector
         // it when the tools are absent puts up Apple's "install the developer tools?" dialog. This
         // detector's entire remit is to say one sentence and change nothing, so it must not be the
         // thing that offers to install software. Nothing is claimed about such a machine either way.
-        if (IsAppleCommandLineToolsStub(path))
+        if (IsAppleCommandLineToolsStub(path, isMacOs))
         {
             FileLog.Write($"[GitPresenceDetector] DetectAsync: {path} is the macOS developer-tools stub; not running it");
             return new GitPresence(GitAvailability.Undetermined, path, null,
@@ -220,9 +233,11 @@ public static class GitPresenceDetector
     /// outcome. A Mac with git from Homebrew or elsewhere resolves to that path instead and is probed
     /// normally.
     /// </summary>
-    private static bool IsAppleCommandLineToolsStub(string path)
-        => OperatingSystem.IsMacOS()
-           && string.Equals(path, "/usr/bin/git", StringComparison.Ordinal);
+    private static bool IsAppleCommandLineToolsStub(string path, bool isMacOs)
+        => isMacOs && string.Equals(path, AppleStubPath, StringComparison.Ordinal);
+
+    /// <summary>Where Apple puts its Command Line Tools shims.</summary>
+    internal const string AppleStubPath = "/usr/bin/git";
 
     /// <summary>
     /// Run <c>&lt;path&gt; --version</c> and capture what it says. Every way of failing to get an
