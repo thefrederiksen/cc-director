@@ -74,7 +74,7 @@ the Gateway calling in, and can become pushes down the connection it already has
 | 2 | The command line tools talk to the Gateway | DONE - pass mark MET, see PHASE-2-REPORT.md |
 | 2b | Owner widening, the write paths, and the inspection fixes | DONE - see PHASE-2B-REPORT.md |
 | I1 | Independent inspection of 1b + 2 (Codex) | DONE - 8 proved defects, 4 high |
-| 3 | Session hooks stop needing an API | not started |
+| 3 | Session hooks stop needing an API | DONE - see PHASE-3-REPORT.md |
 | 4 | Lifecycle off HTTP | not started |
 | 5 | Delete the Director's listener | not started |
 | 6 | Delete the launcher's listener | not started |
@@ -311,3 +311,31 @@ supported path. The two already-running sessions stay unattached until this is f
 **Worth filing on its own.** The error is the dangerous kind: it is specific, confident and actionable,
 and the action it names is impossible. A user following it looks for a route that is not there and
 concludes their install is broken.
+
+## Phase 3 accepted - 2026-08-03
+
+**The number that matters most in this mission so far: the snapshot design, injected as a fault, left
+48 of 52 tests GREEN.** The Architect's Phase 3 correction - that the preamble must be MAINTAINED, not
+snapshotted at launch - was not a stylistic preference. A design that serves a user their old injected
+text after they edit it, and hides newly published skills, would have passed almost the entire suite.
+It never looks broken; it is just wrong.
+
+**A real defect found outside the brief:** `FileSystemWatcher` silently drops roughly one notification
+in five, with the file present and complete and no Error event raised. Fixed by making a 2-second
+sweep the delivery guarantee and the watcher only a latency win - the correct shape, because the fast
+path must never be the correctness path. This concerns a mechanism used well beyond this mission and
+belongs in the QA report.
+
+**The comparative criterion, applied properly for the first time end to end.** Mission arm 0/62/1/0/1,
+parent arm 1/2/1. Every failure on both arms sits in a suite this phase adds nothing to, and
+`SuggestionEmailComposerTests` fails on BOTH arms - which is what makes the conclusion safe rather than
+merely convenient. Both parked suites green on the phase commit.
+
+Architect rulings on the open items:
+- **60-second self-healing preamble window: ACCEPTED.** Bounded, self-correcting, loudly logged. The
+  alternative couples a rewrite to every store write, for a staleness no human can perceive between
+  hook fires.
+- **Preamble file isolation weaker on paper: ACCEPTED and must be stated as UNCHANGED, not improved.**
+  `ControlApiHost` already documents that this was never an operating-system sandbox.
+- **macOS and Linux unproven: a REAL hole, recorded OPEN.** It predates the mission and is not closed
+  by it. The QA report must say the mission was proven on Windows only.
