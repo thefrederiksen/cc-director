@@ -37,6 +37,16 @@ public sealed class FileLogRestartAfterStopTests
     [Fact]
     public void Write_AfterStopAndStart_IsActuallyAccepted_NotSilentlyDropped()
     {
+        // DO NOT DELETE THIS AS A DUPLICATE OF THE TEST ABOVE. It is the ONLY test in this file that
+        // detects a lifetime regression, and that was established by injecting the defect rather than
+        // reasoned about: with the Enqueue fix in place and the Start fix removed, the three
+        // "does not throw" tests here ALL PASS, because the surviving half of the fix converts the
+        // crash into a silent drop. Only the dropped-line count still notices.
+        //
+        // That is the trap the two fixes create together: each one masks the other's symptom. Delete
+        // this assertion and a future change that reverts Start to reviving a spent writer will land
+        // green, with logging quietly dead for the rest of every process that stops and starts.
+        //
         // "Did not throw" on its own would also pass if Start left a spent writer in place and every
         // line went to the dropped counter instead - broken logging that no longer announces itself,
         // which is worse than the crash it replaced. So assert the line was ACCEPTED.
@@ -69,6 +79,32 @@ public sealed class FileLogRestartAfterStopTests
         });
 
         Assert.Null(ex);
+    }
+
+    [Fact]
+    public void DrainAndReadLines_DoesNotLeaveASpentWriterInstalledGlobally()
+    {
+        // THE TRIGGER, pinned. Draining stops the throwaway writer, which completes its queue - and the
+        // scope used to leave that spent writer installed as the process-wide writer, with _started
+        // still 1, right up until Dispose. In an assembly that runs tests in parallel, every neighbour
+        // that logged in that window met a completed queue. That is what actually took down
+        // AuthMiddlewareTests, GatewayInputStatsAggregatorTests, DeviceCredentialImportTests and
+        // SkillStoreTests on different runs - all four in Gateway.UnitTests, which runs four at a time.
+        //
+        // The assertion is the dropped-line count, not "did not throw": with Enqueue no longer throwing,
+        // a spent global writer is SILENT, so a throw-only test would pass while every neighbour's log
+        // line was being discarded.
+        using var scope = FileLog.RedirectForTests();
+
+        FileLog.Write("a line produced inside the scope");
+        var lines = scope.DrainAndReadLines();
+        Assert.Contains(lines, l => l.Contains("a line produced inside the scope"));
+
+        var droppedBefore = FileLog.DroppedLines;
+        var ex = Record.Exception(() => FileLog.Write("a neighbour logging after the drain"));
+
+        Assert.Null(ex);
+        Assert.Equal(droppedBefore, FileLog.DroppedLines);
     }
 
     [Fact]
