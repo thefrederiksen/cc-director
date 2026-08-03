@@ -4,6 +4,7 @@ using CcDirector.Gateway.Api;
 using CcDirector.Gateway.Contracts;
 using CcDirector.Gateway.Tenancy;
 using CcDirector.Gateway.Tests.Data;
+using Microsoft.EntityFrameworkCore;
 using Xunit;
 
 namespace CcDirector.Gateway.Tests.Account;
@@ -225,6 +226,38 @@ public sealed class AccountTrialReadTests : IDisposable
     // -------------------------------------------------------------------------------------------------
     // The state this whole shape exists for.
     // -------------------------------------------------------------------------------------------------
+
+    [Fact]
+    public void A_LEDGER_THAT_CANNOT_BE_READ_PRODUCES_Unreadable_and_never_never_granted()
+    {
+        // THE GUARD ITSELF, exercised through a REAL failing read rather than a hand-built status.
+        //
+        // This test exists because its absence was caught by a revert-proof that refused to redden. Every
+        // other test here builds a TrialStatus by hand and hands it to Describe, which proves the SENTENCE is
+        // right for an unreadable ledger - and proves nothing at all about whether the registry ever produces
+        // that state. Collapsing Unreadable into NeverGranted in ReadStatus left the whole suite green: the
+        // description was validated, the placement was not.
+        //
+        // Dropping the table is the same failure injection the entitlement side already uses for its Unknown
+        // path. It makes the query genuinely throw, which is the only way to reach the catch under proof.
+        var db = _harness.Open();
+        var trials = new TrialRegistry(db);
+        trials.GrantIfFirstArrival(Subject, alreadyKnownToGateway: false, Granted);
+
+        using (var ctx = db.CreateUnscopedContext())
+            ctx.Database.ExecuteSqlRaw("DROP TABLE account_trials");
+
+        var status = trials.ReadStatus(Subject, Granted.AddDays(2));
+
+        // The account HAS a live trial. If a failed read answered NeverGranted, this member would be told
+        // they have nothing while twelve days of Pro were still running.
+        Assert.Equal(TrialStatusKind.Unreadable, status.Kind);
+        Assert.NotEqual(TrialStatusKind.NeverGranted, status.Kind);
+        Assert.NotEqual(TrialStatusKind.Expired, status.Kind);
+
+        // And the access decision must reach the same conclusion from the same read: retry, never refuse.
+        Assert.Equal(TrialOutcome.Unknown, trials.Evaluate(Subject, Granted.AddDays(2)).Outcome);
+    }
 
     [Fact]
     public void An_UNREADABLE_ledger_is_UNKNOWN_and_is_never_described_as_no_trial()
