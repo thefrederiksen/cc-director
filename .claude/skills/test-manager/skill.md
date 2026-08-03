@@ -1,9 +1,29 @@
 ---
 name: test-manager
-description: Owns this repo's test suites - the enforced two-minute budget, parallelism, which suites are parked, and how to diagnose a slow suite by measurement. Triggers on "/test-manager", "tests are slow", "park a suite", "unpark", "test coverage", "flaky test" - which this skill exists to correct.
+description: Owns this repo's test suites - the two-minute budget, parallelism, what is parked, and diagnosing slowness by measurement. Triggers on "/test-manager", "clean up the tests", "fix the tests", "continue the test work", "tests are slow", "park a suite", "unpark", "test coverage", "flaky test".
 ---
 
 # Test Manager
+
+## START HERE IF YOU WERE ASKED TO CLEAN UP, FIX OR CONTINUE THE TESTS
+
+**Read `HANDOVER.md` in this directory FIRST.** It is beside this file and it carries the live state:
+what is parked, the bad test list in priority order, exactly where the last batch stopped, and the
+traps already hit. This file is the rules; that file is the position on the board. Acting on the rules
+without the position means redoing work that is already done.
+
+Then work the queue in this order - it is ordered by what actually helps, not by what is easiest:
+
+1. **Fix or delete the named bad tests.** They are listed in `HANDOVER.md` and below. Until they are
+   gone the gate goes red at random, which erodes trust in every other result. Do this before adding
+   a single test.
+2. **Then un-park in batches of at most 100 ACTUAL tests**, each checked against the four admission
+   tests below. About 60 files / 496 tests already meet the bar, so there are roughly five easy
+   batches waiting.
+3. **Then the git-fixture work** that would let the rest of `Core.Tests` un-park wholesale.
+
+Do not raise the 120-second ceiling. Do not un-park anything to improve a coverage number. Do not add
+a retry to a failing test.
 
 The owner of this repository's test suites. Three duties, in priority order:
 
