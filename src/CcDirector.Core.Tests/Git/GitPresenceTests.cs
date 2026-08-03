@@ -106,11 +106,11 @@ public class GitPresenceTests
         using var cts = new CancellationTokenSource();
         cts.Cancel();
 
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
-            GitPresenceDetector.DetectAsync(
-                _ => "C:\\Program Files\\Git\\cmd\\git.exe",
-                (_, ct) => { ct.ThrowIfCancellationRequested(); return Answers(true, 0, "git version 2.45.1"); },
-                cts.Token));
+        // The REAL detector, not the injected probe: the catch that has to let cancellation through
+        // lives inside the real version probe, so a test that supplies its own probe never reaches
+        // it and would pass whatever that catch did.
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => GitPresenceDetector.DetectAsync(cts.Token));
     }
 
     /// <summary>
@@ -150,12 +150,27 @@ public class GitPresenceTests
     [Fact]
     public void LaunchFailure_CodeThree_IsOnlyAMissingFileOnWindows()
     {
-        var message = GitLaunchFailure.Describe(3, "No such process");
+        // The platform is passed in rather than read from the machine. On Windows the two rules -
+        // the correct one and "code 3 means missing everywhere" - produce identical output, so a
+        // test that read the real platform could not fail here however wrong the rule became.
+        Assert.Equal(
+            "git is not installed on this machine, or is not on PATH",
+            GitLaunchFailure.Describe(3, "The system cannot find the path specified", isWindows: true));
 
-        if (OperatingSystem.IsWindows())
-            Assert.Equal("git is not installed on this machine, or is not on PATH", message);
-        else
-            Assert.DoesNotContain("not installed", message);
+        var onPosix = GitLaunchFailure.Describe(3, "No such process", isWindows: false);
+        Assert.Equal("git could not be started: No such process", onPosix);
+        Assert.DoesNotContain("not installed", onPosix);
+    }
+
+    /// <summary>Code 2 means "no such file" on both platforms, so it reads the same on both.</summary>
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void LaunchFailure_CodeTwo_SaysNotInstalledOnEveryPlatform(bool isWindows)
+    {
+        Assert.Equal(
+            "git is not installed on this machine, or is not on PATH",
+            GitLaunchFailure.Describe(2, "No such file or directory", isWindows));
     }
 
     [Fact]

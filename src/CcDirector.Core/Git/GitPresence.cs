@@ -87,10 +87,18 @@ public static class GitLaunchFailure
     /// <param name="nativeErrorCode">The operating system's own error number from the failed launch.</param>
     /// <param name="reason">What the failure said, used verbatim for every other code.</param>
     public static string Describe(int nativeErrorCode, string? reason)
+        => Describe(nativeErrorCode, reason, OperatingSystem.IsWindows());
+
+    /// <summary>
+    /// The rule with the platform passed in. Exposed because the Windows-only reading of code 3 is
+    /// otherwise UNFALSIFIABLE on Windows: a test running here cannot tell the correct rule from one
+    /// that reads code 3 as a missing file everywhere, so the guard would have no test that can fail.
+    /// </summary>
+    internal static string Describe(int nativeErrorCode, string? reason, bool isWindows)
     {
         var meansThereIsNoSuchFile =
             nativeErrorCode == FileNotFound
-            || (OperatingSystem.IsWindows() && nativeErrorCode == PathNotFoundWindowsOnly);
+            || (isWindows && nativeErrorCode == PathNotFoundWindowsOnly);
 
         if (meansThereIsNoSuchFile)
             return "git is not installed on this machine, or is not on PATH";
