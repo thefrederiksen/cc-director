@@ -75,7 +75,7 @@ the Gateway calling in, and can become pushes down the connection it already has
 | 2b | Owner widening, the write paths, and the inspection fixes | DONE - see PHASE-2B-REPORT.md |
 | I1 | Independent inspection of 1b + 2 (Codex) | DONE - 8 proved defects, 4 high |
 | 3 | Session hooks stop needing an API | DONE - see PHASE-3-REPORT.md |
-| 4 | Lifecycle off HTTP | not started |
+| 4 | Lifecycle off HTTP | DONE - see PHASE-4-REPORT.md |
 | 5 | Delete the Director's listener | not started |
 | 6 | Delete the launcher's listener | not started |
 | 7 | The guard test | not started |
@@ -359,3 +359,39 @@ not a diagnosis.
 
 That last sentence is the standard this mission has been held to throughout, and it is worth more than
 the answer it qualifies. Recorded so the next Manager does not re-derive the shape of this count.
+
+## Phase 4 accepted - and the gate's flakiness is now ONE named defect
+
+**The Architect's Phase 4 premise was corrected AGAIN, on evidence.** The brief said the version comes
+from the exe on disk. Wrong, and consequentially: the exe is swapped BEFORE the new build starts, so a
+disk read reports the new version whether or not anything came up, and the roll-back could never fire.
+Observed - a hung 1.9.8 rolled back to 1.9.7 while disk said 1.9.8. Version now comes from the
+registration the RUNNING process wrote, the only source that distinguishes started from installed.
+That is the fourth Architect premise this mission has corrected, and the most consequential.
+
+**The tie-break ruling, implemented and verified on the owner's own machine.** Ambiguous only when
+claimants share an executable - the real defect, still refused - otherwise the installed application
+wins. Before: `Ambiguous, status=none`. After: `Running, pid 34032, v1.9.7, 3 sessions`. The conflict
+still travels on the answer and reaches the update display, and a test goes red if it is swallowed.
+
+**Two things the Manager reported against itself**, both recorded because the habit matters more than
+either item: detector validation found a HOLE rather than confirming coverage - removing a fail-open
+guard reddened nothing, so it had no test at all - and it fault-injected an uncommitted tree, breaking
+this mission's own law and destroying the work it was testing.
+
+### The gate's unreliability is ONE fixable defect, not noise
+
+Nine failures over seven runs on two commits, nine different tests, no repeats. **Eight share one
+exception - `FileLogWriter.Enqueue` on a completed `BlockingCollection` - and the ninth is its sibling,
+a disposed-object race on the test database.** `SuggestionEmailComposerTests` was an arbitrary victim
+in Phase 3 and again here. **An arbitrary victim recurring by chance is exactly what one shared
+teardown race looks like from a distance** - and the moving victim is precisely why it kept being
+written off as flakiness.
+
+This meets the Architect's own independent finding earlier in the mission, where the same exception and
+stack explained a different suite's flake. Two lines of evidence, one cause.
+
+**Ruling: NOT fixed here.** A race in the logging teardown deserves its own change with its own proof,
+not smuggling in beside a port removal. Filed with the evidence. But it belongs in the QA report as a
+fleet-wide finding, because every mission in this repository currently merges on a signal this defect
+corrupts.
