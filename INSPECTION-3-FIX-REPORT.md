@@ -209,6 +209,78 @@ fully green - 4,217 tests, all nine projects Completed - and it was green while 
 surface I had changed sat unrun in a parked suite. The gate flagged the coverage gap itself and naming
 that gap is what made the difference between a real gate and a ritual.
 
+## The gate - four runs, each one listed, no summaries
+
+**The criterion is comparative, not absolute.** A failure is ours only if it does NOT also appear on the
+parent, and the parent must be run more than once - a single control on this suite is a coin toss, which
+this mission established when an unchanged commit produced 0, then 4, then 2 failures on three runs.
+Every run below is `test-local.ps1 -Parked`, eleven projects, and `-Parked` was mandatory rather than
+optional here because the gate itself flagged that the change touches both parked suites.
+
+| # | Tree | Projects | Real failures | Teardown-race failures |
+|---|---|---|---|---|
+| 0 | fix tip, DEFAULT (not parked) | 9 | 0 | 0 |
+| 1 | fix tip, parked | 11 | **3 - genuinely ours**, now fixed | 1 |
+| 2 | fix tip, parked, after the fix | 11 | 0 | 54, one exception, 133 ms |
+| 3 | parent `5dc4fef6a`, parked | 11 | 0 | 0 |
+| 4 | parent `5dc4fef6a`, parked | 9 of 11 - see below | 0 | 1 |
+
+Run 0 is listed because it is the trap: a fully green default run, 4,217 tests, while three failures of the
+exact surface this branch changed sat unrun in a parked suite.
+
+**Run 1, fix tip.** `Gateway.Tests` 3 failed of 2256; `Gateway.UnitTests` 1 failed of 2955; the other nine
+Completed. The three are described under "The regression this branch caused" above - they were mine, and
+the parked suite is the only thing that could have caught them.
+
+**Run 2, fix tip, after the correction.** `Gateway.Tests` Completed, 2256, **zero failures** - so the
+three tests pass with their assertions UNTOUCHED, which is the only result that proves the behaviour was
+restored rather than the test lowered to meet it. `Core.Tests` Completed 4218. `Gateway.UnitTests` 54
+failed of 2955: **one** distinct exception across all 54,
+`System.InvalidOperationException : The collection has been marked as complete with regards to
+additions`, inside a 0.133-second window (16:22:50.012 to 16:22:50.145) across `SkillStoreTests`,
+`SessionKeyRegistryTests` and `HostedEnrollmentEndpointTests`. Read out of the result file, not
+recognised from the count.
+
+**Run 3, parent.** All eleven projects Completed, zero failures of any kind. Worth recording on its own:
+a parent's FIRST run can come back perfectly clean, which is exactly why one control run would once have
+convicted this mission of a regression it did not cause.
+
+**Run 4, parent - AND IT IS INCOMPLETE, STATED PLAINLY.** Nine of the eleven projects reported, all
+Completed except one. `Gateway.UnitTests` 1 failed of 2945 -
+`RosterFoldBatchedSnoozeReadTests.EveryShapeOfRow_FoldsToTheSameAnswerItDidBefore`, carrying the
+IDENTICAL exception, stack through `FileLogWriter.Enqueue` line 109 from `FileLog.Write` line 124, with
+the stack path naming `devthrottle-fix-parent` - so the attribution to the parent tree is observed, not
+inferred. **`Gateway.Tests` and `Core.Tests` were still running on this arm when the phase was wound
+down and their numbers are NOT in this report.** They cannot change the verdict - the decisive fact is
+already observed and the two directions they could go are "more of the same race on the parent", which
+strengthens it, or "clean", which leaves it untouched - but they were not seen, so they are not claimed.
+
+### Verdict
+
+**The teardown-race failures are NOT this branch's.** They appear on the parent, under the same exception
+and the same stack, so the comparative criterion excludes them. They are the fleet-wide `FileLogWriter`
+race this mission has already characterised and filed, and neither arm carries main's fix for it
+(`ab78c36b1` is an ancestor of neither the fix tip nor the parent - verified with `merge-base`, not
+assumed), so its presence on both arms is expected rather than surprising.
+
+**The only failures either arm produced that a human should care about were the three I caused, and they
+are closed.**
+
+### The reasoning we did NOT end up needing, kept because the next defect will look like this
+
+For a while the runs showed the exception twice on the fix tip and never on the parent, and a careful
+apparatus grew around that asymmetry: an occupancy hypothesis (this branch adds ten tests to that
+assembly, which changes parallel occupancy and so the odds of meeting an existing race, without being its
+cause), a timeline measurement excluding the sharper accusation (all ten of the added tests ran 2.2
+seconds BEFORE the storm window opened and every one passed, with two unrelated classes adjacent to it),
+and a warning not to let "two versus zero" harden into a quoted ratio.
+
+**The fifth run destroyed the pattern the first four suggested.** None of that apparatus was needed. What
+made that safe was not the theorising - it was pre-registering how little the numbers could prove BEFORE
+seeing them, and refusing to publish a rate from two runs per arm. The reasoning is kept rather than
+deleted because the next intermittent defect will present in exactly this shape, and the lesson is the
+discipline, not the hypothesis.
+
 ## What is NOT proven
 
 - **Windows only.** Nothing here was run on macOS or Linux. Two of these fixes are specifically about
@@ -222,3 +294,22 @@ that gap is what made the difference between a real gate and a ritual.
   a heartbeating launcher with no stream from a silent one; nothing here ran a genuinely old launcher
   binary against a new Gateway.
 - **The mixed-version window generally** remains stated rather than tested, as phase 6 said.
+- **Two suites of parent run 4 were never seen** - see the gate section. The verdict does not rest on
+  them, but they are absent, not green.
+
+---
+
+## One last finding, from the instrument rather than the product
+
+While waiting on the final run, the watcher I had set to tell me if it died reported exactly that: **"no
+test processes left - the run died."** It had not. Forty-one processes were alive and consuming CPU. The
+check used `pgrep` under Git Bash, which cannot see Windows processes, so "no matches" was reported as
+"nothing is running" rather than "I cannot see."
+
+It is recorded here because it is the same shape as three findings in this very phase - the phase 7 guard
+that passed while its premise was false, the corrected message that read as an improvement and changed
+nothing, and now a detector that confidently reported a failure it was structurally incapable of
+observing. **A check that cannot see the thing it checks does not return "unknown"; it returns the
+comfortable answer.** It was caught only by verifying with a tool that CAN see Windows processes, and by
+sampling total CPU twice - 4.8 seconds consumed across a 6-second window - rather than trusting that
+processes merely existed.
