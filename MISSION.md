@@ -77,8 +77,8 @@ the Gateway calling in, and can become pushes down the connection it already has
 | 3 | Session hooks stop needing an API | DONE - see PHASE-3-REPORT.md |
 | 4 | Lifecycle off HTTP | DONE - see PHASE-4-REPORT.md |
 | 5 | Delete the Director's listener | DONE AND PROVEN - see PHASE-5-REPORT.md |
-| 6 | Delete the launcher's listener | not started |
-| 7 | The guard test | not started |
+| 6 | Delete the launcher's listener | DONE AND PROVEN - see PHASE-6-REPORT.md |
+| 7 | The guard test | DONE - folded into 6; dependency guard proven red under indirect reintroduction |
 
 Full phase detail, proofs, and the route inventory: `MISSION-PLAN.md` in this directory.
 
@@ -521,3 +521,40 @@ quietly, mid-report. The standing practice, now explicit:
   answer was the model: comfortable headroom, about ten mechanical tool calls left, and an explicit
   commitment to STOP and write a compact handover if the remaining test result needs fresh
   investigation rather than digging with a depleted context.
+
+## PHASE 6 ACCEPTED AND MERGED - the launcher is portless too - 2026-08-04
+
+Merged as `44be0052d` (`mission/remove-network-port-p6` at `e8ece297d` into the mission branch).
+`PHASE-6-REPORT.md` is on the branch. The whole product is now portless: no listener on the Director
+(phase 5), none on the launcher (phase 6), and the phase 7 dependency guard stands - proven red
+against an INDIRECT Kestrel reintroduction (helper in its own file, referenced by nothing), the
+shape that defeated the previous source-text guard. The guard caught a real leftover on its first
+run: ControlApi still carried the `Microsoft.AspNetCore.App` framework reference.
+
+**Architect verification of the merge, not taken from the report:** the two sides carried code never
+built together (phase 5's later test fixes against phase 6's audit updates), so the merged tree was
+rebuilt from scratch (all obj/bin deleted) and the default gate run: build fully clean, 2 failures -
+`SnoozeRegistryTests` and `SnoozeLandingObserverTests`, same instant, both carrying the documented
+FileLog teardown-race signature, in code phase 6 never touches. Judged as the known fleet race under
+the comparative criterion.
+
+**The two "inherited" deterministic reds the Manager handed over are ALREADY FIXED on the merged
+tree** - `GatewayDirectoryRegistrationTests.Register_rejects_missing_tailnet_endpoint` and the
+`WingmanAskForwardingTests` 404 both fail on the Manager's parent (`4a2e6665e`) but pass 14/14 on
+the merge, because phase 5's later commits (`fe14cc136`, `b7ca10ea6`) updated exactly those two test
+files after the p6 branch forked. Settled by running them, not by adopting the Manager's hypothesis.
+
+**Open items the landing must fold in (from PHASE-6-REPORT.md section 6):**
+- `packages/client-core/src/api/schema.ts` is stale (still describes old `/launchers` shapes; no web
+  client consumes them - verified by search). Regenerate against a running Gateway (`npm run gen:api`)
+  before or at landing.
+- Phase 6 not run on macOS/Linux; the surface is less platform-split than phase 4's (no kernel-object
+  arm) but that is an argument, not a run. The QA report must state it.
+- Mixed-version window (old launcher/new Gateway and the reverse) stated, not tested; the fleet ships
+  in lockstep on this branch.
+- The stopper's fail-closed strictness change (unreadable process list now refuses to certify a stop)
+  is deliberate and flagged for review in the report.
+
+**Incident recorded by the Manager against itself, kept visible:** its rig launcher overwrote the
+owner's autostart Run key (caught and restored within minutes, self-healing on next installed-launcher
+start). Standing lesson: a launcher rig must pass `--no-autostart`.
