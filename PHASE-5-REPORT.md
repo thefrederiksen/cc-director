@@ -440,3 +440,67 @@ tasks were unregistered, and the owner's two Directors were still running afterw
   and is called out here so this phase's evidence is never read as covering it.
 - The parked `Gateway.Tests` suite's full green re-run after the two fixes is recorded in the gate
   section; the two fixed classes were re-run directly (14/14).
+
+---
+
+## Proposed MISSION.md entry (for the Architect to commit)
+
+The Architect owns mission state and asked that nothing be written into MISSION.md from this
+worktree while the phase held it. The section below is offered verbatim for him to paste, edit or
+reject.
+
+## Phase 5 accepted - the phase the mission exists for
+
+**The Director listens on nothing, and it was PROVEN rather than argued.** Two Directors, alive and
+registered at the instant of a connection scan that resolves owning processes, owned ZERO listening
+sockets while holding 14 established outbound connections to their Gateway. The owner's own
+pre-mission Directors were found listening on 7879 and 7881 by the identical query in the same
+instant - the positive control that makes the zero a measurement rather than a blind spot. Evidence
+committed at `docs/qa/phase5-noport/`.
+
+Both blockers the Architect found by checking are closed and shown live: no session is handed
+`CC_DIRECTOR_API` or `CC_DIRECTOR_TOKEN` (the session's own environment dump proves it), and the
+desktop's fleet-tool check is rebuilt against the Gateway - it mints and registers a real probe
+session key, runs the tool PATH resolves with exactly a session's environment, and revokes it. 17 of
+17 `cc-*` commands pass from inside a real keyed session.
+
+### Two findings that outlive the phase
+
+**1. A test passed for 22 days without running.** `Ask_no_claude_returns_no_claude_status_with_context_digest`
+needed a session created through the Director's `POST /sessions`; when creation failed it took an
+early `return` and passed having asserted nothing. That route died with the tunnel-only cut
+(`398c4e4ae`, 2026-07-13 - verified by reading the file either side of that commit); the phase's
+re-point made creation succeed on 2026-08-04 and the test failed immediately. **The suite cannot
+presently distinguish a test that passes from a test that never runs**, and the mechanism is
+general: any "if the arrangement failed, return" turns a broken arrangement into a green tick. Worth
+a sweep beyond this mission.
+
+**2. On this machine a rig gets the INSTALLED tools unless it fights for its own.** Two independent
+near-misses, each of which would have produced a fully green proof of the wrong thing: the obvious
+entry point resolves to the pre-mission package in `site-packages`, and even with that fixed the
+Director puts its OWN instance bin first on every session's PATH - and had filled it with the
+installed toolset. The first honest run failed every fleet command with `CC_DIRECTOR_API is not
+set`. This is a property of the setup, not a slip; the previous Manager hit it too. Kept as a result
+as well: an old command line against a new Director fails LOUDLY naming the variable, which is the
+upgrade-ordering fact - the tools must move with the Director.
+
+### The gate
+
+Comparative, and the baseline moved: `f09d55ff4`, the last commit that builds, because the index-lock
+collision left four commits (`a641109fe`..`9b68b91be`) that do not compile. Phase arm's two
+default-run failures are both absent from a green parent run, and one reappears on the parent as a
+DIFFERENT victim of the same named `FileLog` teardown exception - the signature that turns "probably
+flaky" into "demonstrably the known race". The failures that WERE ours came from the parked suites
+the default gate never runs: the print-ban audit (the locator's `ps -p` entering Core's scan) and
+two in `Gateway.Tests` (the register-endpoint guard this phase deleted, and the vacuous test above).
+All fixed and re-run green.
+
+### Open, and stated plainly
+
+- **The first-launch popup on a CLEAN machine is NOT proven.** The mechanism that raised it is
+  deleted, but deletion-in-source is exactly what the requirements refuse; this needs the clean-VM
+  rig and stays OPEN for the mission's QA report.
+- The rebuilt desktop tool-health indicator was never watched painting against a live Gateway.
+- The launcher still listens on 7900 - phase 6's work, recorded in the scan so this evidence is
+  never read as covering it.
+- macOS and Linux unproven for this phase, as for the mission generally.
