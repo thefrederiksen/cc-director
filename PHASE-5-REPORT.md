@@ -185,6 +185,69 @@ already recorded `cc-history` as dead in production (a pre-existing defect filed
 excluded from that phase's pass mark); this phase did not widen or narrow that hole, and it remains
 open.
 
+## FINDING: a test that had been passing without running for 22 days
+
+`WingmanAskForwardingTests.Ask_no_claude_returns_no_claude_status_with_context_digest` was green
+every day and asserted nothing. Its body needed a real session, obtained through the Director's
+`POST /sessions` route; when creation failed it took an early `return` and the test passed having
+verified nothing at all. That route was deleted by the tunnel-only cut, commit `398c4e4ae` on
+**2026-07-13** (confirmed by reading the file on both sides of that commit: one `MapPost("/sessions"`
+before, zero after). From that day until this phase re-pointed session creation at the real create
+verb - **2026-08-04, 22 days** - creation could only ever fail, so the early return was the ONLY
+path the test ever took.
+
+It took a port deletion to expose it, and only because re-pointing creation made it SUCCEED for the
+first time; the test then failed loudly, because the Gateway's wingman-ask route is tunnel-only and
+that fixture has no tunnel. **The suite cannot presently distinguish a test that passes from a test
+that never runs** - a green tick meant the same thing in both cases for three weeks.
+
+Two things follow, and only one of them is a repair:
+
+1. The test is re-pointed at the `wingman-ask` verb core - the seam the tunnel actually dispatches
+   into - so it exercises the claim rather than the fixture's luck.
+2. A conditional early `return` inside a test body is the mechanism, and it is not unique to this
+   file. Anything of the shape "if the arrangement failed, return" converts a broken arrangement
+   into a pass. `Assert.Fail`, `Assert.Skip`, or a fixture that throws would all have surfaced this
+   on day one. Worth a sweep beyond this mission.
+
+**A second, smaller finding fell out of fixing it, and is REPORTED rather than fixed here.** With
+the test finally running, the free-text ask path (`WingmanService.AnswerViaSessionAsync`) is seen to
+omit `ContextDigest` on its `no_claude` branch while setting it on its success branch - and its
+sibling `AskAboutSessionAsync` sets one on BOTH. The two wingman paths disagree about whether a
+no-claude answer carries its context digest. That predates this mission and has nothing to do with a
+network port, so changing it inside a deletion diff would be smuggling; the test now pins the
+contract that actually ships and says why.
+
+## FINDING: on this machine, a rig gets the INSTALLED tools unless it fights for its own
+
+Building the live proof produced two separate near-misses, both of which would have yielded a fully
+green run proving the wrong thing, and both of which look correct from the outside. This is a
+standing hazard for anyone building a rig in this repository, not a slip - the previous Manager hit
+the same trap and warned about it, which is what makes it a property of the setup.
+
+1. **The obvious shim runs the installed package, not the branch.** `tools/cc-devthrottle/main.py`
+   enters through `from cc_devthrottle.cli import app`, and that name resolves to the pre-mission
+   copy in the pyenv's `site-packages`. Running `python main.py` would have exercised the OLD
+   command line - the one that still requires `CC_DIRECTOR_API` - against the new Director. The
+   branch package is `src`, so the shim must set `PYTHONPATH` and enter through it.
+2. **Even a correct shim loses to the Director's own bin.** `SessionManager` deliberately puts its
+   instance's `bin` FIRST on every session's PATH so a stale copy elsewhere can never win - and the
+   Director had populated that directory with the installed toolset. The first honest checklist run
+   resolved `<root>\instances\default\bin\cc-devthrottle.cmd` and every fleet command failed with
+   `CC_DIRECTOR_API is not set`. The rig now installs the branch shim where the Director actually
+   looks, which is also what an upgraded machine looks like.
+
+That second run is worth keeping as a result rather than only as an obstacle: **an old cc-devthrottle
+against a new Director fails loudly, naming the missing variable**, instead of hanging, silently
+degrading, or appearing to work. It also states an upgrade-ordering fact plainly - the command line
+must move with the Director, and a machine that updates one without the other gets a clear error
+rather than a mystery.
+
+The checklist itself contributed a third: the original batch version wrote its environment dump and
+then silently executed none of its commands, reporting nothing while looking complete. It was
+replaced with PowerShell that records each command's exit code. A proof harness that can fail
+silently is not a proof harness.
+
 ## An Architect error in the shared worktree, and what it did to the baseline
 
 Stated in the Architect's own words and at the Architect's request: this was an ARCHITECT error,
@@ -227,7 +290,15 @@ the mission's standing stale-assembly rule.
     A timing assertion that only fails under a loaded parallel run is the same class of noise.
 - Parked `CcDirector.Core.Tests`: 4200 passed, 1 failed, 8 skipped, in 32m53s. The one failure was
   OURS and is fixed: see the print-ban audit above. Re-run of that test: green.
-- Parked `CcDirector.Gateway.Tests`: (result pending; filled from the run.)
+- Parked `CcDirector.Gateway.Tests`: 2204 passed, 2 failed, 47 skipped, in 38m18s. BOTH failures
+  were OURS, and the second is a finding in its own right:
+  - `GatewayDirectoryRegistrationTests.Register_rejects_missing_tailnet_endpoint` pinned the exact
+    guard this phase deleted. Rewritten to assert the new contract - an endpointless registration
+    is ACCEPTED, because it is now what every Director sends - and it checks the registration does
+    not acquire an endpoint on the way in.
+  - `WingmanAskForwardingTests.Ask_no_claude_returns_no_claude_status_with_context_digest`: see the
+    vacuous-test finding below.
+  Both re-run green (14/14 across the two classes).
 
 **Parent arm** (commit `f09d55ff4`, a separate detached worktree, clean by construction), run
 more than once as the mission's rule requires - a single-run control on this repository's gate is
@@ -248,7 +319,83 @@ warns about, and the reason the parked suites were run rather than waved through
 
 ## The live proof
 
-(PENDING - produced by `scripts/phase5-noport-proof.ps1`; evidence files quoted here when run.)
+Produced by `scripts/phase5-noport-proof.ps1` on SOREN_NORTH, 2026-08-04. Evidence committed at
+`docs/qa/phase5-noport/connection-scan.txt` and `docs/qa/phase5-noport/checklist-results.txt`.
+Nothing of the owner's was read, reconfigured or stopped: the rig ran its own self-hosted Gateway on
+port 7997 under its own storage root, two Directors in slots 6 and 7 (the owner's slots 1-5 and the
+installed application untouched), each launched from its own scheduled task through a wrapper that
+sets the environment process-locally, and `--no-autostart` so the throwaway Gateway never wrote the
+user's Run key.
+
+### 1. The connection scan, with owning processes, on a machine running more than one Director
+
+Both rig Directors were PROVEN RUNNING at the instant of the scan - process ids taken from the
+registrations they had written, each verified alive, each registered with the Gateway:
+
+```
+slot 6: pid=20508 exe=...\local_builds\cc-director6.exe directorId=97f74e40... registeredControlEndpoint=''
+slot 7: pid=69368 exe=...\local_builds\cc-director7.exe directorId=deb95cba... registeredControlEndpoint=''
+```
+
+The result:
+
+```
+TCP LISTEN sockets owned by the rig Directors: 0
+UDP endpoints owned by the rig Directors: 0
+VERDICT: PASS: the rig Directors, alive and registered, own ZERO listening sockets
+```
+
+The same file lists 24 sockets those two processes DID own, every one of them an ESTABLISHED
+outbound connection to `127.0.0.1:7997` - the Gateway. That is the design in one line: the Director
+talks, and is never talked to.
+
+**The positive control is in the same scan, in the same instant**, which is what makes the zero a
+measurement rather than a blind spot:
+
+```
+pid=34032 exe=...\cc-director\app\cc-director.exe    listeners=1   LISTEN 127.0.0.1:7879
+pid=15700 exe=D:\ReposFred\dt-slot2\...\cc-director2.exe listeners=1   LISTEN 127.0.0.1:7881
+```
+
+Those are the owner's own pre-mission Directors, found listening by the identical query that found
+zero for ours. The launcher is reported too - `pid=81280 ... LISTEN 127.0.0.1:7900` - and labelled
+in the file as PHASE 6's listener, deliberately still present and not evidence about phase 5 either
+way. The requirements name both programs, so omitting the launcher would have invited a reader to
+take this file as proof of something it never measured.
+
+### 2. Every cc-* command, from inside a real session holding a real session key
+
+The session was created THROUGH the Gateway (`POST /directors/{id}/sessions`) and ran the checklist
+with this branch's command line resolved first on its PATH. Its own environment, dumped by the
+session itself:
+
+```
+CC_GATEWAY_URL             present=True  correct
+CC_GATEWAY_SESSION_KEY     present=True  correct
+CC_DIRECTOR_ID             present=True  correct
+CC_SESSION_ID              present=True  correct
+CC_DIRECTOR_API            present=False correct
+CC_DIRECTOR_TOKEN          present=False correct
+```
+
+**That is blocker 1 proven live**, not argued from source: no session is handed an address for a
+door that does not exist.
+
+**17 of 17 commands PASS**: `session list`, `session whoami`, `actions --json`, `repo list`,
+`worktree list`, `machine list`, `director list`, `skill list`, `workflow list`, `schedule list`,
+`mission list`, `browser list`, `session rename`, `session hold`, `session hold --release`,
+`session role`, `message send all`.
+
+One earlier FAIL was the RIG's, not the product's, and is recorded rather than quietly corrected:
+the checklist invented `session release`, which is not a command (`session hold --release` is), and
+the tool answered `Usage:` with exit 2 - the command line being right and the harness being wrong.
+
+### 3. The teardown is itself a result
+
+Both Directors took the named shutdown signal and **deleted their registrations**, which is what a
+clean stop looks like as distinct from a kill (a force-killed Director leaves its registration
+behind - that is how the earlier reaped run was identified). The Gateway stopped, the scheduled
+tasks were unregistered, and the owner's two Directors were still running afterwards, untouched.
 
 ## Not proven, stated plainly
 

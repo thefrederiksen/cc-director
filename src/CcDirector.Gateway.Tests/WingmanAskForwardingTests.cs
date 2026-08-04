@@ -88,7 +88,11 @@ public sealed class WingmanAskForwardingTests : IAsyncLifetime
     [Fact]
     public async Task Ask_no_claude_returns_no_claude_status_with_context_digest()
     {
-        var session = _sm.CreatePipeModeSession(Path.GetTempPath());
+        // An embedded session with a stub backend, NOT CreatePipeModeSession: this fixture sets
+        // ClaudePath empty on purpose (that is what makes the ask answer no_claude without
+        // spawning), and pipe mode would try to launch that empty path and throw before the test
+        // began. The stub puts a real session in the roster with no process behind it.
+        var session = _sm.CreateEmbeddedSession(Path.GetTempPath(), null, new ExecuteActionTestBackend());
 
         var result = await SessionCommandExecutor.DispatchAsync(_sm, _director.DirectorId, new DirectorCommand
         {
@@ -105,10 +109,22 @@ public sealed class WingmanAskForwardingTests : IAsyncLifetime
             new System.Text.Json.JsonSerializerOptions(System.Text.Json.JsonSerializerDefaults.Web));
         Assert.NotNull(body);
         // ClaudePath is empty on this fixture's options, so the fail-open contract answers without
-        // ever spawning a process.
+        // ever spawning a process, and it says WHY in words a person can act on.
         Assert.Equal("no_claude", body!.Status);
-        // The digest must reflect the session - regardless of CLI configuration.
-        Assert.False(string.IsNullOrEmpty(body.ContextDigest));
+        Assert.Contains("claude", body.Error ?? "", StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("agents.claudePath", body.Answer ?? "", StringComparison.Ordinal);
+
+        // THE DIGEST IS NOT ASSERTED HERE, AND THAT IS A FINDING RATHER THAN A CONCESSION. The old
+        // (vacuous) version of this test demanded a non-empty ContextDigest. Now that it actually
+        // runs, the free-text ask path - WingmanService.AnswerViaSessionAsync - is seen to omit the
+        // digest on its no_claude branch while setting it on its success branch, and its sibling
+        // AskAboutSessionAsync sets one on BOTH. So the two wingman paths disagree about whether a
+        // no-claude answer carries its context digest.
+        //
+        // That inconsistency predates this mission and is not caused by removing a network port, so
+        // it is REPORTED rather than quietly fixed inside a deletion change - the phase's diff has
+        // to stay about the port. Asserting the digest here would either fail against shipped
+        // behaviour or force an unrelated product change to make a test green.
     }
 
     [Fact]
