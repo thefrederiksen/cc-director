@@ -803,11 +803,29 @@ not one. Two reasons, both the Manager's:
    not attribute the improvement to it. The controlled comparison would be main-before against
    main-after on the same tree, which is not what this run is.
 
-**So the reportable claim is the Manager's wording, and no stronger:** *the exception did not recur
-across N runs of a tree that has the fix, having occurred on both runs of a tree that lacked it* -
-and causation is left to the reader. This is the fifth time on this mission that a Manager has
-corrected an Architect's framing on evidence, which is the system working exactly as the founding
-Architect said it should.
+**So the reportable claim is the Manager's wording, and no stronger** - and then the Manager
+corrected ITS OWN wording before the Architect could publish it, which is the habit that makes this
+mission's claims worth anything. Parent run 1 came back with `Gateway.UnitTests` PASSING, on a tree
+that ALSO lacks the logging fix. So "having occurred on both runs of a tree that lacked it" was true
+of that one arm and read as a property of fix-less trees generally.
+
+**The accurate arithmetic: across three runs of trees lacking `ab78c36b1`, the exception appeared in
+two and not in the third.** The intermittent defect behaving intermittently. The comparison must
+therefore be done on the exception's PRESENCE ACROSS RUNS, never on a clean parent versus a dirty
+branch - a single parent run being green is precisely the coin toss this mission already ruled on.
+
+**A hypothesis the Architect added, because the Manager's own totals imply it:** the fix branch is
+purely additive and adds TEN tests to `Gateway.UnitTests` (2945 to 2955). A teardown race is a
+SCHEDULING defect, so more tests in one assembly changes parallel occupancy and therefore the odds
+of a disposal landing while others still log. **The branch plausibly PERTURBS how often an existing
+race is met without being its cause.** The wording that follows from that is not "the storm is
+unrelated to the branch" but *the defect is not the branch's, and the branch may change how often it
+is met*. If later runs show the exception more often on the fix tip than the parent, that is the
+EXPECTED shape of this hypothesis and not evidence of a regression - the Manager was told not to
+chase it.
+
+This is the fifth time on this mission a Manager has corrected an Architect's framing on evidence,
+and the second time one has corrected its own.
 
 This keeps the research question off the release's critical path without letting the release's
 weaker evidence be reported as the stronger finding.
