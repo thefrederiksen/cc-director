@@ -40,6 +40,12 @@ public sealed class PrintBanAuditTests
         ["ClaudeAgent.cs"] = "interactive session streaming transport (launches every Claude Code session)",
         ["ClaudeProcess.cs"] = "interactive session streaming transport (launches every Claude Code session)",
 
+        // Remove-the-network-port mission: the Unix arm of the instance locator reads a process's
+        // image with `/bin/ps -o comm= -p <pid>`. The `-p` is ps's OWN pid selector, not a claude
+        // one-shot - no agent is invoked anywhere in the file. The audit matches the flag textually,
+        // so the file is exempted by name with this reason, per the audit's own instruction.
+        ["DirectorInstanceLocator.cs"] = "/bin/ps -o comm= -p <pid> (ps's pid flag, not a claude --print)",
+
         // The interactive streaming transport for the Cursor agent (`-p --output-format
         // stream-json`). Same exempt category as the Claude transport above: it launches an
         // interactive session the Director parses into cards, not a one-shot side-call.

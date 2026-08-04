@@ -208,7 +208,7 @@ public static class Program
             {
                 // A named lifecycle signal, not a post to the launcher's own web interface.
                 //
-                // The route this replaced was behind LauncherHost's token gate, and issue #1609 is what
+                // The route this replaced was behind the old web host's token gate, and issue #1609 is what
                 // that cost: sent token-less it was answered 401, the launcher never exited, its
                 // executable never unlocked, and the self-update aborted with the misleading "exe still
                 // locked after stop". The signal removes the whole class of failure - there is no

@@ -51,7 +51,7 @@ public sealed class LauncherAutostartVisibilityTests
     // registration file report it. Before this, the failure lived only in a log line and nothing could read it.
     // Revert-proof: delete AutostartFailure and this file does not compile.
     [Fact]
-    public void AutostartFailure_IsReadableFromOutsideTheLauncherHost()
+    public void AutostartFailure_IsReadableFromOutsideTheLauncher()
     {
         var property = typeof(LauncherCore).GetProperty(nameof(LauncherCore.AutostartFailure));
 

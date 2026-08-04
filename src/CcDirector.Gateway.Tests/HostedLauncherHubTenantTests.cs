@@ -33,10 +33,10 @@ namespace CcDirector.Gateway.Tests;
 /// It can only demonstrate absence.
 ///
 /// WHY THE COST OF THE DENY WAS TOTAL RATHER THAN PARTIAL, which is what made replacing it urgent rather than
-/// tidy: on hosted the stream is the ONLY arm that reaches a launcher. The REST fallback dials the launcher's
-/// registered address, and LauncherHost binds Kestrel to loopback only, so from a hosted Gateway that arm
-/// cannot connect to a remote machine at all. With the hub unmapped a subscriber's launcher registered fine,
-/// heartbeated fine, listed fine - and could never receive one command.
+/// tidy: the stream is the ONLY arm that reaches a launcher - everywhere, since phase 6 deleted the
+/// launcher's listener and the REST fallback with it (and even before that, the launcher's Kestrel bound
+/// loopback only, so a hosted Gateway could never dial a remote machine). With the hub unmapped a
+/// subscriber's launcher registered fine, heartbeated fine, listed fine - and could never receive one command.
 ///
 /// EVERY CROSS-TENANT PROOF HERE OBSERVES THE ACT, NOT ONLY A STATUS CODE. Each launcher records the commands
 /// it actually receives, so "Bob did not reach Alice's machine" is asserted against Alice's launcher having

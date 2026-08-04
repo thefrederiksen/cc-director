@@ -2566,12 +2566,13 @@ public sealed class GatewayHost : IAsyncDisposable
         // would not be caution, it would be a gate standing in front of a hole that is already filled - while
         // costing every subscriber the ability to reach their own machines.
         //
-        // AND THE COST WAS TOTAL, NOT PARTIAL, WHICH IS WHY THIS MATTERS MORE THAN IT LOOKS. On hosted the
-        // stream is the ONLY arm that can reach a launcher. The REST fallback dials the launcher's registered
-        // address, and LauncherHost binds Kestrel to loopback ONLY - so from a hosted Gateway that arm cannot
-        // connect to any remote machine, ever. With the hub unmapped, a hosted subscriber's launcher could
-        // register and heartbeat and appear in the machine list, and then never receive a single command:
-        // observed in the field as a launcher retrying the hub thousands of times a day while looking healthy.
+        // AND THE COST WAS TOTAL, NOT PARTIAL, WHICH IS WHY THIS MATTERS MORE THAN IT LOOKS. The stream is
+        // the ONLY arm that can reach a launcher - everywhere, since phase 6 of the remove-the-network-port
+        // mission deleted the launcher's listener and the REST fallback that dialed it (and even before that,
+        // the launcher's Kestrel bound loopback only, so a hosted Gateway could never dial a remote machine).
+        // With the hub unmapped, a subscriber's launcher could register and heartbeat and appear in the
+        // machine list, and then never receive a single command: observed in the field as a launcher retrying
+        // the hub thousands of times a day while looking healthy.
         //
         // THE REGISTRY PURGE THE DENY REQUIRED IS DISCHARGED BY CONSTRUCTION. It asked for the launcher and
         // launcher-connection registries to be purged of rows written under the bare-name scheme. Both are
