@@ -427,3 +427,29 @@ equally undetectable.
 
 **Ruling: the prover fixes it.** It is a prover, not the independent inspector, so nothing is
 compromised - and it is the only seat that can verify a defect invisible on the other platform.
+
+## macOS regression CLOSED - 2026-08-03
+
+Fixed and pushed (`f09d55ff`). `UnixRequestPath` now derives from the same shared root the signal NAME
+is already scoped by, so the two processes finally agree on where the signal lives.
+
+**The detector is three pieces, each honest in its own comment about what it proves on which
+platform** - a cross-process test that runs a listener child and a raiser child with one end redirected
+exactly as a real Director redirects (failing without the fix on macOS and Linux, proving only kernel
+delivery on Windows, and SAYING so), plus a test pinning the path derivation as a VALUE so a regression
+reddens EVERY platform including Windows. That second piece is what actually prevents recurrence: the
+cross-process test can only fail where the mechanism is load-bearing. All three were shown red under an
+injected revert before any was trusted.
+
+All four macOS proofs re-ran green with no Gateway: launcher stop 385ms and clean, where it had been a
+20-second stall then a force-kill; install-it-now delivered; update applied in 2s with a graceful stop
+inside; a dead build rolled back; crash restart and right-Director-of-several both pass.
+
+**The prover labelled its own remaining gap correctly and refused to close it:** "Windows-unregressed is
+an argument from CONSTRUCTION only." A fix that cannot plausibly touch the other platform is still
+unproven there, and reasoning about why it is safe is not running it. A verifier is in flight.
+
+**For the QA report:** this regression was found only because the owner made a Mac available and a seat
+was sent to PROVE rather than to assume. Nothing in the shared test suite could have caught it -
+Windows uses kernel events, so its processes never have to agree on a path at all. That is the argument
+for doing the same again next time, and it belongs in the report as such.
