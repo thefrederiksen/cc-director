@@ -34,12 +34,15 @@
     <PackageReference Include="Avalonia.Themes.Fluent" Version="11.*" />
   </ItemGroup>
 
-  <!-- ASP.NET Core Kestrel: the Launcher hosts a minimal loopback REST API. -->
+  <!-- NO Microsoft.AspNetCore.App framework reference, ON PURPOSE (remove-the-network-port mission,
+       phase 6). The launcher listens on nothing: its web host is deleted, and this project must not
+       reference the hosting/Kestrel surface at all - the listener guard test asserts exactly that, at
+       project and assembly level, because a dependency cannot be hidden the way source text can.
+       The SignalR CLIENT package below is not an exception to that rule: it is the capability to
+       CONNECT OUT (dialing the Gateway's LauncherHub to receive lifecycle commands down the stream),
+       not the capability to LISTEN, and connecting out is the entire architecture this mission moved
+       the launcher to. -->
   <ItemGroup>
-    <FrameworkReference Include="Microsoft.AspNetCore.App" />
-    <!-- launcher-persistent-join: the SignalR CLIENT (separate from the server in the shared framework)
-         so the Launcher can dial the Gateway's LauncherHub and receive lifecycle commands down the stream.
-         Same package + version the Director's ControlApi uses for GatewayStreamClient. -->
     <PackageReference Include="Microsoft.AspNetCore.SignalR.Client" Version="10.0.0" />
   </ItemGroup>
 

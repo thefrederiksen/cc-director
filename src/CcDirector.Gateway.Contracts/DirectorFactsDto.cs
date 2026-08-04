@@ -48,20 +48,24 @@ public sealed class ToolInventoryItemDto
 }
 
 /// <summary>
-/// The launcher presence/port fact (issue #330): read from the launcher discovery file
-/// <c>%LOCALAPPDATA%/cc-director/config/launcher/launcher.json</c> at request time.
+/// The launcher presence fact (issue #330): read at request time from the registration file the
+/// running launcher writes (<c>%LOCALAPPDATA%/cc-director/config/launcher/launcher.json</c>).
 /// Absent file = launcher not installed - a valid fact, not an error (cc-launcher has
-/// not shipped yet, issue #250).
+/// not shipped yet, issue #250). There is no port field any more: the launcher listens on nothing
+/// (remove-the-network-port mission, phase 6), so presence is the file and liveness is the pid in it.
 /// </summary>
 public sealed class LauncherFactDto
 {
-    /// <summary>True when the launcher discovery file exists.</summary>
+    /// <summary>True when the launcher registration file exists.</summary>
     public bool Installed { get; set; }
 
-    /// <summary>The launcher's loopback REST port, when the discovery file declares one.</summary>
-    public int? Port { get; set; }
+    /// <summary>True when the process that wrote the registration is alive right now.</summary>
+    public bool Running { get; set; }
 
-    /// <summary>Why the port could not be read from a PRESENT discovery file (corrupt JSON,
-    /// no port field). Null when absent (not installed) or read cleanly.</summary>
+    /// <summary>The launcher's version, when the registration declares one.</summary>
+    public string? Version { get; set; }
+
+    /// <summary>Why the identity could not be read from a PRESENT registration file (corrupt JSON,
+    /// no pid field). Null when absent (not installed) or read cleanly.</summary>
     public string? Error { get; set; }
 }

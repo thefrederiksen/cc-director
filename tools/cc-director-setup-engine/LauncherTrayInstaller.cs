@@ -1,6 +1,6 @@
 using System.Diagnostics;
-using System.Net.Http;
 using System.Runtime.Versioning;
+using CcDirector.Core.Configuration;
 
 namespace CcDirector.Setup.Engine;
 
@@ -14,7 +14,8 @@ public sealed record LauncherInstallResult(bool Success, string Message, IReadOn
 ///   1. stops any already-running installed launcher (so a fresh managed instance takes over),
 ///   2. starts the launcher tray app with <c>--managed</c> (it runs the periodic self-update check
 ///      and registers its own HKCU Run-key autostart on startup),
-///   3. waits for the launcher (7900) to answer /healthz,
+///   3. waits for the launcher's registration file to name the process it just started
+///      (the launcher listens on nothing - remove-the-network-port mission, phase 6),
 ///   4. confirms the autostart Run key is registered.
 ///
 /// The Launcher exe is already placed by the UpdateRunner at the Launcher component path before this
@@ -25,18 +26,15 @@ public sealed record LauncherInstallResult(bool Success, string Message, IReadOn
 /// </summary>
 public sealed class LauncherTrayInstaller
 {
-    /// <summary>The Launcher's default loopback REST port; kept here so the engine has no compile dependency on the Launcher exe.</summary>
-    public const int LauncherDefaultPort = 7900;
-
     /// <summary>The arguments the installed tray app runs with: managed mode runs the self-update check.</summary>
     public const string InstalledArguments = "--managed";
 
     /// <summary>
-    /// The backstop for a launcher that is running but never answers. It is deliberately far beyond any
-    /// plausible first start: the wait ends when the port answers or when the started process is gone,
-    /// so a generous ceiling costs nothing in the broken case and stops a slow machine being called
+    /// The backstop for a launcher that is running but never registers. It is deliberately far beyond any
+    /// plausible first start: the wait ends when the registration appears or when the started process is
+    /// gone, so a generous ceiling costs nothing in the broken case and stops a slow machine being called
     /// broken in the healthy one. Twenty seconds was the number that failed a clean install (#1152) and
-    /// the process it declared dead was answering 200 the whole time.
+    /// the process it declared dead was healthy the whole time.
     /// </summary>
     public static readonly TimeSpan FirstStartHealthCeiling = TimeSpan.FromMinutes(5);
 
@@ -47,12 +45,12 @@ public sealed class LauncherTrayInstaller
     private static readonly TimeSpan RepeatTheReassuranceEvery = TimeSpan.FromSeconds(5);
 
     private readonly InstallLayout _layout;
-    private readonly HttpClient _http;
+    private readonly string _registrationPath;
 
-    public LauncherTrayInstaller(InstallLayout layout, HttpClient? http = null)
+    public LauncherTrayInstaller(InstallLayout layout, string? registrationPath = null)
     {
         _layout = layout ?? throw new ArgumentNullException(nameof(layout));
-        _http = http ?? new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
+        _registrationPath = registrationPath ?? LauncherDiscovery.DefaultPath;
     }
 
     /// <summary>
@@ -98,16 +96,16 @@ public sealed class LauncherTrayInstaller
 
         // 3. Wait for readiness. Two things are being checked at once, and both matter.
         //
-        // IDENTITY: the answer must come from THE PROCESS WE JUST STARTED, not from whatever holds the
-        // port. Version alone could not do this - build metadata is stripped when versions are compared,
-        // so an orphan reporting "1.8.4+abc" and a freshly placed "1.8.4" matched, and a same-version
-        // reinstall certified against the orphan.
+        // IDENTITY: the registration must name THE PROCESS WE JUST STARTED, not whatever launcher was
+        // already on the machine. Version alone could not do this - build metadata is stripped when
+        // versions are compared, so an orphan reporting "1.8.4+abc" and a freshly placed "1.8.4"
+        // matched, and a same-version reinstall certified against the orphan.
         //
         // READINESS: the wait ends on the CONDITION, not on a clock. A fixed twenty seconds, tuned on a
         // warm developer machine, declared this install failed on a clean Windows 11 machine while the
-        // launcher was still unpacking - and the port it said had never answered was answering 200 with
-        // ok:true from the very process this installer started (issue #1152). So the wait now ends when
-        // the launcher answers, or when the process we started is gone; the ceiling is only a backstop
+        // launcher was still unpacking - and the launcher it said had never answered was healthy, from
+        // the very process this installer started (issue #1152). So the wait ends when the launcher's
+        // registration certifies, or when the process we started is gone; the ceiling is only a backstop
         // for a launcher that is alive and wedged.
         var expectedVersion = new InstalledStateReader(_layout).Read(ComponentRegistry.Launcher).Version;
         var startedPid = started.Id;
@@ -116,8 +114,7 @@ public sealed class LauncherTrayInstaller
         {
             var lastNote = TimeSpan.Zero;
             wait = await LauncherHealthProbe.WaitForReadyAsync(
-                _http,
-                $"http://127.0.0.1:{LauncherDefaultPort}/healthz",
+                _registrationPath,
                 expectedVersion,
                 startedPid,
                 () => StarterIsRunning(started),
@@ -140,10 +137,10 @@ public sealed class LauncherTrayInstaller
         var health = wait.Health;
         var up = wait.Stop == LauncherWaitStop.Healthy;
         steps.Add(up
-            ? $"launcher healthz on {LauncherDefaultPort}: OK (version {health!.Version ?? "unversioned"}, process id {health.Pid})"
+            ? $"launcher registration: OK (version {health!.Version ?? "unversioned"}, process id {health.Pid})"
             : health is null
-                ? $"launcher healthz on {LauncherDefaultPort}: no response ({DescribeStop(wait.Stop)})"
-                : $"launcher healthz on {LauncherDefaultPort}: answered by process id {health.Pid} (version {health.Version ?? "unknown"}), ok={health.Ok} ({DescribeStop(wait.Stop)})");
+                ? $"launcher registration: never appeared ({DescribeStop(wait.Stop)})"
+                : $"launcher registration: names process id {health.Pid} (version {health.Version ?? "unknown"}), alive={health.Ok} ({DescribeStop(wait.Stop)})");
         if (!up)
             return Fail(steps, DescribeFailure(wait, startedPid, expectedVersion));
 
@@ -154,7 +151,7 @@ public sealed class LauncherTrayInstaller
             return Fail(steps, "Launcher is healthy but did not register its autostart Run key; check the launcher log.");
 
         EngineLog.Write("[LauncherTrayInstaller] InstallAsync success");
-        return new LauncherInstallResult(true, $"Launcher tray app installed and running on {LauncherDefaultPort}.", steps);
+        return new LauncherInstallResult(true, "Launcher tray app installed and running.", steps);
     }
 
     /// <summary>
@@ -180,15 +177,16 @@ public sealed class LauncherTrayInstaller
     {
         LauncherWaitStop.Healthy => "certified",
         LauncherWaitStop.StarterExited => "the process this install started has exited",
-        LauncherWaitStop.CeilingReached => "still running but silent when the wait ceiling elapsed",
+        LauncherWaitStop.CeilingReached => "still running but unregistered when the wait ceiling elapsed",
         LauncherWaitStop.Cancelled => "the install was cancelled",
         _ => stop.ToString(),
     };
 
     /// <summary>
     /// What to tell the user. Each end of the wait is a different fact and deserves a different
-    /// sentence: a launcher that died is not a launcher that is slow, and neither is a stranger holding
-    /// the port. Every one of them names the log directory, because that is the only actionable part.
+    /// sentence: a launcher that died is not a launcher that is slow, and neither is a pre-existing
+    /// launcher still holding the registration. Every one of them names the log directory, because that
+    /// is the only actionable part.
     /// </summary>
     private string DescribeFailure(LauncherWaitResult wait, int startedPid, string? expectedVersion)
     {
@@ -196,20 +194,20 @@ public sealed class LauncherTrayInstaller
         var logs = _layout.LogsDir;
 
         if (wait.Stop == LauncherWaitStop.Cancelled)
-            return $"Waiting for the Launcher tray app on port {LauncherDefaultPort} was cancelled. Check {logs}.";
+            return $"Waiting for the Launcher tray app was cancelled. Check {logs}.";
 
         if (health is null)
             return wait.Stop == LauncherWaitStop.StarterExited
-                ? $"The Launcher tray app started as process {startedPid} but exited before it answered on port {LauncherDefaultPort}. Check {logs}."
-                : $"The Launcher tray app is still running as process {startedPid} but did not answer on port {LauncherDefaultPort} within {(int)FirstStartHealthCeiling.TotalMinutes} minutes. Check {logs}.";
+                ? $"The Launcher tray app started as process {startedPid} but exited before it wrote its registration. Check {logs}."
+                : $"The Launcher tray app is still running as process {startedPid} but did not write its registration within {(int)FirstStartHealthCeiling.TotalMinutes} minutes. Check {logs}.";
 
         if (health.Pid == startedPid)
-            return $"The Launcher tray app (process {startedPid}) answered on port {LauncherDefaultPort} but did not report itself healthy"
+            return $"The Launcher tray app (process {startedPid}) wrote its registration but did not report itself healthy"
                    + (LauncherHealthProbe.VersionMatches(expectedVersion, health.Version)
-                       ? $" (ok={health.Ok}). Check {logs}."
+                       ? $" (alive={health.Ok}). Check {logs}."
                        : $": it reports version {health.Version ?? "unknown"}, not the freshly installed {expectedVersion}. Check {logs}.");
 
-        return $"A launcher is answering on port {LauncherDefaultPort}, but it is process {health.Pid} reporting version {health.Version ?? "unknown"} - not the process {startedPid} this install started. Refusing to certify: another launcher instance holds the port. Check {logs}.";
+        return $"A launcher registration exists, but it names process {health.Pid} reporting version {health.Version ?? "unknown"} - not the process {startedPid} this install started. Refusing to certify: another launcher instance is running. Check {logs}.";
     }
 
     /// <summary>

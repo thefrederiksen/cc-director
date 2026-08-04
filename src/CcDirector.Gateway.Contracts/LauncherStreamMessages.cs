@@ -9,14 +9,15 @@ namespace CcDirector.Gateway.Contracts;
 /// This is the launcher twin of <see cref="DirectorStreamHello"/> (the Director's UP-channel Hello). A
 /// launcher only ever RECEIVES commands after Hello - it pushes no session state - so this is the only
 /// message it sends up the stream.
+///
+/// Remove-the-network-port mission, phase 6: Hello used to carry the launcher's loopback REST port for
+/// cross-referencing the registry entry. The launcher listens on nothing now, so there is no port to
+/// declare - this connection IS the only way a command reaches the launcher.
 /// </summary>
 public sealed class LauncherStreamHello
 {
     /// <summary>The machine name (the same key the launcher registers under via POST /launchers/register).</summary>
     public string MachineName { get; set; } = "";
-
-    /// <summary>The launcher's loopback REST port, for diagnostics and cross-referencing the registry entry.</summary>
-    public int Port { get; set; }
 
     /// <summary>Launcher build version, for diagnostics.</summary>
     public string Version { get; set; } = "";

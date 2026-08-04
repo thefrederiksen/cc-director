@@ -14,7 +14,8 @@ namespace CcDirector.Gateway.Tests;
 /// the connection is registered. It then has the Gateway push a command DOWN the stream and asserts the
 /// client's <c>Command</c> handler runs and returns a result over the same connection (SignalR client
 /// results). This proves the whole join + command-dispatch path over the wire: hub auth, identity binding,
-/// the connection registry, and <c>GatewayHost.SendLauncherCommandAsync</c>'s stream-vs-fallback decision.
+/// the connection registry, and <c>GatewayHost.SendLauncherCommandAsync</c>'s connected-or-undeliverable
+/// decision - the stream being the only path to a launcher since phase 6.
 /// </summary>
 [Collection("DirectorRoot")]
 public sealed class LauncherStreamIntegrationTests : IAsyncLifetime
@@ -58,7 +59,7 @@ public sealed class LauncherStreamIntegrationTests : IAsyncLifetime
         await using var conn = await ConnectLauncherAsync(Token);
         conn.On<LauncherCommand, LauncherCommandResult>("Command", _ => Task.FromResult(LauncherCommandResult.Ok()));
 
-        await conn.InvokeAsync("Hello", new LauncherStreamHello { MachineName = Machine, Port = 7878, Version = "test" });
+        await conn.InvokeAsync("Hello", new LauncherStreamHello { MachineName = Machine, Version = "test" });
 
         Assert.True(_gateway.LauncherConnections.IsStreamConnected(CcDirector.Core.Tenancy.TenantId.Local, Machine));
     }
@@ -73,7 +74,7 @@ public sealed class LauncherStreamIntegrationTests : IAsyncLifetime
             received = cmd;
             return Task.FromResult(LauncherCommandResult.Ok());
         });
-        await conn.InvokeAsync("Hello", new LauncherStreamHello { MachineName = Machine, Port = 7878, Version = "test" });
+        await conn.InvokeAsync("Hello", new LauncherStreamHello { MachineName = Machine, Version = "test" });
 
         var result = await _gateway.SendLauncherCommandAsync(CcDirector.Core.Tenancy.TenantId.Local, Machine, new LauncherCommand { Verb = "director/restart" });
 
@@ -89,7 +90,7 @@ public sealed class LauncherStreamIntegrationTests : IAsyncLifetime
         await using var conn = await ConnectLauncherAsync(Token);
         conn.On<LauncherCommand, LauncherCommandResult>("Command",
             _ => Task.FromResult(LauncherCommandResult.Fail(LauncherCommandStatus.BadRequest, "unknown verb: bogus")));
-        await conn.InvokeAsync("Hello", new LauncherStreamHello { MachineName = Machine, Port = 7878, Version = "test" });
+        await conn.InvokeAsync("Hello", new LauncherStreamHello { MachineName = Machine, Version = "test" });
 
         var result = await _gateway.SendLauncherCommandAsync(CcDirector.Core.Tenancy.TenantId.Local, Machine, new LauncherCommand { Verb = "bogus" });
 
@@ -100,10 +101,11 @@ public sealed class LauncherStreamIntegrationTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task SendLauncherCommandAsync_ForOfflineMachine_ReturnsNull_ForRestFallback()
+    public async Task SendLauncherCommandAsync_ForOfflineMachine_ReturnsNull_WhichTheCallerReportsAsUndeliverable()
     {
-        // No launcher has joined for this machine => no active stream connection => null, which the caller
-        // treats as "no stream" and falls back to the existing HTTP relay.
+        // No launcher has joined for this machine => no active stream connection => null. The stream is
+        // the ONLY path to a launcher (phase 6 deleted the HTTP relay along with the launcher's listener),
+        // so the caller turns this into a loud refusal - never a dial.
         var result = await _gateway.SendLauncherCommandAsync(CcDirector.Core.Tenancy.TenantId.Local, "no-such-machine", new LauncherCommand { Verb = "director/start" });
         Assert.Null(result);
     }

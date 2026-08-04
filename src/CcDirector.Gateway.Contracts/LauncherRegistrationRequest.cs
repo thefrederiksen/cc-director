@@ -1,39 +1,20 @@
 namespace CcDirector.Gateway.Contracts;
 
 /// <summary>
-/// Body of POST /launchers/register. A cc-launcher process sends this on startup and
-/// heartbeats every 30 s so the Gateway knows which launchers are live and on which
-/// machines, together with the loopback port the Gateway relay must hit.
+/// The launcher's self-registration body (POST /launchers/register), sent on startup and re-sent
+/// whenever a heartbeat answers 410.
 ///
-/// Issue #331: the Gateway uses the registered port + token to forward lifecycle verbs
-/// (restart/start/stop/launch) to the remote launcher's loopback REST API.
+/// Remove-the-network-port mission, phase 6: this used to carry a loopback PORT, a bearer TOKEN and a
+/// NETWORK ADDRESS, because the Gateway dialed the launcher's REST interface back over them. That
+/// interface no longer exists - the launcher listens on nothing - so a command reaches a launcher only
+/// by riding DOWN the persistent stream the launcher itself opened (<see cref="LauncherStreamHello"/>).
+/// The fields were removed rather than left optional: a stored address and credential for a surface
+/// that is gone is exactly the kind of live-looking dead door a future caller would wire itself to.
 /// </summary>
 public sealed class LauncherRegistrationRequest
 {
     /// <summary>Hostname of the machine the launcher is running on (Environment.MachineName).</summary>
     public string MachineName { get; set; } = "";
-
-    /// <summary>Loopback port the launcher's REST API is bound to.</summary>
-    public int Port { get; set; }
-
-    /// <summary>
-    /// Network address (tailnet hostname or IP) the Gateway relay must use when dialing
-    /// this launcher from a DIFFERENT machine.  The launcher is loopback-only, so the
-    /// Gateway combines this address with <see cref="Port"/> to produce the cross-machine
-    /// URL: <c>http://&lt;NetworkAddress&gt;:&lt;Port&gt;/</c>.
-    ///
-    /// Leave empty or null when registering from the same machine as the Gateway (loopback
-    /// is used in that case).  For a remote machine this is typically the Tailscale hostname
-    /// (e.g. <c>example-pc.ts.net</c>) or a stable LAN IP.
-    /// </summary>
-    public string NetworkAddress { get; set; } = "";
-
-    /// <summary>
-    /// Bearer token the Gateway must send when calling back into the launcher.
-    /// The launcher generates this on first start and writes it to launcher-token.txt;
-    /// it is long-lived (survives restarts of the launcher process).
-    /// </summary>
-    public string Token { get; set; } = "";
 
     /// <summary>OS process id of the launcher (informational / diagnostics).</summary>
     public int Pid { get; set; }

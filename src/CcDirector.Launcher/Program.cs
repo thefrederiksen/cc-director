@@ -1,8 +1,5 @@
 using System.Diagnostics;
-using System.Net.Http;
-using System.Net.Http.Headers;
 using Avalonia;
-using CcDirector.Core.Network;
 using CcDirector.Core.Utilities;
 using CcDirector.Setup.Engine;
 
@@ -10,10 +7,13 @@ namespace CcDirector.Launcher;
 
 public static class Program
 {
-    // Session-scoped (not Global\) mutex: one launcher per logged-in user session.
-    // A second launch on the same port (e.g. autostart racing a manual start) sees the
-    // mutex held and exits without trying to bind the port a second time.
-    private static string SingleInstanceMutexName => $"CcDirector.Launcher.SingleInstance.{LauncherAppOptions.Port}";
+    // Session-scoped (not Global\) mutex: one launcher per logged-in user session PER STORAGE ROOT.
+    // A second launch (e.g. autostart racing a manual start) sees the mutex held and exits. Keyed to
+    // the storage root this launcher serves - the same scoping as the lifecycle signals - so a test
+    // rig running against its own redirected root and the installed launcher can coexist, which the
+    // old port-keyed name only achieved by accident of both fighting over one number.
+    private static string SingleInstanceMutexName =>
+        $"CcDirector.Launcher.SingleInstance.{CcDirector.Core.Lifecycle.LifecycleSignalNames.RootKey()}";
 
     [STAThread]
     public static int Main(string[] args)
@@ -21,10 +21,10 @@ public static class Program
         FileLog.Start();
 
         // Detached self-update helper mode: this process is a STAGED copy of the new Launcher exe.
-        // It asks the running tray app to exit (POST /shutdown), swaps itself into the installed
-        // location, relaunches, and verifies the new build is healthy - rolling back to the .old
-        // build (and pinning the bad version) if not. NEVER the normal startup path: it exits when
-        // done. Launched by LauncherUpdater.LaunchDetachedUpdater.
+        // It asks the running tray app to exit (the shutdown lifecycle signal), swaps itself into the
+        // installed location, relaunches, and verifies the new build is healthy - rolling back to the
+        // .old build (and pinning the bad version) if not. NEVER the normal startup path: it exits
+        // when done. Launched by LauncherUpdater.LaunchDetachedUpdater.
         if (Array.IndexOf(args, "--apply-update") >= 0)
             return ApplyUpdate(args);
 
@@ -38,7 +38,7 @@ public static class Program
             return 0;
         }
 
-        FileLog.Write($"[Program] CC Launcher starting (port={LauncherAppOptions.Port}), log: {FileLog.CurrentLogPath}");
+        FileLog.Write($"[Program] CC Launcher starting, log: {FileLog.CurrentLogPath}");
 
         // TRAY MODE MUST ANSWER SIGTERM TOO.
         //
@@ -69,13 +69,13 @@ public static class Program
             // The user-interface platform itself could not initialize - on macOS this happens
             // when the launcher starts while the screen is locked (the window server refuses a
             // render timer). An unattended supervisor must not die because an icon cannot be
-            // drawn: fall back to HEADLESS mode - web host, Gateway registration, and command
-            // stream all run; only the tray icon is missing. /healthz reports
-            // userInterface=degraded so the Gateway can see the difference. This fallback is
-            // ONLY for platform initialization failures (before any App code ran); a fault in
-            // the running app still exits loudly below.
+            // drawn: fall back to HEADLESS mode - Gateway registration and the command stream
+            // run; only the tray icon is missing. The registration file records
+            // userInterface=degraded so the difference is visible. This fallback is ONLY for
+            // platform initialization failures (before any App code ran); a fault in the
+            // running app still exits loudly below.
             FileLog.Write($"[Program] User-interface platform failed to initialize: {ex.Message}");
-            FileLog.Write("[Program] DEGRADED: running HEADLESS (no tray icon) - web host + Gateway stream only");
+            FileLog.Write("[Program] DEGRADED: running HEADLESS (no tray icon) - Gateway stream + registration only");
             return RunHeadless();
         }
         catch (Exception ex)
@@ -144,8 +144,8 @@ public static class Program
     }
 
     /// <summary>
-    /// Headless degraded mode: everything except the tray icon. Runs until a /shutdown
-    /// request arrives on the web host or the process receives SIGTERM/SIGINT (launchd
+    /// Headless degraded mode: everything except the tray icon. Runs until the shutdown
+    /// lifecycle signal is raised or the process receives SIGTERM/SIGINT (launchd
     /// bootout sends SIGTERM; the graceful stop unregisters from the Gateway).
     /// </summary>
     private static int RunHeadless()
@@ -161,7 +161,7 @@ public static class Program
             ctx => { ctx.Cancel = true; FileLog.Write("[Program] SIGINT received"); shutdown.TrySetResult(); });
 
         using var lifetime = new CancellationTokenSource();
-        var core = new LauncherCore(LauncherAppOptions.Port, LauncherCore.ReadVersion());
+        var core = new LauncherCore(LauncherCore.ReadVersion());
         try
         {
             core.StartAsync(RequestShutdown, userInterfaceState: "degraded").GetAwaiter().GetResult();
@@ -169,7 +169,7 @@ public static class Program
             if (LauncherAppOptions.Managed)
                 _ = LauncherCore.RunUpdateLoopAsync(lifetime.Token);
 
-            FileLog.Write($"[Program] Headless launcher running on :{LauncherAppOptions.Port}");
+            FileLog.Write("[Program] Headless launcher running");
             shutdown.Task.GetAwaiter().GetResult();
             return 0;
         }
@@ -185,52 +185,22 @@ public static class Program
         }
     }
 
-    /// <summary>
-    /// Read the running Launcher's bearer token so the self-update helper can authenticate its
-    /// POST /shutdown (issue #1609). READ-ONLY on purpose: LoadOrCreateToken would MINT one when the file
-    /// is absent, and a freshly minted token is exactly the one the already-running Launcher does not
-    /// know - it would 401 just like sending none. Null means "no token to read", so the caller can say
-    /// that instead of blaming the exe lock.
-    /// </summary>
-    private static string? TryReadLauncherToken()
-    {
-        try
-        {
-            var path = LauncherAuth.TokenFile;
-            if (!File.Exists(path))
-            {
-                FileLog.Write($"[Program] launcher token file not found at {path}");
-                return null;
-            }
-            var token = File.ReadAllText(path).Trim();
-            if (token.Length == 0)
-            {
-                FileLog.Write($"[Program] launcher token file is empty at {path}");
-                return null;
-            }
-            return token;
-        }
-        catch (Exception ex)
-        {
-            FileLog.Write($"[Program] could not read the launcher token: {ex.Message}");
-            return null;
-        }
-    }
-
     private static int ApplyUpdate(string[] args)
     {
         string Arg(string name) { var i = Array.IndexOf(args, name); return i >= 0 && i + 1 < args.Length ? args[i + 1] : ""; }
         var target = Arg("--target");
         var version = Arg("--new-version");
-        var port = int.TryParse(Arg("--port"), out var p) ? p : LauncherAppOptions.DefaultPort;
         // Relaunch arguments: the installed Launcher always relaunches managed; the self-update
         // test harness overrides this to keep its throwaway instance off the real install.
         var relaunchArgs = Arg("--args");
         if (relaunchArgs.Length == 0) relaunchArgs = LauncherTrayInstaller.InstalledArguments;
         var stagedSelf = Environment.ProcessPath ?? "";
-        FileLog.Write($"[Program] --apply-update: version={version}, target={target}, port={port}, args={relaunchArgs}, staged={stagedSelf}");
+        FileLog.Write($"[Program] --apply-update: version={version}, target={target}, args={relaunchArgs}, staged={stagedSelf}");
 
-        using var http = new HttpClient(GatewayHttp.Handler()) { Timeout = TimeSpan.FromSeconds(5) };
+        // The identity the health check verifies: the pid of whichever launcher THIS HELPER started
+        // most recently. Updated by startLauncher on the new build AND again on a rollback relaunch,
+        // so both waits certify the process they actually started - never whatever else wrote the file.
+        var relaunchedPid = 0;
 
         var result = new LauncherSelfUpdate().ApplyAsync(
             target, stagedSelf, version,
@@ -273,6 +243,7 @@ public static class Program
                         UseShellExecute = true,
                     };
                     using var proc = Process.Start(psi);
+                    relaunchedPid = proc?.Id ?? 0;
                     FileLog.Write($"[Program] relaunched Launcher pid={proc?.Id}");
                     return proc is not null;
                 }
@@ -282,10 +253,20 @@ public static class Program
                     return false;
                 }
             },
-            isHealthy: async ct =>
+            isHealthy: ct =>
             {
-                try { return (await http.GetAsync($"http://127.0.0.1:{port}/healthz", ct)).IsSuccessStatusCode; }
-                catch { return false; }
+                // The registration file the RUNNING launcher writes, not a socket: the launcher
+                // listens on nothing. Healthy means the file names THE PROCESS THIS HELPER STARTED
+                // and that process is alive - the same liveness-is-not-identity rule the installer's
+                // readiness wait follows. Pinning the pid (rather than the version) also keeps the
+                // rollback wait honest: after a rollback the OLD build is the one relaunched, and a
+                // version pin would call a healthy rollback dead.
+                var fact = CcDirector.Core.Configuration.LauncherDiscovery.Read();
+                var healthy = fact.Installed
+                    && relaunchedPid != 0
+                    && fact.Pid == relaunchedPid
+                    && CcDirector.Core.Configuration.LauncherDiscovery.IsRunning(fact);
+                return Task.FromResult(healthy);
             },
             healthTimeout: TimeSpan.FromSeconds(30)).GetAwaiter().GetResult();
 

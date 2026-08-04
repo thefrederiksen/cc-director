@@ -141,7 +141,6 @@ public sealed class HostedLauncherHubTenantTests : IAsyncLifetime
         await conn.InvokeAsync("Hello", new LauncherStreamHello
         {
             MachineName = SharedMachine,
-            Port = 7900,
             Version = "test",
         });
         return conn;

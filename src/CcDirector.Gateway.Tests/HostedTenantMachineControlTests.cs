@@ -18,6 +18,7 @@ using CcDirector.Gateway.Running;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
+using Microsoft.AspNetCore.SignalR.Client;
 using Microsoft.Extensions.Logging;
 using Xunit;
 
@@ -45,10 +46,15 @@ namespace CcDirector.Gateway.Tests;
 ///
 /// EVERY CROSS-TENANT PROOF HERE OBSERVES THE ACT, NOT ONLY THE STATUS CODE. A 404 to Bob would also be
 /// produced by a Gateway that was simply broken. So each cross-tenant test additionally asserts the thing the
-/// leak would have caused: Alice's stub launcher process is NOT dialed, Alice's stored port and token are NOT
-/// overwritten, Alice's registry row is NOT removed, and the spawner is NOT entered on her behalf. The
-/// same-tenant tests are the control that proves those instruments are live - the same stub launcher IS dialed
-/// and DOES return its sentinel when its own owner asks.
+/// leak would have caused: Alice's stub launcher receives NOTHING down its stream, Alice's registry row is NOT
+/// overwritten or removed, and the spawner is NOT entered on her behalf. The same-tenant tests are the control
+/// that proves those instruments are live - the same stub launcher DOES receive its owner's commands.
+///
+/// THE TRANSPORT UNDER TEST IS THE STREAM, BECAUSE IT IS THE ONLY ONE. Phase 6 of the
+/// remove-the-network-port mission deleted the launcher's REST interface and the Gateway's dial-out arm with
+/// it; a command reaches a launcher only down the connection that launcher opened. The stub here is therefore
+/// a REAL SignalR client joined to /launcher-stream with Alice's device key, exactly as her real launcher
+/// would be - and the isolation being proved is the composite (tenant, machine) keying of that connection.
 ///
 /// TWO REAL TENANTS ON A REAL HOSTED GATEWAY. Alice and Bob are minted through the real
 /// <c>TenantRegistry</c> and hold real enrolled device keys bound through the real <c>DeviceRegistry</c>, so
@@ -63,7 +69,6 @@ public sealed class HostedTenantMachineControlTests : IAsyncLifetime
     /// defect being closed is precisely that a bare machine name used to be enough to reach it.</summary>
     private const string AliceMachine = "ALICE-PC";
 
-    private const string AliceLauncherToken = "alice-launcher-token";
     private const int AliceLauncherPid = 4242;
 
     private GatewayHost _gateway = null!;
@@ -75,11 +80,11 @@ public sealed class HostedTenantMachineControlTests : IAsyncLifetime
     private TenantId _aliceTenant;
     private TenantId _bobTenant;
 
-    // A stub standing in for the real cc-launcher REST API on Alice's machine. Every dial it receives is
-    // recorded, so "Bob reached Alice's launcher" is a DIRECT assertion rather than an inference from a status
-    // code. If the isolation ever regressed, THIS is what would be executing Bob's commands.
-    private WebApplication? _aliceLauncher;
-    private int _aliceLauncherPort;
+    // A stub standing in for the real cc-launcher on Alice's machine: a SignalR client joined to the
+    // launcher stream with HER key. Every command it receives is recorded, so "Bob reached Alice's
+    // launcher" is a DIRECT assertion rather than an inference from a status code. If the isolation ever
+    // regressed, THIS is what would be executing Bob's commands.
+    private HubConnection? _aliceLauncherStream;
     private readonly List<string> _aliceLauncherHits = new();
 
     private string? _priorHosted;
@@ -94,8 +99,6 @@ public sealed class HostedTenantMachineControlTests : IAsyncLifetime
         _priorHosted = Environment.GetEnvironmentVariable("CC_GATEWAY_HOSTED");
         Environment.SetEnvironmentVariable("CC_GATEWAY_HOSTED", "1");
         Assert.True(GatewayHostedMode.IsHosted);
-
-        _aliceLauncher = await StartStubLauncherAsync();
 
         _gateway = new GatewayHost(port: GatewayHost.OperatingSystemAssignedPort, token: Token, authEnabled: true,
             instancesDirectory: _instancesDir,
@@ -129,55 +132,45 @@ public sealed class HostedTenantMachineControlTests : IAsyncLifetime
 
     public async Task DisposeAsync()
     {
+        if (_aliceLauncherStream is not null) await _aliceLauncherStream.DisposeAsync();
         _http.Dispose();
         await _gateway.StopAsync();
-        if (_aliceLauncher is not null) await _aliceLauncher.DisposeAsync();
         Environment.SetEnvironmentVariable("CC_GATEWAY_HOSTED", _priorHosted);
         try { if (Directory.Exists(_instancesDir)) Directory.Delete(_instancesDir, true); }
         catch (Exception) { /* best effort */ }
     }
 
-    /// <summary>The stub cc-launcher on Alice's machine. It answers every lifecycle verb and the generic launch
-    /// with a sentinel and records the hit.</summary>
-    private async Task<WebApplication> StartStubLauncherAsync()
-    {
-        var builder = WebApplication.CreateBuilder();
-        builder.Logging.ClearProviders();
-        var stub = builder.Build();
-        stub.Urls.Add("http://127.0.0.1:0");
-        foreach (var verb in new[] { "restart", "start", "stop" })
-        {
-            var captured = verb;
-            stub.MapPost($"/director/{captured}", () =>
-            {
-                lock (_aliceLauncherHits) _aliceLauncherHits.Add($"director/{captured}");
-                return Results.Json(new { stub = StubSentinel, verb = captured });
-            });
-        }
-        stub.MapPost("/launch", () =>
-        {
-            lock (_aliceLauncherHits) _aliceLauncherHits.Add("launch");
-            return Results.Json(new { stub = StubSentinel, verb = "launch" });
-        });
-        await stub.StartAsync();
-        _aliceLauncherPort = new Uri(stub.Urls.First()).Port;
-        return stub;
-    }
-
     internal const string StubSentinel = "alice-launcher-actually-reached";
 
-    /// <summary>Put Alice's launcher into HER partition, at the stub's loopback port. An empty network address
-    /// makes the relay dial 127.0.0.1:&lt;port&gt;.</summary>
-    private void RegisterAliceLauncher() =>
+    /// <summary>Join Alice's stub launcher to the stream with HER device key (the hub binds the connection to
+    /// her tenant from that key), answering every lifecycle verb and the generic launch and recording the hit,
+    /// and put her presence row into HER registry partition.</summary>
+    private async Task ConnectAliceLauncherAsync()
+    {
+        var conn = new HubConnectionBuilder()
+            .WithUrl($"http://127.0.0.1:{_gateway.Port}/launcher-stream", options =>
+            {
+                options.AccessTokenProvider = () => Task.FromResult<string?>(_aliceKey);
+            })
+            .Build();
+
+        conn.On<LauncherCommand, LauncherCommandResult>("Command", cmd =>
+        {
+            lock (_aliceLauncherHits) _aliceLauncherHits.Add(cmd.Verb);
+            return Task.FromResult(LauncherCommandResult.Ok());
+        });
+
+        await conn.StartAsync();
+        await conn.InvokeAsync("Hello", new LauncherStreamHello { MachineName = AliceMachine, Version = "1.2.3" });
+        _aliceLauncherStream = conn;
+
         _gateway.Launchers.Upsert(_aliceTenant, new LauncherRegistrationRequest
         {
             MachineName = AliceMachine,
-            Port = _aliceLauncherPort,
-            NetworkAddress = "",
-            Token = AliceLauncherToken,
             Pid = AliceLauncherPid,
             Version = "1.2.3",
         });
+    }
 
     private string[] AliceLauncherHits()
     {
@@ -196,9 +189,6 @@ public sealed class HostedTenantMachineControlTests : IAsyncLifetime
         var register = await Send("POST", "launchers/register", _aliceKey, new
         {
             machineName = AliceMachine,
-            port = 7788,
-            networkAddress = "alice-pc.example.ts.net",
-            token = "tok",
             pid = AliceLauncherPid,
             version = "1.2.3",
         });
@@ -207,8 +197,8 @@ public sealed class HostedTenantMachineControlTests : IAsyncLifetime
         var list = await GetLaunchers(_aliceKey);
         var entry = Assert.Single(list);
         Assert.Equal(AliceMachine, entry.MachineName);
-        Assert.Equal(7788, entry.Port);
-        Assert.Equal("alice-pc.example.ts.net", entry.NetworkAddress);
+        Assert.Equal(AliceLauncherPid, entry.Pid);
+        Assert.Equal("1.2.3", entry.Version);
 
         // HEARTBEAT - 200 for her own machine, and the handler's OWN 410 for one she does not have.
         Assert.Equal(HttpStatusCode.OK,
@@ -229,9 +219,9 @@ public sealed class HostedTenantMachineControlTests : IAsyncLifetime
     [InlineData("stop")]
     public async Task A_hosted_tenant_drives_the_launcher_lifecycle_on_its_own_machine(string verb)
     {
-        // THIS IS THE CAPABILITY THE DENY REMOVED, PROVED ON THE HOSTED GATEWAY. Not "not refused" - actually
-        // reaching the launcher process and returning what that process said.
-        RegisterAliceLauncher();
+        // THIS IS THE CAPABILITY THE DENY REMOVED, PROVED ON THE HOSTED GATEWAY. Not "not refused" - the
+        // command actually arrives at the launcher's own handler, down the stream it opened.
+        await ConnectAliceLauncherAsync();
 
         var resp = await Send("POST", $"machines/{AliceMachine}/director/{verb}", _aliceKey);
 
@@ -240,30 +230,28 @@ public sealed class HostedTenantMachineControlTests : IAsyncLifetime
         Assert.Equal(AliceMachine, doc.RootElement.GetProperty("machine").GetString());
         Assert.Equal(verb, doc.RootElement.GetProperty("verb").GetString());
         Assert.Equal(200, doc.RootElement.GetProperty("relayStatus").GetInt32());
-        Assert.Contains(StubSentinel, doc.RootElement.GetProperty("payload").GetString()!, StringComparison.Ordinal);
 
-        // The sentinel came back OUT OF the launcher, so the relay genuinely dialed it.
+        // THE ACT: the launcher's own handler ran, which only the stream delivery can explain.
         Assert.Equal(new[] { $"director/{verb}" }, AliceLauncherHits());
     }
 
     [Fact]
     public async Task A_hosted_tenant_drives_a_generic_launch_on_its_own_machine()
     {
-        RegisterAliceLauncher();
+        await ConnectAliceLauncherAsync();
 
         // Tenant-boundary hardening (inspection finding I1-03): this test used to send
         // args = "/c echo hi" on a HOSTED Gateway, which is exactly the capability that finding
         // removed - a caller selecting a catalogued command interpreter and supplying the real
         // command in the argument string. The launch capability itself is unchanged and is still
-        // proven here: the catalogued application starts, and the relay genuinely reaches the
-        // launcher process. Only the caller-supplied argument channel is gone on hosted.
+        // proven here: the launch reaches the launcher's own handler. Only the caller-supplied
+        // argument channel is gone on hosted.
         var resp = await Send("POST", $"machines/{AliceMachine}/launch", _aliceKey,
             new { path = @"C:\Windows\System32\cmd.exe", confirmProtected = true });
 
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
         using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
         Assert.Equal("launch", doc.RootElement.GetProperty("verb").GetString());
-        Assert.Contains(StubSentinel, doc.RootElement.GetProperty("payload").GetString()!, StringComparison.Ordinal);
         Assert.Equal(new[] { "launch" }, AliceLauncherHits());
     }
 
@@ -276,9 +264,9 @@ public sealed class HostedTenantMachineControlTests : IAsyncLifetime
     ///
     /// The refusal is proven the way everything in this file is proven - by OBSERVING THE ACT, not
     /// only the status code. A 403 would also be produced by a Gateway that was simply broken, so each
-    /// case additionally asserts that Alice's stub launcher process was NEVER DIALED. The test above is
-    /// the control that proves that instrument is live: the same launcher IS dialed, and DOES return
-    /// its sentinel, when the same tenant asks for the same application with no arguments.
+    /// case additionally asserts that Alice's launcher NEVER RECEIVED a command. The test above is
+    /// the control that proves that instrument is live: the same launcher DOES receive the launch when
+    /// the same tenant asks for the same application with no arguments.
     ///
     /// The empty and whitespace-only cases are inspection finding M03-I2B-02. The first version of
     /// this guard tested IsNullOrWhiteSpace and then forwarded the original object, so those values
@@ -300,7 +288,7 @@ public sealed class HostedTenantMachineControlTests : IAsyncLifetime
     [InlineData("\t", "\t")]
     public async Task A_hosted_launch_carrying_arguments_or_a_working_directory_is_refused(string? args, string? cwd)
     {
-        RegisterAliceLauncher();
+        await ConnectAliceLauncherAsync();
 
         var resp = await Send("POST", $"machines/{AliceMachine}/launch", _aliceKey,
             new { path = @"C:\Windows\System32\cmd.exe", args, cwd, confirmProtected = true });
@@ -314,7 +302,7 @@ public sealed class HostedTenantMachineControlTests : IAsyncLifetime
         // different program started on their behalf and reported as success.
         Assert.Contains("does not accept", text, StringComparison.Ordinal);
 
-        // THE ACT: the launcher process was never reached, so nothing ran.
+        // THE ACT: the launcher never received a command, so nothing ran.
         Assert.Empty(AliceLauncherHits());
     }
 
@@ -336,8 +324,8 @@ public sealed class HostedTenantMachineControlTests : IAsyncLifetime
     public async Task One_tenant_cannot_enumerate_another_tenants_machines()
     {
         // The listing is what makes every other cross-tenant attack AIMABLE: it used to return every machine
-        // name, network address, port and process id fleet-wide. Bob's listing must not carry any of Alice's.
-        RegisterAliceLauncher();
+        // name and process id fleet-wide. Bob's listing must not carry any of Alice's.
+        await ConnectAliceLauncherAsync();
 
         var bobsList = await GetLaunchers(_bobKey);
         Assert.Empty(bobsList);
@@ -346,7 +334,6 @@ public sealed class HostedTenantMachineControlTests : IAsyncLifetime
         // rather than pass a typed assertion that simply does not look at it.
         var raw = await (await Send("GET", "launchers", _bobKey)).Content.ReadAsStringAsync();
         Assert.DoesNotContain(AliceMachine, raw, StringComparison.OrdinalIgnoreCase);
-        Assert.DoesNotContain(AliceLauncherToken, raw, StringComparison.Ordinal);
         Assert.DoesNotContain(AliceLauncherPid.ToString(), raw, StringComparison.Ordinal);
 
         // The control: Alice's OWN listing does carry it. Without this, an unconditionally empty listing - a
@@ -360,7 +347,7 @@ public sealed class HostedTenantMachineControlTests : IAsyncLifetime
     [InlineData("stop")]
     public async Task One_tenant_cannot_drive_the_launcher_lifecycle_on_another_tenants_machine(string verb)
     {
-        RegisterAliceLauncher();
+        await ConnectAliceLauncherAsync();
 
         var resp = await Send("POST", $"machines/{AliceMachine}/director/{verb}", _bobKey);
 
@@ -369,8 +356,8 @@ public sealed class HostedTenantMachineControlTests : IAsyncLifetime
         Assert.Equal(HttpStatusCode.NotFound, resp.StatusCode);
         Assert.Contains("no launcher registered", await resp.Content.ReadAsStringAsync(), StringComparison.OrdinalIgnoreCase);
 
-        // AND THE ACT ITSELF DID NOT HAPPEN: Alice's launcher process was never dialed. This is the assertion
-        // that distinguishes a real partition from a Gateway that is merely broken.
+        // AND THE ACT ITSELF DID NOT HAPPEN: Alice's launcher received nothing down its stream. This is the
+        // assertion that distinguishes a real partition from a Gateway that is merely broken.
         Assert.Empty(AliceLauncherHits());
     }
 
@@ -379,7 +366,7 @@ public sealed class HostedTenantMachineControlTests : IAsyncLifetime
     {
         // The sharpest form of the leak: POST /machines/{machine}/launch forwards a caller-supplied
         // program to the launcher, which runs it.
-        RegisterAliceLauncher();
+        await ConnectAliceLauncherAsync();
 
         // Bob CONFIRMS (CR-5's accident guard is not aimed at him) - the tenant partition alone must refuse.
         //
@@ -396,39 +383,36 @@ public sealed class HostedTenantMachineControlTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task One_tenant_cannot_repoint_another_tenants_launcher_by_registering_over_it()
+    public async Task One_tenant_cannot_commandeer_another_tenants_machine_by_registering_over_it()
     {
-        // OUTBOUND-REQUEST FORGERY, closed. POST /launchers/register overwrites a machine's stored token, port
-        // and network address - so on a tenant-blind registry Bob could re-point Alice's relay at a host he
-        // controls and harvest whatever the Gateway sent it. Bob registering ALICE-PC now writes into BOB's
-        // partition and cannot touch hers.
-        RegisterAliceLauncher();
+        // REGISTRATION OVERWRITE, still worth closing even with nothing to dial. POST /launchers/register
+        // used to overwrite a machine's stored token, port and network address - outbound-request forgery
+        // when the Gateway dialed launchers. The dial-out is gone (phase 6), but a tenant-blind registry
+        // would still let Bob overwrite Alice's presence row and corrupt her fleet view. Bob registering
+        // ALICE-PC now writes into BOB's partition and cannot touch hers.
+        await ConnectAliceLauncherAsync();
 
         var resp = await Send("POST", "launchers/register", _bobKey, new
         {
             machineName = AliceMachine,
-            port = 9999,
-            networkAddress = "attacker.example.com",
-            token = "attacker-token",
             pid = 1,
             version = "6.6.6",
         });
         Assert.Equal(HttpStatusCode.Created, resp.StatusCode);
 
-        // Alice's row is untouched, read straight off the registry: her port, her address, her token.
+        // Alice's row is untouched, read straight off the registry: her pid, her version.
         var alice = _gateway.Launchers.Get(_aliceTenant, AliceMachine);
         Assert.NotNull(alice);
-        Assert.Equal(_aliceLauncherPort, alice!.Port);
-        Assert.Equal("", alice.NetworkAddress);
-        Assert.Equal(AliceLauncherToken, _gateway.Launchers.GetToken(_aliceTenant, AliceMachine));
+        Assert.Equal(AliceLauncherPid, alice!.Pid);
+        Assert.Equal("1.2.3", alice.Version);
 
         // Bob's write landed in BOB's partition - the two rows share a machine name and are different rows.
         var bob = _gateway.Launchers.Get(_bobTenant, AliceMachine);
         Assert.NotNull(bob);
-        Assert.Equal(9999, bob!.Port);
-        Assert.Equal("attacker.example.com", bob.NetworkAddress);
+        Assert.Equal(1, bob!.Pid);
+        Assert.Equal("6.6.6", bob.Version);
 
-        // And Alice's relay still reaches ALICE's launcher, not the attacker's address.
+        // And Alice's lifecycle still reaches ALICE's launcher, down her own stream.
         Assert.Equal(HttpStatusCode.OK,
             (await Send("POST", $"machines/{AliceMachine}/director/start", _aliceKey)).StatusCode);
         Assert.Equal(new[] { "director/start" }, AliceLauncherHits());
@@ -437,7 +421,7 @@ public sealed class HostedTenantMachineControlTests : IAsyncLifetime
     [Fact]
     public async Task One_tenant_cannot_delete_or_heartbeat_another_tenants_machine()
     {
-        RegisterAliceLauncher();
+        await ConnectAliceLauncherAsync();
 
         // A heartbeat for a machine Bob does not have is unknown to HIM - 410, the handler's own answer - and
         // does not refresh or reveal Alice's row.
@@ -456,7 +440,7 @@ public sealed class HostedTenantMachineControlTests : IAsyncLifetime
     {
         // The route --machine uses, from the wrong tenant. Bob's partition has no launcher for ALICE-PC, so the
         // resolve fails in HIS partition and the spawn fails LOUD with 502.
-        RegisterAliceLauncher();
+        await ConnectAliceLauncherAsync();
 
         var resp = await Send("POST", $"machines/{AliceMachine}/sessions", _bobKey,
             new { repoPath = @"C:\repo", agent = "ClaudeCode" });
@@ -505,7 +489,7 @@ public sealed class HostedTenantMachineControlTests : IAsyncLifetime
         // here - and it stays, because a route in this family must not depend on the auth layer's current
         // policy to be safe. Asserting the 401 is asserting what actually happens; asserting a 403 would have
         // been asserting a path production never takes.
-        RegisterAliceLauncher();
+        await ConnectAliceLauncherAsync();
 
         var resp = await Send(verb, path, _unboundKey, BodyFor(path));
 
@@ -547,7 +531,7 @@ public sealed class HostedTenantMachineControlTests : IAsyncLifetime
     {
         // The control that the tenant checks above are the SECOND gate and not the only one: without a
         // credential the host-wide auth middleware still refuses first.
-        RegisterAliceLauncher();
+        await ConnectAliceLauncherAsync();
 
         var req = new HttpRequestMessage(new HttpMethod(verb), path);
         if (BodyFor(path) is { } body) req.Content = JsonBody(body);
@@ -562,8 +546,8 @@ public sealed class HostedTenantMachineControlTests : IAsyncLifetime
     // =====================================================================================================
 
     /// <summary>A REAL, WELL-FORMED body for each write, so a refusal can never be a validation accident: the
-    /// sessions route needs repoPath and register needs machineName/port/token, and either would answer 400
-    /// rather than the status under test.
+    /// sessions route needs repoPath and register needs machineName, and either would answer 400 rather than
+    /// the status under test.
     ///
     /// The launch body carries NO args and NO cwd for the same reason. Since inspection finding I1-03 a
     /// hosted Gateway refuses a launch that supplies either, and that refusal fires before the machine is
@@ -573,7 +557,7 @@ public sealed class HostedTenantMachineControlTests : IAsyncLifetime
         path.EndsWith("/sessions", StringComparison.Ordinal)
             ? new { repoPath = @"C:\repo", agent = "ClaudeCode" }
             : path.EndsWith("launchers/register", StringComparison.Ordinal)
-                ? new { machineName = AliceMachine, port = 7788, token = "tok", pid = 11, version = "1.0.0" }
+                ? new { machineName = AliceMachine, pid = 11, version = "1.0.0" }
                 : path.EndsWith("/launch", StringComparison.Ordinal)
                     ? new { path = @"C:\Windows\System32\cmd.exe", confirmProtected = true }
                     : null;
@@ -598,13 +582,11 @@ public sealed class HostedTenantMachineControlTests : IAsyncLifetime
 }
 
 /// <summary>
-/// Boots ONLY the launcher/machine routes on an ephemeral port and hands the caller back the registry and the
-/// spawner's call counters, so the write side can be re-read directly rather than through the very routes
-/// under test.
-///
-/// <c>sendLauncherCommand</c> is deliberately null so the launcher STREAM arm returns null and dispatch falls
-/// through to the REST RELAY. That is on purpose: the REST relay is the FALLBACK arm, and a fallback is the
-/// path taken when something has already gone wrong, so it is the arm most worth exercising.
+/// Boots ONLY the launcher/machine routes on an ephemeral port and hands the caller back the registry, the
+/// spawner's call counters, and a FAKE STREAM standing in for the launcher's persistent connection - the only
+/// path a command can reach a launcher by since phase 6 deleted the REST dial-out. The fake records every
+/// command, so a served dispatch is proved by an effect only delivery can explain, and a probe started with
+/// <c>withStubLauncher: false</c> has NO stream at all, which is how the not-connected refusal is exercised.
 /// </summary>
 internal sealed class MachineGroupProbeHost : IAsyncDisposable
 {
@@ -612,12 +594,9 @@ internal sealed class MachineGroupProbeHost : IAsyncDisposable
     public required HttpClient Http { get; init; }
     public required LauncherRegistry Launchers { get; init; }
     public required StubResolver Resolver { get; init; }
-    public required WebApplication? StubLauncher { get; init; }
-    public required int StubLauncherPort { get; init; }
     public required List<string> StubLauncherHits { get; init; }
 
     public const string SpawnedSessionId = "sid-self-host-sentinel";
-    public const string StubLauncherSentinel = "stub-launcher-actually-reached";
 
     /// <summary>A resolver that returns a fixed target and COUNTS its calls, so "the spawn never happened" is statable.</summary>
     internal sealed class StubResolver : IDirectorTargetResolver
@@ -633,36 +612,6 @@ internal sealed class MachineGroupProbeHost : IAsyncDisposable
 
     public static async Task<MachineGroupProbeHost> StartAsync(bool withStubLauncher = false)
     {
-        // A stub launcher standing in for the real cc-launcher REST API on the target machine. When the relay
-        // reaches it, it answers with a sentinel - so a served relay is proved by an effect that could only
-        // come from the handler dialing out.
-        WebApplication? stub = null;
-        var hits = new List<string>();
-        var stubPort = 0;
-        if (withStubLauncher)
-        {
-            var stubBuilder = WebApplication.CreateBuilder();
-            stubBuilder.Logging.ClearProviders();
-            stub = stubBuilder.Build();
-            stub.Urls.Add("http://127.0.0.1:0");
-            foreach (var verb in new[] { "restart", "start", "stop" })
-            {
-                var captured = verb;
-                stub.MapPost($"/director/{captured}", () =>
-                {
-                    lock (hits) hits.Add($"director/{captured}");
-                    return Results.Json(new { stub = StubLauncherSentinel, verb = captured });
-                });
-            }
-            stub.MapPost("/launch", () =>
-            {
-                lock (hits) hits.Add("launch");
-                return Results.Json(new { stub = StubLauncherSentinel, verb = "launch" });
-            });
-            await stub.StartAsync();
-            stubPort = new Uri(stub.Urls.First()).Port;
-        }
-
         var builder = WebApplication.CreateBuilder();
         builder.Logging.ClearProviders();
         var app = builder.Build();
@@ -674,10 +623,26 @@ internal sealed class MachineGroupProbeHost : IAsyncDisposable
             (directorId, req, ct) => Task.FromResult<(bool, SessionDto?, string?)>(
                 (true, new SessionDto { SessionId = SpawnedSessionId }, null)));
 
+        // The fake launcher stream: resolves (tenant, machine) against the registry the way the production
+        // hook resolves the connection registry, records the command, and answers Ok. Absent (null) when the
+        // probe is started without a stub launcher - there is then NO path to any launcher.
+        var hits = new List<string>();
+        LauncherCommandRouter.SendLauncherCommandAsync? sendLauncherCommand = null;
+        if (withStubLauncher)
+        {
+            sendLauncherCommand = (tenant, machine, command, _) =>
+            {
+                if (launchers.Get(tenant, machine) is null)
+                    return Task.FromResult<LauncherCommandResult?>(null);
+                lock (hits) hits.Add(command.Verb);
+                return Task.FromResult<LauncherCommandResult?>(LauncherCommandResult.Ok());
+            };
+        }
+
         // Self-host control harness: SelfHostMachineControlTests sets CC_GATEWAY_HOSTED to the non-hosted
         // values before starting this host, so there is no boundary to pass. The parameter is required
         // (finding CR-7), so the absence is stated rather than defaulted.
-        MachineEndpoints.Map(app, launchers, spawner, boundary: null, sendLauncherCommand: null);
+        MachineEndpoints.Map(app, launchers, spawner, boundary: null, sendLauncherCommand: sendLauncherCommand);
 
         await app.StartAsync();
         return new MachineGroupProbeHost
@@ -686,20 +651,15 @@ internal sealed class MachineGroupProbeHost : IAsyncDisposable
             Http = new HttpClient { BaseAddress = new Uri(app.Urls.First()) },
             Launchers = launchers,
             Resolver = resolver,
-            StubLauncher = stub,
-            StubLauncherPort = stubPort,
             StubLauncherHits = hits,
         };
     }
 
-    /// <summary>Register the stub launcher under <paramref name="machine"/> so the REST relay dials it on loopback.</summary>
+    /// <summary>Register the stub launcher under <paramref name="machine"/> so the fake stream resolves it.</summary>
     public void SeedStubLauncher(string machine) =>
         Launchers.Upsert(TenantId.Local, new LauncherRegistrationRequest
         {
             MachineName = machine,
-            Port = StubLauncherPort,
-            NetworkAddress = "",          // empty -> the relay dials 127.0.0.1:<port>
-            Token = "stub-token",
             Pid = 1234,
             Version = "9.9.9",
         });
@@ -708,7 +668,6 @@ internal sealed class MachineGroupProbeHost : IAsyncDisposable
     {
         Http.Dispose();
         await App.DisposeAsync();
-        if (StubLauncher is not null) await StubLauncher.DisposeAsync();
     }
 }
 
@@ -725,13 +684,14 @@ internal sealed class MachineGroupProbeHost : IAsyncDisposable
 /// So this class sets the variable itself, to BOTH non-hosted values that occur in practice - absent, and
 /// present-but-not-"1" - and asserts <see cref="GatewayHostedMode.IsHosted"/> is actually false before driving
 /// anything. Each route is then proved SERVED by a POSITIVE EFFECT: a seeded registration read back out of the
-/// listing, a heartbeat and an unregister whose effects are re-read from the registry, a relay that actually
-/// reaches a STUB LAUNCHER and returns its sentinel payload, and a spawn that returns the stubbed session id.
+/// listing, a heartbeat and an unregister whose effects are re-read from the registry, a dispatch that
+/// actually reaches the stub launcher stream and is recorded by it, and a spawn that returns the stubbed
+/// session id.
 ///
 /// WHAT IT IS THE CONTROL FOR NOW. It used to prove that the hosted DENY had not broken self-host as a side
 /// effect. The deny is gone, and the thing to control for changed with it: on self-host there is exactly one
 /// tenant (Local), so the composite (tenant, machine) key degenerates to the machine name it always was. These
-/// tests prove that degeneration is exact - the same routes, the same relay, the same behaviour - so the
+/// tests prove that degeneration is exact - the same routes, the same dispatch, the same behaviour - so the
 /// tenant work cannot have quietly cost the single-operator deployment anything.
 /// </summary>
 public sealed class SelfHostMachineControlTests : IDisposable
@@ -767,9 +727,6 @@ public sealed class SelfHostMachineControlTests : IDisposable
         var register = await probe.Http.PostAsJsonAsync("/launchers/register", new LauncherRegistrationRequest
         {
             MachineName = Machine,
-            Port = 7788,
-            NetworkAddress = "probe-machine.example.ts.net",
-            Token = "tok",
             Pid = 4242,
             Version = "1.2.3",
         });
@@ -778,8 +735,6 @@ public sealed class SelfHostMachineControlTests : IDisposable
         var list = await probe.Http.GetFromJsonAsync<List<LauncherDto>>("/launchers");
         var entry = Assert.Single(list!);
         Assert.Equal(Machine, entry.MachineName);
-        Assert.Equal(7788, entry.Port);
-        Assert.Equal("probe-machine.example.ts.net", entry.NetworkAddress);
         Assert.Equal(4242, entry.Pid);
         Assert.Equal("1.2.3", entry.Version);
 
@@ -796,7 +751,7 @@ public sealed class SelfHostMachineControlTests : IDisposable
 
     [Theory]
     [MemberData(nameof(NonHostedValues))]
-    public async Task The_director_lifecycle_relay_still_reaches_the_launcher_on_self_host(string? hostedValue)
+    public async Task The_director_lifecycle_dispatch_still_reaches_the_launcher_on_self_host(string? hostedValue)
     {
         DeclareSelfHost(hostedValue);
         await using var probe = await MachineGroupProbeHost.StartAsync(withStubLauncher: true);
@@ -814,30 +769,45 @@ public sealed class SelfHostMachineControlTests : IDisposable
             Assert.Equal(Machine, doc.RootElement.GetProperty("machine").GetString());
             Assert.Equal(verb, doc.RootElement.GetProperty("verb").GetString());
             Assert.Equal(200, doc.RootElement.GetProperty("relayStatus").GetInt32());
-            Assert.Contains(MachineGroupProbeHost.StubLauncherSentinel,
-                doc.RootElement.GetProperty("payload").GetString()!, StringComparison.Ordinal);
         }
 
+        // THE ACT: the launcher's own stream handler recorded every verb, in order.
         Assert.Equal(new[] { "director/restart", "director/start", "director/stop" }, probe.StubLauncherHits);
     }
 
     [Theory]
     [MemberData(nameof(NonHostedValues))]
-    public async Task The_generic_launch_relay_still_reaches_the_launcher_on_self_host(string? hostedValue)
+    public async Task The_generic_launch_dispatch_still_reaches_the_launcher_on_self_host(string? hostedValue)
     {
         DeclareSelfHost(hostedValue);
         await using var probe = await MachineGroupProbeHost.StartAsync(withStubLauncher: true);
         probe.SeedStubLauncher(Machine);
 
+        // Args ride on self-host, deliberately: the I1-03 argument refusal is hosted-only, and the desktop
+        // and local agent keep this capability.
         var resp = await probe.Http.PostAsync($"/machines/{Machine}/launch",
             HostedTenantMachineControlTests.JsonBody(new { path = @"C:\Windows\System32\cmd.exe", args = "/c echo hi", confirmProtected = true }));
 
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
         using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
         Assert.Equal("launch", doc.RootElement.GetProperty("verb").GetString());
-        Assert.Contains(MachineGroupProbeHost.StubLauncherSentinel,
-            doc.RootElement.GetProperty("payload").GetString()!, StringComparison.Ordinal);
         Assert.Equal(new[] { "launch" }, probe.StubLauncherHits);
+    }
+
+    /// <summary>Phase 6's refusal, proved at the route: a registered machine with NO stream is a loud 502
+    /// that names the actual problem, and there is no address left for anything to dial instead.</summary>
+    [Theory]
+    [MemberData(nameof(NonHostedValues))]
+    public async Task A_registered_machine_with_no_stream_is_refused_loudly_on_self_host(string? hostedValue)
+    {
+        DeclareSelfHost(hostedValue);
+        await using var probe = await MachineGroupProbeHost.StartAsync(withStubLauncher: false);
+        probe.SeedStubLauncher(Machine);
+
+        var resp = await probe.Http.PostAsync($"/machines/{Machine}/director/start", content: null);
+
+        Assert.Equal(HttpStatusCode.BadGateway, resp.StatusCode);
+        Assert.Contains("not connected", await resp.Content.ReadAsStringAsync(), StringComparison.Ordinal);
     }
 
     [Theory]
@@ -894,7 +864,6 @@ public sealed class LauncherRegistryIsProcessLifetimeOnlyTests
 
         Assert.Empty(registry.ListLaunchers(TenantId.Local));
         Assert.Null(registry.Get(TenantId.Local, "ANY-MACHINE"));
-        Assert.Null(registry.GetToken(TenantId.Local, "ANY-MACHINE"));
     }
 
     [Fact]
@@ -906,7 +875,7 @@ public sealed class LauncherRegistryIsProcessLifetimeOnlyTests
         var first = new LauncherRegistry();
         first.Upsert(TenantId.Local, new LauncherRegistrationRequest
         {
-            MachineName = "MACHINE-A", Port = 7788, Token = "tok", Pid = 1, Version = "1.0.0",
+            MachineName = "MACHINE-A", Pid = 1, Version = "1.0.0",
         });
         Assert.NotNull(first.Get(TenantId.Local, "MACHINE-A"));
 

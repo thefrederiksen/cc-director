@@ -10,11 +10,11 @@ namespace CcDirector.Launcher.Tests;
 /// This is the original sin behind the Mac that could not install anything. The registration failed,
 /// the failure was caught, one line went to a log, and the launcher carried on reporting perfect
 /// health - so the installer certified it, the uninstaller could not stop it (it only asked launchd,
-/// which had never heard of that process), and every later install collided with it on port 7900.
+/// which had never heard of that process), and every later install collided with it.
 /// The state was invisible, which is exactly what let it survive for hours.
 ///
-/// The health payload now carries the state, so the installer, the Gateway and the tray can all tell
-/// a managed launcher from an unmanaged one. These tests pin the SHAPE of that reporting; whether the
+/// The registration file the running launcher writes now carries the state, so the installer, the
+/// fleet and the tray can all tell a managed launcher from an unmanaged one. These tests pin the SHAPE of that reporting; whether the
 /// operating system's registration itself succeeds is not something a unit test can decide.
 /// </summary>
 public sealed class LauncherAutostartVisibilityTests
@@ -47,8 +47,8 @@ public sealed class LauncherAutostartVisibilityTests
         }
     }
 
-    // The property exists and is readable without a running host - which is what lets /healthz and
-    // /status report it. Before this, the failure lived only in a log line and nothing could read it.
+    // The property exists and is readable from outside the launcher - which is what lets the
+    // registration file report it. Before this, the failure lived only in a log line and nothing could read it.
     // Revert-proof: delete AutostartFailure and this file does not compile.
     [Fact]
     public void AutostartFailure_IsReadableFromOutsideTheLauncherHost()

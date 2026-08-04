@@ -1,4 +1,3 @@
-using System.Net.Http.Json;
 using CcDirector.Core.Tenancy;
 using CcDirector.Core.Utilities;
 using CcDirector.Gateway.Contracts;
@@ -23,34 +22,26 @@ namespace CcDirector.Gateway.Api;
 /// have resolved to a tenant unrelated to the one that asked. A loopback hop cannot carry a tenant, so the
 /// shared code moved DOWN here where the tenant is an argument and cannot be lost.
 ///
-/// BOTH DISPATCH ARMS ARE SCOPED, INCLUDING THE FALLBACK. The stream arm resolves the launcher connection as
-/// (tenant, machine) through <see cref="LauncherCommandRouter"/>; the REST fallback resolves the launcher's
-/// stored address, port and bearer token as (tenant, machine) through <see cref="LauncherRegistry"/>. Neither
-/// arm can be reached with a machine name alone, so a caller can only ever drive a launcher its OWN tenant
-/// registered. This matters more than it looks: the fallback is the arm taken when the stream is absent, so
-/// it is the FAILURE path, and an ungated failure path is a gate that opens exactly when something is already
-/// going wrong.
+/// THERE IS EXACTLY ONE DISPATCH ARM: the persistent stream the launcher opened to the Gateway
+/// (remove-the-network-port mission, phase 6). There used to be a second - an HTTP relay that dialed the
+/// launcher's loopback REST interface with a stored address, port and bearer token whenever the stream was
+/// absent - and it is deliberately GONE, not switched off. The launcher no longer listens on anything, so a
+/// dial would reach nothing; and a fallback that runs exactly when the primary path is already failing is
+/// the second door this mission exists to remove. A launcher whose stream is down is REFUSED loudly
+/// (<see cref="RelayOutcomeKind.NotConnected"/>), never reached another way.
+///
+/// The stream arm resolves the launcher connection as (tenant, machine) through
+/// <see cref="LauncherCommandRouter"/>, and the registered-at-all check resolves the registry entry as
+/// (tenant, machine) through <see cref="LauncherRegistry"/>. Neither can be reached with a machine name
+/// alone, so a caller can only ever drive a launcher its OWN tenant registered.
 /// </summary>
 internal static class LauncherLifecycleRelay
 {
-    /// <summary>
-    /// The longest a launcher will let a file search run, mirroring the launcher's own ceiling. The Gateway
-    /// keeps its own copy because it has to size the relay client BEFORE it can ask the launcher anything.
-    /// </summary>
-    internal const int QueryTimeoutCeilingMilliseconds = 120_000;
-
-    /// <summary>
-    /// Extra time allowed on top of the search ceiling for connecting, serialising the answer and carrying it
-    /// back. Without it the relay client and the search would expire together, turning a search that finished
-    /// on the last moment into a transport failure.
-    /// </summary>
-    internal const int QueryTimeoutHeadroomMilliseconds = 15_000;
-
     /// <summary>How the relay attempt ended. The HTTP routes map this onto a status code and body; the
     /// in-process auto-launcher only asks whether the launcher accepted.</summary>
     internal enum RelayOutcomeKind
     {
-        /// <summary>The launcher answered (over the stream or over REST). <see cref="LauncherRelayOutcome.RelayStatus"/>
+        /// <summary>The launcher answered over the stream. <see cref="LauncherRelayOutcome.RelayStatus"/>
         /// carries its verdict - which may itself be a failure the launcher reported.</summary>
         Relayed,
 
@@ -58,27 +49,20 @@ internal static class LauncherLifecycleRelay
         /// the same bare name is NOT a match and is not consulted.</summary>
         NoLauncher,
 
-        /// <summary>The entry exists but carries no bearer token - a registry the Gateway cannot use.</summary>
-        NoToken,
-
-        /// <summary>The launcher is registered but could not be reached at its stored address.</summary>
-        Unreachable,
+        /// <summary>This tenant's launcher for that machine is registered (it has heartbeated) but has no
+        /// active stream connection right now, so there is no way to deliver the command. The stream is the
+        /// ONLY path - this is a refusal, not a cue to try something else.</summary>
+        NotConnected,
     }
 
     /// <summary>The result of one relay attempt.</summary>
     /// <param name="Kind">How the attempt ended.</param>
     /// <param name="RelayStatus">The launcher's own status when <see cref="RelayOutcomeKind.Relayed"/>, else 0.</param>
     /// <param name="Payload">The launcher's response body when relayed, else null.</param>
-    /// <param name="Detail">The transport error when unreachable, else null.</param>
-    /// <param name="Port">The launcher's registered port, for an unreachable message that names a real address.</param>
-    /// <param name="DialHost">The address actually dialed, for the same reason.</param>
     internal sealed record LauncherRelayOutcome(
         RelayOutcomeKind Kind,
         int RelayStatus = 0,
-        string? Payload = null,
-        string? Detail = null,
-        int Port = 0,
-        string? DialHost = null)
+        string? Payload = null)
     {
         /// <summary>True when the launcher answered AND its answer was a success. This is the whole question
         /// the in-process auto-launcher asks.</summary>
@@ -96,20 +80,16 @@ internal static class LauncherLifecycleRelay
         CancellationToken ct)
         => SendAsync(
             tenant, machine,
-            streamCommand: new LauncherCommand
+            new LauncherCommand
             {
                 Verb = $"director/{verb}",
                 Path = exePath,
                 ConfirmProtected = confirmProtected,
             },
-            restPath: $"/director/{verb}",
-            // The lifecycle verbs carry NO body on the REST arm - the launcher reads the verb from the path.
-            restBody: null, sendsJsonBody: false, isQuery: false,
-            launchers, sendLauncherCommand, ct);
+            isQuery: false, launchers, sendLauncherCommand, ct);
 
     /// <summary>
-    /// Run a generic launch on the CALLING TENANT's launcher for <paramref name="machine"/>, forwarding the
-    /// caller's body verbatim on the REST arm.
+    /// Run a generic launch on the CALLING TENANT's launcher for <paramref name="machine"/>.
     /// </summary>
     public static Task<LauncherRelayOutcome> SendLaunchAsync(
         TenantId tenant, string machine, LaunchRelayBody? body,
@@ -117,7 +97,7 @@ internal static class LauncherLifecycleRelay
         CancellationToken ct)
         => SendAsync(
             tenant, machine,
-            streamCommand: new LauncherCommand
+            new LauncherCommand
             {
                 Verb = "launch",
                 Path = body?.Path,
@@ -126,53 +106,40 @@ internal static class LauncherLifecycleRelay
                 Cwd = body?.Cwd,
                 Headless = body?.Headless ?? false,
             },
-            restPath: "/launch",
-            // The launch body is forwarded VERBATIM, and it is sent as JSON even when it is null - a null body
-            // serialises to "null" and the launcher answers its own 400, which is the behaviour the route has
-            // always had for an unparsable body. Posting nothing instead would be a different request.
-            restBody: body, sendsJsonBody: true, isQuery: false,
-            launchers, sendLauncherCommand, ct);
+            isQuery: false, launchers, sendLauncherCommand, ct);
 
     /// <summary>
     /// Run a QUERY verb - "apps" or "files" - on the CALLING TENANT's launcher for <paramref name="machine"/>
     /// and return the launcher's answer.
     ///
-    /// It differs from the action verbs in the only two ways a question differs from an instruction: the rest
-    /// arm reads with GET instead of posting, and the launcher's answer is carried back to the caller rather
-    /// than reduced to whether it worked. Everything else - tenant scoping, arm preference, the failure
-    /// outcomes - is the shared path, because a query that could reach a machine the action verbs could not
-    /// would be a second, weaker boundary.
+    /// It differs from the action verbs in the only way a question differs from an instruction: the
+    /// launcher's answer is carried back to the caller rather than reduced to whether it worked. Everything
+    /// else - tenant scoping, the failure outcomes - is the shared path, because a query that could reach a
+    /// machine the action verbs could not would be a second, weaker boundary.
     /// </summary>
     public static Task<LauncherRelayOutcome> SendQueryAsync(
         TenantId tenant, string machine, string verb, string? query, int limit, int timeoutMilliseconds,
         LauncherRegistry launchers, LauncherCommandRouter.SendLauncherCommandAsync? sendLauncherCommand,
         CancellationToken ct)
-    {
-        var restPath = $"/{verb}?q={Uri.EscapeDataString(query ?? "")}&limit={limit}" +
-                       $"&timeoutMilliseconds={timeoutMilliseconds}";
-        return SendAsync(
+        => SendAsync(
             tenant, machine,
-            streamCommand: new LauncherCommand
+            new LauncherCommand
             {
                 Verb = verb,
                 Query = query,
                 Limit = limit,
                 TimeoutMilliseconds = timeoutMilliseconds,
             },
-            restPath: restPath,
-            restBody: null, sendsJsonBody: false, isQuery: true,
-            launchers, sendLauncherCommand, ct);
-    }
+            isQuery: true, launchers, sendLauncherCommand, ct);
 
     /// <summary>
-    /// The shared two-arm dispatch. The persistent stream is preferred; a null from it means "no stream"
-    /// (stream mode off, or this tenant's launcher for this machine is not joined) and ONLY then is the REST
-    /// relay dialed. A non-null stream result - success or a typed failure - is authoritative and the REST arm
-    /// is not touched, so one command can never be executed twice.
+    /// The single-arm dispatch: push the command down the calling tenant's launcher stream. A null from the
+    /// router means the command could not be DELIVERED (no hook wired, or no active connection for this
+    /// tenant+machine); the registry then decides which honest refusal that is - "never registered" or
+    /// "registered but not connected". Nothing is dialed in either case.
     /// </summary>
     private static async Task<LauncherRelayOutcome> SendAsync(
-        TenantId tenant, string machine, LauncherCommand streamCommand, string restPath, object? restBody,
-        bool sendsJsonBody, bool isQuery,
+        TenantId tenant, string machine, LauncherCommand streamCommand, bool isQuery,
         LauncherRegistry launchers, LauncherCommandRouter.SendLauncherCommandAsync? sendLauncherCommand,
         CancellationToken ct)
     {
@@ -197,67 +164,15 @@ internal static class LauncherLifecycleRelay
             return new LauncherRelayOutcome(RelayOutcomeKind.Relayed, streamStatus, streamPayload);
         }
 
-        // The REST fallback, resolved in the CALLER'S partition. A machine name alone reaches nothing here.
-        var launcher = launchers.Get(tenant, machine);
-        if (launcher is null)
+        // Undeliverable. Decide WHICH refusal, in the CALLER'S partition - a machine name alone reaches
+        // nothing here either.
+        if (launchers.Get(tenant, machine) is null)
         {
             FileLog.Write($"[LauncherLifecycleRelay] {streamCommand.Verb}: no launcher registered for tenant={tenant.Value}, machine={machine}");
             return new LauncherRelayOutcome(RelayOutcomeKind.NoLauncher);
         }
 
-        var token = launchers.GetToken(tenant, machine);
-        if (string.IsNullOrEmpty(token))
-        {
-            FileLog.Write($"[LauncherLifecycleRelay] {streamCommand.Verb}: launcher token missing for tenant={tenant.Value}, machine={machine}");
-            return new LauncherRelayOutcome(RelayOutcomeKind.NoToken);
-        }
-
-        var networkAddress = launchers.GetNetworkAddress(tenant, machine) ?? "";
-        var dialHost = string.IsNullOrWhiteSpace(networkAddress) ? "127.0.0.1" : networkAddress;
-
-        // A lifecycle verb answers at once, but a file search is allowed to run for up to its own deadline, so
-        // the client must outlast it. A ten-second client on a sixty-second search would abort the request
-        // that was working correctly and report the machine unreachable.
-        var clientTimeout = isQuery
-            ? TimeSpan.FromMilliseconds(QueryTimeoutCeilingMilliseconds + QueryTimeoutHeadroomMilliseconds)
-            : TimeSpan.FromSeconds(10);
-        using var http = BuildLauncherClient(launcher.Port, token, networkAddress, clientTimeout);
-        try
-        {
-            var response = isQuery
-                ? await http.GetAsync(restPath, ct)
-                : sendsJsonBody
-                ? await http.PostAsJsonAsync(restPath, restBody, ct)
-                : await http.PostAsync(restPath, content: null, ct);
-            var payload = await response.Content.ReadAsStringAsync(ct);
-            FileLog.Write($"[LauncherLifecycleRelay] {streamCommand.Verb} tenant={tenant.Value} machine={machine} host={dialHost} -> {(int)response.StatusCode}");
-            return new LauncherRelayOutcome(RelayOutcomeKind.Relayed, (int)response.StatusCode, payload,
-                Port: launcher.Port, DialHost: dialHost);
-        }
-        catch (Exception ex)
-        {
-            FileLog.Write($"[LauncherLifecycleRelay] {streamCommand.Verb} tenant={tenant.Value} machine={machine} host={dialHost} FAILED: {ex.Message}");
-            return new LauncherRelayOutcome(RelayOutcomeKind.Unreachable, Detail: ex.Message,
-                Port: launcher.Port, DialHost: dialHost);
-        }
-    }
-
-    /// <summary>
-    /// Build a short-lived HttpClient pointed at the launcher's REST API.
-    ///
-    /// When <paramref name="networkAddress"/> is non-empty the launcher is on a REMOTE machine: dial
-    /// http://&lt;networkAddress&gt;:&lt;port&gt;/ over the tailnet. When it is empty the launcher is
-    /// co-located with the Gateway: dial http://127.0.0.1:&lt;port&gt;/ on loopback.
-    /// </summary>
-    private static HttpClient BuildLauncherClient(int port, string token, string networkAddress, TimeSpan timeout)
-    {
-        var host = string.IsNullOrWhiteSpace(networkAddress) ? "127.0.0.1" : networkAddress;
-        var http = new HttpClient
-        {
-            BaseAddress = new Uri($"http://{host}:{port}/"),
-            Timeout = timeout,
-        };
-        http.DefaultRequestHeaders.Add("Authorization", $"Bearer {token}");
-        return http;
+        FileLog.Write($"[LauncherLifecycleRelay] {streamCommand.Verb}: launcher registered but NOT stream-connected for tenant={tenant.Value}, machine={machine} - refused (the stream is the only path)");
+        return new LauncherRelayOutcome(RelayOutcomeKind.NotConnected);
     }
 }

@@ -356,9 +356,10 @@ lands in a strange data home.
 - **Scratchpad files do not survive.** Screenshots and working notes in the source's temporary
   directory are gone. Name how to regenerate them, or move them somewhere durable first.
 - **`session hold` queues mid-turn.** "still working; it parks when it finishes" is success.
-- **Do not start a Director from your own process.** Use the launcher's `POST /launch` (port 7900,
-  token from `config\launcher\launcher.json`) - it gives clean parentage. A Director started inside
-  an agent's console hosts sessions that die within seconds.
+- **Do not start a Director from your own process.** Ask the Gateway to have the machine's launcher
+  start it (`POST /machines/{machine}/director/start` - the launcher has no port or token of its own
+  any more; the command rides the connection the launcher holds open to the Gateway) - it gives clean
+  parentage. A Director started inside an agent's console hosts sessions that die within seconds.
 - **The `[MOVED]` marker must never lie.** If you marked the source and the move actually failed,
   rename it back and say so plainly.
 - **A parked source is a failed move.** If you find yourself leaving the source alive "to be safe",

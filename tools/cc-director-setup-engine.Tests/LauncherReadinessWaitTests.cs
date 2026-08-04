@@ -1,4 +1,3 @@
-using System.Net;
 using CcDirector.Setup.Engine;
 using Xunit;
 
@@ -9,48 +8,66 @@ namespace CcDirector.Setup.Engine.Tests;
 ///
 /// This is the guard for issue #1152. On a clean Windows 11 machine the installer allowed about twenty
 /// seconds for the launcher to answer, then painted a red ERROR and a Failed row on the last screen of
-/// a first install. The launcher had not failed: while that error was on screen, port 7900 answered
-/// 200 with ok:true from the very process the installer had started. cc-launcher.exe is a ~134 MB
-/// single-file binary that unpacks itself on first run, so it is slow exactly once - on the machine
-/// where a first-time user is watching. Pressing Retry completed the install with no error at all.
+/// a first install. The launcher had not failed: while that error was on screen, the very process the
+/// installer had started was healthy. cc-launcher.exe is a ~134 MB single-file binary that unpacks
+/// itself on first run, so it is slow exactly once - on the machine where a first-time user is
+/// watching. Pressing Retry completed the install with no error at all.
 ///
 /// A bigger fixed number would be the same defect with a longer fuse, so what is pinned here is the
-/// SHAPE: keep waiting while the started process is alive and the port has not answered, and stop at
-/// once when the started process is gone, because then no answer is ever coming.
+/// SHAPE: keep waiting while the started process is alive and the registration has not certified, and
+/// stop at once when the started process is gone, because then no registration is ever coming. The
+/// transport is now the registration FILE the launcher writes (its listener is deleted -
+/// remove-the-network-port mission, phase 6); every rule survives the transport unchanged.
 /// </summary>
-public sealed class LauncherReadinessWaitTests
+public sealed class LauncherReadinessWaitTests : IDisposable
 {
-    private const string HealthyBody = """{"ok":true,"version":"1.9.0","pid":11216,"uptimeS":4}""";
-    private const string Url = "http://127.0.0.1:7900/healthz";
+    private const string HealthyBody = """{"pid":11216,"version":"1.9.0","startedAtUtc":"2026-08-03T00:00:00Z"}""";
     private static readonly TimeSpan Instant = TimeSpan.FromMilliseconds(1);
 
+    private readonly string _dir = Path.Combine(Path.GetTempPath(), "launcher-readiness-tests", Guid.NewGuid().ToString("N"));
+    private string RegistrationPath => Path.Combine(_dir, "launcher.json");
+
+    public LauncherReadinessWaitTests()
+    {
+        Directory.CreateDirectory(_dir);
+    }
+
+    public void Dispose()
+    {
+        try { Directory.Delete(_dir, recursive: true); } catch (IOException) { }
+    }
+
     /// <summary>
-    /// The incident, as data. The launcher stays silent for sixty polls - at the installer's
+    /// The incident, as data. The launcher stays unregistered for sixty polls - at the installer's
     /// one-second cadence that is a minute, well past the thirty-seven seconds measured in the
-    /// incident and three times what the old twenty-second allowance permitted - and then answers from
+    /// incident and three times what the old twenty-second allowance permitted - and then registers as
     /// the process the installer started. The wait must report HEALTHY.
     ///
     /// Stated plainly, because a test that cannot fail is worse than no test: the poll interval is
-    /// compressed here, so this pins the SHAPE (a late answer is still a healthy one, and the loop
-    /// does not stop early on some clock of its own). What pins the incident's actual number is
+    /// compressed here, so this pins the SHAPE (a late registration is still a healthy one, and the
+    /// loop does not stop early on some clock of its own). What pins the incident's actual number is
     /// <see cref="TheInstallersCeiling_IsFarBeyondTheColdStartThatWasCalledDead"/>, which reads the
     /// ceiling the installer really uses.
     /// </summary>
     [Fact]
-    public async Task ASlowFirstStartThatEventuallyAnswers_IsHealthy_NotFailed()
+    public async Task ASlowFirstStartThatEventuallyRegisters_IsHealthy_NotFailed()
     {
-        // Silent for 60 polls - three times the old twenty-second allowance at its one-second cadence.
-        var handler = new ScriptedHealth(silentPolls: 60, thenBody: HealthyBody);
-        using var http = new HttpClient(handler);
+        var uncertifiedPolls = 0;
 
         var result = await LauncherHealthProbe.WaitForReadyAsync(
-            http, Url, expectedVersion: "1.9.0", expectedPid: 11216,
+            RegistrationPath, expectedVersion: "1.9.0", expectedPid: 11216,
             starterIsRunning: () => true, ceiling: TimeSpan.FromMinutes(5), ct: default,
-            pollInterval: Instant);
+            pollInterval: Instant,
+            onStillWaiting: _ =>
+            {
+                // Registration appears only after 60 empty polls - the slow cold start, as a script.
+                if (++uncertifiedPolls == 60) File.WriteAllText(RegistrationPath, HealthyBody);
+            },
+            processIsAlive: _ => true);
 
         Assert.Equal(LauncherWaitStop.Healthy, result.Stop);
         Assert.Equal(11216, result.Health!.Pid);
-        Assert.Equal(61, handler.Attempts);
+        Assert.Equal(60, uncertifiedPolls);
     }
 
     /// <summary>
@@ -61,22 +78,21 @@ public sealed class LauncherReadinessWaitTests
     [Fact]
     public async Task WhileTheStartedProcessIsAlive_ThePollingContinuesToTheCeiling()
     {
-        var handler = new ScriptedHealth(silentPolls: int.MaxValue, thenBody: HealthyBody);
-        using var http = new HttpClient(handler);
+        var polls = 0;
 
         var result = await LauncherHealthProbe.WaitForReadyAsync(
-            http, Url, expectedVersion: "1.9.0", expectedPid: 11216,
+            RegistrationPath, expectedVersion: "1.9.0", expectedPid: 11216,
             starterIsRunning: () => true, ceiling: TimeSpan.FromMilliseconds(1500), ct: default,
-            pollInterval: Instant);
+            pollInterval: Instant, onStillWaiting: _ => polls++);
 
         Assert.Equal(LauncherWaitStop.CeilingReached, result.Stop);
         Assert.Null(result.Health);
-        Assert.True(handler.Attempts > 20,
-            $"Only {handler.Attempts} polls before the wait ended - it stopped on something other than the ceiling.");
+        Assert.True(polls > 20,
+            $"Only {polls} polls before the wait ended - it stopped on something other than the ceiling.");
     }
 
     /// <summary>
-    /// "Give up only when something is genuinely wrong." A process that has exited will never answer,
+    /// "Give up only when something is genuinely wrong." A process that has exited will never register,
     /// so the wait ends immediately rather than burning a five-minute ceiling on a certainty.
     ///
     /// Revert-proof: drop the liveness term and this hangs for the whole ceiling, so it goes red on the
@@ -85,13 +101,11 @@ public sealed class LauncherReadinessWaitTests
     [Fact]
     public async Task WhenTheStartedProcessExits_TheWaitStopsAtOnce()
     {
-        var handler = new ScriptedHealth(silentPolls: int.MaxValue, thenBody: HealthyBody);
-        using var http = new HttpClient(handler);
         var polls = 0;
 
         var started = DateTime.UtcNow;
         var result = await LauncherHealthProbe.WaitForReadyAsync(
-            http, Url, expectedVersion: "1.9.0", expectedPid: 11216,
+            RegistrationPath, expectedVersion: "1.9.0", expectedPid: 11216,
             starterIsRunning: () => ++polls < 3, ceiling: TimeSpan.FromSeconds(30), ct: default,
             pollInterval: Instant);
         var elapsed = DateTime.UtcNow - started;
@@ -103,39 +117,38 @@ public sealed class LauncherReadinessWaitTests
     }
 
     /// <summary>
-    /// A launcher that answers and then exits was still healthy. Liveness is read AFTER the poll, so
-    /// the certifying answer wins over a process that has since gone away.
+    /// A launcher that registers and then exits was still observed healthy. Liveness of the STARTER is
+    /// read AFTER the poll, so the certifying registration wins over a starter handle that has since
+    /// gone away.
     /// </summary>
     [Fact]
-    public async Task AnAnswerThatCertifies_WinsOverAProcessThatHasSinceExited()
+    public async Task ARegistrationThatCertifies_WinsOverAStarterThatHasSinceExited()
     {
-        var handler = new ScriptedHealth(silentPolls: 0, thenBody: HealthyBody);
-        using var http = new HttpClient(handler);
+        File.WriteAllText(RegistrationPath, HealthyBody);
 
         var result = await LauncherHealthProbe.WaitForReadyAsync(
-            http, Url, expectedVersion: "1.9.0", expectedPid: 11216,
+            RegistrationPath, expectedVersion: "1.9.0", expectedPid: 11216,
             starterIsRunning: () => false, ceiling: TimeSpan.FromMinutes(5), ct: default,
-            pollInterval: Instant);
+            pollInterval: Instant, processIsAlive: _ => true);
 
         Assert.Equal(LauncherWaitStop.Healthy, result.Stop);
     }
 
     /// <summary>
-    /// Waiting longer must not weaken the identity rule from issue #2042: a stranger on the port is
-    /// still polled past (the real launcher may yet take the port) and still reported as what answered,
-    /// never as a certified install.
+    /// Waiting longer must not weaken the identity rule from issue #2042: a pre-existing launcher's
+    /// registration is still polled past (the real launcher may yet rewrite it) and still reported as
+    /// what was found, never as a certified install.
     /// </summary>
     [Fact]
-    public async Task AStrangerOnThePort_NeverCertifies_AndIsReportedAsWhatAnswered()
+    public async Task APreExistingLaunchersRegistration_NeverCertifies_AndIsReportedAsWhatWasFound()
     {
-        var handler = new ScriptedHealth(silentPolls: 0,
-            thenBody: """{"ok":true,"version":"1.9.0","pid":34084,"uptimeS":9461}""");
-        using var http = new HttpClient(handler);
+        File.WriteAllText(RegistrationPath,
+            """{"pid":34084,"version":"1.9.0","startedAtUtc":"2026-07-29T05:00:00Z"}""");
 
         var result = await LauncherHealthProbe.WaitForReadyAsync(
-            http, Url, expectedVersion: "1.9.0", expectedPid: 11216,
+            RegistrationPath, expectedVersion: "1.9.0", expectedPid: 11216,
             starterIsRunning: () => true, ceiling: TimeSpan.FromMilliseconds(300), ct: default,
-            pollInterval: Instant);
+            pollInterval: Instant, processIsAlive: _ => true);
 
         Assert.Equal(LauncherWaitStop.CeilingReached, result.Stop);
         Assert.Equal(34084, result.Health!.Pid);
@@ -144,13 +157,11 @@ public sealed class LauncherReadinessWaitTests
     [Fact]
     public async Task ACancelledInstall_SaysSo_RatherThanBlamingTheLauncher()
     {
-        var handler = new ScriptedHealth(silentPolls: int.MaxValue, thenBody: HealthyBody);
-        using var http = new HttpClient(handler);
         using var cts = new CancellationTokenSource();
         cts.CancelAfter(TimeSpan.FromMilliseconds(50));
 
         var result = await LauncherHealthProbe.WaitForReadyAsync(
-            http, Url, expectedVersion: "1.9.0", expectedPid: 11216,
+            RegistrationPath, expectedVersion: "1.9.0", expectedPid: 11216,
             starterIsRunning: () => true, ceiling: TimeSpan.FromMinutes(10), ct: cts.Token,
             pollInterval: Instant);
 
@@ -164,14 +175,18 @@ public sealed class LauncherReadinessWaitTests
     [Fact]
     public async Task WhileWaiting_TheCallerIsToldHowLongItHasBeen()
     {
-        var handler = new ScriptedHealth(silentPolls: 5, thenBody: HealthyBody);
-        using var http = new HttpClient(handler);
         var notes = new List<TimeSpan>();
 
         await LauncherHealthProbe.WaitForReadyAsync(
-            http, Url, expectedVersion: "1.9.0", expectedPid: 11216,
+            RegistrationPath, expectedVersion: "1.9.0", expectedPid: 11216,
             starterIsRunning: () => true, ceiling: TimeSpan.FromMinutes(5), ct: default,
-            pollInterval: Instant, onStillWaiting: notes.Add);
+            pollInterval: Instant,
+            onStillWaiting: elapsed =>
+            {
+                notes.Add(elapsed);
+                if (notes.Count == 5) File.WriteAllText(RegistrationPath, HealthyBody);
+            },
+            processIsAlive: _ => true);
 
         Assert.Equal(5, notes.Count);
     }
@@ -186,21 +201,4 @@ public sealed class LauncherReadinessWaitTests
         Assert.True(LauncherTrayInstaller.FirstStartHealthCeiling >= TimeSpan.FromMinutes(3),
             $"The launcher readiness ceiling is {LauncherTrayInstaller.FirstStartHealthCeiling}. A clean "
             + "install was already failed at 20 seconds while the launcher was healthy (#1152).");
-
-    /// <summary>A launcher that answers only after a scripted number of silent polls, counting attempts.</summary>
-    private sealed class ScriptedHealth(int silentPolls, string thenBody) : HttpMessageHandler
-    {
-        public int Attempts { get; private set; }
-
-        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
-        {
-            Attempts++;
-            // A port nothing is listening on refuses the connection; that is what a cold start looks like.
-            if (Attempts <= silentPolls) throw new HttpRequestException("connection refused");
-            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
-            {
-                Content = new StringContent(thenBody),
-            });
-        }
-    }
 }

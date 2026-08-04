@@ -9,8 +9,15 @@ namespace CcDirector.Gateway.Discovery;
 /// In-memory registry of live cc-launcher processes.
 ///
 /// A launcher POSTs <see cref="LauncherRegistrationRequest"/> to /launchers/register on
-/// startup and heartbeats every 30 s. The Gateway relay uses the stored port + token to
-/// forward lifecycle verbs to the remote launcher's loopback REST API.
+/// startup and heartbeats every 30 s, so the Gateway can LIST which machines have a live launcher
+/// and how stale each one is.
+///
+/// Remove-the-network-port mission, phase 6: this registry used to also hold each launcher's port,
+/// network address and bearer token, because the relay dialed the launcher's REST interface back over
+/// them. That interface is gone - commands ride DOWN the persistent stream connection
+/// (<see cref="Streaming.LauncherConnectionRegistry"/>) - so this is presence-and-identity metadata
+/// only. Holding a dial-back address or credential for a surface that no longer exists would be an
+/// invitation to build a second door.
 ///
 /// Keys are the composite <see cref="LauncherKey"/> - the OWNING TENANT plus the machine name
 /// (case-insensitive). A machine name is unique only within a tenant, so the tenant is half the key:
@@ -34,8 +41,6 @@ public sealed class LauncherRegistry
     private sealed class Entry
     {
         public required LauncherDto Dto;
-        /// <summary>The launcher's Bearer token (NOT exposed in <see cref="LauncherDto"/>).</summary>
-        public required string Token;
         public DateTime LastSeenAt;
     }
 
@@ -45,7 +50,7 @@ public sealed class LauncherRegistry
 
     /// <summary>
     /// Register or refresh the calling tenant's launcher. Returns the stored <see cref="LauncherDto"/> for
-    /// the 201/200 response body (no token exposed).
+    /// the 201/200 response body.
     /// </summary>
     public LauncherDto Upsert(TenantId tenant, LauncherRegistrationRequest req)
     {
@@ -53,8 +58,6 @@ public sealed class LauncherRegistry
         var dto = new LauncherDto
         {
             MachineName = req.MachineName,
-            Port = req.Port,
-            NetworkAddress = req.NetworkAddress ?? "",
             Pid = req.Pid,
             Version = req.Version,
             StartedAt = req.StartedAt,
@@ -64,11 +67,10 @@ public sealed class LauncherRegistry
         _launchers[Key(tenant, req.MachineName)] = new Entry
         {
             Dto = dto,
-            Token = req.Token,
             LastSeenAt = now,
         };
 
-        FileLog.Write($"[LauncherRegistry] Upsert: tenant={tenant.Value}, machine={req.MachineName}, port={req.Port}, networkAddress={req.NetworkAddress}, pid={req.Pid}, version={req.Version}");
+        FileLog.Write($"[LauncherRegistry] Upsert: tenant={tenant.Value}, machine={req.MachineName}, pid={req.Pid}, version={req.Version}");
         return dto;
     }
 
@@ -107,20 +109,7 @@ public sealed class LauncherRegistry
         _launchers.TryGetValue(Key(tenant, machineName), out var e) ? e.Dto : null;
 
     /// <summary>
-    /// Retrieve the relay token for the calling tenant's launcher. Returns null if not registered.
-    /// </summary>
-    public string? GetToken(TenantId tenant, string machineName) =>
-        _launchers.TryGetValue(Key(tenant, machineName), out var e) ? e.Token : null;
-
-    /// <summary>
-    /// Retrieve the network address for the calling tenant's launcher (tailnet hostname or IP).
-    /// Empty string when co-located with the Gateway (loopback); null when not registered.
-    /// </summary>
-    public string? GetNetworkAddress(TenantId tenant, string machineName) =>
-        _launchers.TryGetValue(Key(tenant, machineName), out var e) ? e.Dto.NetworkAddress : null;
-
-    /// <summary>
-    /// The calling tenant's registered launchers, as public DTOs (no tokens). Never another tenant's.
+    /// The calling tenant's registered launchers, as public DTOs. Never another tenant's.
     /// </summary>
     public IReadOnlyList<LauncherDto> ListLaunchers(TenantId tenant) =>
         _launchers
