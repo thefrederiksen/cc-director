@@ -652,10 +652,6 @@ public partial class App : Application
             var version = AppVersion.Semver;
 
             ControlApiHost = new ControlApiHost(SessionManager, version, RequestShutdownAsync,
-                // Authentication is required, stated here rather than left to the constructor default,
-                // because this is the line that decides what a shipped desktop install exposes. It read
-                // as "no argument, so whatever the default is" for as long as the default was open.
-                authEnabled: true,
                 repositoryRegistry: RepositoryRegistry,
                 // Repositories mission (#510 phase C): the monitor feeds the Gateway push and the
                 // /fleet/repositories - /fleet/worktrees standalone fallback.
@@ -665,8 +661,11 @@ public partial class App : Application
             {
                 try
                 {
-                    var port = await ControlApiHost.StartAsync();
-                    log($"Control API listening on http://127.0.0.1:{port} (directorId={ControlApiHost.DirectorId})");
+                    await ControlApiHost.StartAsync();
+                    // No listener and no port: the Director accepts nothing inbound (the
+                    // Remove-the-network-port mission). Everything reaches it through the Gateway,
+                    // down the tunnel the host just started dialling.
+                    log($"Director services started (directorId={ControlApiHost.DirectorId}; no inbound listener - fleet access is the outbound Gateway tunnel)");
 
                     // Open this Director's crash journal now that its id is known (issue #212 L5).
                     // Seed it immediately so even a session-less Director records its presence;
@@ -679,12 +678,9 @@ public partial class App : Application
                 }
                 catch (Exception ex)
                 {
-                    log($"Control API failed to start: {ex.Message}");
-                    // Surface the degraded state to the UI (loud sidebar indicator). The
-                    // session-state services still started (StartSessionStateServices runs before
-                    // the bind), so the local badge keeps working -- but remote/Gateway/Cockpit
-                    // access is down, and that must not be silent.
-                    ControlApiHost.ReportStartupFailure(ex.Message);
+                    // Loud in the log; the session-state services start first inside StartAsync, so
+                    // the local badge keeps working even here.
+                    log($"Director services failed to start: {ex.Message}");
                 }
             });
         }

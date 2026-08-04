@@ -29,10 +29,15 @@ public sealed class NoCrossMachineLoopbackGuardTests
     private static readonly Dictionary<string, string> Allowlist = new()
     {
         // --- Loopback BIND / same-machine control surface (the deliberate security boundary) ---
-        ["src/CcDirector.ControlApi/ControlApiHost.cs"] = "Binds Kestrel to loopback (tailscale mode); same-machine ControlApiBaseUrl for in-session agents.",
-        ["src/CcDirector.ControlApi/InstanceRegistration.cs"] = "FSW same-machine ControlEndpoint is http://127.0.0.1:{port} by design.",
+        // Remove-the-network-port mission, phase 5: SEVEN entries left this list at once, because the
+        // Director's own listener was deleted. ControlApiHost.cs (no Kestrel bind), ControlApiGuard.cs
+        // (deleted with the routes it guarded), InstanceRegistration.cs (registers no endpoint),
+        // GatewayConnectivitySelfTest.cs (the ladder is outbound-only now), SessionManager.cs (no
+        // CC_DIRECTOR_API stamp), SelectDirectorDialog.axaml.cs (liveness from registrations, not a
+        // port probe) and App.axaml.cs (no listening log line) carry no loopback literal any more -
+        // which is this list doing exactly what its stale-entry check promises: shrinking as loopback
+        // is removed.
         ["src/CcDirector.ControlApi/TailscaleServeSelfProvisioner.cs"] = "Maps the tailnet front door to local loopback backend.",
-        ["src/CcDirector.ControlApi/GatewayConnectivitySelfTest.cs"] = "Probes the local loopback Control API as part of self-test.",
         ["src/CcDirector.ControlApi/GatewayEnrollmentClient.cs"] = "Epic #1069 A: doc comment on EnrollSignedInAsync states the same-machine caller MUST pass a LOOPBACK gatewayUrl (http://127.0.0.1:<local gateway port>) so the Gateway's guardrail-1 IsLoopback check passes. Documents the policy; the literal address is built by the panel's BuildLoopbackEnrollUrl.",
         // Gateway Cleanup mission (the cut): ControlEndpoints.cs (cut to the 6-item loopback floor),
         // DictationEndpoint.cs + TerminalStreamEndpoint.cs (deleted), and SessionWsProxyEndpoints.cs (the
@@ -82,9 +87,7 @@ public sealed class NoCrossMachineLoopbackGuardTests
         ["src/CcDirector.Gateway/Api/GatewayEndpoints.cs"] = "Local/same-origin references in the Gateway router.",
 
         // --- Desktop app: local Director/Cockpit access + local-only labels ---
-        ["src/CcDirector.Avalonia/App.axaml.cs"] = "Local Control API bootstrap / loopback references.",
         ["src/CcDirector.Avalonia/CockpitUrlResolver.cs"] = "Resolves the local Cockpit URL (same machine).",
-        ["src/CcDirector.Avalonia/SelectDirectorDialog.axaml.cs"] = "The named-instance picker probes each instance's liveness by opening a TCP connection to its Control API port on 127.0.0.1. All named instances are local processes on THIS machine (one exe, many profiles), so a running/stopped check is inherently a SAME-machine loopback probe - the same boundary as ControlApiHost's loopback bind.",
         ["src/CcDirector.Avalonia/Controls/GatewayConnectionPanel.axaml.cs"] = "Epic #1069 A: BuildLoopbackEnrollUrl dials the co-located Gateway's /devices/enroll-signed-in at the literal 127.0.0.1 BY DESIGN - the Gateway's guardrail 1 requires the enroll caller to be a proven SAME-machine loopback connection (IPAddress.IsLoopback), so a machine-name or tailnet address would 403. Same-machine only; the enrolled key then registers/heartbeats over the pick's real address.",
         ["src/CcDirector.Avalonia/MainWindow.axaml.cs"] = "Local-only labelled endpoint strings (handover/about).",
         ["src/CcDirector.Avalonia/Controls/ConnectionsView.axaml.cs"] = "Local connection references.",
@@ -95,8 +98,6 @@ public sealed class NoCrossMachineLoopbackGuardTests
         ["src/CcDirector.Avalonia/Voice/BatchDictationRecorder.cs"] = "Doc comment notes the batch path has no localhost WebSocket roundtrip.",
         ["src/CcDirector.Avalonia/HostedAi/DesktopHostedAiCta.cs"] = "Doc comments only: describe that Settings resolves the Cockpit front door and never opens a localhost URL (states the no-loopback policy).",
         ["src/CcDirector.Core/Browser/WorkflowRunner.cs"] = "Drives a local browser via loopback CDP.",
-        ["src/CcDirector.Core/Sessions/SessionManager.cs"] = "Stamps the same-machine CC_DIRECTOR_API loopback URL for in-session agents.",
-        ["src/CcDirector.ControlApi/ControlApiGuard.cs"] = "The loopback literals here are the ALLOWLIST ITSELF, not an address anything dials. The Host gate accepts only '127.0.0.1:<bound port>' / 'localhost:<bound port>' and refuses everything else, which is the DNS-rebinding defence; the cross-site gate compares a browser's Origin against that same loopback origin. Recognising this machine's own address is the opposite of advertising it cross-machine - a mode-appropriate address here would WIDEN what the Director accepts.",
     };
 
     [Fact]

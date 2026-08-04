@@ -663,18 +663,17 @@ public partial class GatewayConnectionPanel : UserControl
         {
             DiagnosticsVerdict.Text = DiagnosticsVerdictText(host.GatewayMonitor);
 
-            var port = host.Port;
-            var (gatewayUrl, endpoint) = await Task.Run(() =>
+            var gatewayUrl = await Task.Run(() =>
             {
                 var cfg = GatewayConfig.Load();
-                // The callback endpoint the deleted handshake used to report is gone with it; resolve this
-                // machine's advertised address the same way it did when no verdict had been recorded yet.
-                var ep = TailscaleIdentity.TryGetMagicDnsName() is { } dns ? $"https://{dns}:{port}" : cfg.TailnetEndpoint;
-                return (cfg.IsEnabled ? cfg.Url : null, ep);
+                return cfg.IsEnabled ? cfg.Url : null;
             }, ct);
 
+            // The ladder is outbound-only now: configured -> Gateway answers -> tunnel connected.
+            // There is no advertised endpoint and no local port to check; the Director listens on
+            // nothing (Remove-the-network-port mission).
             var selfTest = new GatewayConnectivitySelfTest(
-                port, host.DirectorId, endpoint, gatewayUrl);
+                host.DirectorId, gatewayUrl, () => host.GatewayMonitor.Status);
 
             DiagnosticsHost.Children.Clear();
             var index = 0;

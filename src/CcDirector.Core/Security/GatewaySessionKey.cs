@@ -6,12 +6,13 @@ namespace CcDirector.Core.Security;
 /// <summary>
 /// The credential ONE session's agent presents to the Gateway.
 ///
-/// The Director already mints a session-bound credential for its own Control API
-/// (<see cref="DirectorScopedToken"/>), and that one needs no storage at all: the Director holds the
-/// machine secret, so it can re-derive and verify the signature on every request. The Gateway cannot
-/// do that. It does not hold the Director's machine secret and must never be given one - a shared
-/// secret from which any session's credential can be derived would let a Gateway compromise mint
-/// credentials for every session on every machine it serves.
+/// The Director once minted a second, derived credential for its own loopback Control API
+/// (DirectorScopedToken, deleted with that listener by the Remove-the-network-port mission) - that
+/// one needed no storage because the Director held the machine secret and could re-derive the
+/// signature on every request. The Gateway cannot do that. It does not hold the Director's machine
+/// secret and must never be given one - a shared secret from which any session's credential can be
+/// derived would let a Gateway compromise mint credentials for every session on every machine it
+/// serves.
 ///
 /// So a Gateway session key is not derived from anything. It is 256 bits of randomness, minted by the
 /// Director, handed to exactly one session, and recognised by the Gateway from a stored one-way HASH -

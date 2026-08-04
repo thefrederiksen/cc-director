@@ -1,4 +1,4 @@
-using System.Net;
+﻿using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Net.Sockets;
@@ -34,8 +34,8 @@ public sealed class DirectorEventsAndFactsTests : IAsyncLifetime
     public async Task InitializeAsync()
     {
         _sm = new SessionManager(new AgentOptions());
-        _director = new ControlApiHost(_sm, "1.0.0-test", () => Task.CompletedTask, useEphemeralPort: true,
-            instancesDirectory: _instancesDir);
+        _director = new ControlApiHost(_sm, "1.0.0-test", () => Task.CompletedTask,
+            directorId: Guid.NewGuid().ToString(), instancesDirectory: _instancesDir);
         await _director.StartAsync();
 
         _gateway = new GatewayHost(port: GatewayHost.OperatingSystemAssignedPort, token: Token, authEnabled: true,
@@ -112,10 +112,7 @@ public sealed class DirectorEventsAndFactsTests : IAsyncLifetime
         var id = Guid.NewGuid().ToString();
         var sid = Guid.NewGuid().ToString();
         var cfg = new GatewayConfig { Url = $"http://127.0.0.1:{_gateway.Port}", Token = Token };
-        using var client = new GatewayClient(cfg, id, port: 65504, version: "9.9.9-test")
-        {
-            IdentityResolver = { LocalApiProbe = () => null, CliProbe = () => "test-node.test-tailnet.ts.net" },
-        };
+        using var client = new GatewayClient(cfg, id, "9.9.9-test");
         client.Start();
 
         // In production the Director is registered via its tunnel Hello before it rings the doorbell; this

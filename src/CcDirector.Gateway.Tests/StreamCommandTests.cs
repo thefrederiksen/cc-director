@@ -1,4 +1,4 @@
-using CcDirector.Core.Tenancy;
+﻿using CcDirector.Core.Tenancy;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
@@ -37,7 +37,6 @@ public sealed class StreamCommandTests : IAsyncLifetime
     private HttpClient _http = null!;          // set in InitializeAsync
     private SessionManager _directorSessions = null!;
     private ControlApiHost _directorHost = null!;
-    private int _directorPort;
 
     public StreamCommandTests()
     {
@@ -61,13 +60,15 @@ public sealed class StreamCommandTests : IAsyncLifetime
         // endpoint client can read GET /sessions/{sid} without a token in this harness.
         _directorSessions = new SessionManager(new AgentOptions());
         _directorHost = new ControlApiHost(_directorSessions, "1.0.0-test", () => Task.CompletedTask,
-            useEphemeralPort: true, authEnabled: false, directorId: DirectorId, instancesDirectory: _directorInstances);
-        _directorPort = await _directorHost.StartAsync();
+            directorId: DirectorId, instancesDirectory: _directorInstances);
+        await _directorHost.StartAsync();
 
         _gateway.Registry.Upsert(new DirectorRegistrationRequest
         {
             DirectorId = DirectorId,
-            TailnetEndpoint = $"http://127.0.0.1:{_directorPort}/",
+            // Remove-the-network-port: the Director serves no HTTP, so there is no endpoint to
+            // register - everything rides the tunnel, exactly as the portless tests below prove.
+            TailnetEndpoint = "",
             MachineName = "test-machine",
             Pid = 1,
             Version = "test",

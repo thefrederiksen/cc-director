@@ -1,4 +1,4 @@
-namespace CcDirector.Gateway.Util;
+﻿namespace CcDirector.Gateway.Util;
 
 /// <summary>The verdict on one request from a session key, and the sentence explaining it. A refusal always
 /// names its reason so an agent whose command breaks is debuggable from one log line.</summary>
@@ -12,7 +12,7 @@ public readonly record struct SessionKeyVerdict(bool Allowed, string Reason)
 /// <summary>
 /// What a SESSION KEY may call on the Gateway (Remove-the-network-port mission, phase 1b).
 ///
-/// This is the Gateway twin of <c>ControlApiGuard.CheckSessionChild</c>, and it is written the same way and
+/// This began as the Gateway twin of the Director's ControlApiGuard.CheckSessionChild (deleted with the Director's listener; this guard is the surviving one), and it is written the same way and
 /// for the same reason: it is an ALLOW LIST. Anything the product grows later is DENIED to an agent until
 /// somebody deliberately adds it here - the opposite of a deny list, where every new dangerous route is open
 /// until someone remembers to close it. A pure function on the method and path, so there is exactly one place

@@ -9,7 +9,7 @@ public enum RungStatus
 {
     Pass,
     Fail,
-    /// <summary>Informational - never the root cause verdict (the firewall rung, versions).</summary>
+    /// <summary>Informational - never the root cause verdict (versions).</summary>
     Info,
     /// <summary>Not run because an earlier rung already failed - the ladder stops at the first
     /// failing rung; that rung IS the diagnosis.</summary>
@@ -28,230 +28,149 @@ public sealed class LadderRung
 }
 
 /// <summary>
-/// The Gateway-connectivity troubleshooting ladder (issue #223): the exact diagnostic
-/// sequence a human had to run by hand during the EXAMPLE-PC incident, encoded in the
-/// CORRECT order - firewall LAST, because with Tailscale Serve active a TCP timeout means
-/// "no serve mapping", never "firewall" (Serve answers inside tailscaled before the
-/// Windows firewall is consulted). The ladder stops at the first failing rung: that rung
-/// is the root cause; everything after it is noise.
+/// The Gateway-connectivity troubleshooting ladder, rebuilt for the outbound-only Director.
 ///
-/// Rungs:
-///   1. Is Tailscale up?            (BackendState == Running)
-///   2. Is the serve mapping there? (serve status carries --https=&lt;port&gt; -&gt; loopback)
-///   3. Does the local listener answer? (GET 127.0.0.1:&lt;port&gt;/healthz)
-///   4. Does the advertised URL answer AS THIS DIRECTOR? (outside-in healthz + id match)
-///   5. Versions                    (info: this build vs the Gateway's)
-///   6. Firewall                    (info: why it is almost never the cause)
+/// The original ladder (issue #223) diagnosed the INBOUND model: is Tailscale up, is the Serve
+/// mapping present, does the local listener answer, does the advertised URL dial back. Every one of
+/// those questions died with that model - the tunnel-only cut ended the Gateway dialling Directors,
+/// and the Remove-the-network-port mission deleted the local listener itself - so the old rungs
+/// could only fail on perfectly healthy machines and send their owner to fix things that are not
+/// there. What can actually be wrong now, in the order it should be checked:
 ///
-/// Runs on demand from the troubleshooting dialog; each rung is yielded as it completes
-/// so the dialog fills in live (responsive-UI rule). All checks are read-only except
-/// nothing - fixes are offered, never auto-applied.
+///   1. Is a Gateway configured at all?          (no gateway.url -> nothing to connect to)
+///   2. Does the Gateway answer from here?       (outbound GET /healthz - network / Gateway down)
+///   3. Is the tunnel connected?                 (the Director's own live connection state)
+///   4. Versions                                 (info: this build, and whether /healthz answered)
+///
+/// The ladder stops at the first failing rung: that rung is the root cause; everything after it is
+/// noise. Runs on demand from the troubleshooting dialog; each rung is yielded as it completes so
+/// the dialog fills in live (responsive-UI rule). All checks are read-only - fixes are offered,
+/// never auto-applied.
 /// </summary>
 public sealed class GatewayConnectivitySelfTest
 {
-    private readonly int _port;
     private readonly string _directorId;
-    private readonly string? _advertisedEndpoint;
     private readonly string? _gatewayUrl;
-
-    /// <summary>Test seam: read-only tailscale CLI calls. Production: the real CLI.</summary>
-    internal Func<string, (bool ok, string stdout, string message)> Runner { get; set; } = TailscaleCli.Run;
-
-    /// <summary>Test seam: CLI presence.</summary>
-    internal Func<bool> CliAvailable { get; set; } = () => TailscaleCli.IsAvailable;
+    private readonly Func<GatewayConnectionStatus> _tunnelStatus;
 
     /// <summary>Test seam: HTTP GET returning (2xx ok, body-or-error). Production: real HTTP.</summary>
     internal Func<string, CancellationToken, Task<(bool ok, string detail)>> HttpProbe { get; set; } = ProbeHttpAsync;
 
-    /// <param name="advertisedEndpoint">The URL the Gateway dials back - prefer the one from the
-    /// last handshake verdict (what was ACTUALLY dialed) over a recomputed value.</param>
-    public GatewayConnectivitySelfTest(int port, string directorId, string? advertisedEndpoint, string? gatewayUrl)
+    /// <param name="gatewayUrl">The configured Gateway base URL, or null when none is configured.</param>
+    /// <param name="tunnelStatus">Reads the Director's LIVE tunnel state at the moment the rung
+    /// runs (the host's GatewayConnectionMonitor), never a copy captured earlier.</param>
+    public GatewayConnectivitySelfTest(string directorId, string? gatewayUrl, Func<GatewayConnectionStatus> tunnelStatus)
     {
-        if (port <= 0) throw new ArgumentOutOfRangeException(nameof(port), port, "port must be positive");
-        _port = port;
         _directorId = directorId ?? throw new ArgumentNullException(nameof(directorId));
-        _advertisedEndpoint = advertisedEndpoint;
         _gatewayUrl = gatewayUrl;
+        _tunnelStatus = tunnelStatus ?? throw new ArgumentNullException(nameof(tunnelStatus));
     }
 
     /// <summary>Run the ladder, yielding each rung as it completes.</summary>
     public async IAsyncEnumerable<LadderRung> RunAsync([EnumeratorCancellation] CancellationToken ct = default)
     {
-        FileLog.Write($"[GatewayConnectivitySelfTest] RunAsync: port={_port}, endpoint={_advertisedEndpoint ?? "(none)"}");
+        FileLog.Write($"[GatewayConnectivitySelfTest] RunAsync: gateway={_gatewayUrl ?? "(none)"}");
         var failed = false;
 
-        // ----- Rung 1: Is Tailscale up? -----
-        LadderRung rung;
-        if (!CliAvailable())
-        {
-            rung = new LadderRung
-            {
-                Title = "Is Tailscale up?",
-                Status = RungStatus.Fail,
-                Found = "The tailscale CLI was not found on this machine.",
-                Fix = "Install Tailscale (winget install Tailscale.Tailscale), log into the tailnet, then re-test.",
-            };
-        }
-        else
-        {
-            var (ok, stdout, message) = await Task.Run(() => Runner("status --json"), ct);
-            var backendState = ok ? TailscaleIdentity.ParseBackendState(stdout) : null;
-            rung = string.Equals(backendState, "Running", StringComparison.OrdinalIgnoreCase)
-                ? new LadderRung
-                {
-                    Title = "Is Tailscale up?",
-                    Status = RungStatus.Pass,
-                    Found = "tailscale status: BackendState=Running.",
-                }
-                : new LadderRung
-                {
-                    Title = "Is Tailscale up?",
-                    Status = RungStatus.Fail,
-                    Found = ok
-                        ? $"tailscale status: BackendState={backendState ?? "(missing)"} - the tailnet is not connected."
-                        : $"tailscale status failed: {message}",
-                    Fix = "Start Tailscale and connect: open the Tailscale app, or run: tailscale up",
-                };
-        }
-        failed = rung.Status == RungStatus.Fail;
-        yield return rung;
-
-        // ----- Rung 2: Is the serve mapping present? -----
-        if (failed)
-        {
-            yield return Skip("Is the Serve mapping present?");
-        }
-        else
-        {
-            var (ok, stdout, message) = await Task.Run(() => Runner("serve status --json"), ct);
-            var hasMapping = ok && TailscaleServeSelfProvisioner.StatusHasMapping(stdout, _port);
-            if (hasMapping)
-            {
-                yield return new LadderRung
-                {
-                    Title = "Is the Serve mapping present?",
-                    Status = RungStatus.Pass,
-                    Found = $"tailscale serve maps https://<this-machine>:{_port} -> http://localhost:{_port}.",
-                };
-            }
-            else
-            {
-                var why = ok
-                    ? $"The serve table has NO mapping for port {_port} - the Gateway's probes hit nothing and time out. This was the EXAMPLE-PC root cause."
-                    : $"tailscale serve status failed: {message}";
-                yield return new LadderRung
-                {
-                    Title = "Is the Serve mapping present?",
-                    Status = RungStatus.Fail,
-                    Found = why,
-                    Fix = $"tailscale serve --bg --https={_port} http://localhost:{_port}",
-                };
-                failed = true;
-            }
-        }
-
-        // ----- Rung 3: Does the local listener answer? -----
-        if (failed)
-        {
-            yield return Skip("Does the local listener answer?");
-        }
-        else
-        {
-            var (ok, detail) = await HttpProbe($"http://127.0.0.1:{_port}/healthz", ct);
-            yield return ok
-                ? new LadderRung
-                {
-                    Title = "Does the local listener answer?",
-                    Status = RungStatus.Pass,
-                    Found = $"GET http://127.0.0.1:{_port}/healthz answered 2xx.",
-                }
-                : new LadderRung
-                {
-                    Title = "Does the local listener answer?",
-                    Status = RungStatus.Fail,
-                    Found = $"GET http://127.0.0.1:{_port}/healthz failed: {detail}. The Director's own Kestrel is not answering - this is a Director problem, not a network one.",
-                    Fix = "Check the Director log at %LOCALAPPDATA%\\cc-director\\logs\\director\\ for Kestrel startup errors, then restart this Director.",
-                };
-            failed = failed || !ok;
-        }
-
-        // ----- Rung 4: Does the advertised URL answer as THIS Director? -----
-        if (failed)
-        {
-            yield return Skip("Does the advertised URL reach this Director?");
-        }
-        else if (string.IsNullOrEmpty(_advertisedEndpoint))
+        // ----- Rung 1: Is a Gateway configured? -----
+        if (string.IsNullOrWhiteSpace(_gatewayUrl))
         {
             yield return new LadderRung
             {
-                Title = "Does the advertised URL reach this Director?",
+                Title = "Is a Gateway configured?",
                 Status = RungStatus.Fail,
-                Found = "This Director has no advertised tailnet endpoint - it never registered a callable address.",
-                Fix = "Confirm Tailscale is logged in (rung 1) so the MagicDNS name resolves; or set gateway.tailnetEndpoint in config.json for a non-Tailscale front door.",
+                Found = "No gateway.url is configured, so this Director has nothing to connect to. "
+                        + "Without a Gateway there is no agent tooling and no remote access - that is "
+                        + "the designed standalone state, not a fault, but nothing below can pass.",
+                Fix = "Connect a Gateway in Settings (the Gateway tab), or run the Gateway tray app on this machine.",
             };
             failed = true;
         }
         else
         {
-            var url = $"{_advertisedEndpoint.TrimEnd('/')}/healthz";
-            var (ok, detail) = await HttpProbe(url, ct);
-            if (!ok)
-            {
-                yield return new LadderRung
-                {
-                    Title = "Does the advertised URL reach this Director?",
-                    Status = RungStatus.Fail,
-                    Found = $"GET {url} failed from this machine: {detail}. Rungs 1-3 passed, so the URL itself is wrong: stale tailnet name, wrong port, or a certificate still being issued.",
-                    Fix = "Compare the advertised URL against 'tailscale status' (this machine's MagicDNS name) and this Director's port. First-ever Serve on a node can take ~30s to get its TLS certificate - re-test once before digging.",
-                };
-                failed = true;
-            }
-            else if (detail.Contains(_directorId, StringComparison.OrdinalIgnoreCase))
-            {
-                yield return new LadderRung
-                {
-                    Title = "Does the advertised URL reach this Director?",
-                    Status = RungStatus.Pass,
-                    Found = $"GET {url} answered as this Director ({_directorId[..Math.Min(8, _directorId.Length)]}...).",
-                };
-            }
-            else
-            {
-                yield return new LadderRung
-                {
-                    Title = "Does the advertised URL reach this Director?",
-                    Status = RungStatus.Fail,
-                    Found = $"GET {url} answered 2xx but as a DIFFERENT Director - the advertised URL reaches the wrong process (port collision or stale serve mapping).",
-                    Fix = $"Run 'tailscale serve status' and check what port {_port} proxies to; remove stale mappings with: tailscale serve --https={_port} off",
-                };
-                failed = true;
-            }
-        }
-
-        // ----- Rung 5: Versions (info) -----
-        {
-            var found = $"This Director: {AppVersion.Display}.";
-            if (!string.IsNullOrEmpty(_gatewayUrl))
-            {
-                var (ok, detail) = await HttpProbe($"{_gatewayUrl.TrimEnd('/')}/healthz", ct);
-                found += ok
-                    ? " Gateway /healthz answered (see dialog header for its version)."
-                    : $" Gateway /healthz did not answer from here: {detail}.";
-            }
             yield return new LadderRung
             {
-                Title = "Build versions",
-                Status = RungStatus.Info,
-                Found = found + " A Director build that predates the self-serve provisioner (#197) never asserts its own Serve mapping - if rung 2 keeps failing after a manual fix, update this Director.",
+                Title = "Is a Gateway configured?",
+                Status = RungStatus.Pass,
+                Found = $"gateway.url = {_gatewayUrl}.",
             };
         }
 
-        // ----- Rung 6: Firewall (info, deliberately LAST) -----
+        // ----- Rung 2: Does the Gateway answer from this machine? -----
+        if (failed)
+        {
+            yield return Skip("Does the Gateway answer from this machine?");
+        }
+        else
+        {
+            var url = $"{_gatewayUrl!.TrimEnd('/')}/healthz";
+            var (ok, detail) = await HttpProbe(url, ct);
+            yield return ok
+                ? new LadderRung
+                {
+                    Title = "Does the Gateway answer from this machine?",
+                    Status = RungStatus.Pass,
+                    Found = $"GET {url} answered 2xx.",
+                }
+                : new LadderRung
+                {
+                    Title = "Does the Gateway answer from this machine?",
+                    Status = RungStatus.Fail,
+                    Found = $"GET {url} failed from this machine: {detail}. The Gateway is down, the "
+                            + "address is wrong, or the network between here and it is broken.",
+                    Fix = "If this machine hosts the Gateway, start the Gateway tray app. Otherwise check "
+                          + "the address in Settings and this machine's network connection.",
+                };
+            failed = failed || !ok;
+        }
+
+        // ----- Rung 3: Is the tunnel connected? -----
+        if (failed)
+        {
+            yield return Skip("Is the tunnel connected?");
+        }
+        else
+        {
+            var status = _tunnelStatus();
+            yield return status switch
+            {
+                GatewayConnectionStatus.Connected => new LadderRung
+                {
+                    Title = "Is the tunnel connected?",
+                    Status = RungStatus.Pass,
+                    Found = "The Director's outbound tunnel to the Gateway is connected - this IS the "
+                            + "fleet link; there is nothing else to reach.",
+                },
+                GatewayConnectionStatus.Connecting => new LadderRung
+                {
+                    Title = "Is the tunnel connected?",
+                    Status = RungStatus.Fail,
+                    Found = "The Gateway answers (rung 2) but the tunnel is still CONNECTING. Usually this "
+                            + "settles within seconds; if it does not, the token this Director holds may "
+                            + "no longer be accepted.",
+                    Fix = "Give it half a minute and re-run. If it still will not settle, re-save the Gateway "
+                          + "settings (which re-dials with the current token), or re-enrol this machine.",
+                },
+                _ => new LadderRung
+                {
+                    Title = "Is the tunnel connected?",
+                    Status = RungStatus.Fail,
+                    Found = $"The Gateway answers (rung 2) but this Director's tunnel is {status}. "
+                            + "The Gateway may be refusing this Director's token.",
+                    Fix = "Re-save the Gateway settings to re-dial, and check the Gateway's log for a refusal "
+                          + "naming this Director.",
+                },
+            };
+        }
+
+        // ----- Rung 4: Versions (info) -----
         yield return new LadderRung
         {
-            Title = "Windows Firewall",
+            Title = "Build versions",
             Status = RungStatus.Info,
-            Found = "Checked last on purpose: with Tailscale Serve active, the mapping answers inside tailscaled BEFORE the Windows firewall is consulted - a TCP timeout means a missing mapping (rung 2), not a blocked port. The firewall only matters for non-Serve setups (a hand-run reverse proxy).",
+            Found = $"This Director: {AppVersion.Display} (id {_directorId[..Math.Min(8, _directorId.Length)]}...). "
+                    + "See the dialog header for the Gateway's version. This Director accepts no inbound "
+                    + "connections at all - a firewall or port question can never be the cause here.",
         };
 
         FileLog.Write($"[GatewayConnectivitySelfTest] RunAsync complete: rootCauseFound={failed}");

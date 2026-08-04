@@ -1,11 +1,11 @@
 using System.Collections.ObjectModel;
 using System.ComponentModel;
-using System.Net.Sockets;
 using Avalonia.Controls;
 using Avalonia.Interactivity;
 using Avalonia.Media;
 using Avalonia.Threading;
 using CcDirector.Core.Instances;
+using CcDirector.Core.Storage;
 using CcDirector.Core.Utilities;
 
 namespace CcDirector.Avalonia;
@@ -58,23 +58,35 @@ public partial class SelectDirectorDialog : Window
     {
         var tasks = _rows.Select(async row =>
         {
-            var running = await IsPortOpenAsync(row.Port);
+            var running = await Task.Run(() => IsInstanceRunning(row.Slug));
             await Dispatcher.UIThread.InvokeAsync(() => row.SetStatus(running));
         });
         await Task.WhenAll(tasks);
     }
 
-    private static async Task<bool> IsPortOpenAsync(int port)
+    /// <summary>
+    /// Whether a live Director owns this instance, decided from the registration the running
+    /// process wrote (process id certified by its start time), never from a socket - the
+    /// Remove-the-network-port mission deleted the Director's listener, so there is no port to
+    /// probe and never will be again. Ambiguous (more than one live claimant) still means
+    /// SOMETHING is running there, which is what this dialog's green dot claims.
+    /// </summary>
+    private static bool IsInstanceRunning(string slug)
     {
         try
         {
-            using var client = new TcpClient();
-            var connect = client.ConnectAsync("127.0.0.1", port);
-            var done = await Task.WhenAny(connect, Task.Delay(300));
-            return done == connect && client.Connected;
+            var instanceHome = Path.Combine(InstanceContext.SharedRoot, "instances", slug);
+            // The default instance may predate the per-instance layout; its old registrations
+            // live flat at the shared root, exactly as the launcher reads them.
+            var legacyFlat = string.Equals(slug, InstanceContext.DefaultSlug, StringComparison.OrdinalIgnoreCase)
+                ? Path.Combine(InstanceContext.SharedRoot, "config", "director", "instances")
+                : null;
+            var lookup = new DirectorInstanceLocator(instanceHome, legacyFlat).Resolve();
+            return lookup.Outcome is DirectorResolution.Running or DirectorResolution.Ambiguous;
         }
-        catch
+        catch (Exception ex)
         {
+            FileLog.Write($"[SelectDirectorDialog] liveness for slug={slug} FAILED: {ex.Message}");
             return false;
         }
     }
@@ -108,14 +120,12 @@ public partial class SelectDirectorDialog : Window
         public InstanceRow(NamedInstance inst)
         {
             Slug = inst.Name;
-            Port = inst.Port;
             DisplayName = inst.DisplayName;
             var gateway = string.IsNullOrWhiteSpace(inst.GatewayUrl) ? "no gateway" : inst.GatewayUrl;
-            Meta = $"slug {inst.Name} · {gateway} · :{inst.Port}";
+            Meta = $"slug {inst.Name} · {gateway}";
         }
 
         public string Slug { get; }
-        public int Port { get; }
         public string DisplayName { get; }
         public string Meta { get; }
 

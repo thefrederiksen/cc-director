@@ -19,7 +19,7 @@ public class GatewayClientCandidateSelectionTests
     private static GatewayClient NewClient(GatewayConfig cfg, params string[] reachable)
     {
         var ok = new HashSet<string>(reachable, StringComparer.OrdinalIgnoreCase);
-        var client = new GatewayClient(cfg, Guid.NewGuid().ToString(), port: 65500, version: "9.9.9-test");
+        var client = new GatewayClient(cfg, Guid.NewGuid().ToString(), "9.9.9-test");
         client.ProbeGatewayCandidate = (url, _) =>
             Task.FromResult<string?>(ok.Contains(url) ? null : $"unreachable: {url}");
         return client;

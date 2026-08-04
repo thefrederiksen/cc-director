@@ -47,8 +47,9 @@ public static class FleetPreambleTemplate
         "  cc-devthrottle session spawn <repo>  open a new session on this Director\n" +
         "  cc-devthrottle schedule list       list Gateway schedules\n" +
         "  cc-devthrottle setup status        show local setup status\n" +
-        "Address a session by a short prefix of its id or by its name. You reach the fleet through your\n" +
-        "own Director (CC_DIRECTOR_API); no Gateway address or token is needed.\n" +
+        "Address a session by a short prefix of its id or by its name. You reach the fleet through the\n" +
+        "Gateway with this session's own key; both are already in your environment (CC_GATEWAY_URL and\n" +
+        "CC_GATEWAY_SESSION_KEY), so the commands above just work - there is nothing to configure.\n" +
         "Every message you send interrupts the receiving agent. 'message send all' reaches only your own\n" +
         "team, which is what you want. Do NOT try to reach the WHOLE fleet ('--everyone') - it freezes\n" +
         "every session on every machine and repo; the Gateway Hub refuses it without a human grant (issue #1229).\n" +

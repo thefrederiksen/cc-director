@@ -725,13 +725,14 @@ internal static class GatewayEndpoints
                 return LegacyDiscoveryPlaneUnavailable();
             if (req is null || string.IsNullOrEmpty(req.DirectorId))
                 return Results.BadRequest(new { error = "directorId is required" });
-            // Issue #324: a Director with no resolvable tailnet identity may register FLAGGED -
-            // empty endpoint plus its own reason - so the fleet can see the machine exists.
-            // An empty endpoint WITHOUT the reason is still the old undialable-entry bug: reject.
-            if (string.IsNullOrEmpty(req.TailnetEndpoint) && string.IsNullOrWhiteSpace(req.EndpointUnreachableReason))
-                return Results.BadRequest(new { error = "tailnetEndpoint is required (or endpointUnreachableReason for a flagged no-endpoint registration)" });
-
-            FileLog.Write($"[GatewayEndpoints] POST /directors/register: id={req.DirectorId}, endpoint={req.TailnetEndpoint}, machine={req.MachineName}");
+            // An empty endpoint is the NORMAL registration now: the Remove-the-network-port mission
+            // deleted the Director's listener, so a current Director has no inbound address to
+            // advertise and reachability is the tunnel connection itself. The old rule here - reject
+            // an empty endpoint unless it carried its own unreachable-reason (issue #324) - guarded
+            // against undialable entries in the era when the Gateway dialled Directors back; nothing
+            // dials any more, so the guard's question no longer exists. Old Directors that still
+            // send an endpoint or a reason are stored as they always were.
+            FileLog.Write($"[GatewayEndpoints] POST /directors/register: id={req.DirectorId}, endpoint={(string.IsNullOrEmpty(req.TailnetEndpoint) ? "(none - tunnel only)" : req.TailnetEndpoint)}, machine={req.MachineName}");
             var dto = registry.Upsert(req);
             return Results.Json(dto, statusCode: StatusCodes.Status201Created);
         });

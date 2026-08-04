@@ -5,66 +5,43 @@ using Xunit;
 namespace CcDirector.Gateway.Tests;
 
 /// <summary>
-/// Issue #324 regression: <see cref="GatewayClient.BuildRegistrationRequest"/> must NEVER
-/// produce a registration that claims a reachable advertised endpoint while the endpoint is
-/// empty or loopback. "Claims reachable" = <c>EndpointUnreachableReason</c> is null. The
-/// requests here run the REAL detection ladder (probes pinned, override from config), i.e.
-/// the exact production path.
+/// The Remove-the-network-port mission ended the advertised inbound endpoint, and this pins the
+/// registration's new shape: identity only, ALWAYS.
+///
+/// The issue #324 regression this file used to guard - "never claim a reachable endpoint you do not
+/// have" - is now satisfied by construction: there is no endpoint resolution at all, no Tailscale
+/// detection ladder, and no unreachable-reason to carry, because the Director listens on nothing and
+/// reachability is the tunnel connection itself. What is worth pinning is that the request really
+/// does advertise NOTHING (a reintroduced endpoint would re-open the door the mission closed) while
+/// still carrying the identity the Gateway registers.
 /// </summary>
 public sealed class GatewayClientRegistrationRequestTests
 {
-    private static GatewayClient ClientWith(string? configOverride)
-    {
-        var cfg = new GatewayConfig
-        {
-            Url = "http://127.0.0.1:1",
-            Token = "",
-            TailnetEndpoint = configOverride,
-        };
-        return new GatewayClient(cfg, Guid.NewGuid().ToString(), port: 7879, version: "9.9.9-test")
-        {
-            IdentityResolver = { LocalApiProbe = () => null, CliProbe = () => null },
-        };
-    }
-
     [Fact]
-    public void BuildRegistrationRequest_NoIdentityNoOverride_NeverClaimsReachable()
-    {
-        using var client = ClientWith(configOverride: null);
-
-        var req = client.BuildRegistrationRequest();
-
-        Assert.Equal("", req.TailnetEndpoint);
-        Assert.NotNull(req.EndpointUnreachableReason);
-        Assert.Contains("Tailscale", req.EndpointUnreachableReason);
-    }
-
-    [Fact]
-    public void BuildRegistrationRequest_LoopbackOverride_NeverClaimsReachable()
-    {
-        using var client = ClientWith(configOverride: "http://127.0.0.1:7879");
-
-        var req = client.BuildRegistrationRequest();
-
-        // The loopback override is refused: the endpoint stays empty and the reason is set.
-        // A loopback URL must never be advertised as reachable - it is a lie to any remote caller.
-        Assert.Equal("", req.TailnetEndpoint);
-        Assert.NotNull(req.EndpointUnreachableReason);
-        Assert.Contains("loopback", req.EndpointUnreachableReason);
-    }
-
-    [Fact]
-    public void BuildRegistrationRequest_IdentityResolves_ClaimsReachableTailnetEndpoint()
+    public void BuildRegistrationRequest_AdvertisesNoEndpointAndNoReason()
     {
         var cfg = new GatewayConfig { Url = "http://127.0.0.1:1", Token = "" };
-        using var client = new GatewayClient(cfg, Guid.NewGuid().ToString(), port: 7879, version: "9.9.9-test")
-        {
-            IdentityResolver = { LocalApiProbe = () => "node-a.tailnet.ts.net", CliProbe = () => null },
-        };
+        using var client = new GatewayClient(cfg, Guid.NewGuid().ToString(), "9.9.9-test");
 
         var req = client.BuildRegistrationRequest();
 
-        Assert.Equal("https://node-a.tailnet.ts.net:7879", req.TailnetEndpoint);
+        Assert.Equal("", req.TailnetEndpoint);
         Assert.Null(req.EndpointUnreachableReason);
+    }
+
+    [Fact]
+    public void BuildRegistrationRequest_CarriesTheIdentityTheGatewayRegisters()
+    {
+        var id = Guid.NewGuid().ToString();
+        var cfg = new GatewayConfig { Url = "http://127.0.0.1:1", Token = "" };
+        using var client = new GatewayClient(cfg, id, "9.9.9-test");
+
+        var req = client.BuildRegistrationRequest();
+
+        Assert.Equal(id, req.DirectorId);
+        Assert.Equal(Environment.ProcessId, req.Pid);
+        Assert.Equal("9.9.9-test", req.Version);
+        Assert.Equal(Environment.MachineName, req.MachineName);
+        Assert.NotEqual(default, req.StartedAt);
     }
 }

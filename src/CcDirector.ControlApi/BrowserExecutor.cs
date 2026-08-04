@@ -1,4 +1,4 @@
-using System.Text.Json.Nodes;
+﻿using System.Text.Json.Nodes;
 using CcDirector.Core.Browsers;
 using CcDirector.Core.Utilities;
 using CcDirector.Gateway.Contracts;
@@ -10,7 +10,7 @@ namespace CcDirector.ControlApi;
 /// drivable, signed-in-once Chromium instances an agent attaches to with browser-harness.
 ///
 /// Remove-the-network-port mission, phase 2. These verbs existed only as loopback routes on the Director
-/// (<see cref="BrowserEndpoints"/>), because the only caller was the <c>cc-devthrottle browser</c> command
+/// (the old BrowserEndpoints routes), because the only caller was the <c>cc-devthrottle browser</c> command
 /// line on the same machine and it reached them through the Director's own TCP port. That port is being
 /// removed, so the command line now calls the Gateway, and the Gateway carries the command down the tunnel
 /// to the Director - the same shape every other agent verb already has, just never built for these.
@@ -21,7 +21,7 @@ namespace CcDirector.ControlApi;
 /// that does. The verbs are addressed to a DIRECTOR id for that reason: "the browsers on my machine" is
 /// answered by the Director that owns the machine, never resolved from a name in a payload.
 ///
-/// This class holds the ONE implementation. <see cref="BrowserEndpoints"/> is now a thin adapter over it
+/// This class holds the ONE implementation. The BrowserEndpoints routes were briefly a thin adapter over it and then died with the Director's listener (Remove-the-network-port mission, phase 5)
 /// rather than a second copy, so the loopback routes that still serve already-installed command lines
 /// cannot drift from the tunnel verb that replaces them.
 /// </summary>

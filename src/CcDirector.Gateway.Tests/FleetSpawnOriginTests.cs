@@ -1,10 +1,7 @@
-using System.Net;
-using System.Net.Http.Headers;
-using System.Net.Http.Json;
+using System.Text.Json;
 using CcDirector.ControlApi;
 using CcDirector.Core.Configuration;
 using CcDirector.Core.Sessions;
-using CcDirector.Core.Storage;
 using CcDirector.Gateway.Contracts;
 using Xunit;
 
@@ -15,53 +12,44 @@ namespace CcDirector.Gateway.Tests;
 /// records WHO asked for it, from WHERE, and WHICH session made the call, and the record is stamped
 /// before the agent launches.
 ///
-/// Drives the REAL Director Control API over a REAL loopback connection, so the whole path runs -
-/// endpoint, validation, create funnel, pre-launch stamp, DTO mapper. The sessions are `cmd /k`, the same
-/// harmless launch the sibling spawn tests use.
+/// Remove-the-network-port mission, phase 5: the Director's /fleet/spawn HTTP route is gone with the
+/// listener, and the ONE spawn path every caller rides is the <c>create</c> verb - the Gateway
+/// dispatches it down the tunnel and <see cref="SessionCommandExecutor.Create"/> is its whole body:
+/// validation, create funnel, pre-launch stamp, DTO mapper. These tests drive that real verb core, so
+/// the strength of the original wire tests is preserved over the surviving code. The sessions are
+/// `cmd /k`, the same harmless launch the sibling spawn tests use.
 /// </summary>
 [Collection("DirectorRoot")]
-public sealed class FleetSpawnOriginTests : IAsyncLifetime
+public sealed class FleetSpawnOriginTests : IDisposable
 {
+    private const string DirectorId = "dir-spawn-origin";
+
     private readonly string _root;
     private readonly string? _prevRoot;
-    private ControlApiHost _host = null!;
-    private SessionManager _sm = null!;
-    private HttpClient _client = null!;
-    private string _repoDir = null!;
+    private readonly SessionManager _sm;
+    private readonly string _repoDir;
 
     public FleetSpawnOriginTests()
     {
         _prevRoot = Environment.GetEnvironmentVariable("CC_DIRECTOR_ROOT");
         _root = Path.Combine(Path.GetTempPath(), "ccd-spawnorigin-root-" + Guid.NewGuid().ToString("N"));
         Environment.SetEnvironmentVariable("CC_DIRECTOR_ROOT", _root);
-    }
 
-    public async Task InitializeAsync()
-    {
         _repoDir = Path.Combine(Path.GetTempPath(), "ccd-spawnorigin-repo-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(_repoDir);
 
         _sm = new SessionManager(new AgentOptions());
-        _host = new ControlApiHost(_sm, "1.0.0-test", () => Task.CompletedTask, useEphemeralPort: true);
-        var port = await _host.StartAsync();
-        _client = DirectorTestClient.Admin(port);
     }
 
-    public async Task DisposeAsync()
+    public void Dispose()
     {
-        _client.Dispose();
-        await _host.StopAsync();
         _sm.Dispose();
-        try
-        {
-            var f = Path.Combine(InstanceRegistration.InstancesDirectory, $"{_host.DirectorId}.json");
-            if (File.Exists(f)) File.Delete(f);
-        }
-        catch { /* test cleanup, ignore */ }
         Environment.SetEnvironmentVariable("CC_DIRECTOR_ROOT", _prevRoot);
         try { if (Directory.Exists(_root)) Directory.Delete(_root, true); } catch { /* best effort */ }
         try { if (Directory.Exists(_repoDir)) Directory.Delete(_repoDir, true); } catch { /* best effort */ }
     }
+
+    private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
 
     /// <summary>A spawn body shaped like the CLI's, launching a harmless shell.</summary>
     private NewSessionRequest SpawnBody() => new()
@@ -73,18 +61,30 @@ public sealed class FleetSpawnOriginTests : IAsyncLifetime
         Name = "origin test session",
     };
 
-    private async Task<SessionDto> SpawnOkAsync(NewSessionRequest body)
+    private DirectorCommandResult Spawn(NewSessionRequest body)
+        => SessionCommandExecutor.Create(_sm, DirectorId, new DirectorCommand
+        {
+            CommandId = "cmd-spawn-origin",
+            Verb = "create",
+            SessionId = "",
+            PayloadJson = JsonSerializer.Serialize(body, Json),
+        });
+
+    private SessionDto SpawnOk(NewSessionRequest body)
     {
-        var resp = await _client.PostAsJsonAsync("fleet/spawn", body);
-        Assert.Equal(HttpStatusCode.Created, resp.StatusCode);
-        var dto = await resp.Content.ReadFromJsonAsync<SessionDto>();
+        var result = Spawn(body);
+        Assert.Equal(DirectorCommandStatus.Ok, result.Status);
+        var dto = JsonSerializer.Deserialize<SessionDto>(result.BodyJson ?? "{}", Json);
         Assert.NotNull(dto);
         return dto!;
     }
 
     private async Task CleanUpAsync(SessionDto dto)
     {
-        if (dto.SessionId is not null) await _client.DeleteAsync($"sessions/{dto.SessionId}");
+        if (dto.SessionId is not null && Guid.TryParse(dto.SessionId, out var id))
+        {
+            try { await _sm.KillSessionAsync(id); } catch { /* the shell may already be gone */ }
+        }
     }
 
     [Fact]
@@ -99,7 +99,7 @@ public sealed class FleetSpawnOriginTests : IAsyncLifetime
         body.OriginSurface = SessionOriginSurfaces.Cli;
         body.ParentSessionId = parent.ToString();
 
-        var dto = await SpawnOkAsync(body);
+        var dto = SpawnOk(body);
         try
         {
             Assert.Equal(SessionOriginKinds.Agent, dto.OriginKind);
@@ -117,16 +117,14 @@ public sealed class FleetSpawnOriginTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task A_spawn_that_names_no_surface_is_recorded_as_the_command_line()
+    public async Task A_spawn_that_names_no_surface_is_recorded_with_unknown_kind_and_no_parent()
     {
-        // This route IS the command line - loopback-only, and the CLI is what reaches it - so saying
-        // "cli" is a measurement. The KIND stays unknown, because only the caller can tell a person
-        // running the command from a session running it, and inventing one here would fabricate exactly
-        // the number the field exists to produce.
-        var dto = await SpawnOkAsync(SpawnBody());
+        // Only the caller can tell a person running the command from a session running it; inventing a
+        // kind here would fabricate exactly the number the field exists to produce. (The CLI itself
+        // always states its surface; a create that names none is an older or hand-rolled caller.)
+        var dto = SpawnOk(SpawnBody());
         try
         {
-            Assert.Equal(SessionOriginSurfaces.Cli, dto.OriginSurface);
             Assert.Equal(SessionOriginKinds.Unknown, dto.OriginKind);
             Assert.Null(dto.ParentSessionId);
         }
@@ -143,7 +141,7 @@ public sealed class FleetSpawnOriginTests : IAsyncLifetime
         body.OriginSurface = SessionOriginSurfaces.Cli;
         body.ParentSessionId = Guid.NewGuid().ToString();
 
-        var dto = await SpawnOkAsync(body);
+        var dto = SpawnOk(body);
         try
         {
             Assert.Equal(SessionOriginKinds.Human, dto.OriginKind);
@@ -153,7 +151,7 @@ public sealed class FleetSpawnOriginTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task A_mistyped_origin_is_refused_rather_than_recorded_as_unknown()
+    public void A_mistyped_origin_is_refused_rather_than_recorded_as_unknown()
     {
         // The --type lesson, applied here. If a typo landed in the "unknown" bucket it would be
         // indistinguishable from an honest older caller, and the share of sessions agents start would
@@ -161,28 +159,27 @@ public sealed class FleetSpawnOriginTests : IAsyncLifetime
         var body = SpawnBody();
         body.Origin = "robot";
 
-        var resp = await _client.PostAsJsonAsync("fleet/spawn", body);
+        var result = Spawn(body);
 
-        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
-        var text = await resp.Content.ReadAsStringAsync();
-        Assert.Contains("unknown origin 'robot'", text);
-        Assert.Contains(SessionOriginKinds.Agent, text);
+        Assert.Equal(DirectorCommandStatus.BadRequest, result.Status);
+        Assert.Contains("unknown origin 'robot'", result.Error);
+        Assert.Contains(SessionOriginKinds.Agent, result.Error);
     }
 
     [Fact]
-    public async Task A_mistyped_origin_surface_is_refused()
+    public void A_mistyped_origin_surface_is_refused()
     {
         var body = SpawnBody();
         body.OriginSurface = "smoke-signal";
 
-        var resp = await _client.PostAsJsonAsync("fleet/spawn", body);
+        var result = Spawn(body);
 
-        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
-        Assert.Contains("unknown origin surface", await resp.Content.ReadAsStringAsync());
+        Assert.Equal(DirectorCommandStatus.BadRequest, result.Status);
+        Assert.Contains("unknown origin surface", result.Error);
     }
 
     [Fact]
-    public async Task A_parent_session_id_that_is_not_an_id_is_refused()
+    public void A_parent_session_id_that_is_not_an_id_is_refused()
     {
         // A broken lineage edge must never be silently dropped: the session would then look like a root,
         // and a root session is a meaningful thing in the tree this field exists to build.
@@ -190,10 +187,10 @@ public sealed class FleetSpawnOriginTests : IAsyncLifetime
         body.Origin = SessionOriginKinds.Agent;
         body.ParentSessionId = "the session next to me";
 
-        var resp = await _client.PostAsJsonAsync("fleet/spawn", body);
+        var result = Spawn(body);
 
-        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
-        Assert.Contains("is not a session id", await resp.Content.ReadAsStringAsync());
+        Assert.Equal(DirectorCommandStatus.BadRequest, result.Status);
+        Assert.Contains("is not a session id", result.Error);
     }
 
     [Fact]
@@ -210,7 +207,7 @@ public sealed class FleetSpawnOriginTests : IAsyncLifetime
         body.ParentSessionId = parent.ToString();
         body.ControllerSessionId = null; // --standalone
 
-        var dto = await SpawnOkAsync(body);
+        var dto = SpawnOk(body);
         try
         {
             Assert.False(dto.IsControlled);

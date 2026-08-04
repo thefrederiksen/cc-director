@@ -1,4 +1,4 @@
-using System.Net.Sockets;
+﻿using System.Net.Sockets;
 using CcDirector.ControlApi;
 using CcDirector.Core.Configuration;
 using CcDirector.Core.Sessions;
@@ -82,7 +82,7 @@ public sealed class DoorbellColourFactPushTests : IAsyncLifetime
 
         _sm = new SessionManager(new AgentOptions());
         _host = new ControlApiHost(_sm, "1.0.0-test", () => Task.CompletedTask,
-            useEphemeralPort: true, authEnabled: false, directorId: DirectorId, instancesDirectory: _directorInstances);
+            directorId: DirectorId, instancesDirectory: _directorInstances);
         await _host.StartAsync();
     }
 

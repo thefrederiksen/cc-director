@@ -1,4 +1,4 @@
-using System.Text.Json;
+﻿using System.Text.Json;
 using System.Text.Json.Nodes;
 using CcDirector.ControlApi;
 using CcDirector.Core.Sessions;
@@ -16,7 +16,7 @@ namespace CcDirector.Gateway.Tests;
 ///
 /// Each verb is exercised through the real <see cref="SessionCommandExecutor.DispatchAsync"/> path (verb map
 /// -&gt; area -&gt; core), the same way the Gateway stream down-channel reaches it, and asserts the behaviour
-/// the Director's own <see cref="SettingsEndpoint"/> route has: the read returns the config verbatim, the
+/// the Director's old SettingsEndpoint route had (deleted with the listener): the read returns the config verbatim, the
 /// write deep-merges without dropping sibling sections, a non-object body is refused with the route's exact
 /// wording, and a gateway patch re-applies the Gateway live.
 ///

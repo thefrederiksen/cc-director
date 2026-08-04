@@ -1,12 +1,9 @@
 using System.Diagnostics;
 using System.Text.Json;
-using CcDirector.Core.Instances;
 using CcDirector.Core.Sessions;
-using CcDirector.Core.Storage;
 using CcDirector.Core.Utilities;
-using CcDirector.Setup.Engine;
 
-namespace CcDirector.Launcher;
+namespace CcDirector.Core.Instances;
 
 /// <summary>How the search for the supervised Director ended.</summary>
 public enum DirectorResolution
@@ -79,7 +76,7 @@ public sealed record DirectorLookup(
 ///
 /// HOW IT ANSWERS INSTEAD. Every Director writes a registration file into ITS OWN instance home naming
 /// its identifier, its process id and the moment it registered. The launcher supervises exactly one
-/// instance - the default one, because <see cref="DirectorSupervisor.Start"/> launches the installed
+/// instance - the default one, because the launcher's DirectorSupervisor launches the installed
 /// application with no instance flag - so it reads only that home's registrations and takes the process
 /// id from the file. Neither the process name nor the image path is consulted at any point.
 ///
@@ -128,12 +125,6 @@ public sealed class DirectorInstanceLocator
     private readonly string _instanceHome;
     private readonly string? _legacyFlatDirectory;
     private readonly string _installedDirectorPath;
-
-    /// <summary>The default instance of the installed application - what the launcher starts and stops.</summary>
-    public DirectorInstanceLocator()
-        : this(Path.Combine(CcStorage.Root(), "instances", InstanceContext.DefaultSlug),
-               CcStorage.DirectorInstances(),
-               InstallLayout.Default().PathFor(ComponentRegistry.Director)) { }
 
     /// <param name="instanceHome">The storage home of the instance to resolve. Tests aim this at a
     /// throwaway directory; production uses the default constructor.</param>

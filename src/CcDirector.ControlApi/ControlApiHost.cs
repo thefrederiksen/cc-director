@@ -1,35 +1,31 @@
-﻿using System.Net;
 using CcDirector.Core.Configuration;
 using CcDirector.Core.Fleet;
-using CcDirector.Core.Security;
 using CcDirector.Core.Instances;
 using CcDirector.Core.Sessions;
 using CcDirector.Core.Wingman;
 using CcDirector.Core.Utilities;
 using CcDirector.Gateway.Contracts;
-using Microsoft.AspNetCore.Builder;
-using Microsoft.AspNetCore.Hosting;
-using Microsoft.AspNetCore.Hosting.Server;
-using Microsoft.AspNetCore.Hosting.Server.Features;
-using Microsoft.AspNetCore.Http;
-using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Hosting;
-using Microsoft.Extensions.Logging;
 
 namespace CcDirector.ControlApi;
 
 /// <summary>
-/// Hosts the Director's HTTP Control API on a stable, predictable port so the
-/// URL is bookmarkable across restarts and reachable from Tailscale clients.
+/// Hosts the Director's long-running services: the per-session state tracking, the maintained
+/// session-hook files, the Gateway HTTP client and the outbound tunnel, and the same-machine
+/// instance registration.
 ///
-/// Binding:
-///   - Listens on loopback (127.0.0.1) ONLY. The raw port is never on the LAN or the
-///     Tailscale interface; remote access is exclusively via Tailscale Serve (HTTPS),
-///     auto-provisioned per Director by the Gateway's TailscaleServeProvisioner.
+/// THERE IS NO LISTENER HERE, AND THERE MUST NOT BE. The Remove-the-network-port mission deleted
+/// the Director's HTTP Control API - the Kestrel host, the loopback routes, and the port allocator
+/// that picked from [7879..7898]. Everything an agent or another machine does to this Director
+/// arrives over the Gateway, down the tunnel this host dials OUT (<see cref="GatewayStreamClient"/>).
+/// Process lifecycle (stop, update check) is a named signal, not a route. If a change here needs a
+/// caller to reach this process directly, the answer is a tunnel verb or a file, never a socket.
+///
+/// The class name is kept from the listener era because it is referenced throughout the desktop,
+/// the tests and the documentation; what it hosts today is the Director's service plane.
 ///
 /// Lifecycle:
-///   - StartAsync() -> picks port via PortAllocator, starts Kestrel, writes instances/{guid}.json
-///   - StopAsync()  -> deletes registration file, releases port state, stops Kestrel
+///   StartAsync() -> starts the state services, writes instances/{guid}.json, dials the Gateway
+///   StopAsync()  -> farewells the Gateway, stops the services, deletes the registration file
 /// </summary>
 public sealed class ControlApiHost : IAsyncDisposable
 {
@@ -37,71 +33,8 @@ public sealed class ControlApiHost : IAsyncDisposable
     private readonly RepositoryRegistry? _repositoryRegistry;
     private readonly string _version;
     private readonly Func<Task> _requestShutdownAsync;
-    private readonly bool _useEphemeralPort;
-    // Set at StartAsync when the fixed range [7879..7898] is genuinely exhausted and the production
-    // loopback path falls back to an ephemeral loopback port (issue #697). Distinct from
-    // _useEphemeralPort (the test/LAN seam): a fallback host still self-provisions Tailscale Serve.
-    private bool _fellBackToEphemeral;
-    // Not readonly: LAN addressing mode (issue #457) auto-enables auth at StartAsync, because
-    // binding the Control API to the LAN without auth would expose it to the whole network.
-    private bool _authEnabled;
-    // The machine secret this host accepts, resolved at StartAsync and re-resolved by
-    // ReapplyGatewayAsync, because a runtime gateway change (enroll, rotate, disconnect) changes
-    // which secret is in force - the middleware must read this field per request, never a copy
-    // captured at startup, or the API keeps honouring the old secret until the Director restarts.
-    // Held on the host because things other than the middleware present a credential to their OWN
-    // Director: the startup self-probe calls /healthz over real HTTP, and every session launch
-    // mints a child token from it. Volatile: written under the reapply lock, read on request threads.
-    private volatile string? _acceptedSecret;
-
-    /// <summary>The accepted secret before the most recent runtime rotation, if any. Kept so the
-    /// session-child tokens stamped into ALREADY-RUNNING sessions' environments - which cannot be
-    /// re-issued - keep authenticating across one enroll/rotate/disconnect. Only session-child
-    /// credentials are honoured against it; full authority follows <see cref="_acceptedSecret"/>
-    /// alone. One deep by design: a second rotation retires the oldest window. Process-local on
-    /// purpose - sessions do not survive a Director restart, so neither must the grace.</summary>
-    private volatile string? _previousSecret;
 
     public string DirectorId { get; }
-    public int Port { get; private set; }
-    public bool AuthEnabled => _authEnabled;
-
-    /// <summary>
-    /// True once Kestrel has bound and <see cref="StartAsync"/> has completed successfully.
-    /// False while starting AND after a start failure (e.g. all ports in [7879..7898] busy).
-    /// The session-state services (badge tracking) run regardless -- see
-    /// <see cref="StartSessionStateServices"/> -- so this specifically means "the REST/Control
-    /// API and remote (Gateway/Cockpit/phone) access are up".
-    /// </summary>
-    public bool IsListening { get; private set; }
-
-    /// <summary>
-    /// Null while healthy; set to the failure reason when <see cref="StartAsync"/> could not
-    /// bind the Control API (reported by the boundary that catches the exception via
-    /// <see cref="ReportStartupFailure"/>). The desktop surfaces this as a loud sidebar
-    /// indicator so a port-exhausted Director is never silently degraded.
-    /// </summary>
-    public string? StartupError { get; private set; }
-
-    /// <summary>
-    /// Fires whenever <see cref="IsListening"/> / <see cref="StartupError"/> change, so the UI
-    /// can repaint its Control-API indicator. May fire on a background thread.
-    /// </summary>
-    public event Action? StartupStatusChanged;
-
-    /// <summary>
-    /// Record that the Control API failed to start. Called by the boundary that catches the
-    /// <see cref="StartAsync"/> exception (App startup) -- StartAsync re-throws, so the host
-    /// itself cannot set this from a success-returning path. Raises
-    /// <see cref="StartupStatusChanged"/> so the UI surfaces the degraded state.
-    /// </summary>
-    public void ReportStartupFailure(string error)
-    {
-        FileLog.Write($"[ControlApiHost] ReportStartupFailure: {error}");
-        IsListening = false;
-        StartupError = error;
-        StartupStatusChanged?.Invoke();
-    }
 
     /// <summary>
     /// Per-session persistent JSONL log. Exposed so the Avalonia UI can persist
@@ -110,7 +43,6 @@ public sealed class ControlApiHost : IAsyncDisposable
     /// </summary>
     public Core.Storage.SessionLogManager? SessionLogManager => _sessionLogManager;
 
-    private WebApplication? _app;
     private InstanceRegistration? _registration;
     private GatewayClient? _gatewayClient;
     // Issue #1176 (Phase 1a): the outbound push-stream client, running alongside _gatewayClient when
@@ -125,29 +57,6 @@ public sealed class ControlApiHost : IAsyncDisposable
     /// </summary>
     private readonly SessionGatewayKeys _sessionGatewayKeys = new();
     private readonly SemaphoreSlim _gatewayReapplyLock = new(1, 1);
-
-    /// <summary>
-    /// Issue #335 test seam: pin the tailnet identity resolution for the session DTO
-    /// mapper so unit tests can assert identity fields without requiring a live Tailscale
-    /// daemon. Must be set before <see cref="StartAsync"/> if used; the resolver is
-    /// captured at start time. Null (default) uses the real detection ladder.
-    /// </summary>
-    internal Func<CcDirector.Core.Network.TailnetEndpointResolution>? TailnetEndpointResolverOverride { get; set; }
-
-    /// <summary>
-    /// Issue #697 test seam: override the production fixed-range port allocation. Returns the port
-    /// to bind on loopback, or null to simulate a genuinely exhausted range (so the host exercises
-    /// the ephemeral fallback). Null (default) uses the real <see cref="PortAllocator"/>. Only
-    /// consulted on the production loopback path; ignored for ephemeral/LAN hosts.
-    /// </summary>
-    internal Func<string, int?>? PortAllocationOverride { get; set; }
-
-    /// <summary>
-    /// Issue #697 test seam: when true, skip Tailscale Serve self-provisioning at start so a unit
-    /// test exercising the production fallback path does not mutate the host machine's real serve
-    /// table. Defaults to false (production self-provisions, per issue #197).
-    /// </summary>
-    internal bool SuppressServeProvisioning { get; set; }
 
     /// <summary>
     /// The one home of this Director's Gateway-connection truth. Host-owned so it survives
@@ -250,26 +159,10 @@ public sealed class ControlApiHost : IAsyncDisposable
     private bool _stateServicesStarted;
 
     /// <summary>
-    /// Construct a Director Control API host.
+    /// Construct a Director host. There is nothing to configure about a listener because there is
+    /// no listener; see the class comment.
     /// </summary>
-    /// <param name="useEphemeralPort">
-    /// If true, Kestrel picks a free port and we bind only to loopback (intended for tests).
-    /// If false (production), PortAllocator picks a stable port in [7879..7898] and we bind to loopback (Tailscale Serve fronts it).
-    /// </param>
-    /// <param name="authEnabled">
-    /// If true (the DEFAULT), every route except <c>/healthz</c> requires a credential - the machine
-    /// secret or a token derived from it. Pass false only to embed the surface somewhere the caller
-    /// has already established who it is talking to.
-    ///
-    /// This defaulted to FALSE until the local trust boundary work, and the production desktop took
-    /// that default: the comment here said the Director was "completely open" and named the Tailscale
-    /// tailnet as the trust boundary, which had stopped being true - the inbound port is closed and
-    /// the callers are all on this machine. Loopback tells you the peer is local; it cannot tell the
-    /// desktop from the command line from a coding agent's child process from a browser that followed
-    /// a rebound name to 127.0.0.1. Those need different authority, so they need different
-    /// credentials.
-    /// </param>
-    public ControlApiHost(SessionManager sessionManager, string version, Func<Task> requestShutdownAsync, bool useEphemeralPort = false, bool authEnabled = true, RepositoryRegistry? repositoryRegistry = null, string? directorId = null, string? instancesDirectory = null, Core.Git.RepositoryMonitor? repositoryMonitor = null)
+    public ControlApiHost(SessionManager sessionManager, string version, Func<Task> requestShutdownAsync, RepositoryRegistry? repositoryRegistry = null, string? directorId = null, string? instancesDirectory = null, Core.Git.RepositoryMonitor? repositoryMonitor = null)
     {
         _repositoryMonitor = repositoryMonitor;
         _sessionManager = sessionManager ?? throw new ArgumentNullException(nameof(sessionManager));
@@ -290,8 +183,6 @@ public sealed class ControlApiHost : IAsyncDisposable
             if (GatewayMonitor.Status == GatewayConnectionStatus.Connected)
                 _ = RefreshInjectedTextAsync();
         };
-        _useEphemeralPort = useEphemeralPort;
-        _authEnabled = authEnabled;
         _repositoryRegistry = repositoryRegistry;
         // Tests pass an isolated instances directory so test Directors never appear in a real
         // Gateway's discovery (and a real Director never appears in a test Gateway's).
@@ -300,9 +191,7 @@ public sealed class ControlApiHost : IAsyncDisposable
         // Production: persisted id (same across restarts so the Gateway recognizes us).
         // Tests: inject a fresh id per fixture so parallel runs don't collide on the
         // single instances/{id}.json file.
-        DirectorId = directorId ?? (useEphemeralPort
-            ? Guid.NewGuid().ToString()
-            : DirectorIdStore.LoadOrCreate());
+        DirectorId = directorId ?? DirectorIdStore.LoadOrCreate();
     }
 
     /// <summary>
@@ -446,239 +335,40 @@ public sealed class ControlApiHost : IAsyncDisposable
         }
     }
 
-    /// <summary>Start Kestrel and write the instance registration file. Returns the chosen port.</summary>
-    public async Task<int> StartAsync()
+    /// <summary>
+    /// Start the Director's services, write the instance registration file, and dial the Gateway.
+    ///
+    /// This method used to start Kestrel on a loopback port and return the port it bound. There is
+    /// no port any more - nothing in this process listens - so what remains is the service plane:
+    /// the session-state services, the session-environment wiring, the same-machine registration
+    /// file, and the outbound Gateway connections.
+    /// </summary>
+    public Task StartAsync()
     {
-        FileLog.Write($"[ControlApiHost] StartAsync: directorId={DirectorId}, ephemeral={_useEphemeralPort}");
+        FileLog.Write($"[ControlApiHost] StartAsync: directorId={DirectorId}");
 
-        // Start the session-state services FIRST, before any port allocation or Kestrel work.
-        // They observe the SessionManager + terminal buffers only -- never the bound port -- so
-        // they must come up even when the Control API fails to bind (e.g. every port in
-        // [7879..7898] is taken by other Directors). Before this was hoisted out, PortAllocator
-        // throwing aborted StartAsync before these started, freezing every session on its last
-        // badge colour: a silent session could never flip to the red "needs you" state.
+        // Start the session-state services FIRST, before anything that can fail. They observe the
+        // SessionManager and the terminal buffers only, so a Director whose Gateway is missing or
+        // whose registration directory is unwritable still tracks its sessions' badge colours.
+        // (When a listener existed, this ordering was what kept a port-bind failure from freezing
+        // every session on its last colour; the port is gone, the property is kept.)
         StartSessionStateServices();
 
         // Issue #846: one-time session-number backfill at Director startup. By this point every
         // session the manager already tracks - sessions restored from persistence or carried over
         // from a pre-#820 build - is in place, so a single pass numbers any that still lack a
         // three-digit number (sessions created from now on are numbered at creation by
-        // RaiseSessionCreated -> AssignSessionNumber). Like the state services above, this runs
-        // BEFORE the port bind, so a Director whose Control API fails to bind still numbers its
-        // existing sessions. The method itself logs per-session; the count is logged here.
+        // RaiseSessionCreated -> AssignSessionNumber). The method itself logs per-session; the
+        // count is logged here.
         var backfilledAtStartup = _sessionManager.BackfillNumbers();
         FileLog.Write($"[ControlApiHost] Startup session-number backfill assigned {backfilledAtStartup} number(s)");
 
-        // Load the gateway config FIRST: the addressing mode (issue #457) decides the bind
-        // interface below, and it is reused for the GatewayClient + session DTO mapper.
         var gatewayConfig = Core.Configuration.GatewayConfig.Load();
-        var addressingMode = gatewayConfig.AddressingMode;
-
-        // LAN mode auto-enables auth. This began (issue #457) because LAN mode put the Control API on a
-        // routable interface, which MUST be authenticated. The bind is now loopback in every mode, so this
-        // no longer guards a routable interface - it is kept because a LAN-mode Director has required the
-        // fleet token since #457, and quietly dropping auth on upgrade would WEAKEN a running install. It
-        // costs a local caller nothing it was not already paying.
-        if (addressingMode == Core.Configuration.AddressingMode.Lan && !_authEnabled)
-        {
-            _authEnabled = true;
-            FileLog.Write("[ControlApiHost] LAN addressing mode: auth auto-enabled (Control API will require the fleet token)");
-        }
-
-        var builder = WebApplication.CreateBuilder(new WebApplicationOptions
-        {
-            ApplicationName = "CcDirector.ControlApi",
-        });
-        builder.WebHost.UseSetting(WebHostDefaults.PreventHostingStartupKey, "true");
-
-        if (_useEphemeralPort)
-        {
-            builder.WebHost.ConfigureKestrel(o => o.Listen(IPAddress.Loopback, 0));
-        }
-        else
-        {
-            // Loopback ONLY, in EVERY addressing mode. The tunnel-only cut made the Director dial
-            // OUT to the Gateway and be reached only down that stream, so no caller anywhere needs
-            // this port from off-machine: the Gateway creates sessions and drains work lists over
-            // the tunnel (SessionVerbClient / DirectorImplSessionDriver carry no HTTP client), and
-            // the two-way verify handshake that used to dial back was deleted with its route.
-            // Binding a routable interface would therefore open an inbound port with no user at
-            // all - pure attack surface - and break the cut's invariant that the inbound port stays
-            // CLOSED on every client machine. LAN addressing mode used to bind IPAddress.Any here
-            // (issue #457) for a Gateway->Director dial that no longer exists; it no longer changes
-            // the bind interface.
-            //
-            // Named instances: PortAllocator is keyed by the per-slug DirectorId, so each instance
-            // (default or named) gets its own distinct fixed port with no collision. The actual
-            // bound port is recorded to the named-instance registry after Kestrel starts (below),
-            // so the picker shows/probes the right one even on the ephemeral-fallback path.
-            int? allocated = PortAllocationOverride is not null
-                ? PortAllocationOverride(DirectorId)
-                : (PortAllocator.TryAllocate(DirectorId, out var p) ? p : (int?)null);
-
-            if (allocated is int fixedPort)
-            {
-                Port = fixedPort;
-                builder.WebHost.ConfigureKestrel(o => o.Listen(IPAddress.Loopback, fixedPort));
-            }
-            else
-            {
-                // Issue #697: the fixed range [7879..7898] is genuinely full. Rather than disable
-                // the Control API (Remote/Gateway access off, no REST surface), fall back to an
-                // ephemeral loopback port. The actual port is read back after Kestrel starts and is
-                // advertised through the same channels (instances/{guid}.json, Gateway registration,
-                // Tailscale Serve), so remote access keeps working - just on a non-fixed port.
-                _fellBackToEphemeral = true;
-                FileLog.Write($"[ControlApiHost] Fixed range {PortAllocator.PortRangeStart}..{PortAllocator.PortRangeEnd} exhausted; falling back to an ephemeral loopback port");
-                builder.WebHost.ConfigureKestrel(o => o.Listen(IPAddress.Loopback, 0));
-            }
-        }
-
-        builder.Logging.ClearProviders();
-        builder.Logging.SetMinimumLevel(LogLevel.Warning);
-        builder.Services.AddRoutingCore();
-
-        _app = builder.Build();
-
-        // Global exception envelope + access log (issue #212 L2). The Director Control API
-        // previously logged only what each endpoint happened to mention, so many requests -
-        // including state-changing ones - left no trace; the 2026-06-06 post-mortem had to
-        // reconstruct who-called-what from indirect evidence. We now log every MUTATING
-        // request (POST/PUT/PATCH/DELETE) and any request that errors (>=400), with method,
-        // path, status, elapsed, and client. Successful GET/HEAD are skipped because the
-        // Director is polled hard (GET /sessions every 2s per viewer) and would flood the log.
-        _app.Use(async (ctx, next) =>
-        {
-            var sw = System.Diagnostics.Stopwatch.StartNew();
-            try { await next(); }
-            catch (Exception ex)
-            {
-                FileLog.Write($"[ControlApiHost] pipeline exception: {ex}");
-                if (!ctx.Response.HasStarted)
-                {
-                    ctx.Response.StatusCode = StatusCodes.Status500InternalServerError;
-                    ctx.Response.ContentType = "text/plain; charset=utf-8";
-                    await ctx.Response.WriteAsync($"{ex.GetType().Name}: {ex.Message}");
-                }
-            }
-            finally
-            {
-                sw.Stop();
-                var method = ctx.Request.Method;
-                var isMutation = method is "POST" or "PUT" or "PATCH" or "DELETE";
-                if (isMutation || ctx.Response.StatusCode >= 400)
-                {
-                    var client = ctx.Connection.RemoteIpAddress?.ToString() ?? "?";
-                    FileLog.Write($"[ControlApiHost] {method} {ctx.Request.Path}{ctx.Request.QueryString} " +
-                        $"-> {ctx.Response.StatusCode} ({sw.ElapsedMilliseconds}ms) client={client}");
-                }
-            }
-        });
-
-        // The Host allowlist and the cross-site gate run BEFORE authentication and apply on every
-        // route including /healthz, because both answer a question that comes first: is this request
-        // addressed to this Director at all, and did a browser on somebody else's page initiate it.
-        // A caller that fails either is refused whether or not it holds a valid credential - a token
-        // that has leaked into a page must not buy the page a route.
-        //
-        // These are installed unconditionally, even when authentication is switched off for an
-        // embedded host, because they are not about who the caller is.
-        _app.Use(async (ctx, next) =>
-        {
-            var host = ControlApiGuard.CheckHost(ctx.Request.Headers.Host.ToString(), Port);
-            if (!host.Allowed)
-            {
-                FileLog.Write($"[ControlApiHost] 403 {ctx.Request.Method} {ctx.Request.Path}: {host.Reason}");
-                await DirectorAuth.WriteRefusal(ctx, StatusCodes.Status403Forbidden, host.Reason);
-                return;
-            }
-
-            var crossSite = ControlApiGuard.CheckCrossSiteMutation(
-                ctx.Request.Method,
-                ctx.Request.Headers["Sec-Fetch-Site"].ToString(),
-                ctx.Request.Headers["Origin"].ToString(),
-                Port);
-            if (!crossSite.Allowed)
-            {
-                FileLog.Write($"[ControlApiHost] 403 {ctx.Request.Method} {ctx.Request.Path}: {crossSite.Reason}");
-                await DirectorAuth.WriteRefusal(ctx, StatusCodes.Status403Forbidden, crossSite.Reason);
-                return;
-            }
-
-            await next(ctx);
-        });
-
-        if (_authEnabled)
-        {
-            // Accept the shared fleet token (gateway.token) when attached to a Gateway, so the
-            // Gateway authenticates across machines in LAN mode (issue #457); else the local token.
-            // Scoped tokens derived from whichever of those is in force are accepted too.
-            _acceptedSecret = DirectorAuth.ResolveAcceptedToken(gatewayConfig.Token);
-            // Read the FIELDS on every request, not startup-captured copies: ReapplyGatewayAsync
-            // replaces the secret when the gateway config changes at runtime, and a captured copy
-            // would keep the old one in force until restart. The previous secret rides along so a
-            // session launched before a rotation keeps its injected child credential (and nothing
-            // more). Non-null: assigned just above, and reapply only ever assigns another resolved
-            // (non-null) value.
-            _app.Use((ctx, next) => DirectorAuth.Run(ctx, _acceptedSecret!, _previousSecret, next));
-        }
-
-        // Enable WebSocket support for /dictate and any future streaming endpoints.
-        _app.UseWebSockets(new Microsoft.AspNetCore.Builder.WebSocketOptions
-        {
-            KeepAliveInterval = TimeSpan.FromSeconds(30),
-        });
-        _app.UseRouting();
-
-        // NOTE: the per-session state-tracking services (status wingman, terminal-state
-        // detector, recorders, loggers) are NOT started here. They are started up front by
-        // StartSessionStateServices(), before any port allocation, so they survive a
-        // Control-API bind failure. See that method for the rationale.
-
-        // Turn briefing left the Director (issue #187, the Gateway Wingman end state):
-        // the GATEWAY's warm-brain agent observes turn ends (doorbell/heartbeat, #186),
-        // generates briefs, stores them, and stamps BriefingState/RailLine onto the
-        // aggregated session view. The Director is dumb metal here.
-
-        // gatewayConfig was loaded up front (the addressing mode set the bind interface);
-        // reuse it for the served HTML's "Gateway" nav button and the GatewayClient.
-        var gatewayUrl = gatewayConfig.IsEnabled ? gatewayConfig.Url : null;
-
-        // Issue #335: tailnet identity resolver for session DTO population. The resolver is
-        // captured once at start time and shared with the per-session Map helper (runs on
-        // every /sessions request). Production uses the real detection ladder; tests can pin
-        // a fixed endpoint via TailnetEndpointResolverOverride before calling StartAsync.
-        Func<CcDirector.Core.Network.TailnetEndpointResolution> resolveTailnetEndpoint;
-        if (TailnetEndpointResolverOverride is not null)
-        {
-            resolveTailnetEndpoint = TailnetEndpointResolverOverride;
-        }
-        else if (addressingMode == Core.Configuration.AddressingMode.Lan)
-        {
-            // LAN mode (issue #457): the session DTO's routable endpoint is this machine's LAN IP.
-            var lanResolver = new CcDirector.Core.Network.LanIdentityResolver();
-            resolveTailnetEndpoint = () => lanResolver.ResolveEndpoint(Port, gatewayConfig.TailnetEndpoint);
-        }
-        else
-        {
-            var identityResolver = new CcDirector.Core.Network.TailnetIdentityResolver();
-            resolveTailnetEndpoint = () => identityResolver.ResolveEndpoint(Port, gatewayConfig.TailnetEndpoint);
-        }
-
-        // The fleet-relay endpoints (issue #705) read the _gatewayClient FIELD lazily via this
-        // provider, so they always use the current client even after a settings-change rebuild
-        // (the field is replaced, not this lambda). The client is built later in this method.
-        // The fleet-message steward (messaging.steward) - one instance per Director, guarding this
-        // Director's sessions' OUTGOING /fleet/* messages. Built from the Director's options, so it is
-        // default-on-generous and config-tunable, and inert (Allow) when disabled.
-        var messageSteward = new MessageSteward(_sessionManager.Options.MessageSteward);
 
         // Issue #1181, Task 3b: the desktop-side enforced dictation lock. Project the durable PENDING
         // delivery marker (issue #1188) from the shared dictation-uploads store into Session's send
-        // path, so a human typing on the desktop - or hitting this Director's control API without the
-        // authenticated delivery exemption - is refused while a dictation is inbound to that session.
-        // Same rule the Gateway front door enforces, now also closed on the Director's own in-process
-        // and control-API send paths. Idempotent to set on each start.
+        // path, so a human typing on the desktop is refused while a dictation is inbound to that
+        // session. Same rule the Gateway front door enforces. Idempotent to set on each start.
         Core.Sessions.Session.DictationLockCheck = id => Core.Sessions.DictationLockReader.IsSessionLocked(id);
 
         // Issue #1111: the same projection, read in ONE pass, for the roster's per-tick refresh of every
@@ -692,112 +382,19 @@ public sealed class ControlApiHost : IAsyncDisposable
         // change is picked up without a restart. Standalone/no-Gateway resolves to null (line omitted).
         var signedInUserProvider = new Core.Account.SignedInUserProvider(Core.Configuration.GatewayConfig.Load);
 
-        // Remove-the-network-port mission, phase 2: whether this Director still serves the AGENT surface -
-        // the /fleet/* routes and the automation-browser routes the cc-* command line used to call over
-        // loopback. The command line now calls the Gateway; these routes remain only for command lines
-        // installed before the change, and phase 5 deletes them with the listener.
-        //
-        // OFF is the state the phase has to be able to produce on demand, because that is the only way to
-        // show that nothing still needs them. Set CC_DIRECTOR_AGENT_ROUTES=off to run without them.
-        //
-        // DEFAULT ON, and read once here rather than per request: the fleet must never be left without
-        // tooling by accident, and a switch that could flip mid-life would make "which door answered" a
-        // question about timing. It is an environment variable and not a setting on purpose - it is
-        // temporary scaffolding for one phase, and putting it in config.json would outlive the phase and
-        // read as a supported way to run.
-        var agentRoutesSetting = (Environment.GetEnvironmentVariable("CC_DIRECTOR_AGENT_ROUTES") ?? "").Trim();
-        var mapAgentRoutes = !string.Equals(agentRoutesSetting, "off", StringComparison.OrdinalIgnoreCase);
-        FileLog.Write($"[ControlApiHost] agent surface (/fleet/* and /browsers/*): {(mapAgentRoutes ? "ON" : "OFF")}"
-            + (agentRoutesSetting.Length > 0 ? $" (CC_DIRECTOR_AGENT_ROUTES={agentRoutesSetting})" : ""));
-
-        ControlEndpoints.Map(_app, _sessionManager, DirectorId, _version, _requestShutdownAsync, _authEnabled, _repositoryRegistry, _turnSummaryCache, gatewayUrl, _proactiveExplain, GatewayMonitor, resolveTailnetEndpoint, () => _gatewayClient, messageSteward, _missionStore, _repositoryMonitor, mapAgentRoutes);
-
-        // DevThrottle's automation browsers (the drivable, signed-in-once Chromium instances). Loopback,
-        // machine-local surface backed by AutomationBrowserService; the desktop rail reads the same fold
-        // in-process, so switching these off costs the rail nothing. The command line reaches them through
-        // the Gateway's /directors/{id}/browsers legs, which carry the verb down the tunnel to here.
-        if (mapAgentRoutes)
-            BrowserEndpoints.Map(_app);
-
-        // Gateway Cleanup mission: the Director floor's tunnel-bounce. An operator/launcher can force
-        // this Director to re-establish its OUTBOUND tunnel without a full restart. Loopback floor route.
-        _app.MapPost("/reconnect", async (HttpContext ctx) =>
-        {
-            var caller = Core.Network.LoopbackPeerResolver.Describe(ctx.Connection.RemotePort, ctx.Connection.LocalPort);
-            FileLog.Write($"[ControlApiHost] POST reconnect requested caller={caller}");
-            if (_streamClient is null)
-                return Results.Json(new { accepted = false, reason = "tunnel not enabled" });
-            await _streamClient.ReconnectAsync();
-            return Results.Json(new { accepted = true });
-        });
-        // Gateway Cleanup mission (the cut): the browser-facing session reads, the terminal stream, and
-        // dictation no longer register their own Director routes here - they ride the tunnel exclusively.
-        // The usage/context/history/facts reads dispatch through the shared executors over the tunnel; the
-        // live terminal producer moved to the up-stream (open-terminal-stream); dictation is now
-        // client->Gateway audio; claude-transcripts and dispatch are dropped legacy. Only the Phase-4
-        // config surface below (settings/agents/tools/workspaces) stays on the loopback floor for
-        // LOCAL access (the desktop app + cc-settings-api call it same-machine); remote config editing moves
-        // to proper tunnel verbs in Phase 4.
-        SettingsEndpoint.Map(_app, ReapplyGatewayAsync, () => Port);
-        // /settings/agents (issue #584): full Settings-dialog Agents-tab parity over REST -
-        // library CRUD/reorder/enable plus Detect, Quick check, resolved command line, and the
-        // catalog, reusing the same Core services the Agents tab uses (one implementation).
-        AgentsEndpoint.Map(_app, _sessionManager.Options);
-        ToolsEndpoint.Map(_app);
-        WorkspacesEndpoint.Map(_app);
-        await _app.StartAsync();
-
-        if (_useEphemeralPort || _fellBackToEphemeral)
-        {
-            // The OS assigned the port (Listen(..., 0)); read it back from Kestrel's bound address.
-            Port = ReadAssignedPort(_app)
-                ?? throw new InvalidOperationException("Kestrel started but did not expose a bound address.");
-        }
-
-        // Issue #725: confirm the Control API actually ANSWERS on the bound port before claiming we
-        // are listening. A Windows-excluded / http.sys-reserved port lets the bind appear to succeed
-        // while the System process shadows the socket and 404s every request - the Director then
-        // "looks up" but is silently dead. The PortAllocator now skips excluded ranges, so this is a
-        // belt-and-braces guard: if the self-probe fails we say so LOUDLY (never a misleading
-        // "listening" line) and release the reservation so a restart picks a different port.
-        if (await SelfProbeControlApiAsync(Port))
-        {
-            FileLog.Write($"[ControlApiHost] Kestrel listening on http://127.0.0.1:{Port} (loopback only; the inbound port is closed - remote access is the outbound tunnel to the Gateway)");
-        }
-        else
-        {
-            FileLog.Write($"[ControlApiHost] SELF-PROBE FAILED: bound port {Port} does NOT answer its own /healthz. " +
-                "The port is shadowed or reserved (a Windows TCP excluded range or an http.sys reservation), so the " +
-                "Control API is unreachable on it. Releasing the reservation so a restart picks another port. " +
-                "Diagnose with: netsh int ipv4 show excludedportrange protocol=tcp");
-            try { PortAllocator.Release(DirectorId); } catch { /* best-effort */ }
-        }
-
-        // Let the SessionManager stamp CC_DIRECTOR_API / CC_DIRECTOR_ID into every session
-        // it spawns from now on, so agents inside a session can call this Control API
-        // (e.g. GET $CC_DIRECTOR_API/sessions/$CC_SESSION_ID to find themselves).
-        _sessionManager.ControlApiBaseUrl = $"http://127.0.0.1:{Port}";
+        // The session environment. CC_DIRECTOR_ID names which Director a session belongs to - identity,
+        // not an address - and the machine-local verbs (the automation browsers) are scoped by it.
         _sessionManager.DirectorId = DirectorId;
 
-        // ...and the credential that goes with it. Every session gets a token bound to ITS OWN id,
-        // so the agent inside it can fetch its preamble and report its transcript pointer, and can do
-        // nothing else - it cannot spawn, shut down, prompt another session, read another session's
-        // terminal, or touch settings. Before this, children were given the address with no
-        // credential at all, which was safe only because the surface asked for none.
-        //
-        // This is a real boundary against a browser or any caller that does not go looking for the
-        // machine secret. It is NOT an operating-system sandbox: a process running as this user can
-        // read the secret off disk and mint itself full authority, and closing that needs a transport
-        // where the operating system asserts the caller's identity.
-        _sessionManager.SessionCredentialSource = sessionId =>
-            _acceptedSecret is { Length: > 0 } secret
-                ? DirectorScopedToken.Mint(secret, ScopeNames.SessionChild, sessionId)
-                : null;
+        // Remove-the-network-port mission, phase 5: CC_DIRECTOR_API and CC_DIRECTOR_TOKEN are GONE.
+        // Nothing answers on this machine, so handing every agent a live-looking loopback address -
+        // and a credential for it - would send a straggling caller to a dead door and hide the
+        // dependency for as long as the variable existed. A session's ONLY door to the fleet is the
+        // Gateway pair below.
 
-        // Remove-the-network-port mission, phase 1b: the same idea, one hop out. Every session also gets a
-        // credential for the GATEWAY, bound to its own id and limited to the agent routes, so an agent's
-        // command line can reach the fleet through the Gateway without being handed this Director's own
-        // account-wide key.
+        // Remove-the-network-port mission, phase 1b: every session gets a credential for the GATEWAY,
+        // bound to its own id and limited to the agent routes, so an agent's command line can reach the
+        // fleet through the Gateway without being handed this Director's own account-wide key.
         //
         // The registration is sent the moment the key is minted, which is inside the environment build - so
         // it goes up the tunnel BEFORE the agent process is even launched, and is long since accepted by the
@@ -814,16 +411,6 @@ public sealed class ControlApiHost : IAsyncDisposable
                 _ = _streamClient.RegisterSessionKeyAsync(registration);
             return key;
         };
-
-        // Named instances: record the ACTUAL bound port (fixed or ephemeral-fallback) back to the
-        // named-instance registry so the picker/switcher shows and probes the right port. Best-effort;
-        // never throws into startup.
-        CcDirector.Core.Instances.NamedInstanceRegistry.RecordBoundPort(
-            CcDirector.Core.Instances.InstanceContext.Slug, Port);
-
-        // Issue #1357: let the (synchronous, non-blocking) Pi launch path name the signed-in user from
-        // the provider's cached snapshot. Warm the cache once now so the first Pi session started right
-        // after boot already has it; failures inside ResolveAsync are swallowed (best-effort context).
 
         // A session whose launch throws after its key was minted never reaches the roster, so the reaper
         // never revokes it. Wired to the same pair the reap uses: forget the hash here, and owe the
@@ -862,46 +449,117 @@ public sealed class ControlApiHost : IAsyncDisposable
         // synchronously. Kept in step with the config in ReapplyGatewayAsync.
         _sessionManager.FleetNumberingActive = gatewayConfig.IsEnabled;
 
-        _registration = new InstanceRegistration(DirectorId, Port, _version, _instancesDirectory,
+        _registration = new InstanceRegistration(DirectorId, _version, _instancesDirectory,
             // devthrottle_internal#1176: stamp the instance's display name into the same-machine discovery
             // file too, so a file-discovered Director carries the same name a tunnel Hello would.
             displayName: InstanceContext.DisplayName);
         _registration.Register();
 
-        // Gateway Cleanup mission (tunnel-only): the Director NO LONGER opens an inbound Tailscale Serve
-        // front door on its control port. It dials OUT to the Gateway over the tunnel and is reached ONLY
-        // down that stream, so there is nothing inbound to publish - the whole point of the cut is that the
-        // inbound port stays CLOSED on every client machine. Any Serve mapping a previous build left for this
-        // port is proactively torn down so an upgraded Director self-heals to closed. This runs in EVERY
-        // addressing mode: a Director that was on tailscale mode when an older build published a mapping, and
-        // has since been switched to LAN mode, must still have that stale inbound mapping torn down. Only
-        // ephemeral-port hosts (tests, hosted agents) are skipped - they never published one to begin with,
-        // and must not churn the serve table (the #179 lesson).
-        if (!_useEphemeralPort && !SuppressServeProvisioning)
-        {
-            var portToClose = Port;
-            _ = Task.Run(() =>
-            {
-                try { using var p = new TailscaleServeSelfProvisioner(portToClose); p.RemoveOwnMapping(); }
-                catch (Exception ex) { FileLog.Write($"[ControlApiHost] tunnel-only Serve teardown failed (best-effort): {ex.Message}"); }
-            });
-        }
+        // Remove-the-network-port mission, phase 5: clean up what the listener era left on this
+        // machine. Best-effort, off the startup path.
+        _ = Task.Run(CleanUpListenerLeftovers);
 
-        // Phase 1: if gateway.url is configured, register with the Gateway over HTTP and
-        // start the heartbeat. Disabled (no-op) when local-only. Reuses the config
-        // loaded above for the HTML nav button.
+        // If gateway.url is configured, register with the Gateway over outbound HTTP and start the
+        // heartbeat, and dial the tunnel. Disabled (no-op) when local-only.
         _gatewayClient = BuildGatewayClient(gatewayConfig);
         _gatewayClient.Start();
-        // Issue #1176 (Phase 1a): additive push stream, alongside the heartbeat/doorbell floor.
         _streamClient = BuildStreamClient(gatewayConfig);
         _streamClient?.Start();
         WireDoorbellPush();
         WireRepositoryPush();
 
-        IsListening = true;
-        StartupError = null;
-        StartupStatusChanged?.Invoke();
-        return Port;
+        return Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// Remove what this Director's OWN listener era left behind, exactly once per artifact:
+    ///
+    ///   - The port reservation file (config\director\ports\{directorId}.port), written by the
+    ///     deleted PortAllocator so a restart could re-claim the same port. Nothing reads it now,
+    ///     and the schedule command line used to read the whole directory as evidence of which
+    ///     Directors a data root owns - stale files would keep answering a question whose premise
+    ///     is gone.
+    ///   - The Tailscale Serve mapping for that port, if one is still published. Builds older than
+    ///     the tunnel-only cut published an inbound HTTPS front door per Director port; the cut
+    ///     tore it down on every start, and this is the LAST teardown - after the reservation file
+    ///     is gone, the port this Director used to bind is unknowable, so the mapping must go now.
+    ///
+    /// Reading the reservation BEFORE deleting it is what makes the serve teardown possible at all:
+    /// the file is the only remaining record of which port this Director ever bound.
+    /// </summary>
+    private void CleanUpListenerLeftovers()
+    {
+        try
+        {
+            var reservation = Path.Combine(Core.Storage.CcStorage.Config(), "director", "ports", $"{DirectorId}.port");
+            if (!File.Exists(reservation))
+                return;
+
+            var raw = File.ReadAllText(reservation).Trim();
+            if (int.TryParse(raw, out var oldPort) && oldPort > 0)
+            {
+                try
+                {
+                    using var provisioner = new TailscaleServeSelfProvisioner(oldPort);
+                    provisioner.RemoveOwnMapping();
+                }
+                catch (Exception ex)
+                {
+                    FileLog.Write($"[ControlApiHost] stale Serve teardown for old port {oldPort} failed (best-effort): {ex.Message}");
+                }
+            }
+
+            File.Delete(reservation);
+            FileLog.Write($"[ControlApiHost] removed the listener-era port reservation {reservation}" +
+                (raw.Length > 0 ? $" (old port {raw})" : ""));
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[ControlApiHost] listener-leftover cleanup failed (best-effort, retried next start): {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Mint, register, and hand out a short-lived Gateway session key for the desktop's fleet-tool
+    /// health probe - the same kind of credential a real session launch stamps, taken through the
+    /// same mint-and-register path, so the probe proves exactly what a spawned session would
+    /// experience. Registration is AWAITED here (unlike a session launch) because the probe is
+    /// about to present the key immediately and a race would report a healthy machine as broken.
+    ///
+    /// Returns null when no Gateway is configured, the tunnel is not up, or the registration did
+    /// not land - in every one of those states the honest verdict is "the tools have no Gateway to
+    /// reach", not "the tools are broken". The caller MUST invoke the returned Revoke when the
+    /// probe is done; the key is bound to a probe-only id that never joins the session roster, so
+    /// nothing else will ever end it.
+    /// </summary>
+    public async Task<FleetToolProbeCredential?> MintFleetToolProbeCredentialAsync()
+    {
+        var gatewayConfig = Core.Configuration.GatewayConfig.Load();
+        if (!gatewayConfig.IsEnabled || _streamClient is not { } stream)
+            return null;
+
+        var probeId = Guid.NewGuid();
+        var key = _sessionGatewayKeys.Mint(probeId);
+        var registration = _sessionGatewayKeys.RegistrationFor(probeId);
+        if (registration is null)
+        {
+            _sessionGatewayKeys.Forget(probeId);
+            return null;
+        }
+
+        var registered = await stream.RegisterSessionKeyAsync(registration).ConfigureAwait(false);
+        if (!registered)
+        {
+            if (_sessionGatewayKeys.Forget(probeId))
+                _streamClient?.RevokeSessionKey(probeId.ToString());
+            return null;
+        }
+
+        return new FleetToolProbeCredential(gatewayConfig.Url, key, () =>
+        {
+            if (_sessionGatewayKeys.Forget(probeId))
+                _streamClient?.RevokeSessionKey(probeId.ToString());
+        });
     }
 
     /// <summary>
@@ -910,14 +568,14 @@ public sealed class ControlApiHost : IAsyncDisposable
     /// touch Kestrel or the bound port -- so they run independently of whether the Control API
     /// binds.
     ///
-    /// This is deliberately decoupled from the port bind. The desktop "needs you" badge is
+    /// This is deliberately the FIRST thing StartAsync does. The desktop "needs you" badge is
     /// <see cref="Session.StatusColor"/>, written by <see cref="SessionStatusWingman"/> from the
     /// <see cref="ActivityState"/> that <see cref="TerminalStateDetector"/> drives (byte -> Working;
     /// <see cref="TerminalStateDetector.QuietThreshold"/> of silence -> WaitingForInput = red).
-    /// Before these were hoisted out of the post-bind section of <see cref="StartAsync"/>, a
-    /// port-allocation failure (e.g. every port in [7879..7898] busy from other Directors)
+    /// In the listener era these once ran AFTER the port bind, and a port-allocation failure
     /// aborted StartAsync before they started -- leaving every session frozen on its last colour,
-    /// so a silent session could sit forever and never flip to red. Idempotent: safe to call
+    /// so a silent session could sit forever and never flip to red. The port is gone; the lesson
+    /// (state services before anything that can fail) is kept. Idempotent: safe to call
     /// again (StartAsync calls it once up front).
     /// </summary>
     internal void StartSessionStateServices()
@@ -1070,7 +728,7 @@ public sealed class ControlApiHost : IAsyncDisposable
     /// (the wiring here was gated on a serve provisioner this Director never creates), so it is removed.
     /// </summary>
     private GatewayClient BuildGatewayClient(GatewayConfig gatewayConfig)
-        => new(gatewayConfig, DirectorId, Port, _version, SnapshotSessionStates, GatewayMonitor);
+        => new(gatewayConfig, DirectorId, _version, SnapshotSessionStates, GatewayMonitor);
 
     /// <summary>
     /// Issue #1176 (Phase 1a): build the push-stream client, or null when stream mode is off / no Gateway
@@ -1364,26 +1022,6 @@ public sealed class ControlApiHost : IAsyncDisposable
 
             var gatewayConfig = GatewayConfig.Load();
 
-            // The accepted secret follows the gateway config: enrolling, rotating, or disconnecting
-            // a gateway token changes which secret callers derive their credentials from, and the
-            // auth middleware reads _acceptedSecret per request. Without this re-resolve the API
-            // keeps accepting tokens derived from the OLD secret and 401s every caller presenting
-            // the NEW one (the CLI and launcher resolve fresh on each call) until the Director is
-            // restarted. Guarded like startup: with auth disabled the secret stays unset so session
-            // launches keep minting no credential.
-            //
-            // When the secret actually changes, the outgoing one becomes the one-deep grace window
-            // for the session-child tokens already stamped into running sessions' environments -
-            // those processes cannot be handed a new credential, and without the window their hooks
-            // would 401 silently from here on. Full authority never verifies against the window.
-            if (_authEnabled)
-            {
-                var resolved = DirectorAuth.ResolveAcceptedToken(gatewayConfig.Token);
-                if (_acceptedSecret is { Length: > 0 } current && !string.Equals(resolved, current, StringComparison.Ordinal))
-                    _previousSecret = current;
-                _acceptedSecret = resolved;
-            }
-
             _gatewayClient = BuildGatewayClient(gatewayConfig);
             _gatewayClient.Start();
             _streamClient = BuildStreamClient(gatewayConfig);
@@ -1397,54 +1035,6 @@ public sealed class ControlApiHost : IAsyncDisposable
         }
     }
 
-    private static int? ReadAssignedPort(WebApplication app)
-    {
-        var server = app.Services.GetService<IServer>();
-        var addresses = server?.Features.Get<IServerAddressesFeature>()?.Addresses;
-        if (addresses is null) return null;
-        foreach (var addr in addresses)
-            if (Uri.TryCreate(addr, UriKind.Absolute, out var uri))
-                return uri.Port;
-        return null;
-    }
-
-    /// <summary>
-    /// Issue #725: prove the Control API actually serves on the just-bound port by calling its own
-    /// <c>/healthz</c> over loopback. Returns true only when /healthz answers 2xx AND the body
-    /// identifies THIS Director (its <see cref="DirectorId"/>), so a foreign service shadowing the
-    /// port - the symptom of a Windows-reserved port - cannot pass the check. Bounded and best
-    /// effort: any failure means "not serving" and returns false (never throws into startup).
-    /// </summary>
-    private async Task<bool> SelfProbeControlApiAsync(int port)
-    {
-        try
-        {
-            using var http = new System.Net.Http.HttpClient { Timeout = TimeSpan.FromSeconds(3) };
-            using var request = new System.Net.Http.HttpRequestMessage(
-                System.Net.Http.HttpMethod.Get, $"http://127.0.0.1:{port}/healthz");
-            // The probe reads the Director's OWN identifier out of the answer, and /healthz only
-            // names it to a caller that authenticated - its public answer is liveness and nothing
-            // else. So the probe presents an admin credential. Without one it would get the public
-            // body, fail to find the identifier, and report a healthy Director as shadowed: the
-            // check would fire on the very machines it is meant to certify.
-            if (_acceptedSecret is { Length: > 0 } secret)
-            {
-                request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue(
-                    "Bearer", DirectorScopedToken.Mint(secret, ScopeNames.Admin));
-            }
-
-            using var resp = await http.SendAsync(request);
-            if (!resp.IsSuccessStatusCode) return false;
-            var body = await resp.Content.ReadAsStringAsync();
-            return body.Contains(DirectorId, StringComparison.Ordinal);
-        }
-        catch (Exception ex)
-        {
-            FileLog.Write($"[ControlApiHost] SelfProbeControlApiAsync({port}) failed: {ex.Message}");
-            return false;
-        }
-    }
-
     /// <summary>
     /// The clean-shutdown farewell to the Gateway (issue #2194): rules this Director's open
     /// work-history rows "Director stopped" while the tunnel is still up. The app's shutdown routine
@@ -1454,7 +1044,7 @@ public sealed class ControlApiHost : IAsyncDisposable
     public Task NotifyDirectorStoppingAsync()
         => _streamClient?.NotifyDirectorStoppingAsync() ?? Task.CompletedTask;
 
-    /// <summary>Stop Kestrel and delete the registration file. Safe to call multiple times.</summary>
+    /// <summary>Stop the services and delete the registration file. Safe to call multiple times.</summary>
     public async Task StopAsync()
     {
         if (_stopped) return;
@@ -1516,20 +1106,6 @@ public sealed class ControlApiHost : IAsyncDisposable
         _preambleMaintainer = null;
 
         _registration?.Unregister();
-
-        // Release the persisted port file only if we used a real allocated port
-        if (!_useEphemeralPort && Port > 0)
-        {
-            try { PortAllocator.Release(DirectorId); } catch { }
-        }
-
-        if (_app is not null)
-        {
-            try { await _app.StopAsync(TimeSpan.FromSeconds(2)); }
-            catch (Exception ex) { FileLog.Write($"[ControlApiHost] StopAsync error: {ex.Message}"); }
-            await _app.DisposeAsync();
-            _app = null;
-        }
     }
 
     public async ValueTask DisposeAsync()

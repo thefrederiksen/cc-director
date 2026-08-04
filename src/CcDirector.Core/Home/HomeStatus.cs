@@ -150,21 +150,27 @@ public static class HomeStatusBuilder
         {
             Setup.FleetToolVerdict.Working =>
                 new HomeCheck(SessionsRowTitle, HomeCheckLevel.Ok,
-                    "the command line can reach this Director", HomeCheckAction.None),
+                    "the command line can reach the fleet through the Gateway", HomeCheckAction.None),
 
             Setup.FleetToolVerdict.NotFound =>
                 new HomeCheck(SessionsRowTitle, HomeCheckLevel.Bad,
                     "cc-devthrottle is not on this machine's PATH, so sessions cannot drive DevThrottle",
                     HomeCheckAction.OpenTools),
 
-            Setup.FleetToolVerdict.CannotReachDirector when check.IsDifferentInstall =>
+            Setup.FleetToolVerdict.CannotReachGateway when check.IsDifferentInstall =>
                 new HomeCheck(SessionsRowTitle, HomeCheckLevel.Bad,
                     "the command line on your PATH is from another install, so agents report "
                     + "\"cannot connect to DevThrottle\"", HomeCheckAction.OpenTools),
 
-            Setup.FleetToolVerdict.CannotReachDirector =>
+            Setup.FleetToolVerdict.CannotReachGateway =>
                 new HomeCheck(SessionsRowTitle, HomeCheckLevel.Bad,
-                    $"the command line cannot reach this Director: {check.Detail}", HomeCheckAction.OpenTools),
+                    $"the command line cannot reach the fleet: {check.Detail}", HomeCheckAction.OpenTools),
+
+            // No Gateway means no agent tooling - the accepted trade, not a fault in the install.
+            // No row, matching what this page has always done for the standalone state: a local-only
+            // machine must not carry a standing warning for a configuration it chose, and painting the
+            // tools red for it would offer repairs to an install with nothing wrong.
+            Setup.FleetToolVerdict.NoGateway => null,
 
             // Unchecked, or a verdict added later that this switch has not been taught. Saying nothing
             // is correct; inventing a green row would be the bug this whole row exists to prevent.

@@ -1,4 +1,4 @@
-using System.Net;
+﻿using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text.Json.Nodes;
@@ -49,8 +49,8 @@ public sealed class GatewayHostTests : IAsyncLifetime
     {
         // Boot a director
         _sm = new SessionManager(new AgentOptions());
-        _director = new ControlApiHost(_sm, "1.0.0-test", () => Task.CompletedTask, useEphemeralPort: true,
-            instancesDirectory: _instancesDir);
+        _director = new ControlApiHost(_sm, "1.0.0-test", () => Task.CompletedTask,
+            directorId: Guid.NewGuid().ToString(), instancesDirectory: _instancesDir);
         await _director.StartAsync();
 
         // Boot a gateway on an ephemeral port (port 0). The credential service is injected over an

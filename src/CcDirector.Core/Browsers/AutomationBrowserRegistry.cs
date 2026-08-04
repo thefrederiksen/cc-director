@@ -1,4 +1,4 @@
-using System.Net;
+﻿using System.Net;
 using System.Net.Sockets;
 using System.Text;
 using System.Text.Json;
@@ -25,7 +25,7 @@ namespace CcDirector.Core.Browsers;
 public static class AutomationBrowserRegistry
 {
     /// <summary>The first debug port we hand out. Chosen well above the Director's own range
-    /// (<c>PortAllocator</c> 7879-7898) and above the personal harness's historical 9224, so a
+    /// (the listener era's 7879-7898, kept clear so old installs mid-upgrade cannot collide) and above the personal harness's historical 9224, so a
     /// DevThrottle browser never collides with either.</summary>
     public const int PortRangeStart = 9310;
 

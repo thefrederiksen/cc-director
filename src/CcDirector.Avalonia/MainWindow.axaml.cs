@@ -734,68 +734,15 @@ public partial class MainWindow : Window
             }
         });
 
-        // Same host: wire the Control-API status indicator. The bind may have already failed
-        // in the background before we attached, so paint the current state now AND subscribe
-        // for later changes (the event can fire on a background thread -> marshal to UI).
-        host.StartupStatusChanged += () => Dispatcher.UIThread.Post(UpdateControlApiIndicator);
+        // There is no Control-API status indicator any more: the Remove-the-network-port mission
+        // deleted the Director's listener, so there is no bind that can fail and nothing for a
+        // port-exhaustion tile to report. Fleet reachability is the Gateway status box below.
 
         _gatewayAttachTimer?.Stop();
         _gatewayAttachTimer = null;
         RefreshGatewayConfigFields();
         UpdateGatewayStatusBox();
-        UpdateControlApiIndicator();
         FileLog.Write("[MainWindow] Gateway status box attached to GatewayConnectionMonitor");
-    }
-
-    private bool _controlApiFailureNotified;
-
-    /// <summary>
-    /// Paint the Control-API status indicator from <see cref="ControlApiHost.StartupError"/>.
-    /// Hidden while the API is healthy (consistent with the auto-update indicator); RED and
-    /// visible when the bind failed, with a one-time loud notification so the degraded state
-    /// grabs attention immediately rather than only living in a sidebar tile.
-    /// </summary>
-    private void UpdateControlApiIndicator()
-    {
-        var host = (global::Avalonia.Application.Current as App)?.ControlApiHost;
-        if (host is null) return;
-
-        var error = host.StartupError;
-        if (string.IsNullOrEmpty(error))
-        {
-            // Healthy (or not yet failed): no tile.
-            ControlApiIndicator.IsVisible = false;
-            return;
-        }
-
-        ControlApiIndicatorSub.Text = "Remote, Gateway & phone access are off. Close another Director or free a port, then restart. Click for details.";
-        var tip = $"Control API failed to start:\n{error}\n\n"
-                + "The local app still works (session badges are live), but this Director is "
-                + "invisible to the fleet and cannot be driven remotely.\n"
-                + "Fix: free a Control-API port (7879-7898) by closing another Director, then restart this one.";
-        ToolTip.SetTip(ControlApiIndicator, tip);
-        ControlApiIndicator.IsVisible = true;
-
-        if (!_controlApiFailureNotified)
-        {
-            _controlApiFailureNotified = true;
-            FileLog.Write($"[MainWindow] Control API DOWN surfaced in UI: {error}");
-            ShowNotification($"Control API failed to start: {error}. Remote/Gateway access is off -- see the sidebar.");
-        }
-    }
-
-    private void ControlApiIndicator_PointerPressed(object? sender, PointerPressedEventArgs e)
-    {
-        try
-        {
-            var host = (global::Avalonia.Application.Current as App)?.ControlApiHost;
-            var error = host?.StartupError ?? "unknown error";
-            ShowNotification($"Control API down: {error}. Free a port in 7879-7898 (close another Director) and restart this one.");
-        }
-        catch (Exception ex)
-        {
-            FileLog.Write($"[MainWindow] ControlApiIndicator_PointerPressed FAILED: {ex.Message}");
-        }
     }
 
     // Cached line-2 (account) inputs, refreshed by the account status poll; combined with the live
@@ -1428,16 +1375,40 @@ public partial class MainWindow : Window
 
     private async Task RefreshFleetToolReachabilityAsync()
     {
-        // Before the Control API is listening there is no address to prove anything against, and a failure
-        // for that reason would say nothing about the tools. No verdict is not a pass: leave the previous
-        // answer (or none) standing.
-        var endpoint = _sessionManager.ControlApiBaseUrl;
-        if (string.IsNullOrWhiteSpace(endpoint))
-            return;
+        // The tools reach the fleet through the Gateway with a session key, so the probe needs what a
+        // real session gets: the Gateway's address and a freshly minted, freshly REGISTERED key. The
+        // host owns both.
+        var host = (global::Avalonia.Application.Current as App)?.ControlApiHost;
+        if (host is null)
+            return; // no verdict is not a pass: leave the previous answer (or none) standing
 
         try
         {
-            _lastFleetToolCheck = await new FleetToolReachability().RunAsync(endpoint, OwnToolBinDir());
+            var credential = await host.MintFleetToolProbeCredentialAsync();
+            if (credential is null)
+            {
+                // No Gateway configured, or the tunnel is down: there is nothing for the tools to
+                // reach, which is the mission's accepted no-Gateway state - a fact about this
+                // machine's connection, never a fault in the toolbelt. Recorded as its own verdict
+                // so nothing paints the install-repair banner for it.
+                _lastFleetToolCheck = new FleetToolCheck(
+                    FleetToolVerdict.NoGateway, null, OwnToolBinDir(),
+                    "No Gateway connection right now, so the fleet tools have nothing to reach. "
+                    + "Agent tooling requires the Gateway.");
+                return;
+            }
+
+            try
+            {
+                _lastFleetToolCheck = await new FleetToolReachability()
+                    .RunAsync(credential.GatewayUrl, credential.SessionKey, OwnToolBinDir());
+            }
+            finally
+            {
+                // The probe key is bound to an id that never joins the session roster, so nothing
+                // else will ever end it - this is its one revocation.
+                credential.Revoke();
+            }
         }
         catch (Exception ex)
         {
@@ -1463,11 +1434,11 @@ public partial class MainWindow : Window
         // counts as drift rather than a per-tool fault.
         if (_lastBasePythonBroken) reconcilableDrift = true;
 
-        // A cc-devthrottle that cannot reach this Director is a fault no reconcile touches: the reconciler
+        // A cc-devthrottle that cannot reach the Gateway is a fault no reconcile touches: the reconciler
         // repairs THIS install's shims and venv, all of which can be perfect while PATH still resolves an
         // older install's copy first. Feeding it to a reconcile would spend the attempt budget on three
         // guaranteed no-ops and land on a red badge naming no reason - exactly the shape issue #1045 fixed.
-        if (_lastFleetToolCheck is { Verdict: FleetToolVerdict.CannotReachDirector })
+        if (_lastFleetToolCheck is { Verdict: FleetToolVerdict.CannotReachGateway })
             unreconcilableFault = true;
 
         if (probeReconciler && !reconcilableDrift && !_toolsReconcileInFlight)
@@ -1683,15 +1654,15 @@ public partial class MainWindow : Window
                 // "Tools need attention" is true but useless when the fault is that PATH points somewhere
                 // else: the tools ARE fine, they just belong to a different install. Naming the real thing
                 // is what stops an agent - and the owner - blaming the network for an hour.
-                if (_lastFleetToolCheck is { Verdict: FleetToolVerdict.CannotReachDirector } fleetFault)
+                if (_lastFleetToolCheck is { Verdict: FleetToolVerdict.CannotReachGateway } fleetFault)
                 {
-                    ToolsIndicatorLabel.Text = "Sessions cannot reach this Director";
+                    ToolsIndicatorLabel.Text = "Sessions cannot reach the fleet";
                     ToolsIndicatorSub.Text = fleetFault.IsDifferentInstall
                         ? "the command line on your PATH is from another install"
                         : fleetFault.Detail;
                     ToolTip.SetTip(ToolsIndicator,
                         "Agents in your sessions will report \"cannot connect to DevThrottle\",\n" +
-                        "even though this Director is healthy and connected.\n\n" +
+                        "even though this Director's own Gateway connection is healthy.\n\n" +
                         $"Your PATH gives: {fleetFault.ResolvedPath}\n" +
                         $"This Director is: {fleetFault.ExpectedBinDir}\n\n" +
                         "Click to open Settings and repair it.");
@@ -2672,11 +2643,8 @@ public partial class MainWindow : Window
     /// <summary>
     /// Copies a full handover block to the clipboard: the session's display name and
     /// stable ID plus the identity of the Director hosting it (Director ID, machine,
-    /// version) and the Control API endpoint another machine can reach it at. When this
-    /// node is on a tailnet the endpoint is the Tailscale Serve front door
-    /// (https://&lt;magicdns&gt;:&lt;port&gt;) - the same address the Director advertises to
-    /// the Gateway - so the block is usable from any tailnet machine, not just this one.
-    /// This is everything another agent needs to locate the session and talk to it.
+    /// version). There is no endpoint line: the Director listens on nothing, and anything
+    /// that wants this session reaches it through the Gateway by the ids in this block.
     /// </summary>
     private async Task CopySessionNameAndId(SessionViewModel vm)
     {
@@ -2688,19 +2656,10 @@ public partial class MainWindow : Window
             $"Name: {vm.DisplayName}",
             $"Session ID: {vm.Session.Id}",
             $"Repo: {vm.RepoPath}",
-            $"Director ID: {app?.ControlApiHost?.DirectorId ?? "(Control API not started)"}",
+            $"Director ID: {app?.ControlApiHost?.DirectorId ?? "(Director host not started)"}",
             $"Machine: {Environment.MachineName}",
             $"Version: {version}",
         };
-        var port = app?.ControlApiHost?.Port;
-        if (port is > 0)
-        {
-            // Resolving the tailnet front door shells the tailscale CLI (up to ~5s); keep
-            // it off the UI thread so the copy action stays responsive.
-            var endpoint = await Task.Run(() =>
-                TailscaleIdentity.ResolveAdvertisedControlApiEndpoint(port.Value));
-            lines.Add($"Control API: {endpoint}");
-        }
 
         var text = string.Join("\n", lines);
         FileLog.Write($"[MainWindow] CopySessionNameAndId: session={vm.Session.Id}, director={app?.ControlApiHost?.DirectorId}, version={version}");
@@ -3442,38 +3401,6 @@ public partial class MainWindow : Window
         catch (Exception ex)
         {
             FileLog.Write($"[MainWindow] OnDictationFailed FAILED: {ex.Message}");
-        }
-    }
-
-    private void BtnOpenInBrowser_Click(object? sender, RoutedEventArgs e)
-    {
-        try
-        {
-            if (_activeSession is null)
-            {
-                FileLog.Write("[MainWindow] BtnOpenInBrowser_Click: no active session");
-                return;
-            }
-            var app = global::Avalonia.Application.Current as App;
-            var port = app?.ControlApiHost?.Port;
-            if (port is null or 0)
-            {
-                FileLog.Write("[MainWindow] BtnOpenInBrowser_Click: ControlApi port not available");
-                ShowNotification("Web view not available: Control API has not started yet.");
-                return;
-            }
-            var url = $"http://127.0.0.1:{port}/sessions/{_activeSession.Session.Id}/view";
-            FileLog.Write($"[MainWindow] BtnOpenInBrowser_Click: opening {url}");
-            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
-            {
-                FileName = url,
-                UseShellExecute = true,
-            });
-        }
-        catch (Exception ex)
-        {
-            FileLog.Write($"[MainWindow] BtnOpenInBrowser_Click FAILED: {ex.Message}");
-            ShowNotification($"Could not open browser: {ex.Message}");
         }
     }
 
@@ -4261,7 +4188,6 @@ public partial class MainWindow : Window
         // not sit red behind a dialog reporting the fault fixed.
         dialog.EmbeddedToolsView.ShowFleetToolStatus(
             _lastFleetToolCheck,
-            _sessionManager.ControlApiBaseUrl,
             async () =>
             {
                 await RefreshFleetToolReachabilityAsync();

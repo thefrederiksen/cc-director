@@ -1,4 +1,4 @@
-using System.Net;
+﻿using System.Net;
 using System.Net.Http.Json;
 using CcDirector.ControlApi;
 using CcDirector.Core.Configuration;
@@ -32,8 +32,8 @@ public sealed class WingmanAskForwardingTests : IAsyncLifetime
     {
         // ClaudePath empty -> AskAboutSessionAsync returns no_claude without spawning.
         _sm = new SessionManager(new AgentOptions { ClaudePath = "" });
-        _director = new ControlApiHost(_sm, "1.0.0-test", () => Task.CompletedTask, useEphemeralPort: true,
-            instancesDirectory: _instancesDir);
+        _director = new ControlApiHost(_sm, "1.0.0-test", () => Task.CompletedTask,
+            directorId: Guid.NewGuid().ToString(), instancesDirectory: _instancesDir);
         await _director.StartAsync();
 
         _gateway = new GatewayHost(port: GatewayHost.OperatingSystemAssignedPort, token: "test-token", authEnabled: false,
@@ -114,17 +114,24 @@ public sealed class WingmanAskForwardingTests : IAsyncLifetime
 
     private async Task<(string sid, bool isReal)> TryCreateRealSessionAsync()
     {
-        // Try the real ConPty path via the Director's Control API. If that fails
-        // (no claude/cmd available in CI), fall back to a non-null sid that exercises
-        // the gateway wire but lands a 404 - acceptable for the empty-question /
-        // unknown-session tests.
+        // Try the real ConPty path via the create verb core - the same code the tunnel dispatches
+        // into (the Director's POST /sessions route is gone with its listener). If that fails (no
+        // claude/cmd available in CI), fall back to a non-null sid that exercises the gateway wire
+        // but lands a 404 - acceptable for the empty-question / unknown-session tests.
         try
         {
-            using var directorHttp = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{_director.Port}/") };
-            var resp = await directorHttp.PostAsJsonAsync("sessions",
-                new NewSessionRequest { RepoPath = Path.GetTempPath(), Agent = "ClaudeCode" });
-            if (!resp.IsSuccessStatusCode) return (Guid.NewGuid().ToString(), false);
-            var session = await resp.Content.ReadFromJsonAsync<SessionDto>();
+            var result = await SessionCommandExecutor.DispatchAsync(_sm, _director.DirectorId, new DirectorCommand
+            {
+                CommandId = "cmd-wingman-ask",
+                Verb = "create",
+                SessionId = "",
+                PayloadJson = System.Text.Json.JsonSerializer.Serialize(
+                    new NewSessionRequest { RepoPath = Path.GetTempPath(), Agent = "ClaudeCode" },
+                    new System.Text.Json.JsonSerializerOptions(System.Text.Json.JsonSerializerDefaults.Web)),
+            });
+            if (result.Status != DirectorCommandStatus.Ok) return (Guid.NewGuid().ToString(), false);
+            var session = System.Text.Json.JsonSerializer.Deserialize<SessionDto>(result.BodyJson ?? "{}",
+                new System.Text.Json.JsonSerializerOptions(System.Text.Json.JsonSerializerDefaults.Web));
             return session?.SessionId is { } s ? (s, true) : (Guid.NewGuid().ToString(), false);
         }
         catch

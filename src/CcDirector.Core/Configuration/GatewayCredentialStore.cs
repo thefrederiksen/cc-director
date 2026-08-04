@@ -1,4 +1,4 @@
-using System.Text.Json.Nodes;
+﻿using System.Text.Json.Nodes;
 using CcDirector.Core.Storage;
 using CcDirector.Core.Utilities;
 
@@ -19,7 +19,7 @@ public static class GatewayCredentialStore
 {
     /// <summary>
     /// The credential file the Director Control API and local cc-* tools read. Kept in lockstep
-    /// with <c>DirectorAuth.TokenFile</c> / <c>GatewayAuth.TokenFile</c> (the same path).
+    /// with <c>GatewayAuth.TokenFile</c>.
     /// </summary>
     public static string CredentialFile { get; } =
         Path.Combine(CcStorage.Config(), "director", "gateway-token.txt");

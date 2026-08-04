@@ -1,6 +1,3 @@
-using System.Net;
-using System.Net.Http.Headers;
-using System.Net.Http.Json;
 using System.Text.Json;
 using CcDirector.ControlApi;
 using CcDirector.Core.Configuration;
@@ -11,122 +8,87 @@ using Xunit;
 namespace CcDirector.Gateway.Tests;
 
 /// <summary>
-/// Wiring + validation tests for the final-build Director surface: #5 resize, and the #6
-/// endpoints (relink, git writes, scheduler, workspaces/history). No live session is needed -
-/// these prove the routes exist, validate input, and 404/503 correctly. The behavior of
-/// resize/prompt-queue/git lives in the Core unit tests.
+/// Validation of the Director's session-surface verb cores (#5 resize, #6 relink/git), at the seam
+/// that survives: the shared <see cref="SessionCommandExecutor"/> the tunnel dispatches into.
+///
+/// Remove-the-network-port mission, phase 5: the loopback fixture (a real ControlApiHost on an
+/// ephemeral port plus an admin HTTP client) is gone with the listener. The four HTTP tests that
+/// posted at <c>sessions/{sid}/...</c> and expected 404 are folded into executor NotFound checks:
+/// the HTTP versions were already only proving route-not-found once the routes moved to the tunnel,
+/// which is a 404 any deleted router serves. The GET /workspaces and GET /history list routes died
+/// with the listener and their tests with them - the workspace-history READ has no tunnel verb, and
+/// the mission's phase 2 already recorded cc-history as dead in production (a pre-existing defect
+/// filed separately, excluded from the phase pass mark).
 /// </summary>
 [Collection("DirectorRoot")]
-public sealed class DirectorSurfaceEndpointTests : IAsyncLifetime
+public sealed class DirectorSurfaceEndpointTests : IDisposable
 {
+    private const string DirectorId = "dir-surface-test";
+
     private readonly string _root;
     private readonly string? _prevRoot;
-    private ControlApiHost _host = null!;
-    private SessionManager _sm = null!;
-    private HttpClient _client = null!;
+    private readonly SessionManager _sm;
 
     public DirectorSurfaceEndpointTests()
     {
-        // Isolate the machine-global director root so the host resolves its accepted token from a
-        // fresh empty config (no fleet token) and writes its registration file into a temp root -
-        // independent of whatever gateway the test machine happens to have configured.
+        // Isolate the machine-global director root so nothing reads the test machine's real config.
         _prevRoot = Environment.GetEnvironmentVariable("CC_DIRECTOR_ROOT");
         _root = Path.Combine(Path.GetTempPath(), "ccd-surface-root-" + Guid.NewGuid().ToString("N"));
         Environment.SetEnvironmentVariable("CC_DIRECTOR_ROOT", _root);
-    }
-
-    public async Task InitializeAsync()
-    {
         _sm = new SessionManager(new AgentOptions());
-        _host = new ControlApiHost(_sm, "1.0.0-test", () => Task.CompletedTask, useEphemeralPort: true);
-        var port = await _host.StartAsync();
-        _client = DirectorTestClient.Admin(port);
     }
 
-    public async Task DisposeAsync()
+    public void Dispose()
     {
-        _client.Dispose();
-        await _host.StopAsync();
         _sm.Dispose();
-        try
-        {
-            var f = Path.Combine(InstanceRegistration.InstancesDirectory, $"{_host.DirectorId}.json");
-            if (File.Exists(f)) File.Delete(f);
-        }
-        catch { /* test cleanup */ }
         Environment.SetEnvironmentVariable("CC_DIRECTOR_ROOT", _prevRoot);
         try { if (Directory.Exists(_root)) Directory.Delete(_root, recursive: true); } catch { /* best effort */ }
     }
 
     // ---- #5 resize ----
 
-    // Gateway Cleanup (the cut): the Director's POST /sessions/{sid}/resize REST route is deleted. Resize is
-    // now a tunnel verb whose validation core lives in SessionWriteExecutor.Resize (dispatched via
-    // SessionCommandExecutor.DispatchAsync). This asserts that same input guard directly against the real
-    // core - non-positive cols/rows -> BadRequest - so the strength of the original wire test is preserved
-    // over the surviving code, not a canned stand-in. (The Gateway maps a BadRequest verb result to HTTP 400
-    // in TunnelCatchAllDispatch.)
     [Fact]
     public async Task Resize_rejects_nonpositive_dimensions()
     {
-        var result = await SessionCommandExecutor.DispatchAsync(_sm, _host.DirectorId,
+        var result = await SessionCommandExecutor.DispatchAsync(_sm, DirectorId,
             Command("resize", Guid.NewGuid().ToString(), new ResizeRequest { Cols = 0, Rows = 24 }));
         Assert.Equal(DirectorCommandStatus.BadRequest, result.Status);
     }
 
     [Fact]
-    public async Task Resize_404_for_unknown_session()
+    public async Task Resize_unknown_session_is_not_found()
     {
-        var resp = await _client.PostAsJsonAsync($"sessions/{Guid.NewGuid()}/resize", new ResizeRequest { Cols = 80, Rows = 24 });
-        Assert.Equal(HttpStatusCode.NotFound, resp.StatusCode);
+        var result = await SessionCommandExecutor.DispatchAsync(_sm, DirectorId,
+            Command("resize", Guid.NewGuid().ToString(), new ResizeRequest { Cols = 80, Rows = 24 }));
+        Assert.Equal(DirectorCommandStatus.NotFound, result.Status);
     }
 
     // ---- #6 relink ----
 
-    // Gateway Cleanup (the cut): the Director's POST /sessions/{sid}/relink REST route is deleted. Relink is
-    // now a tunnel verb whose validation core lives in SessionWriteExecutor.Relink (dispatched via
-    // SessionCommandExecutor.DispatchAsync). This asserts that same input guard directly against the real
-    // core - absent/blank claudeSessionId -> BadRequest - so the original wire test's strength is preserved.
     [Fact]
     public async Task Relink_rejects_empty_claude_session_id()
     {
-        var result = await SessionCommandExecutor.DispatchAsync(_sm, _host.DirectorId,
+        var result = await SessionCommandExecutor.DispatchAsync(_sm, DirectorId,
             Command("relink", Guid.NewGuid().ToString(), new RelinkRequest { ClaudeSessionId = "" }));
         Assert.Equal(DirectorCommandStatus.BadRequest, result.Status);
     }
 
     [Fact]
-    public async Task Relink_404_for_unknown_session()
+    public async Task Relink_unknown_session_is_not_found()
     {
-        var resp = await _client.PostAsJsonAsync($"sessions/{Guid.NewGuid()}/relink", new RelinkRequest { ClaudeSessionId = "claude-xyz" });
-        Assert.Equal(HttpStatusCode.NotFound, resp.StatusCode);
+        var result = await SessionCommandExecutor.DispatchAsync(_sm, DirectorId,
+            Command("relink", Guid.NewGuid().ToString(), new RelinkRequest { ClaudeSessionId = "claude-xyz" }));
+        Assert.Equal(DirectorCommandStatus.NotFound, result.Status);
     }
 
     // ---- #6 git writes ----
 
     [Fact]
-    public async Task Git_stage_404_for_unknown_session()
+    public async Task Git_stage_unknown_session_is_not_found()
     {
-        var resp = await _client.PostAsJsonAsync($"sessions/{Guid.NewGuid()}/git/stage", new GitPathsRequest());
-        Assert.Equal(HttpStatusCode.NotFound, resp.StatusCode);
-    }
-
-    // ---- #6 workspaces / history (read; present and 200 even when empty) ----
-
-    [Fact]
-    public async Task Workspaces_list_returns_200()
-    {
-        var resp = await _client.GetAsync("workspaces");
-        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
-        Assert.Contains("items", await resp.Content.ReadAsStringAsync());
-    }
-
-    [Fact]
-    public async Task History_list_returns_200()
-    {
-        var resp = await _client.GetAsync("history");
-        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
-        Assert.Contains("items", await resp.Content.ReadAsStringAsync());
+        var result = await SessionCommandExecutor.DispatchAsync(_sm, DirectorId,
+            Command("git-stage", Guid.NewGuid().ToString(), new GitPathsRequest()));
+        Assert.Equal(DirectorCommandStatus.NotFound, result.Status);
     }
 
     // ---- helpers ----

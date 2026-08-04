@@ -52,7 +52,7 @@ public sealed class ControlApiRecorderPurgeTests : IAsyncLifetime
     {
         _sm = new SessionManager(new AgentOptions { ClaudePath = TestShellPath });
         _host = new ControlApiHost(_sm, "1.0.0-test", () => Task.CompletedTask,
-            useEphemeralPort: true, authEnabled: true, instancesDirectory: _instancesDir);
+            directorId: Guid.NewGuid().ToString(), instancesDirectory: _instancesDir);
         await _host.StartAsync();
     }
 

@@ -61,32 +61,13 @@ public sealed class SessionManager : IDisposable
     public AgentOptions Options => _options;
 
     /// <summary>
-    /// Base URL of this Director's Control API (e.g. "http://127.0.0.1:7880"), injected into
-    /// every spawned session as CC_DIRECTOR_API so agents can call the REST API on their own
-    /// Director (look themselves up, list handovers, etc). Set by ControlApiHost.StartAsync
-    /// once Kestrel has bound; sessions spawned before the Control API starts won't have it.
-    /// </summary>
-    public string? ControlApiBaseUrl { get; set; }
-
-    /// <summary>
     /// This Director's stable id, injected into spawned sessions as CC_DIRECTOR_ID.
-    /// Set by ControlApiHost.StartAsync alongside <see cref="ControlApiBaseUrl"/>.
+    /// Set by ControlApiHost.StartAsync. Identity, not an address: the Remove-the-network-port
+    /// mission deleted CC_DIRECTOR_API and CC_DIRECTOR_TOKEN with the listener they named, so a
+    /// session is told WHICH Director it belongs to and reaches everything through the Gateway
+    /// pair below.
     /// </summary>
     public string? DirectorId { get; set; }
-
-    /// <summary>
-    /// Mints the credential a session's own agent presents to this Director, bound to that session's
-    /// id, or returns null when there is no machine secret to derive one from. Set by
-    /// ControlApiHost.StartAsync alongside <see cref="ControlApiBaseUrl"/> - the address and the
-    /// credential that goes with it are stamped together, because either alone is useless.
-    ///
-    /// The Control API used to require nothing, so the address was enough and the comment below said
-    /// plainly that no token entered the session. That was the right call for a secret which is the
-    /// whole fleet's authority. This is a DIFFERENT credential: it is derived, it is bound to one
-    /// session id, and it grants only that session's own reads plus the safe discovery set - so the
-    /// agent can fetch its preamble and report its transcript pointer, and can do nothing else.
-    /// </summary>
-    public Func<Guid, string?>? SessionCredentialSource { get; set; }
 
     /// <summary>
     /// Remove-the-network-port mission, phase 1b: mints the credential a session's own agent presents to the
@@ -95,10 +76,9 @@ public sealed class SessionManager : IDisposable
     /// ControlApiHost.StartAsync alongside <see cref="GatewayUrl"/> - the address and the credential are
     /// stamped together, because either alone is useless.
     ///
-    /// This is a DIFFERENT credential from <see cref="SessionCredentialSource"/> above, and it has to be.
-    /// That one is a signature the Director can re-derive from the machine secret it holds; the Gateway
-    /// holds no such secret and must never be given one, so a Gateway session key is random, registered by
-    /// its hash, and revoked when the session is reaped.
+    /// The Gateway session key is random, registered by its hash, and revoked when the session is
+    /// reaped - never a signature over a machine secret, because the Gateway holds no such secret
+    /// and must never be given one.
     ///
     /// THERE IS NO FALLBACK BEHIND IT. A session either gets its own key or it gets nothing - it is never
     /// handed the Director's own Gateway key, which would give every agent process authority over the whole
@@ -602,21 +582,24 @@ public sealed class SessionManager : IDisposable
 
         try
         {
-            // Inject CC_SESSION_ID so skills (e.g. /handover) can look up the session name,
-            // plus the Control API endpoint so a session can find itself over REST:
-            //   GET $CC_DIRECTOR_API/sessions/$CC_SESSION_ID
+            // Inject CC_SESSION_ID so skills (e.g. /handover) can look up the session name, and
+            // CC_DIRECTOR_ID so the session knows WHICH Director it belongs to (identity only).
+            //
+            // CC_DIRECTOR_API and CC_DIRECTOR_TOKEN are GONE (Remove-the-network-port mission,
+            // phase 5). They named this Director's deleted loopback listener and the credential
+            // for it; stamping them now would hand every agent a live-looking address for a door
+            // nothing answers on - and would hide any straggling caller for as long as the
+            // variables existed. A session's only door to the fleet is the CC_GATEWAY_URL /
+            // CC_GATEWAY_SESSION_KEY pair below.
             var envVars = new Dictionary<string, string>
             {
                 ["CC_SESSION_ID"] = id.ToString()
             };
-            if (!string.IsNullOrEmpty(ControlApiBaseUrl))
-                envVars["CC_DIRECTOR_API"] = ControlApiBaseUrl;
             if (!string.IsNullOrEmpty(DirectorId))
                 envVars["CC_DIRECTOR_ID"] = DirectorId;
 
             // Put THIS Director's own cc-* tools first on the session's PATH.
             //
-            // The address above is useless to a session holding a command line that cannot use it.
             // Machine PATH is shared state: any other install, an unfinished migration, or a test rig
             // that leaked an entry can put a different copy of cc-devthrottle in front of ours, and
             // then every agent in every session reports "cannot connect to DevThrottle" while this
@@ -624,24 +607,15 @@ public sealed class SessionManager : IDisposable
             // machine this was written for, and repairing the machine PATH afterwards could only ever
             // fix it for sessions started later.
             //
-            // So the session is not asked to find us. It is TOLD, in the same breath as the address it
-            // must call. Nothing is removed from the user's PATH here - only which copy of our own
-            // command line wins - and this leaves the machine PATH itself untouched.
+            // So the session is not asked to find us. It is TOLD. Nothing is removed from the user's
+            // PATH here - only which copy of our own command line wins - and this leaves the machine
+            // PATH itself untouched.
             var ownToolBin = Path.Combine(Instances.InstanceContext.InstanceHome, "bin");
             if (Directory.Exists(ownToolBin))
             {
                 envVars["PATH"] = Setup.FleetToolPathRepair.PathWithOwnToolsFirst(
                     ownToolBin, Environment.GetEnvironmentVariable("PATH"));
             }
-
-            // The credential that goes with the address above. Bound to THIS session's id and
-            // least-privilege: it reads this session and the safe discovery set, and it is refused on
-            // spawn, shutdown, prompting another session, another session's terminal, and settings.
-            // The fleet secret itself still never enters a session - this is derived from it, and
-            // knowing it tells you nothing about the secret it came from.
-            var sessionCredential = SessionCredentialSource?.Invoke(id);
-            if (!string.IsNullOrEmpty(sessionCredential))
-                envVars["CC_DIRECTOR_TOKEN"] = sessionCredential;
 
             // Remove-the-network-port mission, phase 1b: the Gateway's address and THIS SESSION'S OWN key
             // for it. Stamped as a PAIR or not at all - a session given one without the other cannot reach
@@ -663,8 +637,8 @@ public sealed class SessionManager : IDisposable
             }
 
             // Issue #705: make session-to-session messaging discoverable to the agent. This is a
-            // one-line reminder, NOT a credential - the tools reach the fleet through CC_DIRECTOR_API
-            // above (the Director relays to the Gateway), so the fleet token never enters the session.
+            // one-line reminder, NOT a credential - the tools reach the fleet through the Gateway
+            // with the session key above, so the fleet token never enters the session.
             //
             // It is ALSO injected text, and it is OURS: nothing in the product reads this variable, so
             // its only reader is the agent. That makes it prose we put in front of an agent without

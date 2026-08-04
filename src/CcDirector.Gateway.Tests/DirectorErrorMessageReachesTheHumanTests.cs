@@ -1,4 +1,4 @@
-using System.Net;
+﻿using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Sockets;
 using System.Text.Json;
@@ -24,9 +24,12 @@ namespace CcDirector.Gateway.Tests;
 ///   branches - no tunnel, Timeout, TunnelDropped - already carried their words; the Director-sent default
 ///   never did.
 ///
-///   LEG 2, the Director's own relay: the ~11 fleet methods on <see cref="GatewayClient"/> threw
+///   LEG 2, the Director's own outbound client: <see cref="GatewayClient"/>'s failure helper threw
 ///   "returned HTTP 502 Bad Gateway" without ever reading the response body, so even a Gateway that DID send
-///   the words had them discarded one hop before the person who typed the command.
+///   the words had them discarded one hop before the person who typed the command. (The ~11 fleet relay
+///   methods that first exposed this died with the Director's /fleet routes in the Remove-the-network-port
+///   mission; the helper - RelayFailureAsync - survives under the remaining outbound calls, and leg 2 now
+///   drives it through the desktop's snooze relay, RecordHoldAsync.)
 ///
 /// These tests pin both legs against real transports, because that is the only way to know the message
 /// actually arrives. Leg 1 rides a REAL SignalR tunnel to a REAL GatewayHost whose Director is registered at
@@ -121,7 +124,7 @@ public sealed class DirectorErrorMessageReachesTheHumanTests
             builder.Logging.ClearProviders();
             builder.WebHost.ConfigureKestrel(o => o.Listen(IPAddress.Loopback, 0));
             var app = builder.Build();
-            app.MapPost("/sessions/{sid}/interrupt", () => jsonBody is null
+            app.MapPost("/sessions/{sid}/hold", () => jsonBody is null
                 ? Results.StatusCode(statusCode)
                 : Results.Content(jsonBody, "application/json", statusCode: statusCode));
             await app.StartAsync();
@@ -129,7 +132,7 @@ public sealed class DirectorErrorMessageReachesTheHumanTests
         }
 
         private static GatewayClient ClientFor(string url) =>
-            new(new GatewayConfig { Url = url }, Guid.NewGuid().ToString(), 7879, "1.0.0");
+            new(new GatewayConfig { Url = url }, Guid.NewGuid().ToString(), "1.0.0");
 
         [Fact]
         public async Task Relay_surfacesTheGatewaysMessage_ratherThanABareStatusLine()
@@ -139,7 +142,7 @@ public sealed class DirectorErrorMessageReachesTheHumanTests
             try
             {
                 var ex = await Assert.ThrowsAsync<InvalidOperationException>(
-                    () => ClientFor(url).InterruptFleetAsync(Guid.NewGuid().ToString()));
+                    () => ClientFor(url).RecordHoldAsync(Guid.NewGuid().ToString(), onHold: true));
 
                 // The whole point: the human reads WHY, not "returned HTTP 502 Bad Gateway".
                 Assert.Equal(GatewayWords, ex.Message);
@@ -160,7 +163,7 @@ public sealed class DirectorErrorMessageReachesTheHumanTests
             try
             {
                 var ex = await Assert.ThrowsAsync<InvalidOperationException>(
-                    () => ClientFor(url).InterruptFleetAsync(Guid.NewGuid().ToString()));
+                    () => ClientFor(url).RecordHoldAsync(Guid.NewGuid().ToString(), onHold: true));
 
                 Assert.Contains("returned HTTP 502", ex.Message);
             }
@@ -180,7 +183,7 @@ public sealed class DirectorErrorMessageReachesTheHumanTests
             try
             {
                 var ex = await Assert.ThrowsAsync<InvalidOperationException>(
-                    () => ClientFor(url).InterruptFleetAsync(Guid.NewGuid().ToString()));
+                    () => ClientFor(url).RecordHoldAsync(Guid.NewGuid().ToString(), onHold: true));
 
                 Assert.Contains("returned HTTP 502", ex.Message);
             }

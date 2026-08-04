@@ -1,4 +1,4 @@
-using System.Net;
+﻿using System.Net;
 using System.Net.Http.Json;
 using CcDirector.ControlApi;
 using CcDirector.Core.Configuration;
@@ -24,8 +24,8 @@ public sealed class FanoutAndEventsTests : IAsyncLifetime
     public async Task InitializeAsync()
     {
         _sm = new SessionManager(new AgentOptions());
-        _director = new ControlApiHost(_sm, "1.0.0-test", () => Task.CompletedTask, useEphemeralPort: true,
-            instancesDirectory: _instancesDir);
+        _director = new ControlApiHost(_sm, "1.0.0-test", () => Task.CompletedTask,
+            directorId: Guid.NewGuid().ToString(), instancesDirectory: _instancesDir);
         await _director.StartAsync();
 
         _gateway = new GatewayHost(port: GatewayHost.OperatingSystemAssignedPort, token: "test-token", authEnabled: true,
@@ -211,8 +211,8 @@ public sealed class FanoutAndEventsTests : IAsyncLifetime
 
         // Create a SECOND director to trigger a director.added event
         using var sm2 = new SessionManager(new AgentOptions());
-        var d2 = new ControlApiHost(sm2, "1.0.0-test", () => Task.CompletedTask, useEphemeralPort: true,
-            instancesDirectory: _instancesDir);
+        var d2 = new ControlApiHost(sm2, "1.0.0-test", () => Task.CompletedTask,
+            directorId: Guid.NewGuid().ToString(), instancesDirectory: _instancesDir);
         await d2.StartAsync();
 
         try

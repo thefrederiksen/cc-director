@@ -15,10 +15,10 @@ namespace CcDirector.Gateway.Tests;
 /// Control API. The saved-document/registry READS survive as tunnel verbs whose cores live in
 /// <see cref="CatalogReadExecutor"/> (claude-sessions repo filter, handovers repo filter), so this asserts
 /// those cores directly against a seeded CC_DIRECTOR_ROOT / CC_VAULT_PATH - the same real read logic the old
-/// REST routes ran, now over the surviving code. It also keeps the Control API info handoff to the
-/// SessionManager (CC_DIRECTOR_API / CC_DIRECTOR_ID injection source), which is host lifecycle, not a route.
-/// Runs a real ControlApiHost on an ephemeral port with CC_DIRECTOR_ROOT + CC_VAULT_PATH redirected to a temp
-/// dir. In the "DirectorRoot" collection (serializes root-touching tests).
+/// REST routes ran, now over the surviving code. It also keeps the Director-identity handoff to the
+/// SessionManager (the CC_DIRECTOR_ID injection source), which is host lifecycle, not a route.
+/// Runs a real ControlApiHost (Remove-the-network-port: it binds nothing) with CC_DIRECTOR_ROOT +
+/// CC_VAULT_PATH redirected to a temp dir. In the "DirectorRoot" collection (serializes root-touching tests).
 ///
 /// CUT RESTORATION (SB-4a): the self-service WRITE + overview operations were briefly over-deleted, then
 /// restored as tunnel verbs (Architect ruling). Their cores now live in the executors - repo-add / repo-rename /
@@ -40,7 +40,6 @@ public sealed class RestApiSelfServiceEndpointsTests : IAsyncLifetime
     private ControlApiHost _host = null!;     // Initialized in InitializeAsync
     private SessionManager _sm = null!;       // Initialized in InitializeAsync
     private RepositoryRegistry _registry = null!; // Initialized in InitializeAsync
-    private HttpClient _client = null!;       // Initialized in InitializeAsync
 
     public RestApiSelfServiceEndpointsTests()
     {
@@ -87,14 +86,14 @@ public sealed class RestApiSelfServiceEndpointsTests : IAsyncLifetime
 
         _sm = new SessionManager(new AgentOptions());
         _host = new ControlApiHost(_sm, "1.0.0-test", () => Task.CompletedTask,
-            useEphemeralPort: true, repositoryRegistry: _registry);
-        var port = await _host.StartAsync();
-        _client = DirectorTestClient.Admin(port);
+            repositoryRegistry: _registry,
+            directorId: Guid.NewGuid().ToString(),
+            instancesDirectory: Path.Combine(_root, "instances-isolated"));
+        await _host.StartAsync();
     }
 
     public async Task DisposeAsync()
     {
-        _client.Dispose();
         await _host.StopAsync();
         _sm.Dispose();
         Environment.SetEnvironmentVariable("CC_DIRECTOR_ROOT", _prevRoot);
@@ -102,12 +101,14 @@ public sealed class RestApiSelfServiceEndpointsTests : IAsyncLifetime
         try { if (Directory.Exists(_root)) Directory.Delete(_root, recursive: true); } catch { /* best effort */ }
     }
 
-    // ===== Control API info handoff (CC_DIRECTOR_API / CC_DIRECTOR_ID source) =====
+    // ===== Director identity handoff (the CC_DIRECTOR_ID source) =====
 
+    // Remove-the-network-port mission, phase 5: the old assertion here also pinned ControlApiBaseUrl
+    // (the CC_DIRECTOR_API source). That address is GONE with the listener - a session is told which
+    // Director it belongs to, never an address for it - so identity is the whole handoff now.
     [Fact]
-    public void Host_start_publishes_control_api_info_to_session_manager()
+    public void Host_start_publishes_director_identity_to_session_manager()
     {
-        Assert.Equal($"http://127.0.0.1:{_host.Port}", _sm.ControlApiBaseUrl);
         Assert.Equal(_host.DirectorId, _sm.DirectorId);
     }
 

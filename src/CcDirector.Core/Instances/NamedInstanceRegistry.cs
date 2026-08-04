@@ -21,12 +21,6 @@ public static class NamedInstanceRegistry
 {
     private const int SchemaVersion = 1;
 
-    // Named instances are assigned from this range (mirrors PortAllocator's 7879-7898).
-    // 7879 is reserved as the nominal default; named instances start at 7880.
-    private const int PortRangeStart = 7880;
-    private const int PortRangeEnd = 7898;
-    private const int DefaultPort = 7879;
-
     private static readonly object WriteLock = new();
 
     private static readonly JsonSerializerOptions JsonOptions = new()
@@ -85,9 +79,9 @@ public static class NamedInstanceRegistry
     }
 
     /// <summary>
-    /// Create a new named instance: derive a unique slug from the display name, assign the
-    /// next free port, mint an id, persist to the registry, and scaffold the instance's data
-    /// home with a <c>config\config.json</c> carrying the gateway block. Returns the instance.
+    /// Create a new named instance: derive a unique slug from the display name, mint an id,
+    /// persist to the registry, and scaffold the instance's data home with a
+    /// <c>config\config.json</c> carrying the gateway block. Returns the instance.
     /// </summary>
     public static NamedInstance Create(string displayName, string gatewayUrl, string gatewayToken)
     {
@@ -102,28 +96,26 @@ public static class NamedInstanceRegistry
                 instances.Insert(0, BuildDefault());
 
             var slug = UniqueSlug(Slugify(displayName), instances);
-            var port = NextFreePort(instances);
             var instance = new NamedInstance
             {
                 Id = Guid.NewGuid().ToString(),
                 Name = slug,
                 DisplayName = displayName.Trim(),
                 GatewayUrl = gatewayUrl?.Trim() ?? "",
-                Port = port,
                 CreatedAt = DateTime.UtcNow.ToString("o"),
             };
             instances.Add(instance);
             SaveRaw(instances);
 
             ScaffoldInstanceHome(instance, gatewayToken?.Trim() ?? "");
-            FileLog.Write($"[NamedInstanceRegistry] Created instance id={instance.Id}, slug={slug}, port={port}");
+            FileLog.Write($"[NamedInstanceRegistry] Created instance id={instance.Id}, slug={slug}");
             return instance;
         }
     }
 
     /// <summary>
-    /// Rename an instance's DISPLAY NAME only. The slug, id, port, home and gateway are
-    /// untouched - nothing that identifies or addresses the instance moves.
+    /// Rename an instance's DISPLAY NAME only. The slug, id, home and gateway are
+    /// untouched - nothing that identifies the instance moves.
     /// </summary>
     public static NamedInstance Rename(string slug, string newDisplayName)
     {
@@ -148,33 +140,6 @@ public static class NamedInstanceRegistry
     /// <summary>Preview the slug that would be derived from a display name (no uniqueness suffix).</summary>
     public static string PreviewSlug(string displayName) => Slugify(displayName ?? "");
 
-    /// <summary>
-    /// Record the actual Control API port a running instance bound to, so the picker shows the
-    /// real port and probes the right one. No-op if the slug is unknown or the port is already
-    /// current. Best-effort - never throws into the startup path.
-    /// </summary>
-    public static void RecordBoundPort(string slug, int port)
-    {
-        try
-        {
-            var normalized = InstanceContext.Normalize(slug);
-            lock (WriteLock)
-            {
-                var instances = LoadRaw();
-                var target = instances.FirstOrDefault(i =>
-                    string.Equals(i.Name, normalized, StringComparison.OrdinalIgnoreCase));
-                if (target is null || target.Port == port)
-                    return;
-                target.Port = port;
-                SaveRaw(instances);
-            }
-        }
-        catch (Exception ex)
-        {
-            FileLog.Write($"[NamedInstanceRegistry] RecordBoundPort FAILED (ignored): {ex.Message}");
-        }
-    }
-
     // -- internals --
 
     private static NamedInstance BuildDefault(string? hostname = null)
@@ -184,7 +149,6 @@ public static class NamedInstanceRegistry
             Name = InstanceContext.DefaultSlug,
             DisplayName = string.IsNullOrWhiteSpace(hostname) ? Environment.MachineName : hostname.Trim(),
             GatewayUrl = "",
-            Port = DefaultPort,
             CreatedAt = DateTime.UtcNow.ToString("o"),
         };
 
@@ -243,16 +207,6 @@ public static class NamedInstanceRegistry
         var temp = Path.Combine(configDir, $".config.{Guid.NewGuid():N}.tmp");
         File.WriteAllText(temp, json);
         File.Move(temp, configPath, overwrite: true);
-    }
-
-    private static int NextFreePort(List<NamedInstance> instances)
-    {
-        var used = instances.Select(i => i.Port).ToHashSet();
-        for (var port = PortRangeStart; port <= PortRangeEnd; port++)
-            if (!used.Contains(port))
-                return port;
-        throw new InvalidOperationException(
-            $"No free instance port in {PortRangeStart}-{PortRangeEnd} (all {instances.Count} in use).");
     }
 
     private static string UniqueSlug(string baseSlug, List<NamedInstance> instances)

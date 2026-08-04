@@ -28,10 +28,6 @@ public sealed class NamedInstance
     /// <summary>The gateway URL this instance binds to (stored for display in the picker).</summary>
     public string GatewayUrl { get; init; } = "";
 
-    /// <summary>The Control API port for this instance. Assigned at creation; the running
-    /// instance records its actual bound port here so the picker shows the real port.</summary>
-    public int Port { get; set; }
-
     /// <summary>ISO-8601 creation timestamp.</summary>
     public string CreatedAt { get; init; } = "";
 

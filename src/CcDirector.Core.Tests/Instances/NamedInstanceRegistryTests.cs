@@ -55,13 +55,12 @@ public sealed class NamedInstanceRegistryTests : IDisposable
     }
 
     [Fact]
-    public void Create_assigns_slug_port_and_scaffolds_gateway_config()
+    public void Create_assigns_slug_and_scaffolds_gateway_config()
     {
         var inst = NamedInstanceRegistry.Create("Company B", "https://gw-b.example", "secret-token");
 
         Assert.Equal("company-b", inst.Name);
         Assert.False(string.IsNullOrEmpty(inst.Id));
-        Assert.InRange(inst.Port, 7880, 7898);
         Assert.Equal("Company B", inst.DisplayName);
 
         // The instance's own config.json must carry the gateway block.
@@ -74,14 +73,13 @@ public sealed class NamedInstanceRegistryTests : IDisposable
     }
 
     [Fact]
-    public void Create_duplicate_display_name_gets_distinct_slug_and_port()
+    public void Create_duplicate_display_name_gets_distinct_slug()
     {
         var a = NamedInstanceRegistry.Create("Company B", "", "");
         var b = NamedInstanceRegistry.Create("Company B", "", "");
 
         Assert.Equal("company-b", a.Name);
         Assert.Equal("company-b-2", b.Name);
-        Assert.NotEqual(a.Port, b.Port);
     }
 
     [Fact]
@@ -98,7 +96,6 @@ public sealed class NamedInstanceRegistryTests : IDisposable
     {
         var inst = NamedInstanceRegistry.Create("Company B", "https://gw-b.example", "tok");
         var originalSlug = inst.Name;
-        var originalPort = inst.Port;
         var originalId = inst.Id;
 
         NamedInstanceRegistry.Rename(originalSlug, "Client B");
@@ -107,7 +104,6 @@ public sealed class NamedInstanceRegistryTests : IDisposable
         Assert.NotNull(after);
         Assert.Equal("Client B", after!.DisplayName);
         Assert.Equal(originalSlug, after.Name);   // slug unchanged
-        Assert.Equal(originalPort, after.Port);   // port unchanged
         Assert.Equal(originalId, after.Id);       // id unchanged
     }
 
