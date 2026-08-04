@@ -45,6 +45,10 @@ Gateway that is indistinguishable from a launcher that is not running. It is fix
 matters on its own: the code's own comment said auto-reconnect would retry, and auto-reconnect only
 retries on reconnect.
 
+**And the parked gate caught a regression I had introduced, in my own change.** It is recorded here
+because the *shape* of it is this mission's recurring theme, twice over. See "The regression this branch
+caused" below.
+
 ---
 
 ## Fix by fix
@@ -174,6 +178,36 @@ update must ship BEFORE or WITH the Gateway. The hosted Gateway deploys independ
 application and normally moves first, which is the wrong order for this change.
 
 ---
+
+## The regression this branch caused, and the two lessons in it
+
+The parked gate arm failed on the fix tip with three failures that were **mine**, and the default gate
+could never have seen them: `SelfHostMachineControlTests` (two cases) and
+`LauncherRegistryEndpointTests.Relay_RegisteredButNotConnected_Returns502ThatSaysSo` all assert that an
+undeliverable command answers with the substring `not connected`, and the finding 2 split had dropped
+that phrase from BOTH branches in favour of new, more specific wording.
+
+**Lesson one: adding a reason must not remove the fact.** The Architect's ruling settled it and the
+reasoning is better than the fix I was about to make. `not connected` is TRUE IN BOTH cases - a launcher
+too old to stream holds no stream, so it is not connected either. The split adds WHY; it does not make
+the shared fact false. So the correction belonged in the MESSAGE, not in the assertions, and the three
+tests now pass UNTOUCHED. That is the only outcome that proves the change did not quietly narrow what
+the message promises: editing the tests to match new wording would have produced an identical green and
+meant the opposite. This mission has one precedent for a test removed on the record, and that precedent
+exists so this kind of edit is never mistaken for it.
+
+**Lesson two, smaller and sharper: the first correction READ as an improvement and meant nothing.** It
+wrote `NOT CONNECTED` in capitals, for emphasis. The assertion is case-sensitive, so it failed in exactly
+the same way as the original defect while looking like the fix. That is this mission's recurring theme in
+miniature - the snapshot design that left 48 of 52 tests green, the guard that passed 4 of 4 while its
+premise was false, a test that was vacuous for 22 days. **A change that looks like an improvement and
+changes nothing is the failure mode this repository produces most reliably**, and the only thing that
+catches it is running the thing rather than reading it.
+
+**Lesson three, about the gate itself: `-Parked` was mandatory here, not optional.** The default run was
+fully green - 4,217 tests, all nine projects Completed - and it was green while three tests of the exact
+surface I had changed sat unrun in a parked suite. The gate flagged the coverage gap itself and naming
+that gap is what made the difference between a real gate and a ritual.
 
 ## What is NOT proven
 
