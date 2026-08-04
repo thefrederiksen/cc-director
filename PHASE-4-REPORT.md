@@ -1,7 +1,9 @@
 # Phase 4 - Lifecycle off HTTP
 
 Manager: session 946d35e4. Branch `mission/remove-network-port`, worktree `D:\ReposFred\devthrottle-noport`.
-Commits: `d64a2f2e4` (the change), `62cbb1e90` (its callers, scripts and documents), plus this report.
+Commits: `d64a2f2e4` (the change), `62cbb1e90` (its callers, scripts and documents), `900c4a3c0` +
+`8c76a679b` (this report and the interaction analysis), `502293c3d` + `ce0e9a5dc` (the approved
+conflict tie-break and the guard test that found a hole).
 
 ---
 
@@ -71,9 +73,12 @@ recycled id and every leftover registration, using only fields the file already 
 change, so it also works against a Director older than this launcher - which matters, because the
 Director being replaced during an update IS the older build.
 
-**Ambiguity is an answer, not a tie to break.** When two live processes claim the supervised instance the
-locator reports `Ambiguous`, names them all in the log, and every caller refuses to act. Picking one
-would be the original defect wearing a tidier interface.
+**Ambiguity is an answer wherever it is real.** When more than one live process claims the supervised
+instance the locator decides it only when it is decidable, and otherwise reports `Ambiguous`, names every
+claimant, and every caller refuses to act. Two processes running the SAME image are the defect and stay
+refused - picking one there would be the original defect wearing a tidier interface. The full line, and
+the Architect's ruling on it, is in item 2 of the interaction section below; the first version of this
+phase refused on EVERY conflict, which turned out to be a real cost on the owner's own machine.
 
 That state is real, not theoretical. It exists on this machine right now, in the owner's own storage:
 
@@ -285,9 +290,25 @@ Every new test was made to fail on purpose, so none of them is a test that canno
 | The OLD behaviour restored - scan every instance home | `ANamedInstanceRunningAlongside_IsNotTheSupervisedDirector`, and only that | 12 green |
 | Missing roster returns 0 instead of null | `AMissingRoster_ReadsAsUnknownRatherThanZero`, and only that | 12 green |
 | `Raise` reports an undelivered request as delivered | `RaisingASignalNobodyListensFor_ReportsItWasNotDelivered` AND `ADisposedListener_IsNoLongerReachable` | 11 green |
+| Tie-break degenerates to "pick the first" when no claimant is the install | `WhenNoClaimantIsTheInstalledDirector_ItStillRefuses`, and only that | 15 green |
+| A resolved conflict is swallowed instead of carried | `TwoClaimantsRunningDIFFERENTImages_..._AndStillReportTheConflict` | 15 green |
+| An unreadable image no longer forces a refusal | **NOTHING** - see below | all green |
 
 The second one is the one worth reading: restoring exactly the behaviour the old tests asserted turns
 exactly one test red - the one written for the defect.
+
+**The last row is the one that found something.** Removing the guard that refuses when a claimant will not
+say what image it is running turned NOTHING red - the branch had no test, and its absence was invisible.
+That is the fail-open shape this mission keeps finding: a guard nobody can tell is gone. The image read is
+now a seam so the branch can be exercised, re-injecting the fault turns
+`AClaimantWhoseImageCannotBeRead_ForcesARefusal` red, and what that test proves is stated in the test
+rather than implied - the BRANCH, not that Windows really refuses to report the image of an elevated
+process, which cannot be produced honestly from a unit test.
+
+**A process note worth recording against myself.** Fault E was injected on an UNCOMMITTED tree and reverted
+with `git checkout`, which destroyed the work it was testing and cost a rebuild of the whole tie-break.
+This mission already has a law for that - commit before injecting a fault - and it exists because this is
+exactly how it goes wrong. Everything after that point was committed first.
 
 ---
 
@@ -443,34 +464,51 @@ claimants and could stop it, or read its session count and update over it. The l
 defect can no longer cause an action aimed at the wrong Director. The cause is untouched; what changed is
 what it can do.
 
-**WORSE - availability, on this machine, today.** Phase 4 chose to refuse rather than guess, and refusing
-is not free. Run read-only against the owner's real storage root, the phase-4 launcher decides:
+**WORSE, THEN FIXED - availability, on this machine.** Phase 4 first chose to refuse rather than guess,
+and refusing is not free. Run read-only against the owner's real storage root, the launcher decided:
 
 ```
 outcome=Ambiguous
-  candidate: directorId=6d4523e2-... pid=34032 version=1.9.7  ...\cc-director\app\cc-director.exe
+  candidate: directorId=6d4523e2-... pid=34032 version=1.9.7  ...\cc-directorpp\cc-director.exe
   candidate: directorId=7a7a040a-... pid=15700 version=1.9.1  D:\ReposFred\dt-slot2\...\cc-director2.exe
 status: (none - nothing may be done to this machine's supervised Director)
-isRunning=True
 ```
 
-Two live processes, both registered in `instances/default`. **After this phase ships, the launcher on
-that machine will not stop, restart, or update his Director** - every update pass returns
-`HeldBecauseUnknown` - until one of the two claimants leaves that instance home.
+Two live processes, both registered in `instances/default`. It would not have stopped, restarted or
+updated his Director - every update pass returning `HeldBecauseUnknown` - until one of them left.
 
-Today it works, and it is important to be exact about WHY: the name scan finds only 34032 because the
-slot build happens to be called `cc-director2.exe`. It works by accident, not by design - two Directors
-of the SAME executable would have been picked between arbitrarily. So this is not a working state that
-Phase 4 broke; it is a lucky state that Phase 4 stopped relying on. It is still a behaviour change the
-owner would notice, and it is caused by this phase.
+It worked before only because the name scan finds 34032 and misses the slot build, which happens to be
+called `cc-director2.exe`. Lucky, not correct: two Directors of the SAME executable would have been picked
+between arbitrarily. But a behaviour change he would notice, caused by this phase.
 
-**A decision for the Architect rather than something I have done.** The two claimants differ by
-EXECUTABLE PATH. The rule "never the exe path" exists because a path cannot tell two INSTANCES of one
-install apart - which is true, and is the defect. But it does tell an INSTALL from a development slot
-build. Narrowing the refusal to "ambiguous only when the claimants share an executable, otherwise prefer
-the installed one" would resolve this machine without reintroducing anything: the case it would decide is
-decidable, and the case that made the original scan wrong stays refused. I have not done it, because it
-touches a rule you set and the phase is accepted; say the word either way.
+**The Architect approved the narrowing, and it is in: `502293c3d` / `ce0e9a5dc`.** Ambiguous ONLY when the
+claimants share an executable - the case a path genuinely cannot decide, and the real defect - otherwise
+the installed application wins, because a development build is not the machine's Director of record.
+Same machine, same read-only probe, after:
+
+```
+outcome=Running
+resolved: directorId=6d4523e2-... pid=34032 version=1.9.7
+status:   ... sessions=3 conflictCarried=True
+conflict=2 live processes claim the instance at ...\instances\default: <both named in full>
+```
+
+Resolved to the installed Director, and it read **3 sessions** off his real roster while doing it.
+
+**Why this is not a fallback**, stated so nobody later reads it as an exception the mission granted
+itself: the no-fallback rule forbids two PATHS to one capability - try one thing, fall back to another -
+because the second path is a door. This is one path with a tie-break on an ambiguous input. There is no
+second mechanism, nothing is retried, and the undecidable case still ends in a refusal.
+
+**And the conflict does not go quiet.** That was the Architect's condition, and it is the more important
+half: a resolved conflict is still a machine in a wrong state, and a tie-break that silently does the
+right thing is how this defect stayed unseen long enough for a mission looking at something else to find
+it. So the conflict travels on the answer (`conflictCarried=True` above), not only into a log, and the
+update owner writes it into the updater state - the file the update display reads - so it reaches a
+person.
+
+The underlying cause is untouched and stays open: the single-instance guard is still keyed by executable
+slot rather than by instance.
 
 ### 3. An unknown `--instance` slug silently becomes the default - same family as 2
 
