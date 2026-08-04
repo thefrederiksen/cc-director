@@ -631,11 +631,16 @@ internal static class MachineEndpoints
             LauncherLifecycleRelay.RelayOutcomeKind.NotStreamCapable => Results.Json(
                 new
                 {
-                    error = $"the launcher on '{machine}' is reaching this Gateway (it heartbeated "
-                          + $"{outcome.QuietForSeconds}s ago, version '{outcome.LauncherVersion}') but holds no "
-                          + $"command stream, so the command could not be delivered. A launcher that talks to this "
-                          + $"Gateway but opens no stream is too old to accept commands from it: update the "
-                          + $"launcher on that machine. Its network connection is not the problem.",
+                    // THE SHARED TRUTH STAYS IN THE SENTENCE. Both undeliverable cases mean the launcher
+                    // is not connected for commands, and that phrase is as true here as it is below - the
+                    // split ADDS the reason, it does not make the shared fact false. Two tests assert that
+                    // phrase and they were right to: dropping it to make room for the new detail would have
+                    // narrowed what the message promises while looking like an improvement.
+                    error = $"the launcher on '{machine}' is registered but not connected for commands: it is "
+                          + $"reaching this Gateway (it heartbeated {outcome.QuietForSeconds}s ago, version "
+                          + $"'{outcome.LauncherVersion}') and yet holds no command stream. A launcher that "
+                          + $"talks to this Gateway while opening no stream is too old to accept commands from "
+                          + $"it: update the launcher on that machine. Its network connection is not the problem.",
                     machine,
                     verb,
                     launcherVersion = outcome.LauncherVersion,
@@ -645,10 +650,11 @@ internal static class MachineEndpoints
             _ => Results.Json(
                 new
                 {
-                    error = $"the launcher on '{machine}' is registered but has stopped talking to this Gateway "
-                          + $"(last heartbeat {outcome.QuietForSeconds}s ago), so the command could not be "
-                          + $"delivered. Commands reach a launcher only over the connection it opens to the "
-                          + $"Gateway; check that machine's launcher is running and can reach this Gateway.",
+                    error = $"the launcher on '{machine}' is registered but not connected to this Gateway - it "
+                          + $"has stopped talking to it altogether (last heartbeat {outcome.QuietForSeconds}s "
+                          + $"ago), so the command could not be delivered. Commands reach a launcher only over "
+                          + $"the connection it opens to the Gateway; check that machine's launcher is running "
+                          + $"and can reach this Gateway.",
                     machine,
                     verb,
                     launcherVersion = outcome.LauncherVersion,
