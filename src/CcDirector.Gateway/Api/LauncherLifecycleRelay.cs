@@ -49,20 +49,43 @@ internal static class LauncherLifecycleRelay
         /// the same bare name is NOT a match and is not consulted.</summary>
         NoLauncher,
 
-        /// <summary>This tenant's launcher for that machine is registered (it has heartbeated) but has no
-        /// active stream connection right now, so there is no way to deliver the command. The stream is the
-        /// ONLY path - this is a refusal, not a cue to try something else.</summary>
+        /// <summary>
+        /// The launcher is registered but its heartbeat has gone quiet, and it holds no stream. It has
+        /// stopped talking to this Gateway altogether: crashed, stopped, or cut off from the network.
+        /// Waiting or restarting that machine's launcher is the fix.
+        /// </summary>
         NotConnected,
+
+        /// <summary>
+        /// The launcher is registered AND still heartbeating, but holds no command stream - so it is
+        /// alive and reaching this Gateway while being unable to receive anything from it.
+        ///
+        /// THIS IS A DIFFERENT CONDITION FROM <see cref="NotConnected"/> AND MUST NOT SHARE ITS
+        /// MESSAGE. A launcher built before the remove-the-network-port mission's phase 6 opens no
+        /// command stream - it expected the Gateway to dial its own listener, and that relay is
+        /// deleted. It heartbeats perfectly, so it looks registered and healthy, and every command
+        /// silently does nothing. The hosted Gateway deploys INDEPENDENTLY of the desktop application
+        /// and normally moves first, so this is the ordinary shape of an upgrade, not an edge case.
+        /// One message for both conditions would send a user to check a network connection that is
+        /// demonstrably working. The answer here is to update that machine's launcher.
+        /// </summary>
+        NotStreamCapable,
     }
 
     /// <summary>The result of one relay attempt.</summary>
     /// <param name="Kind">How the attempt ended.</param>
     /// <param name="RelayStatus">The launcher's own status when <see cref="RelayOutcomeKind.Relayed"/>, else 0.</param>
     /// <param name="Payload">The launcher's response body when relayed, else null.</param>
+    /// <param name="LauncherVersion">The refused launcher's registered version, so the message can say
+    /// WHICH build is not accepting commands rather than only that something is not.</param>
+    /// <param name="QuietForSeconds">How long since that launcher last heartbeated. It is the fact that
+    /// separates "too old to stream" from "stopped talking", so it travels on the answer.</param>
     internal sealed record LauncherRelayOutcome(
         RelayOutcomeKind Kind,
         int RelayStatus = 0,
-        string? Payload = null)
+        string? Payload = null,
+        string? LauncherVersion = null,
+        int QuietForSeconds = 0)
     {
         /// <summary>True when the launcher answered AND its answer was a success. This is the whole question
         /// the in-process auto-launcher asks.</summary>
@@ -165,14 +188,34 @@ internal static class LauncherLifecycleRelay
         }
 
         // Undeliverable. Decide WHICH refusal, in the CALLER'S partition - a machine name alone reaches
-        // nothing here either.
-        if (launchers.Get(tenant, machine) is null)
+        // nothing here either. THREE distinct answers, because they have three different fixes and a
+        // refusal that cannot say which one it is sends the reader to check the wrong thing.
+        var registered = launchers.Get(tenant, machine);
+        if (registered is null)
         {
             FileLog.Write($"[LauncherLifecycleRelay] {streamCommand.Verb}: no launcher registered for tenant={tenant.Value}, machine={machine}");
             return new LauncherRelayOutcome(RelayOutcomeKind.NoLauncher);
         }
 
-        FileLog.Write($"[LauncherLifecycleRelay] {streamCommand.Verb}: launcher registered but NOT stream-connected for tenant={tenant.Value}, machine={machine} - refused (the stream is the only path)");
-        return new LauncherRelayOutcome(RelayOutcomeKind.NotConnected);
+        // Heartbeating and yet unreachable. The two facts together are the evidence: it can talk TO this
+        // Gateway and this Gateway cannot talk to it, which is what a launcher predating the stream looks
+        // like. Reported as what was observed - fresh heartbeat, no stream, this version - so the reader
+        // can check the inference rather than take it.
+        var quietFor = DateTime.UtcNow - registered.LastSeenAt;
+        if (quietFor < LauncherRegistry.HeartbeatTimeout)
+        {
+            FileLog.Write($"[LauncherLifecycleRelay] {streamCommand.Verb}: launcher registered and heartbeating "
+                          + $"({quietFor.TotalSeconds:F0}s ago, version '{registered.Version}') but holds NO command "
+                          + $"stream for tenant={tenant.Value}, machine={machine} - refused. A launcher that reaches "
+                          + "this Gateway but opens no stream is too old to accept stream commands; update it.");
+            return new LauncherRelayOutcome(RelayOutcomeKind.NotStreamCapable, LauncherVersion: registered.Version,
+                QuietForSeconds: (int)quietFor.TotalSeconds);
+        }
+
+        FileLog.Write($"[LauncherLifecycleRelay] {streamCommand.Verb}: launcher registered but silent for "
+                      + $"{quietFor.TotalSeconds:F0}s and NOT stream-connected for tenant={tenant.Value}, "
+                      + $"machine={machine} - refused (the stream is the only path)");
+        return new LauncherRelayOutcome(RelayOutcomeKind.NotConnected, LauncherVersion: registered.Version,
+            QuietForSeconds: (int)quietFor.TotalSeconds);
     }
 }

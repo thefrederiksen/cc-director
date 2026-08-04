@@ -602,9 +602,13 @@ internal static class MachineEndpoints
     /// same answer on purpose, because a distinguishable "exists, but not yours" would let one subscriber
     /// enumerate another's machines one name at a time.
     ///
-    /// The not-connected case is 502: this tenant's launcher IS registered but holds no stream connection
-    /// right now, and the stream is the only way a command reaches a launcher - there is no address to dial
-    /// instead. The message says what to check, because the one fix is the launcher's own connection.
+    /// The undeliverable cases are 502 and there are TWO of them, deliberately, because they have two
+    /// different fixes. A launcher that has gone quiet has crashed or lost the network; a launcher that is
+    /// still heartbeating while holding no stream is TOO OLD to accept stream commands - it expected the
+    /// Gateway to dial its own listener, and that relay is deleted. One message for both would tell the
+    /// second user to check a connection that is provably working. Each carries the registered version and
+    /// how long since the last heartbeat, so the answer shows its evidence rather than asserting a cause.
+    /// A machine-readable `reason` travels with them for a client that wants to act on the difference.
     /// </summary>
     private static IResult ToResult(string machine, string verb, LauncherLifecycleRelay.LauncherRelayOutcome outcome)
         => outcome.Kind switch
@@ -620,14 +624,35 @@ internal static class MachineEndpoints
             LauncherLifecycleRelay.RelayOutcomeKind.NoLauncher => Results.Json(
                 new { error = $"no launcher registered for machine '{machine}'", machine }, statusCode: 404),
 
+            // STILL HEARTBEATING, STILL UNREACHABLE - a different condition with a different fix, and it
+            // used to share the message below. A launcher predating the stream reaches this Gateway
+            // perfectly and opens no stream, so telling its owner to check the network sends them to
+            // examine the one thing that is demonstrably working.
+            LauncherLifecycleRelay.RelayOutcomeKind.NotStreamCapable => Results.Json(
+                new
+                {
+                    error = $"the launcher on '{machine}' is reaching this Gateway (it heartbeated "
+                          + $"{outcome.QuietForSeconds}s ago, version '{outcome.LauncherVersion}') but holds no "
+                          + $"command stream, so the command could not be delivered. A launcher that talks to this "
+                          + $"Gateway but opens no stream is too old to accept commands from it: update the "
+                          + $"launcher on that machine. Its network connection is not the problem.",
+                    machine,
+                    verb,
+                    launcherVersion = outcome.LauncherVersion,
+                    reason = "launcher-too-old",
+                }, statusCode: 502),
+
             _ => Results.Json(
                 new
                 {
-                    error = $"the launcher on '{machine}' is registered but not connected to this Gateway, so the "
-                          + $"command could not be delivered. Commands reach a launcher only over the connection it "
-                          + $"opens to the Gateway; check that machine's launcher is running and can reach this Gateway.",
+                    error = $"the launcher on '{machine}' is registered but has stopped talking to this Gateway "
+                          + $"(last heartbeat {outcome.QuietForSeconds}s ago), so the command could not be "
+                          + $"delivered. Commands reach a launcher only over the connection it opens to the "
+                          + $"Gateway; check that machine's launcher is running and can reach this Gateway.",
                     machine,
                     verb,
+                    launcherVersion = outcome.LauncherVersion,
+                    reason = "launcher-not-connected",
                 }, statusCode: 502),
         };
 
