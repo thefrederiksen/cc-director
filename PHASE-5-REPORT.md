@@ -9,7 +9,7 @@ fix), `fe14cc136` (the live proof and its evidence). Baseline for the comparativ
 ## The claim, and what backs it
 
 **The Director listens on nothing.** Two Directors, proven alive and registered at the moment of a
-connection scan that resolves owning processes, owned ZERO listening sockets while holding 24
+connection scan that resolves owning processes, owned ZERO listening sockets while holding 14
 established outbound connections to their Gateway - with the owner's own pre-mission Directors
 found listening on 7879 and 7881 by the identical query, in the same instant, as the positive
 control. Seventeen of seventeen `cc-*` commands passed from inside a real session holding a real
@@ -358,9 +358,18 @@ UDP endpoints owned by the rig Directors: 0
 VERDICT: PASS: the rig Directors, alive and registered, own ZERO listening sockets
 ```
 
-The same file lists 24 sockets those two processes DID own, every one of them an ESTABLISHED
-outbound connection to `127.0.0.1:7997` - the Gateway. That is the design in one line: the Director
-talks, and is never talked to.
+The same file lists what those two processes DID own: **14 ESTABLISHED** connections, every one of
+them outbound to `127.0.0.1:7997` - the Gateway - plus 14 rows in Windows' `Bound` state.
+
+**The `Bound` rows deserve a sentence, because they are the one thing in this file a reader could
+misread.** They appear as `local=0.0.0.0:63783 remote=0.0.0.0:0`, and `0.0.0.0` looks like
+listening-on-every-interface. It is not: these are the local halves of the same outbound sockets,
+which Windows reports as `Bound` rather than `Listen`. The scan asserts on `State -eq 'Listen'`
+precisely so the distinction is made by the operating system rather than by reading an address, and
+the Listen count is zero. (An earlier draft of this report said 24 established, having counted from
+truncated console output rather than the file; corrected here from the artifact.)
+
+That is the design in one line: the Director talks, and is never talked to.
 
 **The positive control is in the same scan, in the same instant**, which is what makes the zero a
 measurement rather than a blind spot:
