@@ -311,7 +311,11 @@ the mission's standing stale-assembly rule.
     not acquire an endpoint on the way in.
   - `WingmanAskForwardingTests.Ask_no_claude_returns_no_claude_status_with_context_digest`: see the
     vacuous-test finding below.
-  Both re-run green (14/14 across the two classes).
+
+  **Re-run in full after both fixes: 2206 passed, 0 failed, 47 skipped, in 55m09s.** Two more tests
+  pass than before (2206 against 2204) because the vacuous test's sibling arm now runs for real
+  rather than early-returning. The whole-suite re-run is what makes the two fixes trustworthy: the
+  two classes on their own were green at 14/14, but only the full run shows nothing else moved.
 
 **Parent arm** (commit `f09d55ff4`, a separate detached worktree, clean by construction), run
 more than once as the mission's rule requires - a single-run control on this repository's gate is
@@ -438,8 +442,11 @@ tasks were unregistered, and the owner's two Directors were still running afterw
   phase. The check runs in the Avalonia application, which the rig does not drive.
 - **The launcher still listens** (`127.0.0.1:7900`, recorded in the scan). That is phase 6's work
   and is called out here so this phase's evidence is never read as covering it.
-- The parked `Gateway.Tests` suite's full green re-run after the two fixes is recorded in the gate
-  section; the two fixed classes were re-run directly (14/14).
+- Both parked suites were run on the phase commit and their failures resolved, but neither parked
+  suite was run on the PARENT. That was not needed - every parked failure was established as ours
+  by reading it, not by comparison (a deleted guard, a vacuous test, an audit tripping on a moved
+  file), and all are fixed with the suite green. A parent control would have been required only if
+  a parked failure had been unattributable.
 
 ---
 
