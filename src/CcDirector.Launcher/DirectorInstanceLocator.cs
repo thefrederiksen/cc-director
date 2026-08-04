@@ -163,6 +163,19 @@ public sealed class DirectorInstanceLocator
     /// <summary>The instance home being resolved.</summary>
     public string InstanceHome => _instanceHome;
 
+    /// <summary>
+    /// How the image of a live process is read. Production always uses <see cref="ExecutablePathOf"/>.
+    ///
+    /// It is a seam ONLY so the refusal below can be tested. "A claimant that will not say what it is
+    /// running must be refused" is a guard that FAILS OPEN if it is wrong - it would silently let an
+    /// unidentifiable process be treated as not-the-install and hand the tie-break to somebody else - and
+    /// the one thing worse than that guard being absent is it being present and never exercised. The
+    /// unreadable case cannot be produced honestly in a unit test (it needs a process this one is not
+    /// allowed to interrogate), so what the test proves is the BRANCH, not that Windows really refuses
+    /// for an elevated process. Stated rather than implied.
+    /// </summary>
+    internal Func<Process, string> ReadExecutablePath { get; set; } = ExecutablePathOf;
+
     /// <summary>Every directory the supervised Director could have registered in, current layout first.</summary>
     public IEnumerable<string> RegistrationDirectories
     {
@@ -216,7 +229,7 @@ public sealed class DirectorInstanceLocator
                     continue;
                 }
 
-                var executable = ExecutablePathOf(process);
+                var executable = ReadExecutablePath(process);
                 live.Add(new SupervisedDirector(dto.DirectorId, dto.Pid, home, dto.Version, startedAt, executable));
                 described.Add($"directorId={dto.DirectorId} pid={dto.Pid} version={dto.Version} "
                               + $"started={startedAt:o} exe={(executable.Length == 0 ? "UNREADABLE" : executable)} "

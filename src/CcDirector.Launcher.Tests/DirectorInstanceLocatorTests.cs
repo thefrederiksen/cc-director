@@ -226,6 +226,38 @@ public sealed class DirectorInstanceLocatorTests : IDisposable
         Assert.Contains("claim the instance", lookup.Conflict);
     }
 
+    /// <summary>
+    /// UNKNOWN MEANS REFUSE. A claimant that will not say what image it is running cannot be ruled out as
+    /// a second copy of the install, and "I could not check" is not "it is not the install" - treating it
+    /// as the latter would let this guard FAIL OPEN in exactly the case where something unusual is going
+    /// on. Without this the guard would have no test at all: injecting its removal changes nothing that
+    /// any other test can see.
+    ///
+    /// WHAT THIS DOES NOT PROVE, stated rather than implied: it exercises the BRANCH through a seam, not
+    /// that Windows really refuses to report the image of an elevated process. That case cannot be
+    /// produced honestly from a unit test.
+    /// </summary>
+    [Fact]
+    public void AClaimantWhoseImageCannotBeRead_ForcesARefusal()
+    {
+        using var foreign = new ForeignProcess();
+        WriteRegistration(InstanceDirectory("default"), "aaaa0001-0000-0000-0000-000000000017");
+        WriteRegistration(InstanceDirectory("default"), "aaaa0001-0000-0000-0000-000000000018",
+            port: 7880, pid: foreign.Id);
+
+        var locator = Locator(installedDirectorPath: foreign.ExecutablePath);
+        // Everything answers as usual EXCEPT this process, which will not say what it is running. Without
+        // the guard the remaining claimant is the install and the tie-break would resolve happily.
+        locator.ReadExecutablePath = process =>
+            process.Id == Environment.ProcessId ? "" : foreign.ExecutablePath;
+
+        var lookup = locator.Resolve();
+
+        Assert.Equal(DirectorResolution.Ambiguous, lookup.Outcome);
+        Assert.Null(lookup.Director);
+        Assert.NotNull(lookup.Conflict);
+    }
+
     /// <summary>An image this test process is definitely not running.</summary>
     private static string NotThisProcessPath =>
         Path.Combine(Path.GetTempPath(), "definitely-not-the-installed-director.exe");
