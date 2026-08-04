@@ -147,6 +147,22 @@ Three of those ten are worth your attention directly:
    may change. It now requires a per-session token the writer cannot guess, and the test is the
    sibling attack that was missing.
 
+**Fixing those ten found three more that nobody had reported**, which is the argument for fixing
+properly rather than patching what was named:
+
+- **A launcher could be connected, registered nowhere, and look exactly like a launcher that is not
+  running.** The inspector raised this as an unproved suspicion and refused to claim it. It was
+  tested against the real connection and is real: one particular failure during the launcher's
+  introduction leaves it connected but never registered, every command undeliverable, and from the
+  Gateway's side indistinguishable from a machine that is switched off. The code's own comment said
+  the connection would retry - it only retries after a disconnect, and this never disconnects. Fixed.
+- **A second shipped skill carried the same stale instructions** as the one the inspector found -
+  still telling agents to probe the Director's local port, inside a passage its own later text had
+  already declared obsolete. The inspector reached one file; the new guard reaches every shipped
+  skill.
+- **Run-complete notifications on a current fleet carried no link at all.** Not a broken link
+  somebody would report - no link, which reads as a notification that simply does not have one.
+
 Two further findings were verified as PRE-EXISTING and are being filed rather than fixed here: the
 Director falls back to numbering sessions locally when the Gateway fails, and the dictionary falls
 back to a local file. Both genuinely break the no-fallback rule this mission holds itself to; neither
@@ -213,6 +229,15 @@ habit is the reason its claims can be trusted.
 - **The guard covers the two components this mission emptied, not the desktop shell** - which is the
   component that binds the sign-in listener. The runtime scan is the evidence for the steady state;
   the guard is the evidence it cannot come back by refactor.
+- **The inspection fixes were run on Windows only.** Two of them are specifically about behaviour on
+  macOS and Linux - the agent hook that had been written to run only on Windows - and they are proven
+  by checking what gets WRITTEN, not by running it on a Mac. That is the same distinction that caught
+  the macOS defect earlier in this work, and it is not closed.
+- **The old-launcher case is inferred, not executed.** The refusal is proven to tell a quiet launcher
+  apart from a connected one; nothing ran a genuinely old launcher against a new Gateway.
+- **The session drop box is no more isolated than what it replaced.** A process running as you, during
+  the fraction of a second a real hand-off exists, could observe its token. That was equally true of
+  the credential it replaces, and the code says so rather than implying a sandbox that never existed.
 
 ## What is NOT proven
 
