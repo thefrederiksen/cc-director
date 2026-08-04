@@ -387,42 +387,50 @@ nothing.
 
 `obj` and `bin` were deleted on both arms before every run, so no result rode a stale assembly.
 
-| Arm | Result |
-|---|---|
-| Mission `62cbb1e90` | 1 failure: `HostedEnrollmentEndpointTests.WrongAudience_Is401` |
-| Parent `76e9bd25c` run 1 | 1 failure: `SpokenVoiceTests.A_stored_voice_that_does_not_speak_the_language_degrades_to_that_languages_default` |
-| Parent `76e9bd25c` run 2 | fully green |
-| Mission `62cbb1e90`, `-Parked` | 1 failure: `GatewayInputStatsAggregatorTests.AgentTotals_TrackTheSameTurnsAsTheTotals_FromTheSameDeltas` |
+| Arm | Failures | Which test | Exception |
+|---|---|---|---|
+| Mission (pre-tie-break) | 1 | `HostedEnrollmentEndpointTests.WrongAudience_Is401` | `FileLogWriter` completed collection |
+| Mission (pre-tie-break), `-Parked` | 1 | `GatewayInputStatsAggregatorTests.AgentTotals_...` | the same |
+| Mission (post-tie-break) | 2 | `AuthMiddlewareTests.Bearer_with_a_valid_device_key_is_accepted`, `HostedEntitlementGateTests.IGNORANCE_does_not_deny_and_does_not_mint` | the same |
+| Parent `76e9bd25c` run 1 | 1 | `SpokenVoiceTests.A_stored_voice_..._degrades_to_that_languages_default` | the same |
+| Parent `76e9bd25c` run 2 | 0 | - | - |
+| Parent `76e9bd25c` run 3 | 2 | `GatewayStatsReadTenantScopeTests.SessionCounts_ForATenantWithNoRowsAtAll_ReturnNothing` | the same |
+| | | `HostedEntitlementGateTests.Enrollment_grants_..._(tier: "hosted")` | `Cannot access a disposed object` on the test SQLite database |
+| Mission (post-tie-break), `-Parked` | 2 | `SuggestionEmailComposerTests.DefaultOn_IncludesTheBlockWithNoSettingWritten`, `DictionarySuggestionServiceTests.RunScan_RejectedTermIsNeverShown` | the same |
 
-**All three failures are the same exception:** `System.InvalidOperationException: The collection has been
-marked as complete with regards to additions`, thrown from `FileLogWriter.Enqueue` by way of
-`FileLog.Write`. Three different tests, one cause, on both arms, in a suite this phase adds nothing to.
+**Nine failures over seven runs on two commits. Nine DIFFERENT tests, no repeats. Eight of the nine are
+one exception**, and the ninth is its sibling - the same shape of teardown race against a different shared
+object. `SuggestionEmailComposerTests` is worth noting because the mission recorded it failing on BOTH
+arms back in Phase 3: an arbitrary victim will recur by chance, which is exactly what a single shared race
+looks like from a distance and is why it kept being written off as a flaky test.
 
-The parent produced one failure and then none on an unchanged commit - the luck this mission already
-recorded. **A single-run control would have been a coin toss in both directions**: parent run 2 alone
-would have convicted this phase of a regression it did not cause, and parent run 1 alone would have
-excused one it did.
+The parent failed in two runs of three, and was clean in the third. **A single-run control would have been
+a coin toss in both directions**: parent run 2 alone would have convicted this phase of a regression it
+did not cause, and either of the others alone would have excused one it did. This is the comparative rule
+earning its place rather than illustrating it.
 
-**Parked suites, both of which this phase touches and the gate said so itself - GREEN:**
+**Parked suites, both of which this phase touches and the gate said so itself - GREEN on both mission
+commits, run twice:**
 
 ```
-CcDirector.Gateway.Tests   Passed!  Failed: 0, Passed: 2457, Skipped: 47, Total: 2504  (32 m 18 s)
-CcDirector.Core.Tests      Passed!  Failed: 0, Passed: 4218, Skipped:  8, Total: 4226  (18 m 10 s)
+CcDirector.Gateway.Tests   Passed!  Failed: 0, Passed: 2457, Skipped: 47, Total: 2504
+CcDirector.Core.Tests      Passed!  Failed: 0, Passed: 4218, Skipped:  8, Total: 4226
 ```
 
 ### A finding about the gate itself, narrower than "flaky"
 
 This mission has already recorded that the local gate is luck - ten distinct failures over six runs with
-no repeats. These four runs narrow that considerably for at least one family of them: **three distinct
-failures, all `FileLogWriter.Enqueue` on a completed `BlockingCollection`.** That is not randomness, it is
-one process-wide race - a test's teardown calls `FileLog.Stop()` (completing the collection) while another
+no repeats. These seven runs narrow that considerably: **eight distinct failures, all `FileLogWriter.Enqueue`
+on a completed `BlockingCollection`, plus one "cannot access a disposed object" against the test database
+which is the same shape against a different shared object.** That is not randomness, it is one
+process-wide race - a test's teardown calls `FileLog.Stop()` (completing the collection) while another
 test in the same parallel run is still logging, and whichever test happens to be logging at that instant
 is the one that fails. It looks like a different flaky test every time because the victim is arbitrary;
 the cause is not. That is a fixable defect in the fleet's own gate rather than a fact of life, and it
 belongs in the QA report on those terms.
 
 Targeted runs, all clean before the full gate: `DirectorInstanceLocatorTests` and the rest of
-`CcDirector.Launcher.Tests` 110/110; `LifecycleSignalTests` + `NoCrossMachineLoopbackGuardTests` 15/15;
+`CcDirector.Launcher.Tests` 114/114 (110 before the tie-break added four); `LifecycleSignalTests` + `NoCrossMachineLoopbackGuardTests` 15/15;
 the Control API classes in `CcDirector.Gateway.Tests` 140/140; `LauncherStopperTests` 10/10.
 
 ---
