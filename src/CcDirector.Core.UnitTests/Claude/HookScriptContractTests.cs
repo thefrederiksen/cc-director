@@ -37,11 +37,18 @@ public sealed class HookScriptContractTests
     private static string ClaudePosix(out string dir)
         => Read(d => ClaudeHookInstaller.EnsureInstalled(d, forWindows: false), "report-session.sh", out dir);
 
-    private static string Codex(out string dir)
+    private static string CodexWindows(out string dir) => Codex(forWindows: true, out dir);
+
+    /// <summary>The Codex hook's POSIX flavour. It did not exist until inspection 3 found that this
+    /// installer had no platform branch at all, so every one of these contract assertions was being made
+    /// about Windows only while macOS and Linux ran a command that could not run there.</summary>
+    private static string CodexPosix(out string dir) => Codex(forWindows: false, out dir);
+
+    private static string Codex(bool forWindows, out string dir)
     {
         dir = Path.Combine(Path.GetTempPath(), "cc-hook-contract-codex-" + Guid.NewGuid().ToString("N"));
-        CodexHookInstaller.EnsureInstalled(dir, Path.Combine(dir, "hooks.json"));
-        return File.ReadAllText(Path.Combine(dir, "report-preamble.ps1"));
+        CodexHookInstaller.EnsureInstalled(dir, Path.Combine(dir, "hooks.json"), forWindows);
+        return File.ReadAllText(Path.Combine(dir, forWindows ? "cc-director-preamble.ps1" : "cc-director-preamble.sh"));
     }
 
     private static void Cleanup(string dir)
@@ -70,14 +77,16 @@ public sealed class HookScriptContractTests
     {
         var windows = ClaudeWindows(out var d1);
         var posix = ClaudePosix(out var d2);
-        var codex = Codex(out var d3);
+        var codexWindows = CodexWindows(out var d3);
+        var codexPosix = CodexPosix(out var d4);
         try
         {
             Assert.DoesNotContain(forbidden, windows, StringComparison.OrdinalIgnoreCase);
             Assert.DoesNotContain(forbidden, posix, StringComparison.OrdinalIgnoreCase);
-            Assert.DoesNotContain(forbidden, codex, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain(forbidden, codexWindows, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain(forbidden, codexPosix, StringComparison.OrdinalIgnoreCase);
         }
-        finally { Cleanup(d1); Cleanup(d2); Cleanup(d3); }
+        finally { Cleanup(d1); Cleanup(d2); Cleanup(d3); Cleanup(d4); }
     }
 
     // ---------- The positive contract: each script uses the variables the Director stamps ----------
@@ -112,7 +121,7 @@ public sealed class HookScriptContractTests
     public void The_windows_hooks_use_no_dotnet_core_only_api()
     {
         var claude = ClaudeWindows(out var d1);
-        var codex = Codex(out var d2);
+        var codex = CodexWindows(out var d2);
         try
         {
             Assert.DoesNotContain("File]::Move(", claude, StringComparison.Ordinal);
@@ -147,7 +156,7 @@ public sealed class HookScriptContractTests
     [Fact]
     public void The_codex_hook_prints_the_preamble_file_and_does_not_touch_stdin_or_the_pointer()
     {
-        var script = Codex(out var dir);
+        var script = CodexWindows(out var dir);
         try
         {
             Assert.Contains(SessionHookFiles.PreambleFileEnvVar, script, StringComparison.Ordinal);
@@ -170,7 +179,7 @@ public sealed class HookScriptContractTests
     {
         var windows = ClaudeWindows(out var d1);
         var posix = ClaudePosix(out var d2);
-        var codex = Codex(out var d3);
+        var codex = CodexWindows(out var d3);
         try
         {
             foreach (var script in new[] { windows, posix, codex })
