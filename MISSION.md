@@ -488,3 +488,23 @@ two independent Managers hit it.
 
 The founding Architect (`bc291ea4`) is standing down for context, not for cause. `ARCHITECT-HANDOVER.md`
 in this directory is the successor's brief. Nothing important lives only in the old conversation.
+
+## Successor Architect seated - 2026-08-04
+
+Session `ae40057f` took the seat, read the four briefing files, and verified the live state against
+the artifacts rather than the handover's wording:
+
+- Phase 5 Manager `967c051d` is already gone from the fleet - nothing to retire.
+- Phase 6 Manager `f5c7ebf9` is alive and working. Its branch `mission/remove-network-port-p6`
+  carries the deletion commit (`f2c022e06` - launcher listener deleted, six verbs on the stream,
+  registration file the only local surface, phase 7 dependency guard folded in and proven red
+  against an INDIRECT reintroduction) plus a gate-flake fix (`f5d8c7791`). No phase report yet;
+  the comparative gate run is presumed in flight. The branch is ahead 2, behind 13 of the mission
+  branch, so the merge will not be a fast-forward.
+- `QA-REPORT-DRAFT.md` is ALREADY committed on the mission branch in `d3bdb1b64`, byte-identical to
+  the scratchpad copy the handover pointed at - that handover step was already done. Two lines in it
+  are stale (Phase 5 marked outstanding; it is proven) and will be corrected in the finishing pass.
+
+The founding Architect's sign-off added one instruction worth keeping verbatim: the QA report must
+state POSITIVELY, with evidence, what an agent can still do - "a guard exists" is not an answer to
+the owner's actual fear, which is agents ending up able to do less.
