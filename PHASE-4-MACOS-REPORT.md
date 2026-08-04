@@ -322,9 +322,17 @@ of 114, the one failure being the pre-existing macOS tie-break test, also record
 ## Windows
 
 By construction the fix cannot change Windows behaviour: the modified expression is unreachable there,
-and the diff otherwise adds tests and comments. The new tests compile for both platforms and are
-platform-honest as described. A Windows execution of `CcDirector.Core.Tests` (the LifecycleSignal
-classes), `CcDirector.Launcher.Tests` and `LauncherStopperTests` is still the required confirmation,
-and this seat runs on the Mac; that run is being arranged on a Windows seat and its result reported to
-the Architect separately. Until it lands, "Windows unregressed" is an argument from construction, not
-an observation - said plainly rather than assumed.
+and the diff otherwise adds tests and comments. That argument was then CONFIRMED BY EXECUTION, because
+an argument from construction is still not an observation. A Windows verifier seat (session ca0a2697)
+ran the suites in a clean worktree at `f09d55ff` on SOREN_NORTH with `obj` and `bin` deleted first:
+
+| Suite | Result |
+|---|---|
+| `CcDirector.Core.Tests`, LifecycleSignal filter | 16 passed, 0 failed, 0 skipped - including both new cross-process tests and the derivation pin |
+| `CcDirector.Launcher.Tests` (net10.0) | 114 passed, 0 failed, 0 skipped |
+| `CcDirector.Launcher.Tests` (net10.0-windows) | 114 passed, 0 failed, 0 skipped |
+| `setup-engine.Tests`, LauncherStopper filter | 10 passed, 0 failed, 0 skipped |
+
+No reds, no reruns needed. Note what the 16-of-16 also says: the coalescing pair and the backslash
+names test, red on macOS, are green on Windows - they are Unix-arm findings exactly as recorded above,
+not shared-suite flakiness.
