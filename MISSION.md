@@ -771,3 +771,24 @@ Two consequences, both acted on:
    this settles it as a by-product of the release gate. If the storm survives on a tree that contains
    the fix, the fix did not work, and that is a fleet-wide finding the owner needs - every merge in
    this repository rides on a signal this race corrupts.
+
+### How that measurement must be read - the protocol, fixed BEFORE the run
+
+Written down in advance so the result cannot be fitted to it afterwards. The Manager supplied both
+rules and they are adopted:
+
+- **The discriminator is the EXCEPTION plus the INSTANT, never the COUNT.** Two runs of one
+  unchanged commit gave 1 failure and then 54, so a low number proves nothing whatsoever. The
+  question is whether `the collection has been marked as complete with regards to additions` appears
+  at all, with its failures clustered inside a fraction of a second.
+- **One clean run is not evidence** on a defect whose blast radius varies fifty-fold.
+
+**Two different bars, and the weaker evidence may not carry the stronger claim:**
+
+| Claim | Bar |
+|---|---|
+| The release may proceed | ONE run of the merged tip whose failures are all EXPLAINED. A run carrying only the known signature still passes this. |
+| v1.9.8 KILLED the race (a fleet-wide claim) | MORE THAN ONE run of the merged tip showing ZERO instances of that exception. A single instance on the first run answers "no" immediately, and no further runs are needed. |
+
+This keeps the research question off the release's critical path without letting the release's
+weaker evidence be reported as the stronger finding.
