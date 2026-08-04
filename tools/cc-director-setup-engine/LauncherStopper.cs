@@ -1,6 +1,4 @@
 using System.Diagnostics;
-using System.Net.Http;
-using System.Net.Sockets;
 
 namespace CcDirector.Setup.Engine;
 
@@ -16,32 +14,31 @@ namespace CcDirector.Setup.Engine;
 public sealed record LauncherProcess(int Pid, string CommandLine);
 
 /// <summary>
-/// Stops the INSTALLED launcher, whatever started it, and proves the port is free afterwards.
+/// Stops the INSTALLED launcher, whatever started it, and proves no process of ours remains.
 ///
 /// This exists because a Mac was left unable to install anything. The macOS uninstall only asked
 /// launchd to boot the service out, which does nothing for a launcher launchd never started - and
 /// reported success. The installer's own first-install path started launchers that way, so the product
 /// manufactured a process its own uninstaller could not remove, and every later install collided with
-/// it on port 7900.
+/// it.
 ///
 /// The order here is the fix, and every step of it comes from something observed on that machine:
 ///
 /// 1. Find OUR launchers first, scoped to the install-owned directory. Nothing is asked or stopped
-///    before this, because a launcher a developer runs from a repository checkout shares the same
-///    per-user token file - so asking "whoever owns the port" to quit would shut down their launcher.
-/// 2. Ask ours to quit through its own endpoint, while the token that authorizes it still exists. An
-///    uninstall wipe deletes that token; a shutdown attempt on the real orphan came back 401.
+///    before this, because a launcher a developer runs from a repository checkout would otherwise be
+///    caught in a net meant for the installed one.
+/// 2. Ask ours to quit politely, via the named lifecycle signal scoped to this install's storage root.
 /// 3. Stop what is left by process, escalating - the real orphan ignored a polite request.
-/// 4. Judge by the PORT and by whether our processes are gone. Steps 1 to 3 report what was
-///    attempted; only these say whether it worked, and trusting an attempt is the whole original bug.
+/// 4. Judge by whether our PROCESSES are gone. Steps 1 to 3 report what was attempted; only this says
+///    whether it worked, and trusting an attempt is the whole original bug. (There used to be a port
+///    check in the verdict too; the launcher listens on nothing now - remove-the-network-port mission,
+///    phase 6 - so the process scan is the entire fact.)
 /// </summary>
 public sealed class LauncherStopper
 {
     /// <summary>What the stop attempt did, and whether the machine is actually clear afterwards.</summary>
     /// <param name="Stopped">
-    /// True when no installed launcher process remains AND nothing of ours holds the launcher port.
-    /// A port held by something that is not ours does not make this false - we must not claim to have
-    /// failed at a job that was never ours - but it IS reported in the steps.
+    /// True when no installed launcher process remains.
     /// </param>
     public sealed record Result(bool Stopped, IReadOnlyList<string> Steps);
 
@@ -66,16 +63,12 @@ public sealed class LauncherStopper
     /// <summary>Stop this process, escalating from a polite request to a kill. True when it exited.</summary>
     public Func<int, bool> StopProcess { get; init; } = DefaultStopProcess;
 
-    /// <summary>Is anything listening on the launcher port?</summary>
-    public Func<bool> PortInUse { get; init; } = DefaultPortInUse;
-
-    /// <summary>Which process answers on the launcher port, or 0 when nothing does or it will not say.</summary>
-    public Func<int> PortOwnerPid { get; init; } = DefaultPortOwnerPid;
-
     // Remove-the-network-port mission, phase 4: TokenFilePath and ReadToken are GONE. The polite quit
     // was a post to the launcher's loopback interface behind a bearer token, so an uninstall running
     // AFTER the token file was removed got a 401 and fell through to killing the process. There is no
     // token to be missing now, which removes the ordering hazard rather than documenting it.
+    // Phase 6: PortInUse and PortOwnerPid are GONE too - the launcher's listener itself was deleted, so
+    // "who holds the port" is no longer a fact about launchers at all. The process scan is the verdict.
 
     /// <summary>
     /// Stop every installed launcher. Safe when none is running. MUST be called BEFORE any wipe of the
@@ -91,48 +84,29 @@ public sealed class LauncherStopper
         //    be deleted underneath it.
         var ours = Ours(out var listed);
         if (!listed)
-            steps.Add("could not list launcher processes on this machine - relying on the port check alone");
+        {
+            // We could not read the process list at all. We do not know that anything is stopped, so
+            // we must not say it is - the caller uses this to decide whether it is safe to delete the
+            // launcher's files. (There is no port to fall back on: the launcher listens on nothing.)
+            steps.Add("cannot confirm the launcher is stopped: the process list is unreadable");
+            return new Result(false, steps);
+        }
         steps.Add(ours.Count == 0
             ? $"no launcher process running from {_layout.LauncherDir}"
             : $"found {ours.Count} installed launcher process(es): {string.Join(", ", ours.Select(p => p.Pid))}");
 
-        var portOwner = PortOwnerPid();
-        var portBusy = PortInUse();
-        if (portBusy && portOwner != 0 && ours.All(p => p.Pid != portOwner))
-        {
-            // Something else holds the launcher port. Not ours to stop, and not ours to claim as a
-            // failure either - but the user must be told, because an install will collide with it.
-            steps.Add($"port {LauncherTrayInstaller.LauncherDefaultPort} is held by process {portOwner}, "
-                      + $"which is NOT running from {_layout.LauncherDir} - left alone");
-        }
-
         if (ours.Count == 0)
         {
-            if (!listed && portBusy)
-            {
-                // We could not read the process list AND something holds the port. We do not know that
-                // we stopped anything, so we must not say we did - the caller uses this to decide
-                // whether it is safe to delete the launcher's files.
-                steps.Add("cannot confirm the launcher is stopped: the process list is unreadable and "
-                          + $"port {LauncherTrayInstaller.LauncherDefaultPort} is in use");
-                return new Result(false, steps);
-            }
-
-            // Nothing of ours is running. A port held by a stranger is reported above and is not ours
-            // to fail at.
             steps.Add("launcher: nothing of ours to stop");
             return new Result(true, steps);
         }
 
         // 2. Politely first, and only to a launcher that is ours.
         //
-        // THE SCOPING NO LONGER DEPENDS ON WHO HOLDS THE PORT. It used to: the quit was sent only when
-        // the process answering the launcher port was positively one of ours, because a per-user bearer
-        // token would also be accepted by a launcher running out of a developer's checkout, and an
-        // unidentified port owner was not permission to shut down whoever was there. The signal is
-        // named for the storage root this installer is uninstalling, so a launcher serving a different
-        // root cannot hear it at all - the scoping moved from a runtime check into the address itself,
-        // which is why the port test is gone rather than merely relaxed.
+        // The scoping lives in the ADDRESS: the signal is named for the storage root this installer is
+        // uninstalling, so a launcher serving a different root cannot hear it at all. (It used to be a
+        // runtime check on who answered the launcher port; the name-scoped signal replaced that, and
+        // phase 6 then removed the port itself.)
         {
             var asked = RequestQuit(_layout.LocalRoot);
             steps.Add(asked
@@ -150,22 +124,17 @@ public sealed class LauncherStopper
                 : $"could NOT stop installed launcher process {p.Pid}");
         }
 
-        // 4. The facts. Both of them: no process of ours left, and the port not held by us.
-        // Give a killed process a moment to release the port before judging.
+        // 4. The fact: no process of ours left. Give a killed process a moment to exit before judging.
         WaitFor(() => Ours(out _).Count == 0, TimeSpan.FromSeconds(5));
 
         var remaining = Ours(out var listedAtEnd);
-        // The port is part of the verdict, not a log line. If one of ours still holds it, or we cannot
-        // even read the process list while something holds it, we have not finished the job.
-        var portStillBusy = PortInUse();
-        var stopped = listedAtEnd && remaining.Count == 0 && !(portStillBusy && OursHoldsPort());
+        var stopped = listedAtEnd && remaining.Count == 0;
 
         steps.Add(stopped
             ? "no installed launcher process remains"
-            : $"installed launcher process(es) STILL RUNNING: {string.Join(", ", remaining.Select(p => p.Pid))}");
-        steps.Add(PortInUse()
-            ? $"port {LauncherTrayInstaller.LauncherDefaultPort}: still in use"
-            : $"port {LauncherTrayInstaller.LauncherDefaultPort}: free");
+            : listedAtEnd
+                ? $"installed launcher process(es) STILL RUNNING: {string.Join(", ", remaining.Select(p => p.Pid))}"
+                : "cannot confirm the launcher is stopped: the process list became unreadable");
 
         return new Result(stopped, steps);
     }
@@ -196,18 +165,6 @@ public sealed class LauncherStopper
             return [];
         }
     }
-
-    /// <summary>
-    /// Is the launcher port held by one of OUR processes right now? Used in the verdict: a port held by
-    /// a stranger is not our failure, but a port held by our own surviving launcher certainly is.
-    /// </summary>
-    private bool OursHoldsPort()
-    {
-        var owner = PortOwnerPid();
-        if (owner == 0) return false;   // unknown - do not invent a failure
-        return Ours(out _).Any(p => p.Pid == owner);
-    }
-
 
     private static bool WaitFor(Func<bool> condition, TimeSpan timeout)
     {
@@ -311,40 +268,4 @@ public sealed class LauncherStopper
         }
     }
 
-    private static bool DefaultPortInUse()
-    {
-        try
-        {
-            using var client = new TcpClient();
-            var connect = client.ConnectAsync("127.0.0.1", LauncherTrayInstaller.LauncherDefaultPort);
-            return connect.Wait(TimeSpan.FromMilliseconds(600)) && client.Connected;
-        }
-        catch
-        {
-            return false;
-        }
-    }
-
-    /// <summary>
-    /// Which process answers on the launcher port? Read from the launcher's own public health endpoint,
-    /// which reports its process id. Zero when nothing answers or the answer carries no id - and zero
-    /// is treated as "unknown", never as "not ours".
-    /// </summary>
-    private static int DefaultPortOwnerPid()
-    {
-        try
-        {
-            using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(3) };
-            using var resp = http.Send(new HttpRequestMessage(
-                HttpMethod.Get, $"http://127.0.0.1:{LauncherTrayInstaller.LauncherDefaultPort}/healthz"));
-            if (!resp.IsSuccessStatusCode) return 0;
-            using var reader = new StreamReader(resp.Content.ReadAsStream());
-            return LauncherHealthProbe.Parse(reader.ReadToEnd()).Pid;
-        }
-        catch (Exception ex)
-        {
-            EngineLog.Write($"[LauncherStopper] could not read the port owner: {ex.Message}");
-            return 0;
-        }
-    }
 }

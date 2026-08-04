@@ -2566,12 +2566,13 @@ public sealed class GatewayHost : IAsyncDisposable
         // would not be caution, it would be a gate standing in front of a hole that is already filled - while
         // costing every subscriber the ability to reach their own machines.
         //
-        // AND THE COST WAS TOTAL, NOT PARTIAL, WHICH IS WHY THIS MATTERS MORE THAN IT LOOKS. On hosted the
-        // stream is the ONLY arm that can reach a launcher. The REST fallback dials the launcher's registered
-        // address, and LauncherHost binds Kestrel to loopback ONLY - so from a hosted Gateway that arm cannot
-        // connect to any remote machine, ever. With the hub unmapped, a hosted subscriber's launcher could
-        // register and heartbeat and appear in the machine list, and then never receive a single command:
-        // observed in the field as a launcher retrying the hub thousands of times a day while looking healthy.
+        // AND THE COST WAS TOTAL, NOT PARTIAL, WHICH IS WHY THIS MATTERS MORE THAN IT LOOKS. The stream is
+        // the ONLY arm that can reach a launcher - everywhere, since phase 6 of the remove-the-network-port
+        // mission deleted the launcher's listener and the REST fallback that dialed it (and even before that,
+        // the launcher's Kestrel bound loopback only, so a hosted Gateway could never dial a remote machine).
+        // With the hub unmapped, a subscriber's launcher could register and heartbeat and appear in the
+        // machine list, and then never receive a single command: observed in the field as a launcher retrying
+        // the hub thousands of times a day while looking healthy.
         //
         // THE REGISTRY PURGE THE DENY REQUIRED IS DISCHARGED BY CONSTRUCTION. It asked for the launcher and
         // launcher-connection registries to be purged of rows written under the bare-name scheme. Both are
@@ -3198,8 +3199,9 @@ public sealed class GatewayHost : IAsyncDisposable
         // Issue #331: launcher registration + cross-machine Director lifecycle relay.
         // Launchers POST /launchers/register on startup; relay callers POST
         // /machines/{machine}/director/restart|start|stop to reach that machine's Director.
-        // launcher-persistent-join: pass the stream-send hook only when stream mode is on. The relay tries
-        // this first and falls back to the REST relay when it returns null (stream off, or launcher offline).
+        // launcher-persistent-join: the stream-send hook is the ONLY delivery path (phase 6 of the
+        // remove-the-network-port mission deleted the REST fallback along with the launcher's listener) -
+        // a null from it is reported to the caller as the launcher being offline, never dialed around.
         MachineEndpoints.Map(_app, Launchers, _machineSessionSpawner,
             // Tenant boundary - REQUIRED (finding CR-7): every launcher-registry read/write and relay is
             // scoped to the calling tenant, and on hosted an unbound request is denied, never Local.
@@ -4067,8 +4069,9 @@ public sealed class GatewayHost : IAsyncDisposable
     /// launcher-persistent-join: push a lifecycle command DOWN a machine's launcher stream and await its
     /// result over the SAME connection (SignalR client results), modeled exactly on <see cref="SendCommandAsync"/>.
     /// Returns null when that machine's launcher has no active stream connection (or the hub is unavailable),
-    /// which the caller treats as "no stream" and falls back to the HTTP relay. Any non-null result - success
-    /// OR a typed failure - means the stream handled the command and its outcome is authoritative.
+    /// which the caller reports as the launcher being unreachable - the stream is the only path to a launcher,
+    /// so there is nothing to fall back to. Any non-null result - success OR a typed failure - means the
+    /// stream handled the command and its outcome is authoritative.
     /// </summary>
     public async Task<LauncherCommandResult?> SendLauncherCommandAsync(Core.Tenancy.TenantId tenant, string machineName, LauncherCommand command, CancellationToken ct = default)
     {

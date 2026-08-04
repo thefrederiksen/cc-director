@@ -2769,7 +2769,7 @@ internal static class GatewayEndpoints
         });
 
         // Issue #330: pull a registered Director's machine facts (tool inventory with
-        // versions + launcher presence/port) through the existing proxy leg. Pulled on
+        // versions + launcher presence) through the existing proxy leg. Pulled on
         // demand rather than pushed in registration/heartbeat: the inventory is large and
         // changes rarely, so riding the 15s heartbeat would bloat the hot path for a fact
         // a consumer reads occasionally.

@@ -3,25 +3,66 @@ using Xunit;
 
 namespace CcDirector.Setup.Engine.Tests;
 
-/// <summary>The health answer's IDENTITY rules (issue #2042): liveness alone never certifies an
-/// install when the expected version is known.</summary>
-public class LauncherHealthProbeTests
+/// <summary>The registration reading's IDENTITY rules (issue #2042): liveness alone never certifies an
+/// install when the expected version is known, and an unreadable identity never reads as health.</summary>
+public class LauncherHealthProbeTests : IDisposable
 {
-    [Fact]
-    public void Parse_WellFormedAnswer_ReadsIdentity()
+    private readonly string _dir = Path.Combine(Path.GetTempPath(), "launcher-probe-tests", Guid.NewGuid().ToString("N"));
+
+    public LauncherHealthProbeTests()
     {
-        var h = LauncherHealthProbe.Parse("""{"ok":true,"version":"1.7.4+abc","pid":77,"uptimeS":3}""");
-        Assert.True(h.Ok);
+        Directory.CreateDirectory(_dir);
+    }
+
+    public void Dispose()
+    {
+        try { Directory.Delete(_dir, recursive: true); } catch (IOException) { }
+    }
+
+    private string PathFor(string content)
+    {
+        var path = Path.Combine(_dir, "launcher.json");
+        File.WriteAllText(path, content);
+        return path;
+    }
+
+    [Fact]
+    public void ReadRegistration_WellFormedFile_ReadsIdentity()
+    {
+        var h = LauncherHealthProbe.ReadRegistration(
+            PathFor("""{"pid":77,"version":"1.7.4+abc","startedAtUtc":"2026-08-03T00:00:00Z"}"""),
+            processIsAlive: _ => true);
+
+        Assert.NotNull(h);
+        Assert.True(h!.Ok);
         Assert.Equal("1.7.4+abc", h.Version);
         Assert.Equal(77, h.Pid);
     }
 
+    [Fact]
+    public void ReadRegistration_AbsentFile_IsNull()
+    {
+        Assert.Null(LauncherHealthProbe.ReadRegistration(Path.Combine(_dir, "does-not-exist.json")));
+    }
+
     [Theory]
-    [InlineData("")]
     [InlineData("not json")]
-    [InlineData("{\"ok\":false}")]
-    public void Parse_GarbageOrNotOk_NeverOk(string body) =>
-        Assert.False(LauncherHealthProbe.Parse(body).Ok);
+    [InlineData("{\"version\":\"1.7.4\"}")]   // present but no pid: identity unreadable
+    public void ReadRegistration_GarbageOrNoPid_NeverOk(string body)
+    {
+        var h = LauncherHealthProbe.ReadRegistration(PathFor(body), processIsAlive: _ => true);
+        Assert.NotNull(h);       // the file existing is still an observation...
+        Assert.False(h!.Ok);     // ...but an unreadable identity must never read as health
+    }
+
+    [Fact]
+    public void ReadRegistration_DeadPid_IsNotOk_ACrashLeftoverIsNotALiveLauncher()
+    {
+        var h = LauncherHealthProbe.ReadRegistration(PathFor("""{"pid":77,"version":"1.7.4"}"""), processIsAlive: _ => false);
+        Assert.NotNull(h);
+        Assert.False(h!.Ok);
+        Assert.Equal(77, h.Pid);
+    }
 
     [Theory]
     [InlineData("1.7.4", "1.7.4", true)]

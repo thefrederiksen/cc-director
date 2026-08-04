@@ -18,33 +18,33 @@ namespace CcDirector.Gateway.Api;
 ///
 /// Issue #331: the cc-launcher process on each machine registers with the Gateway
 /// (POST /launchers/register) and heartbeats so the Gateway knows it is live. The
-/// Gateway then exposes relay routes that forward lifecycle verbs to the target
-/// machine's launcher loopback REST API:
+/// Gateway then exposes relay routes that push lifecycle verbs DOWN the persistent
+/// stream that machine's launcher holds open to this Gateway:
 ///
 ///   POST /launchers/register                        launcher self-registers
 ///   POST /launchers/{machine}/heartbeat             launcher heartbeat
 ///   DELETE /launchers/{machine}                     graceful launcher unregister
 ///   GET  /launchers                                 list registered launchers
 ///
-///   POST /machines/{machine}/director/restart       relay -> launcher POST /director/restart
-///   POST /machines/{machine}/director/start         relay -> launcher POST /director/start
-///   POST /machines/{machine}/director/stop          relay -> launcher POST /director/stop
-///   POST /machines/{machine}/launch                 relay -> launcher POST /launch
-///   GET  /machines/{machine}/apps                   relay -> launcher GET /apps
-///   GET  /machines/{machine}/files                  relay -> launcher GET /files
+///   POST /machines/{machine}/director/restart       push -> launcher verb director/restart
+///   POST /machines/{machine}/director/start         push -> launcher verb director/start
+///   POST /machines/{machine}/director/stop          push -> launcher verb director/stop
+///   POST /machines/{machine}/launch                 push -> launcher verb launch
+///   GET  /machines/{machine}/apps                   push -> launcher verb apps
+///   GET  /machines/{machine}/files                  push -> launcher verb files
 ///
 /// Relay calls are token-gated (Gateway Bearer) and audit-logged. A slot guard in the
 /// relay refuses restart/stop targeting the main Director build or slots 1-4 unless the
 /// request carries <c>"confirmProtected": true</c>.
 ///
-/// Cross-machine relay: when the launcher on a remote machine registers, it supplies a
-/// <c>networkAddress</c> (tailnet hostname or IP) in its registration payload.  The relay
-/// uses that address (plus the registered port) to build the outbound HTTP URL so it can
-/// reach launchers on other machines over Tailscale:
-///   - Same-machine launcher (networkAddress empty): dials http://127.0.0.1:<port>/
-///   - Remote launcher (networkAddress set):         dials http://<networkAddress>:<port>/
-/// This enables the Gateway on MACHINE_A to relay lifecycle verbs to the launcher on
-/// EXAMPLE-PC when EXAMPLE-PC's launcher registered with its tailnet hostname.
+/// HOW A COMMAND CROSSES MACHINES (remove-the-network-port mission, phase 6). The launcher LISTENS ON
+/// NOTHING - it has no REST interface, no port and no bearer token. It DIALS OUT to this Gateway's
+/// /launcher-stream hub and keeps that connection open, and every verb above is delivered down that
+/// connection (<see cref="LauncherLifecycleRelay"/>). Local and remote machines are therefore the same
+/// case: whichever machine the launcher is on, IT opened the connection, so there is no dial-back
+/// address, no loopback shortcut, and no second path when the stream is down - an unconnected launcher
+/// is refused loudly, never reached another way. The registration surface above is presence-and-identity
+/// metadata for listings; delivery is decided solely by the stream connection existing.
 ///
 /// TENANT-SCOPED ON HOSTED, NOT DENIED (issue #1917 closed the leak by DENY; this replaces that deny with
 /// the authorization it was always a placeholder for). A tenant has FULL control of every device registered
@@ -59,8 +59,9 @@ namespace CcDirector.Gateway.Api;
 /// CONSTRUCTION - no tenant dimension anywhere in the path - so on hosted any authenticated device key could
 /// enumerate every tenant's machines through GET /launchers and then drive the machine routes AGAINST
 /// ANOTHER TENANT'S MACHINE: cross-machine CODE EXECUTION via POST /machines/{machine}/launch, and
-/// OUTBOUND-REQUEST FORGERY via POST /launchers/register, which overwrites a machine's stored token, port and
-/// network address and so re-points the relay at an arbitrary host. That hole was real and it had to close.
+/// OUTBOUND-REQUEST FORGERY via POST /launchers/register, which - when the relay still dialed launchers over
+/// HTTP - could overwrite a machine's stored token, port and network address and so re-point the relay at an
+/// arbitrary host. That hole was real and it had to close.
 /// The deny closed it by removing the capability from every hosted tenant on their OWN machines, which is the
 /// one thing the product must never do. The correct close - stated in the deny's own un-deny instruction and
 /// now implemented - is to bind machine identity to a tenant at REGISTRATION and authorize every call against
@@ -82,17 +83,17 @@ namespace CcDirector.Gateway.Api;
 /// to none, exactly as <see cref="Streaming.DirectorHub"/>.Hello does. There is no writer left that can
 /// deposit a tenant-blind row.
 ///
-/// ALL THREE DISPATCH ARMS ARE SCOPED - INCLUDING THE FALLBACK, WHICH IS THE ONE THAT MATTERED. The old deny
-/// noted that only the Director-tunnel arm was gated, because that protection lived in the TRANSPORT
-/// (<c>SendCommandAsync</c> refuses to resolve a tunnel connection with no tenant in scope) rather than in
-/// the route - and that the launcher stream arm and the launcher REST relay were both ungated, the REST relay
-/// being the FALLBACK taken when the stream arm returns null. An ungated failure path is a gate that opens
-/// exactly when something is already going wrong. All three now scope on the calling tenant:
+/// BOTH DISPATCH ARMS ARE SCOPED. (There used to be a third - an HTTP relay that dialed the launcher's
+/// loopback REST interface as the fallback when the stream arm returned null, and the history matters
+/// because the old deny called out precisely that an ungated failure path is a gate that opens exactly when
+/// something is already going wrong. The remove-the-network-port mission deleted that arm outright in phase
+/// 6: the launcher no longer listens, so there is nothing to dial and no fallback to gate.) The two that
+/// remain both scope on the calling tenant:
 ///   * the Director tunnel - the session spawn enters the caller's tenant scope, so the transport's own
 ///     fail-closed resolves the caller's Director and no one else's;
-///   * the launcher stream and the launcher REST relay - both behind
-///     <see cref="LauncherLifecycleRelay"/>, which takes the tenant as an ARGUMENT and resolves the
-///     connection, the address, the port and the bearer token as (tenant, machine).
+///   * the launcher stream - behind <see cref="LauncherLifecycleRelay"/>, which takes the tenant as an
+///     ARGUMENT and resolves the connection and the registry row as (tenant, machine), refusing loudly when
+///     the caller's launcher is not stream-connected.
 ///
 /// THE PURGE THE UN-DENY INSTRUCTION REQUIRED IS DISCHARGED BY CONSTRUCTION. It asked for the launcher and
 /// launcher-connection registries to be purged of rows accumulated behind the deny, deny-closed on the safe
@@ -218,17 +219,16 @@ internal static class MachineEndpoints
         // the launcher's authenticated device key, so a launcher registers only into its own tenant partition.
 
         // POST /launchers/register - the launcher POSTs this on startup and after reconnects.
+        // Phase 6 of the remove-the-network-port mission: no port and no token any more. The machine name
+        // is the only required field, because the registration is presence metadata - command delivery is
+        // the stream connection, which authenticates and binds its tenant on its own (LauncherHub.Hello).
         app.MapPost("/register", (LauncherRegistrationRequest req, HttpContext ctx) =>
         {
             if (req is null || string.IsNullOrWhiteSpace(req.MachineName))
                 return Results.BadRequest(new { error = "machineName is required" });
-            if (req.Port <= 0)
-                return Results.BadRequest(new { error = "port must be > 0" });
-            if (string.IsNullOrWhiteSpace(req.Token))
-                return Results.BadRequest(new { error = "token is required" });
             if (ReqTenant(ctx, boundary) is not { } tenant) return NoTenant();
 
-            FileLog.Write($"[MachineEndpoints] POST /launchers/register: tenant={tenant.Value}, machine={req.MachineName}, port={req.Port}, pid={req.Pid}, version={req.Version}");
+            FileLog.Write($"[MachineEndpoints] POST /launchers/register: tenant={tenant.Value}, machine={req.MachineName}, pid={req.Pid}, version={req.Version}");
             var dto = launchers.Upsert(tenant, req);
             return Results.Json(dto, statusCode: 201);
         });
@@ -595,13 +595,16 @@ internal static class MachineEndpoints
     }
 
     /// <summary>
-    /// Render a relay outcome as the HTTP answer. One mapping for both relay routes and both dispatch arms,
-    /// so a stream-served call is indistinguishable to the caller from a REST-relayed one.
+    /// Render a relay outcome as the HTTP answer.
     ///
     /// The not-registered case is 404 and says so in the caller's terms. It is reached both when nobody has
     /// registered that machine and when ANOTHER TENANT has registered a machine of that name - those are the
     /// same answer on purpose, because a distinguishable "exists, but not yours" would let one subscriber
     /// enumerate another's machines one name at a time.
+    ///
+    /// The not-connected case is 502: this tenant's launcher IS registered but holds no stream connection
+    /// right now, and the stream is the only way a command reaches a launcher - there is no address to dial
+    /// instead. The message says what to check, because the one fix is the launcher's own connection.
     /// </summary>
     private static IResult ToResult(string machine, string verb, LauncherLifecycleRelay.LauncherRelayOutcome outcome)
         => outcome.Kind switch
@@ -617,12 +620,15 @@ internal static class MachineEndpoints
             LauncherLifecycleRelay.RelayOutcomeKind.NoLauncher => Results.Json(
                 new { error = $"no launcher registered for machine '{machine}'", machine }, statusCode: 404),
 
-            LauncherLifecycleRelay.RelayOutcomeKind.NoToken => Results.Json(
-                new { error = "launcher token not available" }, statusCode: 500),
-
             _ => Results.Json(
-                new { error = $"launcher unreachable on {outcome.DialHost}:{outcome.Port}", detail = outcome.Detail },
-                statusCode: 502),
+                new
+                {
+                    error = $"the launcher on '{machine}' is registered but not connected to this Gateway, so the "
+                          + $"command could not be delivered. Commands reach a launcher only over the connection it "
+                          + $"opens to the Gateway; check that machine's launcher is running and can reach this Gateway.",
+                    machine,
+                    verb,
+                }, statusCode: 502),
         };
 
     // -------------------------------------------------------------------------
@@ -679,9 +685,9 @@ internal static class MachineEndpoints
             }
         }
 
-        // Both dispatch arms - the persistent launcher stream, then the REST relay it falls back to - live in
-        // LauncherLifecycleRelay and BOTH resolve on (tenant, machine). The slot guard above has already run,
-        // so a protected-slot action is gated identically whichever arm carries it.
+        // Dispatch lives in LauncherLifecycleRelay: the persistent launcher stream, resolved on
+        // (tenant, machine), and nothing else - an unconnected launcher is refused, never dialed. The slot
+        // guard above has already run before anything is delivered.
         var outcome = await LauncherLifecycleRelay.SendDirectorVerbAsync(
             tenant, machine, verb, exePathFromBody, confirmProtectedFromBody == true,
             launchers, sendLauncherCommand, ct);
@@ -718,7 +724,7 @@ internal static class MachineEndpoints
     }
 }
 
-/// <summary>Request body forwarded verbatim to the launcher POST /launch endpoint.</summary>
+/// <summary>Request body for POST /machines/{machine}/launch, carried to the launcher as a stream command.</summary>
 internal sealed class LaunchRelayBody
 {
     public string? Path { get; init; }

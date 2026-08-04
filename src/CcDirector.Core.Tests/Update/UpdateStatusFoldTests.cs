@@ -20,10 +20,10 @@ public class UpdateStatusFoldTests
         UpdaterState state,
         UpdateProgress? live = null,
         int sessions = 0,
-        int? launcherPort = 7900,
+        bool launcherRunning = true,
         bool enabled = true,
         string current = "1.9.0")
-        => new(current, enabled, state, live, sessions, launcherPort, Now);
+        => new(current, enabled, state, live, sessions, launcherRunning, Now);
 
     // ---- The defect itself ------------------------------------------------
 
@@ -157,7 +157,7 @@ public class UpdateStatusFoldTests
     {
         var view = UpdateStatusFold.Fold(Facts(
             new UpdaterState { StagedVersion = "1.9.1" },
-            sessions: 0, launcherPort: 7900));
+            sessions: 0, launcherRunning: true));
 
         Assert.Equal("StagedReady", view.State);
         Assert.True(view.CanInstallNow);
@@ -171,7 +171,7 @@ public class UpdateStatusFoldTests
         // would do nothing. Offering it anyway is the exact defect rule 7 was written for.
         var view = UpdateStatusFold.Fold(Facts(
             new UpdaterState { StagedVersion = "1.9.1" },
-            sessions: 0, launcherPort: null));
+            sessions: 0, launcherRunning: false));
 
         Assert.False(view.CanInstallNow);
         Assert.Contains("restart", view.Detail, StringComparison.OrdinalIgnoreCase);
@@ -289,10 +289,10 @@ public class UpdateStatusFoldTests
 
         foreach (var state in states)
             foreach (var sessions in new[] { 0, 2 })
-                foreach (var port in new int?[] { 7900, null })
+                foreach (var launcherRunning in new[] { true, false })
                     foreach (var enabled in new[] { true, false })
                     {
-                        var view = UpdateStatusFold.Fold(Facts(state, sessions: sessions, launcherPort: port, enabled: enabled));
+                        var view = UpdateStatusFold.Fold(Facts(state, sessions: sessions, launcherRunning: launcherRunning, enabled: enabled));
 
                         Assert.False(string.IsNullOrWhiteSpace(view.State));
                         Assert.False(string.IsNullOrWhiteSpace(view.Headline));

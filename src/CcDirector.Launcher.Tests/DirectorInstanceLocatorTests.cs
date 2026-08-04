@@ -289,13 +289,17 @@ public sealed class DirectorInstanceLocatorTests : IDisposable
             Assert.NotEqual(Environment.ProcessPath, ExecutablePath);
 
             // A process that has only just been created has not loaded its main module yet, so asking
-            // what image it is running answers "" for a moment. That is a REAL property the locator has
-            // to live with - it treats an unreadable image as a refusal - and it would make this test
-            // flaky rather than proving anything, so wait until the answer exists before asserting on it.
+            // what image it is running answers "" for a moment - and Windows can even answer with a
+            // TRANSIENT WRONG module (ntdll.dll was observed) before the real one is loaded. Both are
+            // REAL properties the locator has to live with, and both would make this test flaky rather
+            // than proving anything - so wait until the answer IS the expected image, and only assert at
+            // the deadline. Waiting merely for a non-empty answer was itself a race: the ntdll moment is
+            // non-empty and wrong.
             var deadline = DateTime.UtcNow.AddSeconds(10);
-            while (DateTime.UtcNow < deadline && ImageOf(_process).Length == 0)
+            while (DateTime.UtcNow < deadline
+                   && !string.Equals(ImageOf(_process), ExecutablePath, StringComparison.OrdinalIgnoreCase))
                 Thread.Sleep(50);
-            Assert.Equal(ExecutablePath, ImageOf(_process));
+            Assert.Equal(ExecutablePath, ImageOf(_process), ignoreCase: true);
         }
 
         public int Id => _process.Id;

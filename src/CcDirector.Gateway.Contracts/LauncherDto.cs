@@ -3,20 +3,16 @@ namespace CcDirector.Gateway.Contracts;
 /// <summary>
 /// A registered cc-launcher entry as served by GET /launchers and as embedded in the
 /// machines listing. Issue #331.
+///
+/// Remove-the-network-port mission, phase 6: no port and no network address any more. The launcher
+/// listens on nothing; commands reach it down the persistent stream it opens to the Gateway, so
+/// there is no dial-back address to publish. Liveness is the heartbeat (<see cref="LastSeenAt"/>)
+/// and, for command delivery, the stream connection being up.
 /// </summary>
 public sealed class LauncherDto
 {
     /// <summary>Hostname of the machine.</summary>
     public string MachineName { get; set; } = "";
-
-    /// <summary>Loopback port the launcher's REST API is bound to (for local relay calls).</summary>
-    public int Port { get; set; }
-
-    /// <summary>
-    /// Network address the Gateway uses when dialing this launcher from a different machine.
-    /// Empty string means the launcher is co-located with the Gateway (loopback applies).
-    /// </summary>
-    public string NetworkAddress { get; set; } = "";
 
     /// <summary>OS process id of the launcher.</summary>
     public int Pid { get; set; }

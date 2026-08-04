@@ -8,7 +8,12 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+    <!-- NO Microsoft.AspNetCore.App framework reference, ON PURPOSE (remove-the-network-port mission:
+         phase 5 deleted the Director's web host, and the phase-7 listener guard asserts the hosting/Kestrel
+         surface is absent at project and assembly level, because a dependency cannot be hidden the way
+         source text can). The SignalR CLIENT packages below are not an exception to that rule: they are the
+         capability to CONNECT OUT (the Director dialing the Gateway's hubs), not the capability to LISTEN,
+         and connecting out is the entire architecture the mission moved the Director to. -->
     <!-- Issue #1176 (Phase 1a): the SignalR CLIENT (separate from the server in the shared framework)
          so the Director can dial the Gateway's DirectorHub and push its session state. -->
     <PackageReference Include="Microsoft.AspNetCore.SignalR.Client" Version="10.0.9" />

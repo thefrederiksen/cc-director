@@ -185,8 +185,6 @@ public sealed class OmittedTenantBoundaryFailClosedTests : IAsyncLifetime
         unwiredLaunchers.Upsert(TenantId.Local, new LauncherRegistrationRequest
         {
             MachineName = LocalSecretMachine,
-            Port = 4321,
-            Token = "local-token",
             Pid = 99,
             Version = "1.0",
         });
@@ -204,8 +202,6 @@ public sealed class OmittedTenantBoundaryFailClosedTests : IAsyncLifetime
         wiredLaunchers.Upsert(TenantId.Local, new LauncherRegistrationRequest
         {
             MachineName = LocalSecretMachine,
-            Port = 4321,
-            Token = "local-token",
             Pid = 99,
             Version = "1.0",
         });
@@ -554,7 +550,7 @@ public sealed class OmittedTenantBoundaryFailClosedTests : IAsyncLifetime
         var registry = new LauncherConnectionRegistry();
         var (hub, ctx) = NewLauncherHub("conn-launcher-unwired", tenantBoundary: null!, registry, deviceKey: "any-key");
 
-        hub.Hello(new LauncherStreamHello { MachineName = LocalSecretMachine, Port = 1, Version = "t" });
+        hub.Hello(new LauncherStreamHello { MachineName = LocalSecretMachine, Version = "t" });
 
         Assert.True(ctx.Aborted);
         Assert.False(registry.IsStreamConnected(TenantId.Local, LocalSecretMachine));
@@ -567,7 +563,7 @@ public sealed class OmittedTenantBoundaryFailClosedTests : IAsyncLifetime
         var (wiredHub, wiredCtx) = NewLauncherHub("conn-launcher-wired",
             new HostedTenantBoundary(new AsyncLocalTenantContext(), wiredDevices), wiredRegistry, key);
 
-        wiredHub.Hello(new LauncherStreamHello { MachineName = "own-machine", Port = 1, Version = "t" });
+        wiredHub.Hello(new LauncherStreamHello { MachineName = "own-machine", Version = "t" });
 
         Assert.False(wiredCtx.Aborted);
         Assert.True(wiredRegistry.IsStreamConnected(_tenant, "own-machine"));

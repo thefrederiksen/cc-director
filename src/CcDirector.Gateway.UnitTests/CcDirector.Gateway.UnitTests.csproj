@@ -45,6 +45,11 @@
     <ProjectReference Include="..\CcDirector.Engine\CcDirector.Engine.csproj" />
     <ProjectReference Include="..\CcDirector.Gateway.Contracts\CcDirector.Gateway.Contracts.csproj" />
     <ProjectReference Include="..\CcDirector.Gateway\CcDirector.Gateway.csproj" />
+    <!-- The LISTENER GUARD's subject (remove-the-network-port mission, phase 7 folded into phase 6):
+         NoListenerDependencyGuardTests walks the launcher's built assembly and its CcDirector closure to
+         assert the hosting/Kestrel surface is absent. The reference exists so the built cc-launcher.dll
+         lands in this test's output directory where the guard can read its metadata. -->
+    <ProjectReference Include="..\CcDirector.Launcher\CcDirector.Launcher.csproj" />
     <!-- The Postgres migration assembly. Nothing here calls into it: EF resolves the migration set BY
          ASSEMBLY NAME at runtime, so it has to be present in the output directory or the model-only tests
          throw FileNotFoundException. That makes this reference load-bearing exactly as it is in the locked

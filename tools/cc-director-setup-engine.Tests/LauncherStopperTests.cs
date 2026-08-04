@@ -12,14 +12,16 @@ namespace CcDirector.Setup.Engine.Tests;
 /// The macOS uninstall only asked launchd to boot the launcher service out. That does nothing for a
 /// launcher launchd never started - and reported success. The installer's own first-install path
 /// created launchers exactly that way, so the product manufactured a process its own uninstaller
-/// could not remove, and every later install collided with it on port 7900. The real orphan was
-/// still serving that port seventy-three minutes after the tree it ran from had been deleted.
+/// could not remove, and every later install collided with it. The real orphan was still running
+/// seventy-three minutes after the tree it ran from had been deleted.
 ///
 /// These tests pin the ORDER and the SCOPE, because both were the fix:
-///   - ask the launcher to quit BEFORE anything wipes the token that authorizes the request;
+///   - ask the launcher to quit politely first, via the root-scoped lifecycle signal;
 ///   - only ever stop a process whose executable is under the install-owned launcher directory;
 ///   - escalate, because the real orphan ignored a polite request;
-///   - and judge success by the PORT, not by what was attempted.
+///   - and judge success by the PROCESSES being gone, not by what was attempted. (The verdict used
+///     to include the launcher port; the launcher listens on nothing now - remove-the-network-port
+///     mission, phase 6 - so the process scan is the entire fact.)
 /// </summary>
 public sealed class LauncherStopperTests
 {
@@ -39,8 +41,6 @@ public sealed class LauncherStopperTests
         var listed = false;
         var stopper = new LauncherStopper(LayoutIn(root))
         {
-            PortInUse = () => false,
-            PortOwnerPid = () => 0,
             ListLauncherProcesses = () => { listed = true; return []; },
             RequestQuit = _ => throw new InvalidOperationException("must not ask when nothing of ours is running"),
             StopProcess = _ => throw new InvalidOperationException("must not stop anything"),
@@ -65,7 +65,6 @@ public sealed class LauncherStopperTests
         string? sawRoot = null;
         var quitAsked = false;
         var killed = false;
-        var running = true;
 
         var layout = LayoutIn(root);
         var ourLauncher = new LauncherProcess(4242, Path.Combine(layout.LauncherDir, "cc-launcher") + " --managed");
@@ -73,11 +72,9 @@ public sealed class LauncherStopperTests
 
         var s = new LauncherStopper(layout)
         {
-            PortInUse = () => running,
-            PortOwnerPid = () => 4242,
             RequestQuit = askedRoot =>
             {
-                quitAsked = true; sawRoot = askedRoot; running = false; alive = false; return true;
+                quitAsked = true; sawRoot = askedRoot; alive = false; return true;
             },
             ListLauncherProcesses = () => alive ? [ourLauncher] : [],
             StopProcess = _ => { killed = true; return true; },
@@ -105,8 +102,6 @@ public sealed class LauncherStopperTests
 
         var s = new LauncherStopper(layout)
         {
-            PortInUse = () => running,
-            PortOwnerPid = () => 34084,
             RequestQuit = _ => false,
             ListLauncherProcesses = () => running
                 ? [new LauncherProcess(34084, Path.Combine(layout.LauncherDir, "cc-launcher") + " --managed")]
@@ -130,8 +125,6 @@ public sealed class LauncherStopperTests
 
         var s = new LauncherStopper(LayoutIn(root))
         {
-            PortInUse = () => true,
-            PortOwnerPid = () => 999,
             RequestQuit = _ => throw new InvalidOperationException(
                 "must not ask a launcher outside the install to quit - it shares the same token file"),
             ListLauncherProcesses = () => [new LauncherProcess(999, @"D:\repos\devthrottle\src\CcDirector.Launcher\bin\cc-launcher.exe --managed")],
@@ -141,25 +134,22 @@ public sealed class LauncherStopperTests
         var result = s.Stop();
 
         Assert.Empty(stopped);
-        // Nothing of ours was running, so this did not fail at its job - but the steps must say the
-        // port is held by a stranger, because an install will collide with it.
+        // Nothing of ours was running, so this did not fail at its job.
         Assert.True(result.Stopped);
-        Assert.Contains(result.Steps, x => x.Contains("NOT running from", StringComparison.Ordinal));
+        Assert.Contains(result.Steps, x => x.Contains("nothing of ours to stop", StringComparison.Ordinal));
     }
 
-    // The whole failure was an installer that trusted an attempt. A stop that cannot free the port
-    // must report failure, so the uninstall can say a later install will collide.
-    // Revert-proof: return the attempt instead of the port state and this goes red.
+    // The whole failure was an installer that trusted an attempt. A stop whose process survives must
+    // report failure, so the uninstall can say a later install will collide.
+    // Revert-proof: return the attempt instead of the end-state scan and this goes red.
     [Fact]
-    public void Stop_ReportsFailure_WhenTheProcessWasStoppedButThePortIsStillHeld()
+    public void Stop_ReportsFailure_WhenTheProcessSurvivesEveryAttempt()
     {
         var root = MakeRoot();
         var layout = LayoutIn(root);
 
         var s = new LauncherStopper(layout)
         {
-            PortInUse = () => true,                 // never frees
-            PortOwnerPid = () => 34084,
             RequestQuit = _ => false,
             // The process survives every attempt - the exact orphan behaviour.
             ListLauncherProcesses = () => [new LauncherProcess(34084, Path.Combine(layout.LauncherDir, "cc-launcher") + " --managed")],
@@ -190,8 +180,6 @@ public sealed class LauncherStopperTests
 
         var s = new LauncherStopper(layout)
         {
-            PortInUse = () => alive,
-            PortOwnerPid = () => 34084,
             RequestQuit = _ => false,
             ListLauncherProcesses = () => alive
                 ? [new LauncherProcess(34084, Path.Combine(layout.LauncherDir, "cc-launcher") + " --managed")]
@@ -216,8 +204,6 @@ public sealed class LauncherStopperTests
 
         var s = new LauncherStopper(layout)
         {
-            PortInUse = () => true,
-            PortOwnerPid = () => 777,
             RequestQuit = _ => throw new InvalidOperationException("not ours"),
             ListLauncherProcesses = () => [new LauncherProcess(777, layout.LauncherDir + "-dev/cc-launcher --managed")],
             StopProcess = pid => { stopped.Add(pid); return true; },
@@ -228,17 +214,15 @@ public sealed class LauncherStopperTests
         Assert.Empty(stopped);
     }
 
-    // FINDING 4: an installed launcher that holds NO port - still starting, failed to bind, or on a
-    // different port - must still be stopped, because its files are about to be deleted underneath it.
+    // FINDING 4: an installed launcher that is invisible to every rendezvous - still starting, or
+    // half-initialized - must still be stopped, because its files are about to be deleted underneath
+    // it.
     //
-    // It is now ASKED first as well, which the port-gated version could not do: the polite path used to
-    // require the launcher port to be held by a process positively identified as ours, so precisely the
-    // launcher that had failed to bind was the one that could only ever be killed. The signal is named
-    // for the storage root rather than found through a port, so a launcher holding no port at all still
-    // hears it. Here nothing answers, so the process path still runs - which is what this test was
-    // written to protect.
+    // It is ASKED first as well: the signal is named for the storage root rather than found through a
+    // port, so even a launcher that never finished starting hears it. Here nothing answers, so the
+    // process path still runs - which is what this test was written to protect.
     [Fact]
-    public void Stop_StopsAnInstalledLauncherThatHoldsNoPort()
+    public void Stop_StopsAnInstalledLauncherThatIsStillStarting()
     {
         var root = MakeRoot();
         var layout = LayoutIn(root);
@@ -248,8 +232,6 @@ public sealed class LauncherStopperTests
 
         var s = new LauncherStopper(layout)
         {
-            PortInUse = () => false,                 // nothing on the port at all
-            PortOwnerPid = () => 0,
             RequestQuit = _ => { asked = true; return false; },
             ListLauncherProcesses = () => alive
                 ? [new LauncherProcess(5150, Path.Combine(layout.LauncherDir, "cc-launcher") + " --managed")]
@@ -264,9 +246,9 @@ public sealed class LauncherStopperTests
         Assert.True(result.Stopped);
     }
 
-    // Two installed launchers: stopping the one that answers on the port is not enough.
+    // Two installed launchers: stopping the first one found is not enough.
     [Fact]
-    public void Stop_StopsEveryInstalledLauncher_NotJustThePortOwner()
+    public void Stop_StopsEveryInstalledLauncher_NotJustTheFirst()
     {
         var root = MakeRoot();
         var layout = LayoutIn(root);
@@ -276,8 +258,6 @@ public sealed class LauncherStopperTests
 
         var s = new LauncherStopper(layout)
         {
-            PortInUse = () => live.Contains(100),
-            PortOwnerPid = () => 100,
             RequestQuit = _ => false,
             ListLauncherProcesses = () => live.Select(p => new LauncherProcess(p, exe + " --managed")).ToList(),
             StopProcess = pid => { live.Remove(pid); stopped.Add(pid); return true; },
@@ -289,16 +269,16 @@ public sealed class LauncherStopperTests
         Assert.True(result.Stopped);
     }
 
-    // If the machine will not tell us what is running, do not claim success on the strength of a free
-    // port - say the list could not be read.
+    // If the machine will not tell us what is running, do not claim success - there is no port left
+    // to corroborate with, so an unreadable process list means the verdict is unknowable, and
+    // unknowable must read as NOT stopped. The caller uses this to decide whether it is safe to
+    // delete the launcher's files.
     [Fact]
-    public void Stop_WhenTheProcessListCannotBeRead_SaysSo()
+    public void Stop_WhenTheProcessListCannotBeRead_RefusesToClaimSuccess()
     {
         var root = MakeRoot();
         var s = new LauncherStopper(LayoutIn(root))
         {
-            PortInUse = () => false,
-            PortOwnerPid = () => 0,
             ListLauncherProcesses = () => throw new InvalidOperationException("ps is unavailable"),
             RequestQuit = _ => false,
             StopProcess = _ => false,
@@ -306,7 +286,8 @@ public sealed class LauncherStopperTests
 
         var result = s.Stop();
 
-        Assert.Contains(result.Steps, x => x.Contains("could not list launcher processes", StringComparison.Ordinal));
+        Assert.False(result.Stopped);
+        Assert.Contains(result.Steps, x => x.Contains("cannot confirm the launcher is stopped", StringComparison.Ordinal));
     }
 }
 

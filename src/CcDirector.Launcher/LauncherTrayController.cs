@@ -15,9 +15,9 @@ using CcDirector.TrayUi;
 namespace CcDirector.Launcher;
 
 /// <summary>
-/// Owns the tray icon, the loopback REST host, the launch service, and the Director
-/// supervisor. This is the whole launcher app: no main window, just a notification-area
-/// icon whose menu drives everything. Only the Quit menu item (or a /shutdown REST call)
+/// Owns the tray icon, the launcher core (Gateway stream + registration), the launch service, and
+/// the Director supervisor. This is the whole launcher app: no main window, just a notification-area
+/// icon whose menu drives everything. Only the Quit menu item (or the shutdown lifecycle signal)
 /// shuts it down.
 /// </summary>
 public sealed class LauncherTrayController : IDisposable
@@ -25,7 +25,6 @@ public sealed class LauncherTrayController : IDisposable
     private enum HostState { Starting, Running, Failed }
 
     private readonly IClassicDesktopStyleApplicationLifetime _desktop;
-    private readonly int _port;
     private readonly CancellationTokenSource _lifetime = new();
 
     private TrayIcon? _trayIcon;
@@ -45,13 +44,12 @@ public sealed class LauncherTrayController : IDisposable
     private volatile string _installedText = Placeholder;
     private volatile string? _gatewayBaseUrl;
 
-    public LauncherTrayController(IClassicDesktopStyleApplicationLifetime desktop, int port)
+    public LauncherTrayController(IClassicDesktopStyleApplicationLifetime desktop)
     {
         _desktop = desktop ?? throw new ArgumentNullException(nameof(desktop));
-        _port = port;
     }
 
-    /// <summary>Build the tray icon, register autostart, and start the REST host.</summary>
+    /// <summary>Build the tray icon, register autostart, and start the core.</summary>
     public void Start()
     {
         FileLog.Write($"[LauncherTrayController] Start (managed={LauncherAppOptions.Managed})");
@@ -142,7 +140,6 @@ public sealed class LauncherTrayController : IDisposable
         var rows = new List<StatusRow>
         {
             new("Version", LauncherCore.ReadVersion().Split('+')[0]),
-            new("Port", _port.ToString()),
             new("Director", directorState),
         };
 
@@ -186,7 +183,7 @@ public sealed class LauncherTrayController : IDisposable
             Icon = _icon,
             StatusTitle = _state switch
             {
-                HostState.Running => $"Running on :{_port}",
+                HostState.Running => "Running",
                 HostState.Starting => "Starting...",
                 _ => "Failed - see logs",
             },
@@ -211,10 +208,10 @@ public sealed class LauncherTrayController : IDisposable
     {
         try
         {
-            _core = new LauncherCore(_port, LauncherCore.ReadVersion());
+            _core = new LauncherCore(LauncherCore.ReadVersion());
             await _core.StartAsync(QuitAsync, userInterfaceState: "tray");
             SetState(HostState.Running);
-            FileLog.Write($"[LauncherTrayController] Host running on :{_port}");
+            FileLog.Write("[LauncherTrayController] Core running");
         }
         catch (Exception ex)
         {
@@ -248,7 +245,7 @@ public sealed class LauncherTrayController : IDisposable
         FileLog.Write("[LauncherTrayController] QuitAsync");
         _lifetime.Cancel();
 
-        // Stream close, Gateway unregister, host stop - all owned by the core.
+        // Stream close, Gateway unregister, registration-file removal - all owned by the core.
         if (_core is not null)
         {
             await _core.StopAsync();
@@ -327,7 +324,7 @@ public sealed class LauncherTrayController : IDisposable
                     LauncherLaunchdAutostart.EnsureRegistered(exePath, LauncherAppOptions.AutostartArguments());
                 FileLog.Write("[LauncherTrayController] Autostart enabled by user");
 
-                // Tell the API what the state IS now. Without this, /healthz and /status kept reporting
+                // Tell the registration file what the state IS now. Without this it kept reporting
                 // the startup-era verdict: a failure the user had just repaired here, or health after a
                 // toggle that silently failed.
                 var registered = OperatingSystem.IsWindows()
@@ -364,7 +361,7 @@ public sealed class LauncherTrayController : IDisposable
         var tip = state switch
         {
             HostState.Starting => "Launcher - starting",
-            HostState.Running => $"Launcher - running on :{_port}",
+            HostState.Running => "Launcher - running",
             HostState.Failed => "Launcher - failed to start",
             _ => "Launcher",
         };

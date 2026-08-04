@@ -47,8 +47,15 @@ public sealed class NoCrossMachineLoopbackGuardTests
         ["src/CcDirector.Gateway/GatewayService.cs"] = "Probes THIS process's own Gateway port on loopback to diagnose a failed start (is the port taken by our own gateway, another app, or nothing?). Same machine by definition - it is asking about its own bind - and it moved here unchanged from GatewayTrayController when the lifecycle left the tray app.",
         ["src/CcDirector.Gateway/Tailscale/TailscaleServeProvisioner.cs"] = "Maps the tailnet front door to local loopback backends.",
         ["src/CcDirector.Gateway/Api/RecordingEndpoints.cs"] = "Local recording paths.",
-        ["src/CcDirector.Gateway/Api/MachineEndpoints.cs"] = "Same-machine relay/launcher wiring.",
-        ["src/CcDirector.Gateway/Api/LauncherLifecycleRelay.cs"] = "The launcher REST relay dials a launcher's registered address, and an EMPTY registered address means the launcher is co-located with the Gateway - so it falls back to http://127.0.0.1:<port>. That is the same-machine case stated explicitly; a REMOTE launcher registers a tailnet address and is dialed on it, never on loopback. This is the shared two-arm dispatch that moved out of IDirectorLauncher when the auto-launch stopped hopping through the Gateway's own loopback port, which is why that file no longer appears on this list.",
+        // Remove-the-network-port mission, phase 6: FOUR more entries left this list at once, because
+        // the LAUNCHER's listener was deleted. LauncherHost.cs is gone entirely (the Kestrel bind it
+        // was listed for WAS the launcher's listener); LauncherLifecycleRelay.cs no longer dials
+        // anything (the REST fallback arm was deleted - the stream the launcher opens is the only
+        // path, so there is no address, loopback or otherwise, in the file); MachineEndpoints.cs
+        // carries no dial-back wiring for the same reason; and the launcher's Program.cs self-update
+        // helper reads the registration file instead of posting /shutdown and probing /healthz on
+        // loopback. The list shrinking is this guard doing exactly what its stale-entry check
+        // promises.
         ["src/CcDirector.Gateway/Data/GatewayDbContextDesignTimeFactory.cs"] = "Design-time-only EF tooling factory (dotnet ef migrations): the localhost Postgres connection string is a THROWAWAY design value - migrations add builds the model and writes source without ever opening the connection, and the running Gateway wires its context through GatewayDatabase instead.",
         ["src/CcDirector.Gateway.Migrations.Postgres/GatewayStatsDbContextPostgresDesignTimeFactory.cs"] = "Design-time-only EF tooling factory for the statistics context's POSTGRES migration chain, same shape as GatewayDbContextDesignTimeFactory.cs above: the localhost connection string is a THROWAWAY design value that migrations add never opens, and the running Gateway selects its statistics connection through StatsConnectionSelection instead.",
         ["src/CcDirector.Gateway/CarMode/LoopbackCarModeFleet.cs"] = "The Car Mode brain's fleet tools call THIS Gateway's own endpoints over http://127.0.0.1:{port} (same-machine self-call), the same pattern the Web Push needs-you notifier uses to read its own /sessions - so the brain sees the identical aggregated roster every client sees with no re-implementation.",
@@ -56,8 +63,6 @@ public sealed class NoCrossMachineLoopbackGuardTests
         // Remove-the-network-port mission, phase 4: DirectorSupervisor.cs no longer appears here. It
         // supervised the Director by posting to its loopback Control API; it now reads the files the
         // Director maintains and raises a named signal, so it carries no address of any kind.
-        ["src/CcDirector.Launcher/LauncherHost.cs"] = "Local launcher loopback bind.",
-        ["src/CcDirector.Launcher/Program.cs"] = "Self-update helper POSTs /shutdown + probes /healthz on the launcher's own loopback (same machine).",
         ["src/CcDirector.Core/Account/LoopbackLoginListener.cs"] = "Binds an HttpListener on 127.0.0.1 only (operating-system-assigned ephemeral port) to receive the first-run browser sign-in hand-back; same-machine loopback trust boundary (security rule DT-07, issue #581).",
         // Remove-the-network-port mission, phase 4: LauncherRestartClient.cs no longer appears here
         // either. "Install it now" asked the launcher over http://127.0.0.1:{port}/director/restart,

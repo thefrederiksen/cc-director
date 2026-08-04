@@ -8,8 +8,9 @@ namespace CcDirector.Setup.Engine;
 /// + verify) to a stable path, and launch the detached helper (the staged exe in
 /// <c>--apply-update</c> mode) that performs the stop -> swap -> relaunch -> health -> rollback
 /// (<see cref="LauncherSelfUpdate"/>). The helper runs from the STAGED copy so the installed exe is
-/// free to overwrite once the running tray app exits. Refresh-only and pin-aware. Everything is
-/// per-user (no elevation): the Launcher is a tray app under %LOCALAPPDATA%. Mirrors
+/// free to overwrite once the running tray app exits; its health check reads the registration file
+/// the relaunched launcher writes (there is no port to probe). Refresh-only and pin-aware. Everything
+/// is per-user (no elevation): the Launcher is a tray app under %LOCALAPPDATA%. Mirrors
 /// <see cref="GatewayUpdater"/>.
 /// </summary>
 public sealed class LauncherUpdater
@@ -74,7 +75,7 @@ public sealed class LauncherUpdater
     /// installed one), so it survives the running tray app exiting and can overwrite the installed exe.
     /// </summary>
     [SupportedOSPlatform("windows")]
-    public Process LaunchDetachedUpdater(string stagedExePath, string newVersion, int port = LauncherTrayInstaller.LauncherDefaultPort)
+    public Process LaunchDetachedUpdater(string stagedExePath, string newVersion)
     {
         var target = _layout.PathFor(ComponentRegistry.Launcher);
         var psi = new ProcessStartInfo
@@ -88,8 +89,6 @@ public sealed class LauncherUpdater
         psi.ArgumentList.Add(newVersion);
         psi.ArgumentList.Add("--target");
         psi.ArgumentList.Add(target);
-        psi.ArgumentList.Add("--port");
-        psi.ArgumentList.Add(port.ToString());
 
         var p = Process.Start(psi) ?? throw new InvalidOperationException("Failed to launch the Launcher self-update helper.");
         EngineLog.Write($"[LauncherUpdater] launched detached updater pid={p.Id} for {newVersion}");

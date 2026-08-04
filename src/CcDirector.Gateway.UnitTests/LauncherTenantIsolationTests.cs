@@ -18,15 +18,12 @@ public sealed class LauncherTenantIsolationTests
     private static readonly TenantId Alpha = new("alpha");
     private static readonly TenantId Beta = new("beta");
 
-    private static LauncherRegistrationRequest Req(string machine, int port, string token, string net = "") =>
+    private static LauncherRegistrationRequest Req(string machine, int pid = 1, string version = "test") =>
         new()
         {
             MachineName = machine,
-            Port = port,
-            Token = token,
-            NetworkAddress = net,
-            Pid = 1,
-            Version = "test",
+            Pid = pid,
+            Version = version,
             StartedAt = DateTime.UtcNow,
         };
 
@@ -35,16 +32,14 @@ public sealed class LauncherTenantIsolationTests
     {
         var reg = new LauncherRegistry();
         const string machine = "SHARED-BOX";
-        reg.Upsert(Alpha, Req(machine, 1111, "alpha-token", "alpha.net"));
-        reg.Upsert(Beta, Req(machine, 2222, "beta-token", "beta.net"));
+        reg.Upsert(Alpha, Req(machine, pid: 1111, version: "alpha-build"));
+        reg.Upsert(Beta, Req(machine, pid: 2222, version: "beta-build"));
 
-        // Each tenant sees ONLY its own launcher for the colliding machine name - port, token and address.
-        Assert.Equal(1111, reg.Get(Alpha, machine)!.Port);
-        Assert.Equal(2222, reg.Get(Beta, machine)!.Port);
-        Assert.Equal("alpha-token", reg.GetToken(Alpha, machine));
-        Assert.Equal("beta-token", reg.GetToken(Beta, machine));
-        Assert.Equal("alpha.net", reg.GetNetworkAddress(Alpha, machine));
-        Assert.Equal("beta.net", reg.GetNetworkAddress(Beta, machine));
+        // Each tenant sees ONLY its own launcher for the colliding machine name.
+        Assert.Equal(1111, reg.Get(Alpha, machine)!.Pid);
+        Assert.Equal(2222, reg.Get(Beta, machine)!.Pid);
+        Assert.Equal("alpha-build", reg.Get(Alpha, machine)!.Version);
+        Assert.Equal("beta-build", reg.Get(Beta, machine)!.Version);
 
         // Lists are per-tenant: neither tenant's list carries the other's machine.
         Assert.Single(reg.ListLaunchers(Alpha));
@@ -53,21 +48,19 @@ public sealed class LauncherTenantIsolationTests
         // Removing Alpha's launcher does not touch Beta's same-named entry.
         reg.Remove(Alpha, machine);
         Assert.Null(reg.Get(Alpha, machine));
-        Assert.Equal(2222, reg.Get(Beta, machine)!.Port);
+        Assert.Equal(2222, reg.Get(Beta, machine)!.Pid);
         Assert.Empty(reg.ListLaunchers(Alpha));
         Assert.Single(reg.ListLaunchers(Beta));
     }
 
     [Fact]
-    public void A_tenant_never_reaches_another_tenants_launcher_or_its_token()
+    public void A_tenant_never_reaches_another_tenants_launcher()
     {
         var reg = new LauncherRegistry();
-        reg.Upsert(Alpha, Req("alpha-only", 3000, "alpha-secret"));
+        reg.Upsert(Alpha, Req("alpha-only"));
 
-        // A foreign machine id under another tenant resolves to nothing - and leaks no token.
+        // A foreign machine id under another tenant resolves to nothing.
         Assert.Null(reg.Get(Beta, "alpha-only"));
-        Assert.Null(reg.GetToken(Beta, "alpha-only"));
-        Assert.Null(reg.GetNetworkAddress(Beta, "alpha-only"));
         Assert.Empty(reg.ListLaunchers(Beta));
 
         // Case-insensitive WITHIN the owning tenant.
@@ -78,7 +71,7 @@ public sealed class LauncherTenantIsolationTests
     public void Heartbeat_is_scoped_to_the_owning_tenant()
     {
         var reg = new LauncherRegistry();
-        reg.Upsert(Alpha, Req("box", 4000, "t"));
+        reg.Upsert(Alpha, Req("box"));
 
         Assert.True(reg.Heartbeat(Alpha, "box"));    // owner heartbeat lands
         Assert.False(reg.Heartbeat(Beta, "box"));    // another tenant's heartbeat for the same name is unknown (410)
