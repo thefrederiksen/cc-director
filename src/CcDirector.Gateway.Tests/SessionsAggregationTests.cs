@@ -80,9 +80,11 @@ public sealed class SessionsAggregationTests : IAsyncLifetime
         Assert.Equal("MACHINE_A", s.MachineName);
         Assert.Equal("alice", s.User);
         Assert.Equal(fake.BaseUrl, s.TailnetEndpoint);
-        // ViewUrl carries the gateway address as a ?gw= deep-link param (the session
-        // view uses it for its "back to Gateway" menu item).
-        Assert.StartsWith($"{fake.BaseUrl}/sessions/s1/view?gw=", s.ViewUrl);
+        // THE LINK IS THE GATEWAY'S OWN, not the Director's. It used to be rooted on the Director's
+        // endpoint with the Gateway carried along as a ?gw= parameter; the Director has no endpoint any
+        // more, so the roots are swapped and the parameter is gone. Asserted against the address THIS
+        // request arrived on, which is what the Gateway mints from.
+        Assert.Equal($"{GatewayOrigin()}/sessions/s1", s.ViewUrl);
     }
 
     [Fact]
@@ -781,11 +783,17 @@ public sealed class SessionsAggregationTests : IAsyncLifetime
         var sessions = await GetSessions();
         var s = Assert.Single(sessions);
         Assert.Equal("s1", s.SessionId);
-        // Director-supplied values must survive the Gateway aggregation pass unchanged.
+        // Director-supplied identity survives the aggregation pass unchanged...
         Assert.Equal(directorMachine, s.MachineName);
         Assert.Equal(directorUser, s.User);
         Assert.Equal(directorEndpoint, s.TailnetEndpoint);
-        Assert.Equal(directorViewUrl, s.ViewUrl);
+
+        // ...but the LINK does not, and that is deliberate. Where a session can be opened is a verdict,
+        // and the standing law is that the Gateway owns every verdict. A Director old enough to supply
+        // one supplies a link to its own port, which is a dead door on a current fleet - so preferring
+        // it "when present" would keep exactly the case that breaks.
+        Assert.Equal($"{GatewayOrigin()}/sessions/s1", s.ViewUrl);
+        Assert.NotEqual(directorViewUrl, s.ViewUrl);
     }
 
     [Fact]
@@ -821,7 +829,7 @@ public sealed class SessionsAggregationTests : IAsyncLifetime
         var sessions = await GetSessions();
         var s = Assert.Single(sessions);
         Assert.DoesNotContain("//sessions", s.ViewUrl);
-        Assert.Contains("/sessions/only/view?gw=", s.ViewUrl);
+        Assert.Equal($"{GatewayOrigin()}/sessions/only", s.ViewUrl);
     }
 
     // ---------- single-session lookup ----------
@@ -839,8 +847,10 @@ public sealed class SessionsAggregationTests : IAsyncLifetime
         Assert.Equal("MACHINE_X", s!.MachineName);
         Assert.Equal("carol", s.User);
         Assert.Equal(fake.BaseUrl, s.TailnetEndpoint);
-        // Same ?gw= deep-link param as the aggregator (see above).
-        Assert.StartsWith($"{fake.BaseUrl}/sessions/only/view?gw=", s.ViewUrl);
+        // The single-session read mints the same Gateway-rooted link as the roster does. Both paths are
+        // asserted because they build it in different places, and only one of them was fixed the first
+        // time this kind of change was made.
+        Assert.Equal($"{GatewayOrigin()}/sessions/only", s.ViewUrl);
     }
 
     [Fact]
@@ -927,6 +937,13 @@ public sealed class SessionsAggregationTests : IAsyncLifetime
         if (fake.Connected && fake.Tunnel is not null && fake.Sessions is not null)
             await fake.Tunnel.PushSnapshotAsync(fake.Sessions);
     }
+
+    /// <summary>
+    /// The origin these tests reach the Gateway on - which is exactly what the Gateway mints session
+    /// links from, because it roots them on the address the CALLER used. Derived from the live client
+    /// rather than written out, so a link asserted here is one a caller could actually follow.
+    /// </summary>
+    private string GatewayOrigin() => $"http://127.0.0.1:{_gateway.Port}";
 
     private async Task<Fake> StartFake(string machine, string user, SessionDto[]? sessions, bool connected = true)
     {
