@@ -54,6 +54,13 @@ public sealed class PrintBanAuditTests
         // SessionAskRunner does not provide.
         ["ClaudeArgBuilder.cs"] = "structured one-shot client behind QuickActions (needs structured JSON / budget caps)",
         ["ClaudeClient.cs"] = "structured one-shot client behind QuickActions (needs structured JSON / budget caps)",
+
+        // Runs `/bin/ps -o comm= -p <pid>` on macOS/Linux to read a process's image path. That
+        // `-p` selects a PROCESS ID for ps; no agent is invoked anywhere in the file. It entered
+        // this audit's scope when the Remove-the-network-port mission moved the locator from the
+        // Launcher into Core (the instance picker resolves liveness from registrations now, so
+        // both supervisors share the one certified answer).
+        ["DirectorInstanceLocator.cs"] = "ps -p <pid> reads a process image path; not an agent invocation",
     };
 
     /// <summary>
