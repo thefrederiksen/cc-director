@@ -855,6 +855,25 @@ Written before parent run 2 exists, so its result cannot be fitted to a reading:
 Neither outcome blocks the merge. The three real failures were the only thing on either arm that a
 human should care about, and they are fixed and gone.
 
+### RESOLVED on the next run - the first branch applied, and the asymmetry evaporated
+
+**Parent run 2 produced the identical exception on the PARENT tree**, so the race is demonstrated on
+both trees and the pre-registered first branch applies: the matter is closed and this failure is not
+this branch's under the comparative criterion. `RosterFoldBatchedSnoozeReadTests` failed with
+`System.InvalidOperationException: the collection has been marked as complete with regards to
+additions`, stack through `FileLogWriter.Enqueue:109` from `FileLog.Write:124`, and the PATH in that
+stack names the parent worktree - so the attribution is unambiguous rather than inferred.
+
+**The whole apparatus below - the occupancy hypothesis, the two-versus-zero caveat, the warning
+about a ratio hardening - turned out to be UNNECESSARY, and that is the lesson worth keeping.** Four
+runs showed a clean asymmetry that the fifth destroyed. Had the work stopped at four and reported
+what it saw, this mission would have published a spurious pattern and invited someone to explain it.
+The pre-registered reading is what made that safe: the response to the asymmetry was a written rule
+about how little it proved, not a theory about why it existed.
+
+The reasoning is kept below rather than deleted, because the next intermittent defect will present
+the same way and the discipline is the reusable part.
+
 **The Manager's caveat, adopted: two versus zero across two runs per arm is NOT A RATE, and must
 never harden into a believed asymmetry by being repeated.** This mission's own history is the
 argument - the parent that produced 0, then 4, then 2 failures on one unchanged commit proves that
