@@ -445,7 +445,7 @@ All four macOS proofs re-ran green with no Gateway: launcher stop 385ms and clea
 20-second stall then a force-kill; install-it-now delivered; update applied in 2s with a graceful stop
 inside; a dead build rolled back; crash restart and right-Director-of-several both pass.
 
-**The prover labelled its own remaining gap correctly and refused to close it:** "Windows-unregressed is
+**CLOSED on observation, not argument.** Windows verification came back green from a clean worktree with both target frameworks run: 16 of 16 on the lifecycle signal filter including both cross-process tests and the derivation pin, 114 of 114 Launcher tests on each framework, 10 of 10 on the stopper. Before that arrived, the prover had labelled its own gap correctly and refused to close it: "Windows-unregressed is
 an argument from CONSTRUCTION only." A fix that cannot plausibly touch the other platform is still
 unproven there, and reasoning about why it is safe is not running it. A verifier is in flight.
 
@@ -453,3 +453,14 @@ unproven there, and reasoning about why it is safe is not running it. A verifier
 was sent to PROVE rather than to assume. Nothing in the shared test suite could have caught it -
 Windows uses kernel events, so its processes never have to agree on a path at all. That is the argument
 for doing the same again next time, and it belongs in the report as such.
+
+### A side-finding worth as much as the fix
+
+The same Windows run discriminated two OTHER open items: the coalescing pair and the backslash-names
+test are green on Windows and red on macOS, which makes them **Unix-arm findings, not shared
+flakiness**.
+
+That matters beyond this mission. This repository's default explanation for an unexplained red has been
+flakiness, and the mission has now twice caught that label hiding a specific cause - first the
+log-writer teardown race behind most gate failures, now this. **A red that reproduces on one platform
+and never on the other is not noise; it is a platform finding wearing noise as a disguise.**
