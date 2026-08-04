@@ -219,8 +219,20 @@ public class ReleaseSourceTests : IDisposable
     public async Task FetchLatestAsync_403ThenSuccess_RecoversAndDelaysBetweenAttempts()
     {
         // Arrange: first attempt 403, second attempt 200 with the release body.
+        //
+        // THE RESET HINT IS MINUTES AWAY, NOT ONE SECOND, AND THAT IS LOAD-BEARING. ComputeBackoff
+        // derives the delay as (resetHint - UtcNow) and CLAMPS A NEGATIVE RESULT TO ZERO, so a hint one
+        // second ahead only produces a non-zero backoff if less than one second of wall clock passes
+        // between this line and that computation. On a busy machine it does not: this suite joined the
+        // nine-project parallel default run on 2026-08-03 and the assertion below started failing with
+        // "expected a non-zero backoff" - the test measuring how loaded the machine was, not what the
+        // code did.
+        //
+        // Minutes ahead removes the race entirely. The value is then clamped to MaxBackoff, so the
+        // assertion is about the CLASSIFICATION - a rate-limit hint produces a real wait - and no
+        // longer about scheduling. Nothing here ever sleeps: the delay is injected below.
         var responses = new Queue<HttpResponseMessage>();
-        responses.Enqueue(RateLimited(DateTimeOffset.UtcNow.AddSeconds(1)));
+        responses.Enqueue(RateLimited(DateTimeOffset.UtcNow.AddMinutes(5)));
         responses.Enqueue(Ok(ReleaseJson(), etag: "\"abc123\""));
         var handler = new ScriptedHandler(responses);
 

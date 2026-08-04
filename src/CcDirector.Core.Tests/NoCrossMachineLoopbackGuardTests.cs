@@ -36,7 +36,9 @@ public sealed class NoCrossMachineLoopbackGuardTests
         // CC_DIRECTOR_API stamp), SelectDirectorDialog.axaml.cs (liveness from registrations, not a
         // port probe) and App.axaml.cs (no listening log line) carry no loopback literal any more -
         // which is this list doing exactly what its stale-entry check promises: shrinking as loopback
-        // is removed.
+        // is removed. Merging main at the landing added a fourth: main's own popup fix (pull request
+        // #2447) had rewritten PortAllocator.cs and its allowlist entry, and this branch deletes that
+        // file outright - the entry goes with it, which is the same fix arrived at permanently.
         ["src/CcDirector.ControlApi/TailscaleServeSelfProvisioner.cs"] = "Maps the tailnet front door to local loopback backend.",
         ["src/CcDirector.ControlApi/GatewayEnrollmentClient.cs"] = "Epic #1069 A: doc comment on EnrollSignedInAsync states the same-machine caller MUST pass a LOOPBACK gatewayUrl (http://127.0.0.1:<local gateway port>) so the Gateway's guardrail-1 IsLoopback check passes. Documents the policy; the literal address is built by the panel's BuildLoopbackEnrollUrl.",
         // Gateway Cleanup mission (the cut): ControlEndpoints.cs (cut to the 6-item loopback floor),

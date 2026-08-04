@@ -19,9 +19,13 @@ public static class FileLog
     // UseUniqueInstanceId() before Start(), because inside a container the process id is always 1.
     private static string _instanceId = Environment.ProcessId.ToString();
 
-    // The active writer. Production never reassigns it; the test-only RedirectForTests seam (issue
-    // #862) swaps it for an isolated writer for the duration of one test, which is safe because the
-    // test assemblies disable parallelization (one test owns FileLog at a time).
+    // The active writer. Reassigned in exactly three places, all of them deliberate: UseUniqueInstanceId
+    // before the writer has started, Start when the previous writer is SPENT (a stop completed its queue,
+    // which cannot be undone), and the test-only RedirectForTests seam (issue #862) which swaps in an
+    // isolated writer for one test and restores the previous one afterwards.
+    //
+    // This comment used to say "Production never reassigns it", which was true and was the bug: a stopped
+    // writer was restarted rather than replaced, so every later line threw. See Start.
     private static FileLogWriter _writer =
         new(LogDir, _instanceId, () => DateTime.Now);
 
@@ -106,11 +110,26 @@ public static class FileLog
 
     private static bool _mirrorForcedBySinkFailure;
 
-    /// <summary>Start the background writer thread. Safe to call multiple times.</summary>
+    /// <summary>
+    /// Start the background writer thread. Safe to call multiple times, INCLUDING after a
+    /// <see cref="Stop"/> - which is the case that used to break everything.
+    ///
+    /// Stopping completes the writer's queue, and a completed queue can never accept another item. This
+    /// method used to set <c>_started</c> back to 1 and start a thread on the SAME spent writer, so it
+    /// restarted the FLAG and not the WRITER. Every later Write then passed the <c>_started</c> guard and
+    /// threw from Enqueue into whichever caller happened to be logging. The guard was correct code and
+    /// saved nothing, because <c>_started</c> had quietly stopped meaning "the writer can accept lines" -
+    /// a guard is only as good as the invariant it reads (devthrottle_internal#1312).
+    ///
+    /// So a spent writer is REPLACED here rather than revived. A flag is not a lifetime.
+    /// </summary>
     public static void Start()
     {
         if (Interlocked.CompareExchange(ref _started, 1, 0) != 0)
             return;
+
+        if (_writer.IsSpent)
+            _writer = new FileLogWriter(LogDir, _instanceId, () => DateTime.Now);
 
         _writer.OnSinkHealthChanged = OnSinkHealthChanged;
         _writer.Start();
@@ -125,6 +144,19 @@ public static class FileLog
         if (MirrorToConsole) Console.Out.WriteLine(line);
         System.Diagnostics.Debug.WriteLine(line);
     }
+
+    /// <summary>
+    /// TEST-ONLY. True when the installed writer's queue has been completed and can never accept another
+    /// line - the state devthrottle_internal#1312 was about.
+    ///
+    /// This exists because the invariant is otherwise unobservable, and the obvious substitute is a trap.
+    /// The first version of those tests asserted on <see cref="DroppedLines"/>, which is a PROCESS-WIDE
+    /// counter every other test contributes to: the assertion passed alone and failed inside the full
+    /// suite, where the ambient writer's bounded queue had filled from thousands of unrelated lines. An
+    /// order-dependent test for an order-dependent bug is not a test, it is the same defect wearing a
+    /// different hat.
+    /// </summary>
+    internal static bool InstalledWriterIsSpent => _writer.IsSpent;
 
     /// <summary>
     /// Lines this process could not fit into the writer's queue - a stalled writer means the file record is
@@ -186,6 +218,8 @@ public static class FileLog
         {
             if (_lines is not null) return _lines;
             _testWriter.Stop();
+            _writer = _previousWriter;
+            _started = _previousStarted;
             var lines = new List<string>();
             foreach (var file in Directory.EnumerateFiles(_dir, "*.log"))
                 lines.AddRange(ReadAllLinesShared(file));

@@ -70,6 +70,36 @@ would blow the budget, it does not go in - however good the tests are.
 Anything failing any of the four goes on the bad-test list below. It does NOT go in the batch, and it
 does NOT get a retry.
 
+### A test that touches a LOCK does not come back at all
+
+**If a test touches a lock - any lock, of any scope - it stays parked. Do not scope it, do not fix it,
+do not admit it "carefully". Leave it and move on.**
+
+This is stricter than rule 1 above and it overrides it. Rule 1 asks whether the test currently fights
+another test; this asks whether it goes anywhere near a lock at all, and the answer disqualifies it
+without further work. Screening a class is then a five-second question, not an investigation.
+
+**Why, since a scoped lock looks harmless.** Making a lock-touching test admissible is not a small
+job, and it consumes the day it is done in. On 3 August 2026 three defects of exactly this shape
+surfaced within an afternoon while verifying unrelated changes:
+
+- `FileLogWriter` - a process-wide writer left completed, so an unrelated bystander test threw. Four
+  tests in `Gateway.UnitTests` had been failing intermittently for weeks, each looking like a separate
+  flaky test.
+- `ReleaseSourceTests` - an assertion that held only if less than one second of wall clock passed, so
+  it measured how loaded the machine was.
+- `SharedInstallLock` - one fixed mutex name for the whole machine, so every installing test queued
+  behind every other, and a different test failed on each run.
+
+Each was real, each was worth fixing, and together they are why the tests-coming-back work stalled.
+The gate is already fast and trustworthy without the parked suites. **Coverage we do not have costs
+nothing; a slow or untrustworthy gate costs every change forever.** So the trade is settled in
+advance: leave it parked.
+
+Also note what those three have in common - they were all invisible until parallelism increased. A
+suite that serialises hides every one of them, which is why a class moving from a serial project into
+a parallel one is the risky direction and needs this screen, and why "it passes today" says nothing.
+
 ## THERE IS NO SUCH THING AS A FLAKY TEST
 
 **A test works, or it is a bad test. There is no third category, and the word "flaky" is banned from
