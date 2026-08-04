@@ -228,6 +228,12 @@ and has not been given - he declined twice and then said the fix is unnecessary 
 and this approved two-line change is the only thing that would have prevented it. Flag at release
 time, not before.
 
+**SUPERSEDED - 2026-08-04, verified by the successor Architect against origin/main:** the fix DID
+land on main as `1677b1b0d` (pull request #2447) and shipped in v1.9.8 (verified by tag
+containment, not prose). The flag above is therefore discharged: no release in the gap carries the
+popup. The `devthrottle-portprobe` worktree and `fix/port-probe-loopback` branch are now merged
+leftovers, removable at the next repo convergence.
+
 ## Independent inspection of Phases 1b and 2 - 2026-08-03
 
 Codex, different family, own detached worktree, told to attack the mission's own reports rather than
