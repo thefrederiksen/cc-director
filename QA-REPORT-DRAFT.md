@@ -78,6 +78,21 @@ need not be re-decided: an agent may change how the product BEHAVES, not WHO IS 
 
 **Proven on the wire** with a real session key: 8 routes allowed, 9 refused.
 
+## The qualification on the headline claim, stated rather than rounded away
+
+**The Director does bind one listening socket - on loopback, during interactive sign-in.** The
+desktop shell opens a local `HttpListener` to catch the sign-in callback from your browser, in the
+first-run wizard and the gateway connection panel.
+
+This was found while widening the guard, and verified in the source before being accepted rather
+than taken on report. It is accepted because it is not the door this mission removes: it is
+transient, loopback-only, opened because a human clicked sign-in, and it carries no fleet surface an
+agent could call. But the honest wording is **the Director RUNS without a listening socket**, not
+that it never binds one - the live proof measured two running Directors, which is steady state.
+
+This mission has been caught four separate times by claims that were true as measured and false as
+worded. This one is written the way it is so it does not become the fifth.
+
 ## What this mission FIXED that you did not ask for
 
 **A live security hole.** Skill, workflow, schedule and mission commands each read your account-wide
@@ -98,6 +113,45 @@ Found because you made a Mac available and a seat was sent to PROVE rather than 
 shared test suite could have caught it - Windows uses kernel events, so its processes never have to
 agree on a file path at all. Fixed, re-proven on macOS, and Windows verified unregressed across both
 target frameworks.
+
+## Three independent inspections, and why they were worth the delay
+
+A different agent family, working in its own copy of the code at the branch tip, was told to attack
+this mission's own reports rather than believe them. That happened three times. **Every time, it
+found real defects that every green test suite had missed** - eighteen in total across the three.
+
+The third inspection is the one that justifies the whole practice. It returned **FAIL: ten proved
+defects while 261 tests passed and none failed.** Its own explanation of how that is possible is the
+most valuable sentence produced on this mission: *several of the tests explicitly PRESERVE the
+defects, and the guard test cannot observe the defect in itself.*
+
+Three of those ten are worth your attention directly:
+
+1. **The guard that was supposed to stop a port ever coming back did not work.** Its premise - that a
+   process cannot listen without heavyweight web machinery - is simply false; the plain .NET library
+   can open a listener with none of it. The inspector proved this by binding a real port from a
+   project with zero of the assemblies the guard looks for, while all four of the guard's assertions
+   stayed green. **The mission's central promise was resting on a test that proved nothing.** It has
+   been rebuilt as a call-graph walk - what these components can actually REACH - and proven red
+   against both a hidden listener dropped into the Director's component and one reached indirectly
+   through a shared library, which is the shape the old guard could never have seen.
+2. **The product was still shipping agents instructions to use the deleted door.** The built-in
+   move-session skill told agents to find a Director by probing its ports and to set the address
+   variable this mission removed. A phase report had claimed this was fixed; it had fixed the
+   launcher half and left the Director half. This is your founding fear inverted - not agents using
+   two doors, but agents being sent to a door that is gone.
+3. **The session-hook change had replaced a credential with a filename.** Any agent could name
+   another live session in a filename and retarget that session's transcript and routing. The test
+   written to prove isolation attacked the wrong path, so the one attack that mattered was never
+   attempted. **That is this mission breaking its own law** - the line you drew about what an agent
+   may change. It now requires a per-session token the writer cannot guess, and the test is the
+   sibling attack that was missing.
+
+Two further findings were verified as PRE-EXISTING and are being filed rather than fixed here: the
+Director falls back to numbering sessions locally when the Gateway fails, and the dictionary falls
+back to a local file. Both genuinely break the no-fallback rule this mission holds itself to; neither
+was introduced by it. You are being told because the rule has two live exceptions in the product, and
+you should hear it here rather than from an outage.
 
 ## Findings about your tooling - not footnotes
 
@@ -130,7 +184,35 @@ it did not cause.
 
 - Four pre-existing defects found in passing, including one where an update on a machine with named
   instances rolls back silently - which affects your machine.
+- The two fallback paths named above (session numbering, dictionary). Filed, not fixed here.
 - Linux is unproven. macOS is proven; Linux shares the Unix arm but has not been run.
+
+## What is NOT proven
+
+Written as plainly as the successes, because every phase of this mission listed its own gaps and that
+habit is the reason its claims can be trusted.
+
+- **The first-run wizard on a clean Windows machine has not been run.** This is the one pre-declared
+  acceptance criterion still outstanding, and it became more important rather than less: the sign-in
+  listener described above opens inside that very wizard, which is exactly where the firewall popup
+  used to appear. The popup's original cause is deleted, and a loopback listener would not normally
+  raise that prompt - but "would not normally" is an argument, and this mission does not ship
+  arguments in place of runs. **Recommendation: run it against the built release before the mission
+  is called closed.** Your own machine cannot answer it; it already carries firewall rules from
+  earlier runs.
+- **Phase 6 was not run on macOS or Linux.** Its pieces are less platform-split than the lifecycle
+  work was, but phase 4 proved on this exact surface that a green shared suite can hide a completely
+  inert platform mechanism.
+- **"From another machine" was proven as a code path, not as two physical machines.**
+- **A mixed-version fleet degrades.** A launcher older than this change cannot be commanded by an
+  upgraded Gateway. No compatibility bridge was built, deliberately - an arm that dials an old
+  launcher's port is the second door this mission exists to delete. Instead the refusal now names its
+  cause, and **the release must ship the launcher update with or before the Gateway.**
+- **The guard cannot see a call made only by reflection.** Stated in the guard's own file rather than
+  implied away.
+- **The guard covers the two components this mission emptied, not the desktop shell** - which is the
+  component that binds the sign-in listener. The runtime scan is the evidence for the steady state;
+  the guard is the evidence it cannot come back by refactor.
 
 ## What is NOT proven
 
