@@ -422,7 +422,11 @@ CcDirector.Core.Tests      Passed!  Failed: 0, Passed: 4218, Skipped:  8, Total:
 This mission has already recorded that the local gate is luck - ten distinct failures over six runs with
 no repeats. These seven runs narrow that considerably: **eight distinct failures, all `FileLogWriter.Enqueue`
 on a completed `BlockingCollection`, plus one "cannot access a disposed object" against the test database
-which is the same shape against a different shared object.** That is not randomness, it is one
+which is the same shape against a different shared object.** **Filed as issue #2445** with the full run-by-run
+evidence, on the Architect's ruling that it is not this mission's work to fix - a race in the logging
+teardown deserves its own change with its own proof rather than being smuggled in beside a port removal.
+
+That is not randomness, it is one
 process-wide race - a test's teardown calls `FileLog.Stop()` (completing the collection) while another
 test in the same parallel run is still logging, and whichever test happens to be logging at that instant
 is the one that fails. It looks like a different flaky test every time because the victim is arbitrary;
