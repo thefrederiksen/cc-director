@@ -2,10 +2,23 @@
 
 Manager: session 967c051d. Branch `mission/remove-network-port`, worktree `D:\ReposFred\devthrottle-noport`.
 Phase commits: `e5132c9af` (the deletion), `4a2e6665e` (everything outside the product repointed),
-`742a49ee3` (the live-proof rig). Baseline for the comparative gate: `f09d55ff4` - see the gate
-section for why it is not the branch tip the phase started from.
+`742a49ee3` (the live-proof rig), `59d66db01` (the print-ban audit), `9bdb31fe9` (the refused-probe
+fix), `fe14cc136` (the live proof and its evidence). Baseline for the comparative gate:
+`f09d55ff4` - see the gate section for why it is not the branch tip the phase started from.
 
-DRAFT - the gate and live-proof sections are being filled as the runs complete.
+## The claim, and what backs it
+
+**The Director listens on nothing.** Two Directors, proven alive and registered at the moment of a
+connection scan that resolves owning processes, owned ZERO listening sockets while holding 24
+established outbound connections to their Gateway - with the owner's own pre-mission Directors
+found listening on 7879 and 7881 by the identical query, in the same instant, as the positive
+control. Seventeen of seventeen `cc-*` commands passed from inside a real session holding a real
+session key, and that session's own environment dump shows `CC_DIRECTOR_API` and
+`CC_DIRECTOR_TOKEN` absent. Evidence is committed under `docs/qa/phase5-noport/`; the source
+absence of a bind is deliberately NOT offered as proof, per the mission's requirements.
+
+What is NOT proven is stated in the last section, and the first-launch popup on a clean machine is
+the one the mission asked for that this worktree cannot produce.
 
 ## What was deleted
 
@@ -408,4 +421,13 @@ tasks were unregistered, and the owner's two Directors were still running afterw
 - macOS and Linux remain unproven for this phase's changes, as for the mission generally (recorded
   at phase 3; unchanged).
 - A single-target `message send` into a real agent terminal remains outside the rig (phase 2's
-  fixture limitation, unchanged): the checklist session is a batch script with no composer to echo.
+  fixture limitation, unchanged): the checklist session is a script with no composer to echo.
+  `message send all` exercises the same framing and fanout and passed.
+- **The desktop's rebuilt fleet-tool check was not exercised against a live Gateway.** Its verdict
+  logic, its probe-credential path and its refusal-vs-no-Gateway distinction are covered by unit
+  tests and by construction, but nobody watched the indicator paint on a running desktop in this
+  phase. The check runs in the Avalonia application, which the rig does not drive.
+- **The launcher still listens** (`127.0.0.1:7900`, recorded in the scan). That is phase 6's work
+  and is called out here so this phase's evidence is never read as covering it.
+- The parked `Gateway.Tests` suite's full green re-run after the two fixes is recorded in the gate
+  section; the two fixed classes were re-run directly (14/14).
