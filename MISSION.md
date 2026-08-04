@@ -696,3 +696,23 @@ headline user-facing promise could still fail. It stays outstanding, named, and 
 Second measurement from the same work, recorded because it went the other way: `LoopbackLoginListener`
 is NOT reachable from the Director's portless Control API component, so the guard's allow list came
 out STRICTER than planned rather than looser. The Manager reported both directions.
+
+## MAIN IS MERGED INTO THE BRANCH - the landing is de-risked - 2026-08-04
+
+Done ahead of the landing rather than at it, so no conflict is discovered under release pressure.
+Merged at `7b13b4791`; `git log origin/main ^HEAD` returns 0, so main is fully contained.
+
+Exactly the two conflicts the dry run predicted, both resolved on the mission's side and verified:
+
+- `PortAllocator.cs` - deleted here, modified on main by the popup fix (#2447). **Stays deleted.**
+  Main fixed the popup by narrowing what the file touched; this branch deletes the file, which is the
+  same fix arrived at permanently.
+- `NoCrossMachineLoopbackGuardTests.cs` - main's three allowlist entries name files this branch
+  deleted or emptied, so they go with them. The resolution was VERIFIED by running that guard (2 of 2
+  green), which is the test that would catch a wrong resolution - the merge was not trusted on the
+  absence of conflict markers.
+
+The branch also takes main's version, `1.9.8`, so the release bump starts from the right number.
+
+**Order note for the fix branch:** checked before merging that `mission/remove-network-port-fix`
+touches NEITHER conflicted file, so landing main first cannot disturb it.
