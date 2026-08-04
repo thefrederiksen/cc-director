@@ -128,9 +128,27 @@ What is actually left:
 restarting a Director from another machine still works.
 
 ### 7 - The guard
-A fitness test that fails if a listener is added back to either program.
-**Proof:** add one on purpose and watch it go red. A guard that has never failed has not been shown
-to work.
+
+**Do NOT build this as a source-text scan.** This mission already proved that shape can be defeated:
+during the carried-over popup fix, a review restored the defect by moving the construction into a
+helper and leaving the expected text in a comment, and every assertion stayed green. A guard that
+greps for `TcpListener` or `Listen(` has exactly that weakness, and it is the weakness that matters,
+because the person who reintroduces a listener years from now will do it in a refactor - which is
+precisely indirection.
+
+**Build it as a DEPENDENCY assertion instead.** A process cannot listen on a port without the hosting
+machinery to do it. So assert that `CcDirector.ControlApi` and `CcDirector.Launcher` no longer
+reference the ASP.NET Core hosting/Kestrel surface at all - a project-and-assembly level check that no
+amount of indirection inside the code can slip past, because the capability itself is absent. Text can
+be moved; a dependency cannot be hidden.
+
+Pair it with the runtime proof the QA report already demands (a live connection scan with the owning
+process resolved), so one guard covers "cannot" and the other covers "does not".
+
+**Proof:** add a listener back on purpose - and add it INDIRECTLY, through a helper in another file,
+which is the case that defeated the last guard - and watch it go red. A guard that has never failed
+has not been shown to work, and a guard that has only failed against the obvious case has not been
+shown to work either.
 
 ## Order
 
