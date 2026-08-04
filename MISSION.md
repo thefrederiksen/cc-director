@@ -564,3 +564,99 @@ files after the p6 branch forked. Settled by running them, not by adopting the M
 **Incident recorded by the Manager against itself, kept visible:** its rig launcher overwrote the
 owner's autostart Run key (caught and restored within minutes, self-healing on next installed-launcher
 start). Standing lesson: a launcher rig must pass `--no-autostart`.
+
+## INSPECTION 3 (phases 3-7) - FAIL, ten proved defects - 2026-08-04
+
+Codex, different family, own detached worktree at the tip, told to attack the mission's own reports.
+Full report committed as `INSPECTION-3-7.md`. **261 targeted tests passed, 0 failed, throughout.**
+That is the third time this mission's green suites have sat on top of proved defects, and this time
+the inspector says why in one line worth keeping: *several tests explicitly PRESERVE the defects, and
+the phase 7 test cannot observe the defect in itself.*
+
+**The two findings the Architect verified personally against the source before ruling** - because
+each contradicts something the mission had already claimed:
+
+- **Finding 10: the phase 7 guard does not guard.** Its premise - that a process cannot listen
+  without ASP.NET hosting machinery - is FALSE. `IsListenSurface` matches only ASP.NET, hosting and
+  Kestrel assembly names, while `TcpListener` and `HttpListener` are base class library types needing
+  none of them. The inspector built a project with ordinary SDK references, bound `127.0.0.1:50578`,
+  and its reference list contained zero ASP.NET assemblies. **This repository already uses both BCL
+  listeners in `CcDirector.Core`, which the Director and launcher both reference.** So the mission's
+  own headline guarantee - "nothing CAN listen again" - is not enforced by the guard that exists,
+  which passes 4 of 4. The dependency-assertion SHAPE was the right call and the phase 6 proof
+  against indirect Kestrel was real; the SURFACE it asserts over is simply incomplete.
+- **Finding 8: the Gateway is actively serving agents instructions to use the deleted door.** The
+  built-in `move-session` skill still tells agents the Director loopback serves `/healthz`, to select
+  a target by PROBING Director ports, and to set `CC_DIRECTOR_API` for spawn and buffer. Phase 6's
+  report said it fixed this skill; it fixed the LAUNCHER port references and left every DIRECTOR one
+  (lines 52, 61, 68, 158, 162, 190, 241, 421). This is the mission's founding reason inverted: the
+  owner's stated fear was agents using the wrong door, and the product is shipping a document that
+  sends them to a dead one.
+
+### Architect rulings on all ten
+
+**MUST FIX before landing - mission scope, each with a test that fails without it:**
+
+1. **[CRITICAL] The phase 3 pointer drop is authorized by its FILENAME.** `SessionPointerWatcher.Apply`
+   derives the target session from the file name alone and then mutates that session's Claude id,
+   transcript pointer and routing map. Any same-user agent can write `<victim-session-id>.json` into
+   the shared drop directory and retarget another live session. **This is the mission's own law
+   broken by the mission** - phase 3 replaced a session-BOUND credential with a name anyone can
+   spell. The isolation test writes the attack body to the AUTHORIZED path, so it proves only that
+   the body cannot override the name - the one attack that matters was never attempted. Fix must
+   bind the drop to the session that owns it, and the test must be the sibling-write attack.
+3. **[HIGH] A lone registration authorizes a force-kill of a process that is not the Director.**
+   `DirectorInstanceLocator.Resolve` accepts a single claimant on pid liveness and a start-time window
+   without ever checking the executable path, and `DirectorSupervisor.StopAsync` will force-kill what
+   it returns. A test currently LOCKS THIS IN by name. The image check exists in the ambiguous path
+   already; it must apply to the single-claimant path too.
+6, 7. **[MEDIUM] The Codex hook is Windows-only and duplicates per named instance.** It writes a
+   `powershell` command with no operating-system branch, while the Claude installer next to it
+   correctly branches to `/bin/sh` - so on macOS and Linux the hook is not runnable. And because
+   idempotence compares the whole command string while the script path is instance-scoped, each named
+   instance appends another global hook: proven by a run returning two `SessionStart` entries, both
+   reading the same variable, so a Codex launch gets its preamble twice.
+8. **[MEDIUM, ranked higher by the Architect] The `move-session` skill's Director-port instructions.**
+   Both copies (Gateway-served and `.claude/skills`).
+10. **[MEDIUM, ranked CRITICAL by the Architect] Widen the guard to the real listen surface** -
+   `System.Net.Sockets` `TcpListener`, `System.Net.HttpListener`, and any equivalent - and prove it
+   red against a BCL listener, not only against Kestrel. **A guard that has only failed against the
+   case its author imagined has not been shown to work.** Note the honest complication the fixer must
+   solve rather than dodge: `CcDirector.Core` legitimately contains listeners
+   (`LoopbackLoginListener`, the automation browser registry) and both portless projects reference
+   it, so a naive closure walk over `System.Net.Sockets` will go red on innocent code. The assertion
+   must distinguish the capability being PRESENT in a shared library from the portless components
+   USING it - and if that cannot be done at assembly granularity, say so and assert at the type or
+   member level rather than weakening the claim to fit the tool.
+9. **[MEDIUM] Tunnel-only Directors emit no session-view origin.** Phase 5 deliberately empties
+   `ControlEndpoint`, so the Gateway's enrichment derives an empty base and builds a relative legacy
+   link, and `GatewayCronNotifier` cannot derive a Director link at all. The aggregation tests hide
+   the seam by ASSIGNING a fake base URL. Per the standing law that the Gateway owns every ruling and
+   the client is dumb, the link must be minted from the GATEWAY's own origin, not derived from a
+   Director endpoint that no longer exists.
+
+**ACCEPTED, with work that is not a bridge:**
+
+2. **[HIGH] A pre-phase-6 launcher cannot be commanded by a new Gateway.** Real, and it matters more
+   than the phase 6 report allowed, because the hosted Gateway deploys INDEPENDENTLY of the desktop
+   application and normally moves first. **Refused: a compatibility arm.** An arm that dials an old
+   launcher's port is precisely the second door this mission exists to delete, and it would have to
+   be deleted again later. What is required instead: the refusal must NAME the cause - a launcher too
+   old to accept stream commands is not the same condition as a launcher that crashed, and the 502
+   currently says the same thing for both - and the release must ship the launcher update before or
+   with the Gateway, recorded as a release-ordering constraint rather than left to chance.
+
+**OUT OF MISSION SCOPE - verified pre-existing, recorded and filed, NOT fixed here:**
+
+4, 5. **The session-number and dictionary fallbacks.** Both are genuine violations of the no-fallback
+   law and both are worth fixing. Neither is this mission's: the Architect verified that
+   `AssignOfflineNumber` is on `origin/main` today (introduced by the fleet-unique numbering change,
+   pull request #1292) and that no mission commit touches `DictionaryResolver.cs`. The precedent is
+   the one this mission already set for the dead `cc-history` commands: a pre-existing defect found in
+   passing is recorded precisely and filed, not smuggled into a port removal. **They belong in the QA
+   report** - the standing law has two live exceptions in the product, and the owner should learn that
+   from this report rather than from an outage.
+
+**The hypothesis** - that a `Hello` failure while SignalR stays connected leaves a launcher streamed
+but never registered for commands - goes to the Manager to settle cheaply by injection. If it cannot
+be settled cheaply, it is recorded as open, not argued away.
