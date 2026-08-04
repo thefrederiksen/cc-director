@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- A test-only probe executable for LifecycleSignalCrossProcessTests. It exists because the
+       lifecycle signal's one honest test is two REAL PROCESSES agreeing on where a signal lives, and
+       a unit-test host cannot be its own second process. Never shipped; referenced only by
+       CcDirector.Core.Tests so it is built into the test output directory. -->
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>CcDirector.Core.Tests.SignalProbe</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../CcDirector.Core/CcDirector.Core.csproj" />
+  </ItemGroup>
+
+</Project>

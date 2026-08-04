@@ -1,6 +1,6 @@
 using System.Globalization;
 using System.Runtime.Versioning;
-using CcDirector.Core.Storage;
+using CcDirector.Core.Instances;
 using CcDirector.Core.Utilities;
 
 namespace CcDirector.Core.Lifecycle;
@@ -126,11 +126,29 @@ public static class LifecycleSignal
     }
 
     /// <summary>
-    /// Where a Unix request file lives. Under the caller's storage root, so two roots on one machine -
-    /// a test rig and the real install - never signal each other.
+    /// Where a Unix request file lives: <c>config/lifecycle-signals</c> under the machine-wide SHARED
+    /// storage root. Scoped per root, so two roots on one machine - a test rig and the real install -
+    /// never signal each other.
+    ///
+    /// THE ROOT IS THE SHARED ONE, NEVER THIS PROCESS'S OWN, and this is the load-bearing line of the
+    /// whole Unix arm. A Director redirects its data tree to its instance home at startup, so a path
+    /// resolved through CcStorage differs between a Director (its instance home) and the launcher (the
+    /// shared root) - the two ends of every signal here. Resolved that way, the Director polled a
+    /// directory the launcher never wrote and vice versa: every launcher-initiated stop became a
+    /// 20-second stall and a force-kill, and "install it now" reported success while the request sat in
+    /// a directory nobody watched. <see cref="LifecycleSignalNames.RootKey"/> already derives the NAME
+    /// from <see cref="InstanceContext.SharedRoot"/> for exactly this reason; the path must agree with
+    /// the name.
+    ///
+    /// WINDOWS CANNOT SEE A BUG HERE, WHICH IS WHY IT SHIPPED. The Windows arm addresses a kernel
+    /// object by NAME alone - the two processes never have to agree on a file path at all. The Unix arm
+    /// is the only place where agreeing on a path is load-bearing, so a platform-shared test suite ran
+    /// entirely green while one platform's delivery was completely inert. The cross-process tests in
+    /// <c>LifecycleSignalCrossProcessTests</c> exist to make two real processes agree on where a signal
+    /// lives; they are the detector this defect proved was missing.
     /// </summary>
     internal static string UnixRequestPath(string name)
-        => Path.Combine(CcStorage.ToolConfig("lifecycle-signals"), name + ".request");
+        => Path.Combine(InstanceContext.SharedRoot, "config", "lifecycle-signals", name + ".request");
 
     [SupportedOSPlatform("windows")]
     private sealed class WindowsListener : ILifecycleSignalListener
