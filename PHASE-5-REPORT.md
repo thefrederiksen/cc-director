@@ -17,7 +17,15 @@ The Director binds nothing. Removed outright:
   assets, including the session view and the dictate page).
 - The port allocator: the 7879-7898 range, the per-Director reservation files, the ghost-reservation
   pruning, and the Windows excluded-range reader (`netsh` parsing). Named instances no longer carry
-  an assigned port at all (`NamedInstance.Port` is gone; old registry JSON deserializes cleanly).
+  an assigned port at all (`NamedInstance.Port` is gone).
+
+  **The upgrade path was RUN, not reasoned about.** A throwaway program compiled against this
+  branch's Core deserialized (a) a pre-mission `named-instances.json` in which every instance
+  carries a `port`, and (b) a pre-mission Director registration whose `ControlEndpoint` is a real
+  loopback address. Both parsed cleanly - two instances with names, display names and gateway URLs
+  intact; the registration with its id, pid and old endpoint readable - so a machine upgrading onto
+  this build does not lose its instance registry or trip over its own leftover files. The dropped
+  `port` is simply not carried forward the next time the registry is written.
 - The startup self-probe. The Architect's ruling held: the probe existed to prove nothing was
   shadowing the bound port, and with no bound port its question no longer exists. It went with the
   route it called.
