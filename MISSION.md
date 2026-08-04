@@ -660,3 +660,39 @@ each contradicts something the mission had already claimed:
 **The hypothesis** - that a `Hello` failure while SignalR stays connected leaves a launcher streamed
 but never registered for commands - goes to the Manager to settle cheaply by injection. If it cannot
 be settled cheaply, it is recorded as open, not argued away.
+
+## THE DIRECTOR DOES BIND A LOOPBACK LISTENER, DURING SIGN-IN - 2026-08-04
+
+Found by the fixing Manager while widening the phase 7 guard, and **verified independently by the
+Architect before being accepted**, because it qualifies the mission's headline claim and the mission's
+own standard is that a claim is checked against the artifact.
+
+`CcDirector.Avalonia` - which IS the Director process - references the setup engine and calls
+`GatewayAccountEnrollRunner.SignInAndEnrollHostedAsync` from both `FirstRunWizardDialog` and
+`GatewayConnectionPanel`. That runner builds a `LoopbackLoginListener`, an `HttpListener` on
+loopback, to receive the sign-in callback. So the Director process CAN and DOES bind a listening
+socket - transiently, on loopback only, during interactive sign-in.
+
+**Ruling: this is ACCEPTED, and it must be STATED, never rounded to zero.**
+
+- It is accepted because it is not the thing the mission removes. The charter's target is a standing,
+  agent-reachable command door - the second entrance that confuses agents and invites scanning. This
+  is a browser handing back a credential to the process that asked for it, driven by a human click,
+  gone when the exchange completes, and carrying no fleet surface an agent could call.
+- It must be stated because the phase 5 proof observed STEADY STATE. "Two Directors owned zero
+  listening sockets" was measured on running Directors, and it remains true as measured - but the
+  honest claim is *the Director runs without a listening socket*, not *the Director never binds one*.
+  This mission has been caught four times by claims that were true as measured and false as worded.
+
+**The consequence nobody had connected, and it raises the stakes on the one un-run proof.** The
+outstanding pre-declared criterion is the first-launch wizard on a CLEAN Windows machine with no
+security popup - and this listener runs INSIDE that very wizard. The original defect was the port
+probe binding every interface, which is deleted; a loopback `HttpListener` is a different mechanism
+and would not normally raise the Windows prompt. **But "would not normally" is an argument, and this
+mission has ruled repeatedly that an argument is not a run.** So the clean-machine wizard proof is no
+longer a formality to tidy up after landing: it is the check on a specific, plausible way the
+headline user-facing promise could still fail. It stays outstanding, named, and the QA report says so.
+
+Second measurement from the same work, recorded because it went the other way: `LoopbackLoginListener`
+is NOT reachable from the Director's portless Control API component, so the guard's allow list came
+out STRICTER than planned rather than looser. The Manager reported both directions.
