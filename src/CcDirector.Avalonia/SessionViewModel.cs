@@ -89,6 +89,11 @@ public class SessionViewModel : INotifyPropertyChanged
         // handler, like the deletion badge, because it is a raw local FACT and not one of the Gateway-fold
         // inputs RaiseFoldProjection re-reads.
         session.OnPromptDeliveryChanged += OnPromptDeliveryChangedVm;
+        // The model this session is running (issue internal#1340). Its own handler for the same reason as
+        // the two above: it is a raw local FACT re-read at turn-end, not one of the Gateway-fold inputs
+        // RaiseFoldProjection re-reads, and a /model switch inside a working session raises none of the
+        // events the rail already hears.
+        session.OnCurrentModelChanged += OnCurrentModelChangedVm;
 
         if (session.PromptQueue != null)
         {
@@ -663,6 +668,52 @@ public class SessionViewModel : INotifyPropertyChanged
 
     public ISolidColorBrush AgentBadgeBrush => BadgeBrushFor(Session.AgentKind);
 
+    // ===== The model, folded into the agent badge (issue internal#1340) =====
+    //
+    // The owner picked the combined badge over a second one beside it: "Claude Code | fable-5" reads as one
+    // identity - which tool, running which model - and costs one badge's worth of the row rather than two,
+    // on a rail that already carries a role glyph, a not-delivered alarm and a winding-down marker.
+    //
+    // The rail RENDERS this; it does not decide it. Both halves come from ModelDisplayFold, the same
+    // function the Gateway stamps onto SessionDto.ModelDisplay for the browser clients, so the desktop and
+    // the Cockpit cannot word the same session two ways. It is folded here from the LOCAL DTO rather than
+    // read from a Gateway stamp because its two inputs are facts this Director owns firsthand (its records
+    // watcher writes the model; its driver declares the capability), so the answer is identical and it
+    // still reads correctly with no Gateway attached - unlike the session COLOUR, which reads Gateway-only
+    // inputs and is deliberately never folded here.
+
+    /// <summary>The model half of the agent badge: the recorded model shortened for the rail
+    /// (<c>fable-5</c>), or the honest words for whichever absence this is.</summary>
+    public string ModelLabel => ModelDisplayFold.For(FoldInput).Text;
+
+    /// <summary>True when there is no recorded model, so the badge can mute the model half rather than
+    /// give an absence the same weight as a fact. STYLING only - the words already say which absence
+    /// it is.</summary>
+    public bool IsModelAbsent => ModelDisplayFold.For(FoldInput).IsAbsent;
+
+    /// <summary>The model half's opacity: full weight for a recorded model, dimmed for either absence, so
+    /// a row with no model reads as quieter without the words changing. Bound directly rather than through
+    /// a bool-to-opacity converter, which is a whole class to say one number.</summary>
+    public double ModelOpacity => IsModelAbsent ? 0.72 : 1.0;
+
+    /// <summary>The badge tooltip: the agent, then the FULL recorded model id (the badge itself shows a
+    /// shortened form), or the sentence explaining the absence. One badge, one tooltip.</summary>
+    public string AgentModelTooltip => $"{AgentLabel} - {ModelDisplayFold.For(FoldInput).Tooltip}";
+
+    /// <summary>The agent's records named a different model - a mid-session <c>/model</c> switch, or the
+    /// first turn finishing and recording one at last. Repaint the badge on the UI thread: the records
+    /// watcher raises this from a background read.</summary>
+    private void OnCurrentModelChangedVm()
+    {
+        Dispatcher.UIThread.Post(() =>
+        {
+            OnPropertyChanged(nameof(ModelLabel));
+            OnPropertyChanged(nameof(IsModelAbsent));
+            OnPropertyChanged(nameof(ModelOpacity));
+            OnPropertyChanged(nameof(AgentModelTooltip));
+        });
+    }
+
     /// <summary>Pure agent-kind -> rail label mapping. Every provider has its own arm; the
     /// default is Claude Code (kind 0). Static so it can be unit-tested without a live
     /// <see cref="Session"/> (issue #517 regression: Cursor must not fall through to "Claude Code").</summary>
@@ -939,6 +990,11 @@ public class SessionViewModel : INotifyPropertyChanged
         OnPropertyChanged(nameof(CustomColorBrush));
         OnPropertyChanged(nameof(AgentLabel));
         OnPropertyChanged(nameof(AgentBadgeBrush));
+        // The model rides ON the agent badge, so anything that repaints the badge repaints both halves.
+        OnPropertyChanged(nameof(ModelLabel));
+        OnPropertyChanged(nameof(IsModelAbsent));
+            OnPropertyChanged(nameof(ModelOpacity));
+        OnPropertyChanged(nameof(AgentModelTooltip));
     }
 
     public event PropertyChangedEventHandler? PropertyChanged;

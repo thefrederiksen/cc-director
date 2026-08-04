@@ -13,6 +13,8 @@ import {
   directorsByMachine,
   groupByDirector,
   machineKeyOf,
+  modelChip,
+  modelKeyOf,
 } from "./fleetMapFormat";
 
 function session(overrides: Partial<SessionDto> = {}): SessionDto {
@@ -262,5 +264,77 @@ describe("agentBadgeText", () => {
     expect(agentBadgeText(session({ agent: "" }), "machine")).toBe("?");
     expect(agentBadgeText(session({ agent: "   " }), "machine")).toBe("?");
     expect(agentBadgeText(session({ agent: undefined }), "machine")).toBe("?");
+  });
+});
+
+// Issue devthrottle_internal#1340. The card renders the Gateway's model verdict and composes none of it;
+// what these pin is WHEN a chip appears and WHICH lane a card lands in - never the wording, which is the
+// Gateway's and is tested once, in C#, where it is decided.
+describe("modelChip", () => {
+  const reported = session({
+    modelDisplay: { kind: "reported", text: "fable-5", modelId: "claude-fable-5", tooltip: "claude-fable-5" },
+  });
+
+  it("renders the Gateway's words verbatim on every pivot but its own", () => {
+    for (const pivot of ["machine", "repo", "agent", "list"]) {
+      expect(modelChip(reported, pivot)).toEqual({ text: "fable-5", title: "claude-fable-5", absent: false });
+    }
+  });
+
+  it("shows nothing on the model pivot, where the lane header already states it", () => {
+    expect(modelChip(reported, "model")).toBeNull();
+  });
+
+  it("marks either absence as absent, and keeps the two sets of words apart", () => {
+    const notYet = session({
+      modelDisplay: { kind: "notRecordedYet", text: "no model yet", modelId: null, tooltip: "not yet", isAbsent: true },
+    });
+    const never = session({
+      modelDisplay: { kind: "notReported", text: "model not reported", modelId: null, tooltip: "never", isAbsent: true },
+    });
+    expect(modelChip(notYet, "machine")?.absent).toBe(true);
+    expect(modelChip(never, "machine")?.absent).toBe(true);
+    expect(modelChip(notYet, "machine")?.text).not.toBe(modelChip(never, "machine")?.text);
+  });
+
+  it("renders nothing when the Gateway stamped no verdict - a missing VERDICT is not a missing model", () => {
+    expect(modelChip(session(), "machine")).toBeNull();
+    expect(modelChip(session({ modelDisplay: null }), "machine")).toBeNull();
+    expect(modelChip(session({ modelDisplay: { kind: "reported", text: "  " } }), "machine")).toBeNull();
+  });
+});
+
+describe("modelKeyOf", () => {
+  it("names a lane with the FULL recorded id, not the shortened badge text", () => {
+    const s = session({ modelDisplay: { kind: "reported", text: "fable-5", modelId: "claude-fable-5" } });
+    expect(modelKeyOf(s)).toEqual({ key: "claude-fable-5", title: "claude-fable-5" });
+  });
+
+  it("folds two spellings of one model into one lane", () => {
+    const a = session({ modelDisplay: { kind: "reported", text: "opus-5", modelId: "claude-opus-5" } });
+    const b = session({ modelDisplay: { kind: "reported", text: "opus-5", modelId: "Claude-Opus-5" } });
+    expect(modelKeyOf(a).key).toBe(modelKeyOf(b).key);
+  });
+
+  it("gives the two absences SEPARATE lanes - pooling them would undo the distinction", () => {
+    const notYet = session({ modelDisplay: { kind: "notRecordedYet", text: "no model yet", isAbsent: true } });
+    const never = session({ modelDisplay: { kind: "notReported", text: "model not reported", isAbsent: true } });
+    expect(modelKeyOf(notYet).key).not.toBe(modelKeyOf(never).key);
+    expect(modelKeyOf(notYet).title).toBe("no model yet");
+    expect(modelKeyOf(never).title).toBe("model not reported");
+  });
+
+  it("puts an unstamped session in its own lane - 'we were not told' is neither absence", () => {
+    const key = modelKeyOf(session()).key;
+    expect(key).not.toBe(modelKeyOf(session({ modelDisplay: { kind: "notReported", text: "x" } })).key);
+  });
+
+  it("keys an absence so it can never collide with a real model id", () => {
+    // A recorded id is always trimmed and non-empty, so the reserved prefix is enough on its own; nothing
+    // here is trying to influence lane ORDER, which is by session count and then title like every pivot.
+    expect(modelKeyOf(session()).key.startsWith("absent:")).toBe(true);
+    expect(modelKeyOf(session({ modelDisplay: { kind: "notReported", text: "x" } })).key.startsWith("absent:")).toBe(
+      true,
+    );
   });
 });

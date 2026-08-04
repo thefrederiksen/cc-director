@@ -85,6 +85,36 @@ def _repo_name(repo: str) -> str:
     return repo.replace("\\", "/").rstrip("/").split("/")[-1] if repo else "-"
 
 
+def _model_text(s: Dict[str, Any]) -> str:
+    """The MODEL column (issue devthrottle_internal#1340): which model this session is actually running.
+
+    It exists because an agent driving the fleet had to parse the JSON to learn the one fact that
+    drives both cost and quality, while a human reading the same table could not learn it at all.
+
+    RENDER, NEVER RULE. The Gateway folds this - the full recorded id when there is one, and the words
+    for WHICH of the two absences applies when there is not ("no model yet" for a session that has not
+    finished a turn, "model not reported" for an agent that can never report one). This prints the id
+    in full rather than the fold's shortened badge text, because a table has the width a rail does not
+    and a truncated id is not a name anything else will match.
+
+    A row with no folded verdict at all is a Gateway too old to have stamped one. Then, and only then,
+    the raw recorded model stands in - and when there is no model either, the cell reads "(unknown)":
+    deliberately NOT one of the fold's two sentences, because this is a third case. We were told
+    nothing, which is not the same as being told there is no model YET or that there never will be.
+    An empty cell would have quietly claimed the second of those.
+    """
+    display = s.get("modelDisplay", s.get("ModelDisplay"))
+    if isinstance(display, dict):
+        model_id = (display.get("modelId") or display.get("ModelId") or "").strip()
+        if model_id:
+            return model_id
+        text = (display.get("text") or display.get("Text") or "").strip()
+        if text:
+            return text
+    raw = (director.field(s, "currentModel", "CurrentModel") or "").strip()
+    return raw if raw else "(unknown)"
+
+
 def _get_fleet() -> Tuple[List[Dict[str, Any]], Optional[bool], Optional[str], Optional[str]]:
     """The fleet roster and BOTH folded cautions, with this tool's error posture (issue #1051).
 
@@ -219,6 +249,12 @@ def list_sessions(json_output: bool) -> None:
     table.add_column("NAME")
     table.add_column("MACHINE")
     table.add_column("REPOSITORY")
+    # Issue devthrottle_internal#1340. ONE new column, not two: an AGENT column beside it was tried and
+    # cost more than it gave. Rich lays this table out at 80 columns when stdout is a pipe (which is how
+    # every agent reads it), and the eighth column pushed STATUS far enough to elide "Exited (crashed)" -
+    # trading a fact nobody could read anywhere for one already implied by the model id and available in
+    # --json. The model is the fact that was invisible; it gets the width.
+    table.add_column("MODEL")
     table.add_column("STATUS")
 
     me = director.session_id()
@@ -241,7 +277,15 @@ def list_sessions(json_output: bool) -> None:
         if s.get("crashed", s.get("Crashed")) is True:
             status = f"{status} (crashed)"
         marker = " (you)" if me and sid.lower() == me.lower() else ""
-        table.add_row(number_text, director.short_id(sid) + marker, name, machine, _repo_name(repo), status)
+        table.add_row(
+            number_text,
+            director.short_id(sid) + marker,
+            name,
+            machine,
+            _repo_name(repo),
+            _model_text(s),
+            status,
+        )
 
     console.print(table)
     # Issue #1051: printed AFTER the table, so the rows the reader can trust come first and the

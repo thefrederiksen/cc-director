@@ -553,6 +553,38 @@
   font-weight: 600;
 }
 
+/* The model chip (issue devthrottle_internal#1340), riding beside the agent chip it belongs with. Filled
+   and a shade brighter than the agent chip, because the model id is what a reader is scanning for and the
+   agent beside it is the context. NO text-transform: these are recorded ids, and capitalizing
+   "claude-fable-5" would print a name the records do not contain. */
+.fmap-model {
+  flex: 0 0 auto;
+  font-size: 9.5px;
+  letter-spacing: 0.02em;
+  padding: 2px 7px;
+  border-radius: 10px;
+  border: 1px solid #3a4668;
+  background: #202a45;
+  color: #c3ccdf;
+  font-weight: 600;
+  max-width: 16ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Either absence - "no model yet" or "model not reported". Outlined rather than filled, and lighter, so
+   it reads as a note about the card instead of as a model named "no model yet". The WORDS carry which
+   absence it is; this only sets the weight, and it deliberately does not animate or pulse: one of the two
+   is never going to arrive, and a spinner would promise otherwise. */
+.fmap-model.absent {
+  border-style: dashed;
+  background: transparent;
+  color: var(--text-dim);
+  font-weight: 500;
+  opacity: 0.85;
+}
+
 .fmap-card-tags {
   display: flex;
   flex-wrap: wrap;
