@@ -115,15 +115,28 @@ public sealed class GatewayDirectoryRegistrationTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Register_rejects_missing_tailnet_endpoint()
+    public async Task Register_accepts_an_endpointless_registration_because_that_is_now_every_director()
     {
+        // Remove-the-network-port mission, phase 5: this used to assert the OPPOSITE - an empty
+        // endpoint with no unreachable-reason was rejected as an undialable entry. That guard
+        // belonged to the era when the Gateway dialled Directors back; the Director now listens on
+        // nothing and advertises nothing, so an endpointless registration is what EVERY current
+        // Director sends, and rejecting it would refuse the whole fleet.
+        var id = Guid.NewGuid().ToString();
         var req = new DirectorRegistrationRequest
         {
-            DirectorId = Guid.NewGuid().ToString(),
+            DirectorId = id,
             TailnetEndpoint = "",
+            MachineName = "machine-portless",
         };
+
         var resp = await _http.PostAsJsonAsync("directors/register", req);
-        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+
+        Assert.Equal(HttpStatusCode.Created, resp.StatusCode);
+        var dto = await resp.Content.ReadFromJsonAsync<DirectorDto>();
+        Assert.NotNull(dto);
+        Assert.Equal(id, dto!.DirectorId);
+        Assert.True(string.IsNullOrEmpty(dto.TailnetEndpoint), "an endpointless registration must not acquire an endpoint");
     }
 
     [Fact]

@@ -64,34 +64,48 @@ public sealed class WingmanAskForwardingTests : IAsyncLifetime
     [Fact]
     public async Task Ask_with_empty_question_returns_400()
     {
-        // We need a real session id, but it doesn't have to be one that exists
-        // in this Director - the Gateway's 404 path triggers BEFORE the body
-        // check when no Director claims the sid. So create one to ensure the
-        // sid lookup succeeds.
-        var sid = await TryCreateSessionOrFakeAsync();
-        var resp = await _http.PostAsJsonAsync($"sessions/{sid}/wingman/ask",
+        // The route validates the body BEFORE it locates a session, so any well-formed id proves
+        // the 400: an empty question never reaches a Director, which is the point.
+        var resp = await _http.PostAsJsonAsync($"sessions/{Guid.NewGuid()}/wingman/ask",
             new WingmanAskRequest { Question = "" });
         Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
     }
 
+    /// <summary>
+    /// The no-claude contract, at the verb core the Gateway's tunnel dispatches into.
+    ///
+    /// THIS TEST USED TO PASS WITHOUT RUNNING. It asked the Gateway over HTTP and needed a real
+    /// session, which it created through the Director's own `POST /sessions` route - a route the
+    /// Gateway Cleanup cut had already deleted. So creation always failed, `isReal` was always
+    /// false, and the body early-returned: a green test that asserted nothing. The
+    /// Remove-the-network-port mission's phase 5 exposed it, because re-pointing session creation
+    /// at the real create verb made creation SUCCEED for the first time - and the ask then failed,
+    /// since the Gateway's wingman-ask route is tunnel-only and this fixture has no tunnel.
+    ///
+    /// Restoring the old shape would restore a test that cannot fail. Asserting it at the core -
+    /// the same `wingman-ask` verb the tunnel invokes - is what actually holds the claim.
+    /// </summary>
     [Fact]
     public async Task Ask_no_claude_returns_no_claude_status_with_context_digest()
     {
-        var (sid, isReal) = await TryCreateRealSessionAsync();
-        if (!isReal)
-        {
-            // Couldn't create a real session in this CI environment - the
-            // unknown-session test already proves the 404 wire path, and the
-            // empty-question test proves the 400 wire path. Nothing more to
-            // verify here without a real session id.
-            return;
-        }
+        var session = _sm.CreatePipeModeSession(Path.GetTempPath());
 
-        var resp = await _http.PostAsJsonAsync($"sessions/{sid}/wingman/ask",
-            new WingmanAskRequest { Question = "what is going on" });
-        Assert.True(resp.IsSuccessStatusCode, $"HTTP {(int)resp.StatusCode}");
-        var body = await resp.Content.ReadFromJsonAsync<WingmanAskResult>();
+        var result = await SessionCommandExecutor.DispatchAsync(_sm, _director.DirectorId, new DirectorCommand
+        {
+            CommandId = "cmd-wingman-ask",
+            Verb = "wingman-ask",
+            SessionId = session.Id.ToString(),
+            PayloadJson = System.Text.Json.JsonSerializer.Serialize(
+                new WingmanAskRequest { Question = "what is going on" },
+                new System.Text.Json.JsonSerializerOptions(System.Text.Json.JsonSerializerDefaults.Web)),
+        });
+
+        Assert.Equal(DirectorCommandStatus.Ok, result.Status);
+        var body = System.Text.Json.JsonSerializer.Deserialize<WingmanAskResult>(result.BodyJson ?? "{}",
+            new System.Text.Json.JsonSerializerOptions(System.Text.Json.JsonSerializerDefaults.Web));
         Assert.NotNull(body);
+        // ClaudePath is empty on this fixture's options, so the fail-open contract answers without
+        // ever spawning a process.
         Assert.Equal("no_claude", body!.Status);
         // The digest must reflect the session - regardless of CLI configuration.
         Assert.False(string.IsNullOrEmpty(body.ContextDigest));
@@ -106,38 +120,9 @@ public sealed class WingmanAskForwardingTests : IAsyncLifetime
         Assert.Equal(HttpStatusCode.NotFound, resp.StatusCode);
     }
 
-    private async Task<string> TryCreateSessionOrFakeAsync()
-    {
-        var (sid, _) = await TryCreateRealSessionAsync();
-        return sid;
-    }
-
-    private async Task<(string sid, bool isReal)> TryCreateRealSessionAsync()
-    {
-        // Try the real ConPty path via the create verb core - the same code the tunnel dispatches
-        // into (the Director's POST /sessions route is gone with its listener). If that fails (no
-        // claude/cmd available in CI), fall back to a non-null sid that exercises the gateway wire
-        // but lands a 404 - acceptable for the empty-question / unknown-session tests.
-        try
-        {
-            var result = await SessionCommandExecutor.DispatchAsync(_sm, _director.DirectorId, new DirectorCommand
-            {
-                CommandId = "cmd-wingman-ask",
-                Verb = "create",
-                SessionId = "",
-                PayloadJson = System.Text.Json.JsonSerializer.Serialize(
-                    new NewSessionRequest { RepoPath = Path.GetTempPath(), Agent = "ClaudeCode" },
-                    new System.Text.Json.JsonSerializerOptions(System.Text.Json.JsonSerializerDefaults.Web)),
-            });
-            if (result.Status != DirectorCommandStatus.Ok) return (Guid.NewGuid().ToString(), false);
-            var session = System.Text.Json.JsonSerializer.Deserialize<SessionDto>(result.BodyJson ?? "{}",
-                new System.Text.Json.JsonSerializerOptions(System.Text.Json.JsonSerializerDefaults.Web));
-            return session?.SessionId is { } s ? (s, true) : (Guid.NewGuid().ToString(), false);
-        }
-        catch
-        {
-            return (Guid.NewGuid().ToString(), false);
-        }
-    }
+    // The two session-creating helpers that used to live here are gone. They spawned a real agent
+    // process to obtain a session id that neither remaining wire test actually needs: the
+    // empty-question 400 is returned by the route BEFORE it locates a session, and the
+    // unknown-session test wants an id no Director claims.
 
 }

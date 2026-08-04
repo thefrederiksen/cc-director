@@ -92,29 +92,54 @@ switch ($Command) {
     New-Item -ItemType Directory -Force -Path $rig, $gwRoot, $rigBin, $results | Out-Null
 
     # ---- this branch's own command line, first on the session PATH -------------------------
+    #
+    # IT MUST BE THIS BRANCH'S SOURCE, AND PROVING THAT TOOK A CHECK. Running the obvious
+    # `python tools\cc-devthrottle\main.py` does NOT do it: main.py says
+    # `from cc_devthrottle.cli import app`, which resolves to the INSTALLED package in the pyenv's
+    # site-packages - pre-mission code that still knows about CC_DIRECTOR_API. A checklist run that
+    # way would have proved the old tools work, which is worse than proving nothing. The branch
+    # package is `src`, so the shim puts the tool directory on PYTHONPATH and enters through it.
+    # (The installed pyenv is used only as an interpreter with the right dependencies; it is read,
+    # never written.)
     $py = Join-Path $env:LOCALAPPDATA 'cc-director\pyenv\Scripts\python.exe'
-    if (-not (Test-Path $py)) { Fail "no python environment at $py (the installed pyenv is used to RUN this branch's tool source; it is read, never written)" }
-    Set-Content (Join-Path $rigBin 'cc-devthrottle.cmd') "@`"$py`" `"$repo\tools\cc-devthrottle\main.py`" %*" -Encoding ascii
-    if (Test-Path "$repo\tools\cc-status\main.py") {
-        Set-Content (Join-Path $rigBin 'cc-status.cmd') "@`"$py`" `"$repo\tools\cc-status\main.py`" %*" -Encoding ascii
-    }
+    if (-not (Test-Path $py)) { Fail "no python environment at $py" }
+    $toolsDir = Join-Path $repo 'tools'
+    $ccdtDir  = Join-Path $toolsDir 'cc-devthrottle'
+    $shim = "@echo off`r`nset PYTHONPATH=$ccdtDir;$toolsDir`r`n`"$py`" -c `"from src.cli import app; app()`" %*"
+    Set-Content (Join-Path $rigBin 'cc-devthrottle.cmd') $shim -Encoding ascii
 
     # ---- gateway ---------------------------------------------------------------------------
-    if (-not $SkipBuild) {
-        Say 'publishing the Gateway from this worktree'
+    # -SkipBuild means REUSE WHAT EXISTS, so it cannot skip a build whose output is not there -
+    # skipping into a missing stage would fail with a path error that says nothing about the cause.
+    # CcDirector.GatewayApp (devthrottle-gateway.exe) is the SELF-HOSTED Gateway. Not
+    # CcDirector.Gateway.Host: that is the HOSTED image and it fails closed when the hosted
+    # contract is absent, by design, rather than downgrading to single-tenant no-auth semantics -
+    # phase 2's report records the same correction.
+    $stagedExe = if (Test-Path $stage) { @(Get-ChildItem $stage -Filter 'devthrottle-gateway.exe') } else { @() }
+    if (-not $SkipBuild -or $stagedExe.Count -eq 0) {
+        if ($SkipBuild) { Say 'no staged Gateway to reuse - publishing it anyway' }
+        else { Say 'publishing the self-hosted Gateway from this worktree' }
         if (Test-Path $stage) { Remove-Item -Recurse -Force $stage }
-        & dotnet publish (Join-Path $repo 'src\CcDirector.Gateway.Host\CcDirector.Gateway.Host.csproj') -c Debug -o $stage --nologo -v q
+        & dotnet publish (Join-Path $repo 'src\CcDirector.GatewayApp\CcDirector.GatewayApp.csproj') -c Debug -o $stage --nologo -v q
         if ($LASTEXITCODE -ne 0) { Fail 'Gateway publish failed' }
     }
-    $gwExe = Get-ChildItem $stage -Filter '*.exe' | Where-Object { $_.Name -notlike 'createdump*' } | Select-Object -First 1
-    if (-not $gwExe) { Fail "no Gateway executable in $stage" }
+    $gwExe = Get-ChildItem $stage -Filter 'devthrottle-gateway.exe' | Select-Object -First 1
+    if (-not $gwExe) { Fail "no devthrottle-gateway.exe in $stage" }
 
     Say "starting the isolated Gateway on port $GatewayPort (own root: $gwRoot)"
     $gwLog = Join-Path $results 'gateway.out'
-    $gw = Start-Process -FilePath $gwExe.FullName -ArgumentList @('--port', "$GatewayPort") `
+    # A wrapper sets CC_DIRECTOR_ROOT process-locally. Start-Process -Environment is PowerShell 7
+    # only and this fleet's scripts run under Windows PowerShell 5.1, where it fails with an
+    # unhelpful "parameter cannot be found" - the same wrapper shape the Directors below use.
+    # --no-autostart is NOT optional here: without it the rig Gateway would write the user's HKCU
+    # Run key and this throwaway build would be launched on every login. Never touch the owner's
+    # autostart. --managed is deliberately absent too, so it supervises no Cockpit and never
+    # self-updates.
+    $gwWrapper = Join-Path $rig 'start-gateway.cmd'
+    Set-Content $gwWrapper "@echo off`r`nset CC_DIRECTOR_ROOT=$gwRoot`r`n`"$($gwExe.FullName)`" --port $GatewayPort --no-autostart" -Encoding ascii
+    $gw = Start-Process -FilePath 'cmd.exe' -ArgumentList @('/c', "`"$gwWrapper`"") `
         -WorkingDirectory $stage -PassThru -WindowStyle Hidden `
-        -RedirectStandardOutput $gwLog -RedirectStandardError "$gwLog.err" `
-        -Environment @{ CC_DIRECTOR_ROOT = $gwRoot }
+        -RedirectStandardOutput $gwLog -RedirectStandardError "$gwLog.err"
     $ok = $false
     foreach ($i in 1..60) {
         try { if ((Invoke-WebRequest "http://127.0.0.1:$GatewayPort/healthz" -UseBasicParsing -TimeoutSec 2).StatusCode -eq 200) { $ok = $true; break } } catch {}
@@ -122,7 +147,14 @@ switch ($Command) {
     }
     if (-not $ok) { Get-Content $gwLog -Tail 30 | Write-Host; Fail "the isolated Gateway never answered /healthz on $GatewayPort" }
 
-    $tokenFile = Join-Path $gwRoot 'config\gateway-token.txt'
+    # The pid recorded must be the GATEWAY's, not the cmd.exe wrapper's - 'down' stops what this
+    # records, and stopping the wrapper would leave the Gateway running as an orphan. Resolved by
+    # exact image path so it can only ever be the executable this rig staged.
+    $gwProc = @(Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.Path -and ($_.Path -ieq $gwExe.FullName) }) | Select-Object -First 1
+    if (-not $gwProc) { Fail "the Gateway answered /healthz but no process is running $($gwExe.FullName)" }
+    Say "gateway pid $($gwProc.Id) (wrapper cmd was $($gw.Id))"
+
+    $tokenFile = Join-Path $gwRoot 'config\director\gateway-token.txt'
     $token = ''
     foreach ($i in 1..20) {
         if (Test-Path $tokenFile) { $token = (Get-Content $tokenFile -Raw).Trim(); if ($token) { break } }
@@ -134,15 +166,30 @@ switch ($Command) {
     # ---- two Directors ---------------------------------------------------------------------
     foreach ($slot in @($SlotA, $SlotB)) {
         $root = DirRoot $slot
-        New-Item -ItemType Directory -Force -Path (Join-Path $root 'config') | Out-Null
-        Set-Content (Join-Path $root 'config\config.json') (@{ gateway = @{ url = "http://127.0.0.1:$GatewayPort"; token = $token } } | ConvertTo-Json) -Encoding utf8
+        # The Director reads its config from its INSTANCE HOME, not the storage root - phase 2 lost
+        # time to exactly this, so it is written where the running Director actually looks.
+        $instanceConfig = Join-Path $root 'instances\default\config'
+        New-Item -ItemType Directory -Force -Path $instanceConfig | Out-Null
+        Set-Content (Join-Path $instanceConfig 'config.json') (@{ gateway = @{ url = "http://127.0.0.1:$GatewayPort"; token = $token } } | ConvertTo-Json) -Encoding utf8
 
-        if (-not $SkipBuild) {
+        # THIS BRANCH'S TOOLS WHERE THE DIRECTOR ACTUALLY LOOKS. SessionManager puts its OWN
+        # instance bin FIRST on every session's PATH (deliberately - a stale copy elsewhere on the
+        # machine PATH must never win), so a shim in the rig's bin loses to whatever lives here.
+        # The first run of this rig proved it: the session resolved
+        # <root>\instances\default\bin\cc-devthrottle.cmd - the INSTALLED pre-mission tool - and
+        # every fleet command failed with "CC_DIRECTOR_API is not set". Installing the branch shim
+        # here is what an upgraded machine looks like, and it is the only way the checklist tests
+        # the command line under proof.
+        $instanceBin = Join-Path $root 'instances\default\bin'
+        New-Item -ItemType Directory -Force -Path $instanceBin | Out-Null
+        Set-Content (Join-Path $instanceBin 'cc-devthrottle.cmd') $shim -Encoding ascii
+
+        $exe = Join-Path $repo "local_builds\cc-director$slot.exe"
+        if (-not $SkipBuild -or -not (Test-Path $exe)) {
             Say "building the slot $slot Director from this worktree"
             & powershell -NoProfile -File (Join-Path $repo 'scripts\local-build-avalonia.ps1') -Slot $slot -OutputDir (Join-Path $repo 'local_builds')
             if ($LASTEXITCODE -ne 0) { Fail "slot $slot build failed" }
         }
-        $exe = Join-Path $repo "local_builds\cc-director$slot.exe"
         if (-not (Test-Path $exe)) { Fail "no slot exe at $exe" }
 
         # The wrapper sets the environment PROCESS-LOCALLY (rule 0b: the task, not this shell,
@@ -168,7 +215,7 @@ switch ($Command) {
         Say "slot $slot RUNNING: pid=$($reg.Pid) directorId=$($reg.DirectorId) controlEndpoint='$($reg.ControlEndpoint)'"
     }
 
-    @{ gatewayPid = $gw.Id; gatewayPort = $GatewayPort; token = $token; slotA = $SlotA; slotB = $SlotB } |
+    @{ gatewayPid = $gwProc.Id; gatewayExe = $gwExe.FullName; gatewayPort = $GatewayPort; token = $token; slotA = $SlotA; slotB = $SlotB } |
         ConvertTo-Json | Set-Content $state -Encoding utf8
     Say "rig is UP. state: $state"
 }
@@ -255,59 +302,74 @@ switch ($Command) {
     $outFile = Join-Path $results 'checklist-results.txt'
     if (Test-Path $outFile) { Remove-Item $outFile -Force }
 
-    # The checklist the SESSION runs. It inherits the session environment the Director builds -
-    # including this session's own Gateway key - which is the only honest way to exercise it.
-    $checklist = Join-Path $rig 'checklist.cmd'
+    # The checklist the SESSION runs, in PowerShell rather than batch. The first version used a
+    # `call :run` subroutine with `shift`, and it produced the environment dump but not one single
+    # command line - a checklist that silently ran nothing while looking like it had run. Debugging
+    # batch quoting is not worth it when the failure mode is "reports nothing and looks fine";
+    # PowerShell records each command's exit code and its own output directly.
+    $checklistPs = Join-Path $rig 'checklist.ps1'
     @'
-@echo off
-setlocal enabledelayedexpansion
-set OUT=%1
-echo === phase 5 cc-* checklist, run inside a real session === > "%OUT%"
-echo --- the environment the session was handed --- >> "%OUT%"
-if defined CC_GATEWAY_URL (echo CC_GATEWAY_URL=[present] >> "%OUT%") else (echo CC_GATEWAY_URL=[MISSING] >> "%OUT%")
-if defined CC_GATEWAY_SESSION_KEY (echo CC_GATEWAY_SESSION_KEY=[present] >> "%OUT%") else (echo CC_GATEWAY_SESSION_KEY=[MISSING] >> "%OUT%")
-if defined CC_DIRECTOR_ID (echo CC_DIRECTOR_ID=[present] >> "%OUT%") else (echo CC_DIRECTOR_ID=[MISSING] >> "%OUT%")
-if defined CC_SESSION_ID (echo CC_SESSION_ID=[present] >> "%OUT%") else (echo CC_SESSION_ID=[MISSING] >> "%OUT%")
-if defined CC_DIRECTOR_API (echo CC_DIRECTOR_API=[STILL PRESENT - FAIL] >> "%OUT%") else (echo CC_DIRECTOR_API=[absent - correct] >> "%OUT%")
-if defined CC_DIRECTOR_TOKEN (echo CC_DIRECTOR_TOKEN=[STILL PRESENT - FAIL] >> "%OUT%") else (echo CC_DIRECTOR_TOKEN=[absent - correct] >> "%OUT%")
-echo. >> "%OUT%"
+param([Parameter(Mandatory=$true)][string]$Out)
+$ErrorActionPreference = 'Continue'
+function W([string]$line) { Add-Content -Path $Out -Value $line -Encoding utf8 }
 
-call :run "session list"       cc-devthrottle session list
-call :run "session whoami"     cc-devthrottle session whoami
-call :run "actions --json"     cc-devthrottle actions --json
-call :run "repo list"          cc-devthrottle repo list
-call :run "worktree list"      cc-devthrottle worktree list
-call :run "machine list"       cc-devthrottle machine list
-call :run "director list"      cc-devthrottle director list
-call :run "skill list"         cc-devthrottle skill list
-call :run "workflow list"      cc-devthrottle workflow list
-call :run "schedule list"      cc-devthrottle schedule list
-call :run "mission list"       cc-devthrottle mission list
-call :run "browser list"       cc-devthrottle browser list
-call :run "session rename"     cc-devthrottle session rename "phase5-proof"
-call :run "session hold"       cc-devthrottle session hold
-call :run "session release"    cc-devthrottle session release
-call :run "session role"       cc-devthrottle session role Worker
-call :run "message send all"   cc-devthrottle message send all "phase 5 proof broadcast"
-echo. >> "%OUT%"
-echo === done === >> "%OUT%"
-exit /b 0
+W '=== phase 5 cc-* checklist, run inside a real session ==='
+W '--- the environment the session was handed ---'
+foreach ($pair in @(
+  @('CC_GATEWAY_URL', $true), @('CC_GATEWAY_SESSION_KEY', $true), @('CC_DIRECTOR_ID', $true),
+  @('CC_SESSION_ID', $true), @('CC_DIRECTOR_API', $false), @('CC_DIRECTOR_TOKEN', $false))) {
+  $name, $wanted = $pair
+  $present = [bool](Get-Item "env:$name" -ErrorAction SilentlyContinue)
+  $verdict = if ($present -eq $wanted) { 'correct' } else { 'WRONG' }
+  W ("  {0,-26} present={1,-5} {2}" -f $name, $present, $verdict)
+}
+W ''
+W ('--- which cc-devthrottle PATH resolves (must be this branch, not the install) ---')
+$resolved = (Get-Command cc-devthrottle -ErrorAction SilentlyContinue)
+W ("  {0}" -f ($(if ($resolved) { $resolved.Source } else { '(NOT ON PATH)' })))
+W ''
 
-:run
-set NAME=%~1
-shift
-%1 %2 %3 %4 %5 %6 %7 > "%TEMP%\phase5-cmd.txt" 2>&1
-if errorlevel 1 (
-  echo FAIL  !NAME! >> "%OUT%"
-  type "%TEMP%\phase5-cmd.txt" >> "%OUT%"
-) else (
-  echo PASS  !NAME! >> "%OUT%"
+$commands = @(
+  @('session list',    @('session','list')),
+  @('session whoami',  @('session','whoami')),
+  @('actions --json',  @('actions','--json')),
+  @('repo list',       @('repo','list')),
+  @('worktree list',   @('worktree','list')),
+  @('machine list',    @('machine','list')),
+  @('director list',   @('director','list')),
+  @('skill list',      @('skill','list')),
+  @('workflow list',   @('workflow','list')),
+  @('schedule list',   @('schedule','list')),
+  @('mission list',    @('mission','list')),
+  @('browser list',    @('browser','list')),
+  @('session rename',  @('session','rename','phase5-proof')),
+  @('session hold',    @('session','hold')),
+  # `session release` is NOT a command - `hold --release` is. The first run of this checklist
+  # invented it and the tool answered "Usage:" with exit 2, which is the command line being right
+  # and the rig being wrong. Recorded rather than quietly corrected, because a rig error that
+  # looks like a product failure is worth exactly one sentence the next reader will not have to
+  # re-derive.
+  @('session hold --release', @('session','hold','--release')),
+  @('session role',    @('session','role','Worker')),
+  @('message send all',@('message','send','all','phase 5 proof broadcast'))
 )
-exit /b 0
-'@ | Set-Content $checklist -Encoding ascii
+foreach ($c in $commands) {
+  $name, $cmdArgs = $c
+  $output = & cc-devthrottle @cmdArgs 2>&1 | Out-String
+  if ($LASTEXITCODE -eq 0) {
+    W ("PASS  {0}" -f $name)
+  } else {
+    W ("FAIL  {0}  (exit {1})" -f $name, $LASTEXITCODE)
+    foreach ($l in ($output -split "`n" | Where-Object { $_.Trim() } | Select-Object -First 4)) { W ("        {0}" -f $l.TrimEnd()) }
+  }
+}
+W ''
+W '=== done ==='
+'@ | Set-Content $checklistPs -Encoding utf8
 
     Say "creating the checklist session THROUGH the Gateway (POST /directors/$($regA.DirectorId)/sessions)"
-    $body = @{ repoPath = $rig; agent = 'RawCli'; command = 'cmd'; commandArgs = "/c `"`"$checklist`" `"$outFile`"`""; name = 'phase5 proof checklist' } | ConvertTo-Json
+    $psArgs = "-NoProfile -ExecutionPolicy Bypass -File `"$checklistPs`" -Out `"$outFile`""
+    $body = @{ repoPath = $rig; agent = 'RawCli'; command = 'powershell'; commandArgs = $psArgs; name = 'phase5 proof checklist' } | ConvertTo-Json
     $resp = Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:$($s.gatewayPort)/directors/$($regA.DirectorId)/sessions" `
         -Headers @{ Authorization = "Bearer $($s.token)" } -ContentType 'application/json' -Body $body
     Say "session created: $($resp.sessionId)"
@@ -349,10 +411,14 @@ exit /b 0
             Unregister-ScheduledTask -TaskName (TaskName $slot) -Confirm:$false
         }
     }
+    # Exact image path, so this can only ever stop the executable this rig staged - never a Gateway
+    # the owner is running.
     $gw = Get-Process -Id $s.gatewayPid -ErrorAction SilentlyContinue
-    if ($gw -and $gw.ProcessName -like '*Gateway*') {
+    if ($gw -and $gw.Path -and ($gw.Path -ieq $s.gatewayExe)) {
         Say "stopping the isolated Gateway (pid $($s.gatewayPid))"
         Stop-Process -Id $s.gatewayPid -Force -Confirm:$false
+    } elseif ($gw) {
+        Say "NOT stopping pid $($s.gatewayPid): its image $($gw.Path) is not this rig's Gateway"
     }
     Say 'rig is DOWN'
 }
