@@ -395,3 +395,35 @@ stack explained a different suite's flake. Two lines of evidence, one cause.
 not smuggling in beside a port removal. Filed with the evidence. But it belongs in the QA report as a
 fleet-wide finding, because every mission in this repository currently merges on a signal this defect
 corrupts.
+
+## macOS: the regression was REAL, and proving it caught it - 2026-08-03
+
+The Architect refused to ship Phase 4 to macOS unproven, on the grounds that lifecycle WORKED there
+over HTTP and now depended on code never executed on that platform. The owner made a Mac mini
+available; a prover was seated on it. **It found a blocking defect within the hour.**
+
+**Every launcher-to-Director signal is silently lost on macOS, in both directions.**
+`LifecycleSignal.UnixRequestPath` derives the request-file path from each process's OWN redirected
+`CC_DIRECTOR_ROOT`, while the name uses the SHARED root - so the Director polls its instance home while
+the launcher writes to the shared root, and neither ever sees the other. Consequences on macOS:
+every stop is a 20-second stall then a force-kill leaving a phantom crash journal; every update applies
+by force-kill; and "install it now" REPORTS SUCCESS while nothing happens. Not shippable.
+
+The rest of Phase 4 does work there: the locator, hold/apply/rollback, version-from-registration and
+crash-restart all passed.
+
+### Why this could not have been caught on Windows
+
+**Windows uses kernel named events, so its two processes never have to agree on a FILE PATH at all.**
+The Unix arm is the only place where agreeing on a path is load-bearing. So a shared test suite could
+be entirely green while one platform's mechanism was completely inert. This is the strongest example
+in the mission of a proof that does not transfer: the tests were not weak, they were asking a question
+that only exists on one platform.
+
+**The fix is one path expression. The important deliverable is the MISSING CROSS-PROCESS TEST** - no
+test ever made two processes agree on where the signal lives, which is why this reached a prover rather
+than a suite. A fix without that test merely removes today's instance and leaves the next path change
+equally undetectable.
+
+**Ruling: the prover fixes it.** It is a prover, not the independent inspector, so nothing is
+compromised - and it is the only seat that can verify a defect invisible on the other platform.
