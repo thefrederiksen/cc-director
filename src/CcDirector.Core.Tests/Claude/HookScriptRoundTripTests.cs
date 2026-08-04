@@ -155,7 +155,7 @@ public sealed class HookScriptRoundTripTests : IDisposable
     {
         var session = Adopt();
         var preambleFile = WritePreamble(session, new SignedInUser("star@example.com", "Starlord"));
-        var pointerFile = SessionHookFiles.PointerPathFor(session.Id, _pointerDir);
+        var pointerFile = SessionHookFiles.PointerPathFor(session.Id, session.PointerDropToken, _pointerDir);
         var (interpreter, arguments) = ClaudeHook();
 
         var rotatedId = Guid.NewGuid().ToString();
@@ -200,7 +200,7 @@ public sealed class HookScriptRoundTripTests : IDisposable
     {
         var session = Adopt();
         var preambleFile = WritePreamble(session);
-        var pointerFile = SessionHookFiles.PointerPathFor(session.Id, _pointerDir);
+        var pointerFile = SessionHookFiles.PointerPathFor(session.Id, session.PointerDropToken, _pointerDir);
         var (interpreter, arguments) = ClaudeHook();
 
         foreach (var source in new[] { "clear", "compact" })
@@ -235,7 +235,7 @@ public sealed class HookScriptRoundTripTests : IDisposable
     {
         var session = Adopt();
         var preambleFile = SessionHookFiles.PreamblePathFor(session.Id, _preambleDir);
-        var pointerFile = SessionHookFiles.PointerPathFor(session.Id, _pointerDir);
+        var pointerFile = SessionHookFiles.PointerPathFor(session.Id, session.PointerDropToken, _pointerDir);
         var (interpreter, arguments) = ClaudeHook();
 
         var store = new InjectedTextStore(Path.Combine(_dir, "injected-text-cache.json"));
@@ -272,7 +272,7 @@ public sealed class HookScriptRoundTripTests : IDisposable
         var (interpreter, arguments) = ClaudeHook();
 
         var (exitCode, stdout, _) = RunHook(interpreter, arguments, null, preambleFile,
-            SessionHookFiles.PointerPathFor(session.Id, _pointerDir));
+            SessionHookFiles.PointerPathFor(session.Id, session.PointerDropToken, _pointerDir));
 
         Assert.Equal(0, exitCode);
         Assert.True(string.IsNullOrEmpty(stdout), $"an empty preamble file produced output: {stdout}");
@@ -333,7 +333,7 @@ public sealed class HookScriptRoundTripTests : IDisposable
         using var sweepOnly = new SessionPointerWatcher(_sessions, pointerDir) { SuppressWatcherForTests = true };
         sweepOnly.Start();
 
-        var pointerFile = SessionHookFiles.PointerPathFor(session.Id, pointerDir);
+        var pointerFile = SessionHookFiles.PointerPathFor(session.Id, session.PointerDropToken, pointerDir);
         var (interpreter, arguments) = ClaudeHook();
         var rotatedId = Guid.NewGuid().ToString();
 
@@ -343,8 +343,14 @@ public sealed class HookScriptRoundTripTests : IDisposable
         Assert.Equal(0, exitCode);
 
         // Well inside the deadline at a two-second interval, and nothing but the timer can deliver it.
+        //
+        // BOTH conditions are waited for, not just the pointer. Apply moves the pointer and THEN deletes
+        // the drop, so waiting on the pointer alone and asserting on the file immediately afterwards
+        // races those two statements - measured at roughly one run in ten, on this change and on its
+        // parent alike. The wait is the fix; the assertions below still state what must be true.
         var deadline = DateTime.UtcNow.AddSeconds(15);
-        while (DateTime.UtcNow < deadline && session.ClaudeSessionId != rotatedId)
+        while (DateTime.UtcNow < deadline
+               && (session.ClaudeSessionId != rotatedId || File.Exists(pointerFile)))
             Thread.Sleep(50);
 
         Assert.Equal(rotatedId, session.ClaudeSessionId);

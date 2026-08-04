@@ -54,21 +54,26 @@ public sealed class SessionPointerDropTests : IDisposable
 
     private SessionPointerWatcher Watcher() => new(_sessions, _dir);
 
+    /// <summary>The exact path the Director hands this session - id dot its own drop token.</summary>
+    private string PathFor(Session session)
+        => SessionHookFiles.PointerPathFor(session.Id, session.PointerDropToken, _dir);
+
+    private static string Body(string claudeId, string transcript, string source = "clear")
+        => $$"""{"session_id":"{{claudeId}}","transcript_path":"{{transcript}}","hook_event_name":"SessionStart","source":"{{source}}","cwd":"/tmp"}""";
+
     /// <summary>Write a drop exactly as the hook script does: the raw Claude event, at the path the
     /// Director handed that session.</summary>
-    private void Drop(Guid sessionId, string claudeId, string transcript, string source = "clear")
-        => File.WriteAllText(
-            SessionHookFiles.PointerPathFor(sessionId, _dir),
-            $$"""{"session_id":"{{claudeId}}","transcript_path":"{{transcript}}","hook_event_name":"SessionStart","source":"{{source}}","cwd":"/tmp"}""");
+    private void Drop(Session session, string claudeId, string transcript, string source = "clear")
+        => File.WriteAllText(PathFor(session), Body(claudeId, transcript, source));
 
     [Fact]
     public void A_drop_moves_the_sessions_pointer_to_the_rotated_transcript()
     {
         var session = Adopt();
         var rotatedId = Guid.NewGuid().ToString();
-        Drop(session.Id, rotatedId, "/tmp/rotated.jsonl");
+        Drop(session, rotatedId, "/tmp/rotated.jsonl");
 
-        Assert.True(Watcher().Apply(SessionHookFiles.PointerPathFor(session.Id, _dir)));
+        Assert.True(Watcher().Apply(PathFor(session)));
 
         Assert.Equal(rotatedId, session.ClaudeSessionId);
         Assert.Equal("/tmp/rotated.jsonl", session.ClaudeTranscriptPath);
@@ -84,9 +89,9 @@ public sealed class SessionPointerDropTests : IDisposable
     {
         var session = Adopt();
         var rotatedId = Guid.NewGuid().ToString();
-        Drop(session.Id, rotatedId, "/tmp/rotated.jsonl");
+        Drop(session, rotatedId, "/tmp/rotated.jsonl");
 
-        Watcher().Apply(SessionHookFiles.PointerPathFor(session.Id, _dir));
+        Watcher().Apply(PathFor(session));
 
         Assert.Equal(session.Id, _sessions.GetSessionByClaudeId(rotatedId)?.Id);
     }
@@ -100,8 +105,8 @@ public sealed class SessionPointerDropTests : IDisposable
     public void An_applied_drop_is_removed()
     {
         var session = Adopt();
-        Drop(session.Id, "rotated", "/tmp/rotated.jsonl");
-        var path = SessionHookFiles.PointerPathFor(session.Id, _dir);
+        Drop(session, "rotated", "/tmp/rotated.jsonl");
+        var path = PathFor(session);
 
         Assert.True(Watcher().Apply(path));
 
@@ -120,11 +125,11 @@ public sealed class SessionPointerDropTests : IDisposable
         var session = Adopt();
         var rotatedId = Guid.NewGuid().ToString();
         var watcher = Watcher();
-        var path = SessionHookFiles.PointerPathFor(session.Id, _dir);
+        var path = PathFor(session);
 
-        Drop(session.Id, rotatedId, "/tmp/rotated.jsonl");
+        Drop(session, rotatedId, "/tmp/rotated.jsonl");
         Assert.True(watcher.Apply(path));
-        Drop(session.Id, rotatedId, "/tmp/rotated.jsonl");
+        Drop(session, rotatedId, "/tmp/rotated.jsonl");
         Assert.True(watcher.Apply(path));
 
         Assert.Equal(rotatedId, session.ClaudeSessionId);
@@ -140,7 +145,7 @@ public sealed class SessionPointerDropTests : IDisposable
     public void A_drop_that_has_already_been_applied_and_removed_is_not_an_error()
     {
         var session = Adopt();
-        var path = SessionHookFiles.PointerPathFor(session.Id, _dir);
+        var path = PathFor(session);
 
         Assert.False(Watcher().Apply(path));
         Assert.Equal("the-id-from-launch", session.ClaudeSessionId);
@@ -158,7 +163,7 @@ public sealed class SessionPointerDropTests : IDisposable
         var rotatedId = Guid.NewGuid().ToString();
 
         // Nothing is watching this directory - no watcher was ever started, so no event exists.
-        Drop(session.Id, rotatedId, "/tmp/unnotified.jsonl");
+        Drop(session, rotatedId, "/tmp/unnotified.jsonl");
 
         Assert.Equal(1, Watcher().Sweep());
         Assert.Equal(rotatedId, session.ClaudeSessionId);
@@ -177,22 +182,57 @@ public sealed class SessionPointerDropTests : IDisposable
         var other = Adopt();
 
         // A body that names the OTHER session in every field a body could carry.
-        File.WriteAllText(SessionHookFiles.PointerPathFor(mine.Id, _dir),
+        File.WriteAllText(PathFor(mine),
             $$"""{"session_id":"hijack","transcript_path":"/tmp/hijack.jsonl","sessionId":"{{other.Id}}","cc_session_id":"{{other.Id}}"}""");
 
-        Watcher().Apply(SessionHookFiles.PointerPathFor(mine.Id, _dir));
+        Watcher().Apply(PathFor(mine));
 
         Assert.Equal("hijack", mine.ClaudeSessionId);
         Assert.Equal("the-id-from-launch", other.ClaudeSessionId);
+    }
+
+    /// <summary>
+    /// THE SIBLING-WRITE ATTACK - the one inspection 3 proved the old test never attempted. The drop
+    /// box is one shared same-user directory, so any agent process can derive it from its own
+    /// environment and write a file NAMED for a sibling live session. The name must not be enough:
+    /// a drop is applied only when its name also carries the victim's unguessable token, which an
+    /// attacker who can merely spell the victim's id does not have.
+    /// </summary>
+    [Fact]
+    public void A_sibling_write_naming_a_victims_session_id_cannot_retarget_its_pointer()
+    {
+        var victim = Adopt();
+        var watcher = Watcher();
+
+        // The attack exactly as the inspector described it: a valid hook body, at the path the OLD
+        // scheme authorized - the victim's bare session id.
+        var bareIdPath = Path.Combine(_dir, victim.Id + ".json");
+        File.WriteAllText(bareIdPath, Body("attacker-id", "/tmp/attacker.jsonl"));
+
+        Assert.False(watcher.Apply(bareIdPath), "a drop named by session id alone was applied");
+
+        // The same attack with a token the attacker minted for itself: right shape, wrong secret.
+        var guessedPath = SessionHookFiles.PointerPathFor(victim.Id, SessionHookFiles.NewDropToken(), _dir);
+        File.WriteAllText(guessedPath, Body("attacker-id", "/tmp/attacker.jsonl"));
+
+        Assert.False(watcher.Apply(guessedPath), "a drop carrying a guessed token was applied");
+
+        // A sweep - the delivery path that runs every two seconds in production - must refuse both too.
+        Assert.Equal(0, watcher.Sweep());
+
+        Assert.Equal("the-id-from-launch", victim.ClaudeSessionId);
+        Assert.Null(victim.ClaudeTranscriptPath);
+        Assert.Null(_sessions.GetSessionByClaudeId("attacker-id"));
     }
 
     [Fact]
     public void A_drop_for_a_session_that_is_not_on_the_roster_is_ignored()
     {
         var stranger = Guid.NewGuid();
-        Drop(stranger, "whatever", "/tmp/whatever.jsonl");
+        var path = SessionHookFiles.PointerPathFor(stranger, SessionHookFiles.NewDropToken(), _dir);
+        File.WriteAllText(path, Body("whatever", "/tmp/whatever.jsonl"));
 
-        Assert.False(Watcher().Apply(SessionHookFiles.PointerPathFor(stranger, _dir)));
+        Assert.False(Watcher().Apply(path));
     }
 
     [Fact]
@@ -208,9 +248,9 @@ public sealed class SessionPointerDropTests : IDisposable
     public void A_drop_that_is_not_valid_json_leaves_the_pointer_alone()
     {
         var session = Adopt();
-        File.WriteAllText(SessionHookFiles.PointerPathFor(session.Id, _dir), "this is not json {");
+        File.WriteAllText(PathFor(session), "this is not json {");
 
-        Assert.False(Watcher().Apply(SessionHookFiles.PointerPathFor(session.Id, _dir)));
+        Assert.False(Watcher().Apply(PathFor(session)));
         Assert.Equal("the-id-from-launch", session.ClaudeSessionId);
     }
 
@@ -223,7 +263,7 @@ public sealed class SessionPointerDropTests : IDisposable
     public void A_temporary_file_from_an_in_progress_write_is_never_applied()
     {
         var session = Adopt();
-        var tmp = Path.ChangeExtension(SessionHookFiles.PointerPathFor(session.Id, _dir), ".tmp");
+        var tmp = Path.ChangeExtension(PathFor(session), ".tmp");
         File.WriteAllText(tmp, """{"session_id":"half-written","transcript_path":"/tmp/half.jsonl"}""");
 
         Assert.False(Watcher().Apply(tmp));
@@ -235,9 +275,11 @@ public sealed class SessionPointerDropTests : IDisposable
     {
         var a = Adopt();
         var b = Adopt();
-        Drop(a.Id, "rotated-a", "/tmp/a.jsonl");
-        Drop(b.Id, "rotated-b", "/tmp/b.jsonl");
-        Drop(Guid.NewGuid(), "rotated-stranger", "/tmp/stranger.jsonl");
+        Drop(a, "rotated-a", "/tmp/a.jsonl");
+        Drop(b, "rotated-b", "/tmp/b.jsonl");
+        File.WriteAllText(
+            SessionHookFiles.PointerPathFor(Guid.NewGuid(), SessionHookFiles.NewDropToken(), _dir),
+            Body("rotated-stranger", "/tmp/stranger.jsonl"));
         File.WriteAllText(Path.Combine(_dir, "rubbish.json"), "not json {");
 
         Assert.Equal(2, Watcher().Sweep());
@@ -247,8 +289,8 @@ public sealed class SessionPointerDropTests : IDisposable
 
         // The two that were applied are gone; the two that were not stay put. A sweep that deleted what
         // it could not apply would throw away a drop for a session that is merely still starting up.
-        Assert.False(File.Exists(SessionHookFiles.PointerPathFor(a.Id, _dir)));
-        Assert.False(File.Exists(SessionHookFiles.PointerPathFor(b.Id, _dir)));
+        Assert.False(File.Exists(PathFor(a)));
+        Assert.False(File.Exists(PathFor(b)));
         Assert.Equal(2, Directory.GetFiles(_dir, "*.json").Length);
     }
 
@@ -261,10 +303,10 @@ public sealed class SessionPointerDropTests : IDisposable
     public void The_older_mapped_body_shape_is_still_understood()
     {
         var session = Adopt();
-        File.WriteAllText(SessionHookFiles.PointerPathFor(session.Id, _dir),
+        File.WriteAllText(PathFor(session),
             """{"claudeSessionId":"mapped-id","transcriptPath":"/tmp/mapped.jsonl","hookEvent":"SessionStart","source":"compact"}""");
 
-        Assert.True(Watcher().Apply(SessionHookFiles.PointerPathFor(session.Id, _dir)));
+        Assert.True(Watcher().Apply(PathFor(session)));
         Assert.Equal("mapped-id", session.ClaudeSessionId);
         Assert.Equal("/tmp/mapped.jsonl", session.ClaudeTranscriptPath);
     }
@@ -277,8 +319,8 @@ public sealed class SessionPointerDropTests : IDisposable
     public void Forgetting_a_session_removes_its_drop()
     {
         var session = Adopt();
-        Drop(session.Id, "rotated", "/tmp/rotated.jsonl");
-        var path = SessionHookFiles.PointerPathFor(session.Id, _dir);
+        Drop(session, "rotated", "/tmp/rotated.jsonl");
+        var path = PathFor(session);
 
         Watcher().Forget(session.Id);
 

@@ -157,6 +157,16 @@ public sealed class Session : IDisposable
     /// </summary>
     public string? LaunchExecutable { get; internal set; }
 
+    /// <summary>
+    /// The unguessable half of this session's pointer-drop file name, minted once per session and
+    /// never persisted. The Director stamps the full drop path (id dot token) into the session's
+    /// environment, and <see cref="SessionPointerWatcher"/> refuses any drop whose name does not
+    /// carry this exact value - so writing a drop for a session requires having been HANDED that
+    /// session's path, not merely being able to spell its id. This is the session-bound limit the
+    /// deleted claude-hook route's credential gave, rebuilt for the drop box.
+    /// </summary>
+    public string PointerDropToken { get; } = SessionHookFiles.NewDropToken();
+
     /// <summary>If this session was created as part of a group (issue #225), the shared
     /// group identity its members travel by; null for a solo session. Members of the same
     /// group sort adjacently and drag as one unit. Stamped at creation, immutable.</summary>

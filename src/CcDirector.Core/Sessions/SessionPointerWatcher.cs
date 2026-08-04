@@ -13,10 +13,19 @@ namespace CcDirector.Core.Sessions;
 /// Gateway voice mode above it - quietly goes empty. That is the whole reason the route existed, and
 /// it is why the replacement has to be as reliable as the route was.
 ///
-/// THE FILE NAME CARRIES THE SESSION. A drop is applied to the session its FILE is named after, not to
-/// a session named inside the body. The Director hands each session the exact path to write, so a
-/// session cannot report a pointer for another one - the same limit the route's session-bound
-/// credential gave, achieved by the shape of the drop box rather than by a check.
+/// THE FILE NAME CARRIES THE SESSION AND MUST PROVE IT. A drop is applied to the session its FILE is
+/// named after, never to a session named inside the body - and the name is id DOT TOKEN, where the
+/// token is unguessable, minted per session, and known only to the Director and the session that was
+/// handed the path. The id alone is NOT authorization: the box is one shared same-user directory, so
+/// any process could create a file named for a sibling's id. Requiring the token restores the limit
+/// the deleted route's session-bound credential gave - reporting a pointer for a session requires
+/// holding that session's own capability, not spelling its name.
+///
+/// What this does NOT claim: a same-user process that enumerates the box during a real drop's
+/// sub-second in-flight window can observe a token in a file name, just as it could read the deleted
+/// route's credential out of a sibling process's environment. That isolation level is UNCHANGED from
+/// the route this replaced - this was never an operating-system sandbox, and ControlApiHost says the
+/// same about the preamble file beside it.
 ///
 /// THE SWEEP IS THE DELIVERY GUARANTEE; THE WATCHER ONLY MAKES IT FAST. That is the design, and it is
 /// the design because of a measurement rather than a preference. A FileSystemWatcher was tried as the
@@ -158,17 +167,29 @@ public sealed class SessionPointerWatcher : IDisposable
         if (!string.Equals(Path.GetExtension(path), SessionHookFiles.DropExtension, StringComparison.OrdinalIgnoreCase))
             return false;
 
-        var sessionId = SessionHookFiles.SessionIdFromDropPath(path);
-        if (sessionId is null)
+        if (!SessionHookFiles.TryParseDropName(path, out var sessionId, out var dropToken))
         {
-            FileLog.Write($"[SessionPointerWatcher] ignoring {path}: its name is not a session id");
+            FileLog.Write($"[SessionPointerWatcher] ignoring {path}: its name is not a session id plus drop token");
             return false;
         }
 
-        var session = _sessions.GetSession(sessionId.Value);
+        var session = _sessions.GetSession(sessionId);
         if (session is null)
         {
             FileLog.Write($"[SessionPointerWatcher] ignoring {path}: session {sessionId} is not on the roster");
+            return false;
+        }
+
+        // THE TOKEN IS THE AUTHORIZATION. The drop box is one shared same-user directory, so any
+        // process that can spell a session id can create a file NAMED for it - the name alone proves
+        // nothing. Only the session that was handed this exact path (and the Director that handed it)
+        // knows the token, so a mismatch means the writer was not the session's own hook. Refused
+        // loudly and left in place: this is an attempt to retarget another session's transcript
+        // pointer, not a malformed drop.
+        if (!TokensMatch(dropToken, session.PointerDropToken))
+        {
+            FileLog.Write($"[SessionPointerWatcher] REFUSED {path}: the drop token does not match " +
+                          $"session {sessionId} - written by something other than that session's own hook");
             return false;
         }
 
@@ -205,7 +226,7 @@ public sealed class SessionPointerWatcher : IDisposable
         // Keep the SessionManager's claude-id routing map in sync with the new id, exactly as the
         // deleted route did.
         if (!string.IsNullOrWhiteSpace(evt.ClaudeSessionId))
-            _sessions.RelinkClaudeSession(sessionId.Value, evt.ClaudeSessionId!);
+            _sessions.RelinkClaudeSession(sessionId, evt.ClaudeSessionId!);
 
         // Applied, so the drop has done its job and goes. The state lives in the session now, and an
         // empty box is what makes a two-second sweep cost nothing. A failed delete is harmless -
@@ -216,20 +237,40 @@ public sealed class SessionPointerWatcher : IDisposable
         return true;
     }
 
-    /// <summary>Delete a session's drop file. Called when the session is removed.</summary>
+    /// <summary>
+    /// Delete a session's drop files. Called when the session is removed. Matches on the id half of
+    /// the name rather than reconstructing the exact tokened path, so it also clears anything a
+    /// refused write left behind under that session's id.
+    /// </summary>
     public void Forget(Guid sessionId)
     {
-        var path = SessionHookFiles.PointerPathFor(sessionId, _directory);
         try
         {
-            if (File.Exists(path))
-                File.Delete(path);
+            foreach (var path in System.IO.Directory.EnumerateFiles(
+                         _directory, sessionId + ".*" + SessionHookFiles.DropExtension))
+            {
+                try { File.Delete(path); }
+                catch (Exception ex) { FileLog.Write($"[SessionPointerWatcher] could not delete {path}: {ex.Message}"); }
+            }
+        }
+        catch (DirectoryNotFoundException)
+        {
+            // Nothing was ever dropped, so there is nothing to forget.
         }
         catch (Exception ex)
         {
-            FileLog.Write($"[SessionPointerWatcher] could not delete {path}: {ex.Message}");
+            FileLog.Write($"[SessionPointerWatcher] could not enumerate {_directory} to forget {sessionId}: {ex.Message}");
         }
     }
+
+    /// <summary>
+    /// Fixed-time comparison, so the refusal path leaks nothing about how much of a guessed token
+    /// matched. The cost of being proper here is one line.
+    /// </summary>
+    private static bool TokensMatch(string presented, string expected)
+        => System.Security.Cryptography.CryptographicOperations.FixedTimeEquals(
+            System.Text.Encoding.UTF8.GetBytes(presented),
+            System.Text.Encoding.UTF8.GetBytes(expected));
 
     private void OnDropped(object sender, FileSystemEventArgs e)
     {

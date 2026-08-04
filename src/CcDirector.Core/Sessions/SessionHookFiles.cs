@@ -38,22 +38,58 @@ public static class SessionHookFiles
     public static string PreamblePathFor(Guid sessionId, string? directory)
         => Path.Combine(directory ?? CcStorage.SessionPreambles(), sessionId.ToString() + DropExtension);
 
-    /// <summary>The pointer drop file for one session, under the real storage root.</summary>
-    public static string PointerPathFor(Guid sessionId) => PointerPathFor(sessionId, directory: null);
+    /// <summary>
+    /// Mint the unguessable half of a pointer-drop file name: 32 hex characters from a
+    /// cryptographic generator. Hex only, so the value can never contain a dot or a path
+    /// separator and the name parses unambiguously.
+    /// </summary>
+    public static string NewDropToken()
+        => Convert.ToHexString(System.Security.Cryptography.RandomNumberGenerator.GetBytes(16)).ToLowerInvariant();
 
-    /// <summary>Testable overload: the pointer drop file under an explicit directory.</summary>
-    public static string PointerPathFor(Guid sessionId, string? directory)
-        => Path.Combine(directory ?? CcStorage.SessionPointers(), sessionId.ToString() + DropExtension);
+    /// <summary>The pointer drop file for one session, under the real storage root.</summary>
+    public static string PointerPathFor(Guid sessionId, string dropToken)
+        => PointerPathFor(sessionId, dropToken, directory: null);
 
     /// <summary>
-    /// The session a drop file belongs to, read from its name, or null when the name is not a session
-    /// id. Used by the pointer watcher: the file NAME carries the session, so a hook cannot report a
-    /// pointer for a session other than the one whose path it was handed.
+    /// Testable overload: the pointer drop file under an explicit directory.
+    ///
+    /// THE NAME IS ID DOT TOKEN. The id says which session the drop is for; the token proves the
+    /// writer was HANDED that session's path rather than spelling its id. The drop box is a shared
+    /// same-user directory, so a name anyone can derive is a name anyone can write - the token is
+    /// what makes the path a capability instead of an address. It travels in the environment the
+    /// Director stamps, exactly where the deleted route's session-bound credential travelled.
     /// </summary>
-    public static Guid? SessionIdFromDropPath(string path)
+    public static string PointerPathFor(Guid sessionId, string dropToken, string? directory)
     {
+        // Hex-only, and checked: the two-argument overloads of this method used to take a DIRECTORY
+        // second, so a stale caller would otherwise compile cleanly and bake a path into the file
+        // name. A token is 32 lowercase hex characters and nothing else.
+        if (string.IsNullOrEmpty(dropToken) || !dropToken.All(char.IsAsciiHexDigitLower))
+            throw new ArgumentException(
+                $"A pointer drop path needs the session's drop token (lowercase hex), got: '{dropToken}'.",
+                nameof(dropToken));
+        return Path.Combine(directory ?? CcStorage.SessionPointers(),
+            sessionId.ToString() + "." + dropToken + DropExtension);
+    }
+
+    /// <summary>
+    /// Split a drop file's name into the session it claims and the token that must prove the claim.
+    /// False when the name does not have the id-dot-token shape - including the OLD bare
+    /// "<c>id.json</c>" shape, which is exactly what a writer that only knows a session's id can
+    /// spell, and is therefore refused rather than grandfathered.
+    /// </summary>
+    public static bool TryParseDropName(string path, out Guid sessionId, out string dropToken)
+    {
+        sessionId = default;
+        dropToken = "";
         var name = Path.GetFileNameWithoutExtension(path);
-        return Guid.TryParse(name, out var id) ? id : null;
+        var dot = name.LastIndexOf('.');
+        if (dot <= 0 || dot == name.Length - 1)
+            return false;
+        if (!Guid.TryParse(name[..dot], out sessionId))
+            return false;
+        dropToken = name[(dot + 1)..];
+        return true;
     }
 
     /// <summary>
