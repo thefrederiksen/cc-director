@@ -165,12 +165,22 @@ public sealed class DirectorUpdateOwner
                 "The running Director could not be identified when the launcher looked at how busy it was.");
         }
 
+        // A resolved conflict is carried into every decision this pass records, so it reaches the update
+        // status a person actually reads rather than only the launcher's log. The machine is in a state
+        // that should not exist; the tie-break made it possible to carry on, which is exactly why it must
+        // not become invisible.
+        var conflictNote = status.Conflict is { Length: > 0 } c
+            ? $"MORE THAN ONE PROCESS CLAIMS THIS DIRECTOR'S INSTANCE - {c}. The installed one was used. "
+            : "";
+        if (conflictNote.Length > 0)
+            FileLog.Write($"[DirectorUpdateOwner] proceeding under a resolved instance conflict: {conflictNote}");
+
         if (status.Sessions is null)
         {
             FileLog.Write($"[DirectorUpdateOwner] {staged.Version} is staged but the Director's session roster could "
                           + "not be read; holding the update rather than guessing.");
             return Record(staged, DirectorUpdateDecision.HeldBecauseUnknown,
-                "The Director did not have a readable roster saying how many sessions it holds.");
+                conflictNote + "The Director did not have a readable roster saying how many sessions it holds.");
         }
 
         // The Director is already the staged version - it was installed by a route other than this one,
@@ -189,7 +199,7 @@ public sealed class DirectorUpdateOwner
             FileLog.Write($"[DirectorUpdateOwner] {staged.Version} is staged but {sessions} session(s) are running; "
                           + "holding it until the Director is idle. No session is ever interrupted to update.");
             return Record(staged, DirectorUpdateDecision.HeldBecauseBusy,
-                $"{sessions} session(s) were running, so the update waits rather than interrupting them.");
+                conflictNote + $"{sessions} session(s) were running, so the update waits rather than interrupting them.");
         }
 
         FileLog.Write($"[DirectorUpdateOwner] installing {staged.Version}: staged={staged.StagedBuild}, "
@@ -218,7 +228,7 @@ public sealed class DirectorUpdateOwner
             FileLog.Write($"[DirectorUpdateOwner]   step: {step}");
 
         if (result.Outcome == SelfUpdateOutcome.Updated)
-            return Record(staged, DirectorUpdateDecision.Applied, result.Message);
+            return Record(staged, DirectorUpdateDecision.Applied, conflictNote + result.Message);
 
         // The build did not come up. Pin it so neither the launcher nor the Director tries it again when
         // it is offered a second time - the Director re-downloads on its own schedule and would
@@ -228,7 +238,7 @@ public sealed class DirectorUpdateOwner
             result.Outcome == SelfUpdateOutcome.RolledBack
                 ? DirectorUpdateDecision.RolledBack
                 : DirectorUpdateDecision.Failed,
-            result.Message);
+            conflictNote + result.Message);
     }
 
     /// <summary>

@@ -1,5 +1,7 @@
 using System.Diagnostics;
+using CcDirector.Core.Instances;
 using CcDirector.Core.Lifecycle;
+using CcDirector.Core.Storage;
 using CcDirector.Core.Utilities;
 using CcDirector.Setup.Engine;
 
@@ -10,7 +12,13 @@ namespace CcDirector.Launcher;
 /// of any kind: which Director it is, the version it is running, and how many sessions it is holding
 /// (null when that could not be established).
 /// </summary>
-public sealed record DirectorStatus(string DirectorId, int Pid, string Version, int? Sessions);
+/// <param name="Conflict">
+/// Null in the ordinary case. Set when more than one live process claimed this instance and the tie-break
+/// resolved it anyway - the machine is still in a wrong state and every caller must pass this on to
+/// somewhere a person will meet it, not swallow it because the answer came out right.
+/// </param>
+public sealed record DirectorStatus(string DirectorId, int Pid, string Version, int? Sessions,
+    string? Conflict = null);
 
 /// <summary>
 /// Supervises the installed CC Director app - start, stop, restart, and the two facts the update path
@@ -43,9 +51,13 @@ public sealed class DirectorSupervisor
     private readonly InstallLayout _layout;
     private readonly DirectorInstanceLocator _locator;
 
-    public DirectorSupervisor() : this(InstallLayout.Default(), new DirectorInstanceLocator()) { }
+    public DirectorSupervisor() : this(InstallLayout.Default()) { }
 
-    public DirectorSupervisor(InstallLayout layout) : this(layout, new DirectorInstanceLocator()) { }
+    public DirectorSupervisor(InstallLayout layout)
+        : this(layout, new DirectorInstanceLocator(
+            Path.Combine(CcStorage.Root(), "instances", InstanceContext.DefaultSlug),
+            CcStorage.DirectorInstances(),
+            layout.PathFor(ComponentRegistry.Director))) { }
 
     public DirectorSupervisor(InstallLayout layout, DirectorInstanceLocator locator)
     {
@@ -220,7 +232,7 @@ public sealed class DirectorSupervisor
         }
 
         var sessions = _locator.ReadSessionCount(director);
-        return new DirectorStatus(director.DirectorId, director.Pid, director.Version, sessions);
+        return new DirectorStatus(director.DirectorId, director.Pid, director.Version, sessions, lookup.Conflict);
     }
 
     /// <summary>

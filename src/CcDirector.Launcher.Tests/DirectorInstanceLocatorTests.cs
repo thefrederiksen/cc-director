@@ -61,8 +61,15 @@ public sealed class DirectorInstanceLocatorTests : IDisposable
         Path.Combine(InstanceHome(slug), "config", "director", "instances");
 
     /// <summary>The locator as production builds it: the default instance, plus the pre-1.8 flat path.</summary>
-    private DirectorInstanceLocator Locator() =>
-        new(InstanceHome("default"), FlatDirectory);
+    /// <param name="installedDirectorPath">
+    /// What counts as the installed application for the tie-break. Defaulting it to THIS TEST PROCESS's
+    /// own executable is what makes the tie-break testable at all: every claimant these tests write is
+    /// this process, so "the installed one" and "not the installed one" are both expressible by pointing
+    /// this somewhere else.
+    /// </param>
+    private DirectorInstanceLocator Locator(string? installedDirectorPath = null) =>
+        new(InstanceHome("default"), FlatDirectory,
+            installedDirectorPath ?? Environment.ProcessPath ?? "");
 
     /// <summary>
     /// Write a registration exactly as a Director writes one.
@@ -143,13 +150,13 @@ public sealed class DirectorInstanceLocatorTests : IDisposable
     }
 
     /// <summary>
-    /// Two live processes claiming the SAME instance is undecidable, and the launcher must say so
-    /// rather than pick. This is not hypothetical: it is what a development build started without an
-    /// instance flag does, because the single-instance guard is keyed by executable slot rather than by
-    /// instance and does not prevent two executables from claiming one home.
+    /// TWO CLAIMANTS RUNNING THE SAME IMAGE IS THE REAL DEFECT AND STAYS REFUSED. This is the case an
+    /// executable path cannot decide - two named instances of one install are one image - and it is
+    /// exactly what the old launcher guessed at. Both claimants here are this test process, so they
+    /// share an executable by construction.
     /// </summary>
     [Fact]
-    public void TwoLiveProcessesClaimingTheSameInstance_IsAmbiguousAndNamesBoth()
+    public void TwoClaimantsRunningTheSameExecutable_IsAmbiguousAndNamesBoth()
     {
         WriteRegistration(InstanceDirectory("default"), "aaaa0001-0000-0000-0000-000000000010");
         WriteRegistration(InstanceDirectory("default"), "aaaa0001-0000-0000-0000-000000000011", port: 7880);
@@ -159,6 +166,120 @@ public sealed class DirectorInstanceLocatorTests : IDisposable
         Assert.Equal(DirectorResolution.Ambiguous, lookup.Outcome);
         Assert.Null(lookup.Director);
         Assert.Equal(2, lookup.Candidates.Count);
+        Assert.NotNull(lookup.Conflict);
+    }
+
+    /// <summary>
+    /// The tie-break PREFERS the install; it does not invent one. When no claimant is the installed
+    /// application there is nothing here this launcher supervises, and it must still refuse.
+    /// </summary>
+    [Fact]
+    public void WhenNoClaimantIsTheInstalledDirector_ItStillRefuses()
+    {
+        WriteRegistration(InstanceDirectory("default"), "aaaa0001-0000-0000-0000-000000000012");
+        WriteRegistration(InstanceDirectory("default"), "aaaa0001-0000-0000-0000-000000000013", port: 7880);
+
+        var lookup = Locator(installedDirectorPath: NotThisProcessPath).Resolve();
+
+        Assert.Equal(DirectorResolution.Ambiguous, lookup.Outcome);
+        Assert.NotNull(lookup.Conflict);
+    }
+
+    /// <summary>
+    /// A single claimant is resolved without the executable being consulted at all - the tie-break exists
+    /// only for a conflict. Pinning this stops the preference quietly becoming an identity check, which
+    /// is the one thing this class must never do.
+    /// </summary>
+    [Fact]
+    public void ASingleClaimant_IsResolvedEvenWhenItIsNotTheInstalledDirector()
+    {
+        WriteRegistration(InstanceDirectory("default"), "aaaa0001-0000-0000-0000-000000000014");
+
+        var lookup = Locator(installedDirectorPath: NotThisProcessPath).Resolve();
+
+        Assert.Equal(DirectorResolution.Running, lookup.Outcome);
+        Assert.Null(lookup.Conflict);
+    }
+
+    /// <summary>
+    /// THE APPROVED TIE-BREAK, AND THE ARCHITECT'S CONDITION ON IT. A development build sitting in the
+    /// installed application's instance home is a different question from "which of two instances is
+    /// this", and it has an answer: the launcher supervises the install. So this resolves - AND the
+    /// conflict still travels on the answer, because a resolved conflict is still a machine in a wrong
+    /// state and a tie-break that silently does the right thing is how the defect stays unseen.
+    /// </summary>
+    [Fact]
+    public void TwoClaimantsRunningDIFFERENTImages_ResolveToTheInstalledOne_AndStillReportTheConflict()
+    {
+        using var foreign = new ForeignProcess();
+
+        // This process stands in for the development build; the foreign one for the install.
+        WriteRegistration(InstanceDirectory("default"), "aaaa0001-0000-0000-0000-000000000015");
+        WriteRegistration(InstanceDirectory("default"), "aaaa0001-0000-0000-0000-000000000016",
+            port: 7880, pid: foreign.Id);
+
+        var lookup = Locator(installedDirectorPath: foreign.ExecutablePath).Resolve();
+
+        Assert.Equal(DirectorResolution.Running, lookup.Outcome);
+        Assert.Equal(foreign.Id, lookup.Director!.Pid);
+        Assert.NotNull(lookup.Conflict);
+        Assert.Contains("claim the instance", lookup.Conflict);
+    }
+
+    /// <summary>An image this test process is definitely not running.</summary>
+    private static string NotThisProcessPath =>
+        Path.Combine(Path.GetTempPath(), "definitely-not-the-installed-director.exe");
+
+    /// <summary>
+    /// A live process running a DIFFERENT image from this test process, so the tie-break has two things
+    /// it can genuinely tell apart. Killed on dispose - a test that leaves a process behind is a test
+    /// that poisons the next run.
+    /// </summary>
+    private sealed class ForeignProcess : IDisposable
+    {
+        private readonly Process _process;
+
+        public ForeignProcess()
+        {
+            // A FULL path, not a bare name, so what this test calls "the install" is exactly the string
+            // the locator will read back out of the running process.
+            ExecutablePath = OperatingSystem.IsWindows()
+                ? Path.Combine(Environment.SystemDirectory, "cmd.exe")
+                : "/bin/sh";
+            var psi = OperatingSystem.IsWindows()
+                ? new ProcessStartInfo(ExecutablePath, "/c ping -n 60 127.0.0.1")
+                : new ProcessStartInfo(ExecutablePath, "-c \"sleep 60\"");
+            psi.UseShellExecute = false;
+            psi.CreateNoWindow = true;
+            psi.RedirectStandardOutput = true;
+            _process = Process.Start(psi) ?? throw new InvalidOperationException("could not start a helper process");
+            Assert.NotEqual(Environment.ProcessPath, ExecutablePath);
+
+            // A process that has only just been created has not loaded its main module yet, so asking
+            // what image it is running answers "" for a moment. That is a REAL property the locator has
+            // to live with - it treats an unreadable image as a refusal - and it would make this test
+            // flaky rather than proving anything, so wait until the answer exists before asserting on it.
+            var deadline = DateTime.UtcNow.AddSeconds(10);
+            while (DateTime.UtcNow < deadline && ImageOf(_process).Length == 0)
+                Thread.Sleep(50);
+            Assert.Equal(ExecutablePath, ImageOf(_process));
+        }
+
+        public int Id => _process.Id;
+        public string ExecutablePath { get; }
+
+        private static string ImageOf(Process process)
+        {
+            if (!OperatingSystem.IsWindows()) return "/bin/sh";
+            try { return process.MainModule?.FileName ?? ""; }
+            catch { return ""; }
+        }
+
+        public void Dispose()
+        {
+            try { if (!_process.HasExited) _process.Kill(entireProcessTree: true); } catch { }
+            _process.Dispose();
+        }
     }
 
     /// <summary>

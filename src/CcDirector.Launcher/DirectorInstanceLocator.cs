@@ -4,6 +4,7 @@ using CcDirector.Core.Instances;
 using CcDirector.Core.Sessions;
 using CcDirector.Core.Storage;
 using CcDirector.Core.Utilities;
+using CcDirector.Setup.Engine;
 
 namespace CcDirector.Launcher;
 
@@ -34,8 +35,15 @@ public enum DirectorResolution
 /// <param name="Version">The version it reported when it started. Written BY the running process, which
 /// is what makes it usable as proof that a swapped build actually came up.</param>
 /// <param name="ProcessStartedAtUtc">When the operating system started that process.</param>
+/// <param name="ExecutablePath">
+/// The image this process is running, or an empty string when it would not say. Used ONLY to tell an
+/// INSTALL from a development build when more than one process claims one instance - never to identify a
+/// Director. See <see cref="DirectorInstanceLocator.BreakTheTie"/> for why that distinction is not a
+/// re-run of the defect this class exists to remove.
+/// </param>
 public sealed record SupervisedDirector(
-    string DirectorId, int Pid, string InstanceHome, string Version, DateTime ProcessStartedAtUtc);
+    string DirectorId, int Pid, string InstanceHome, string Version, DateTime ProcessStartedAtUtc,
+    string ExecutablePath);
 
 /// <summary>The answer to "which Director am I supervising", with the evidence behind it.</summary>
 /// <param name="Outcome">What the search concluded.</param>
@@ -43,8 +51,16 @@ public sealed record SupervisedDirector(
 /// <see cref="DirectorResolution.Running"/>; null otherwise.</param>
 /// <param name="Candidates">Every live claimant, described. One entry when resolved, several when
 /// ambiguous, none when nothing is running - so a log line can always say what was actually seen.</param>
+/// <param name="Conflict">
+/// Set when more than one live process claimed this instance - INCLUDING when the tie-break resolved it.
+/// A resolved conflict is still a machine in a wrong state, and a tie-break that quietly does the right
+/// thing is how the underlying defect survives unseen; this one survived long enough to be found by a
+/// mission that was looking at something else. Callers must carry it somewhere a person will meet it, not
+/// only into a log file.
+/// </param>
 public sealed record DirectorLookup(
-    DirectorResolution Outcome, SupervisedDirector? Director, IReadOnlyList<string> Candidates);
+    DirectorResolution Outcome, SupervisedDirector? Director, IReadOnlyList<string> Candidates,
+    string? Conflict = null);
 
 /// <summary>
 /// Answers "is THIS Director running, and which process is it" - the question the launcher has to get
@@ -75,14 +91,22 @@ public sealed record DirectorLookup(
 /// after the file was written. That single comparison rejects every recycled id and every registration
 /// left by a process that is gone, using only fields the file already carries.
 ///
-/// AMBIGUITY IS AN ANSWER, NOT A TIE TO BREAK. When two live processes both claim the supervised
-/// instance, this reports <see cref="DirectorResolution.Ambiguous"/> and names them all, and callers
-/// must refuse to act. Picking one would be the original defect wearing a tidier interface: the whole
-/// reason to stop scanning by name was that an arbitrary choice among equals is indistinguishable from
-/// a correct one right up until it stops the wrong Director. The condition is real and not theoretical
-/// - it happens whenever a development build is started without an instance flag, because the
-/// single-instance guard is keyed by executable slot rather than by instance and does not prevent two
-/// different executables from claiming one home.
+/// AMBIGUITY IS AN ANSWER WHEREVER IT IS REAL. When more than one live process claims the supervised
+/// instance, this decides it ONLY when it is decidable and otherwise reports
+/// <see cref="DirectorResolution.Ambiguous"/>, names every claimant, and callers refuse to act. The line
+/// between the two is drawn in <see cref="BreakTheTie"/>, and that is the paragraph to read before
+/// changing anything here: two processes running the SAME image are the real defect and stay refused,
+/// because an arbitrary choice among equals is indistinguishable from a correct one right up until it
+/// stops the wrong Director; a development build sitting in the installed application's instance home is
+/// a different question with an answer, and refusing to update the real Director because somebody is
+/// testing a slot build helps nobody.
+///
+/// The condition is real and not theoretical. It happens whenever a development build is started without
+/// an instance flag, because the single-instance guard is keyed by executable slot rather than by
+/// instance and does not prevent two different executables from claiming one home. It was found on the
+/// machine this was written on, with two live Directors in one instance home. A RESOLVED CONFLICT IS
+/// STILL A MACHINE IN A WRONG STATE and is reported as one, on <see cref="DirectorLookup.Conflict"/> as
+/// well as in the log - a tie-break that silently does the right thing is how this defect stayed unseen.
 /// </summary>
 public sealed class DirectorInstanceLocator
 {
@@ -103,11 +127,13 @@ public sealed class DirectorInstanceLocator
 
     private readonly string _instanceHome;
     private readonly string? _legacyFlatDirectory;
+    private readonly string _installedDirectorPath;
 
     /// <summary>The default instance of the installed application - what the launcher starts and stops.</summary>
     public DirectorInstanceLocator()
         : this(Path.Combine(CcStorage.Root(), "instances", InstanceContext.DefaultSlug),
-               CcStorage.DirectorInstances()) { }
+               CcStorage.DirectorInstances(),
+               InstallLayout.Default().PathFor(ComponentRegistry.Director)) { }
 
     /// <param name="instanceHome">The storage home of the instance to resolve. Tests aim this at a
     /// throwaway directory; production uses the default constructor.</param>
@@ -121,10 +147,17 @@ public sealed class DirectorInstanceLocator
     /// upgrade from being supervised at all, and named instances are still excluded either way - which
     /// is the precision this class exists for.
     /// </param>
-    public DirectorInstanceLocator(string instanceHome, string? legacyFlatDirectory = null)
+    /// <param name="installedDirectorPath">
+    /// The installed application's image. Used ONLY by the tie-break, and only to tell an install from a
+    /// development build when more than one process claims this instance - never to identify a Director.
+    /// Empty means no tie-break is possible, so every conflict is refused.
+    /// </param>
+    public DirectorInstanceLocator(string instanceHome, string? legacyFlatDirectory = null,
+        string? installedDirectorPath = null)
     {
         _instanceHome = instanceHome ?? throw new ArgumentNullException(nameof(instanceHome));
         _legacyFlatDirectory = legacyFlatDirectory;
+        _installedDirectorPath = installedDirectorPath ?? "";
     }
 
     /// <summary>The instance home being resolved.</summary>
@@ -183,25 +216,146 @@ public sealed class DirectorInstanceLocator
                     continue;
                 }
 
-                live.Add(new SupervisedDirector(dto.DirectorId, dto.Pid, home, dto.Version, startedAt));
+                var executable = ExecutablePathOf(process);
+                live.Add(new SupervisedDirector(dto.DirectorId, dto.Pid, home, dto.Version, startedAt, executable));
                 described.Add($"directorId={dto.DirectorId} pid={dto.Pid} version={dto.Version} "
-                              + $"started={startedAt:o} registration={file}");
+                              + $"started={startedAt:o} exe={(executable.Length == 0 ? "UNREADABLE" : executable)} "
+                              + $"registration={file}");
             }
         }
 
         if (live.Count == 0)
             return new DirectorLookup(DirectorResolution.NotRunning, null, described);
 
-        if (live.Count > 1)
+        // ONE claimant is resolved without the image ever being consulted. The tie-break exists only for
+        // a conflict, and keeping it there is what stops a preference quietly becoming an identity check.
+        if (live.Count == 1)
+            return new DirectorLookup(DirectorResolution.Running, live[0], described);
+
+        return BreakTheTie(live, described);
+    }
+
+    /// <summary>
+    /// More than one live process claims this instance. Decide it when it is decidable, refuse when it is
+    /// not.
+    ///
+    /// WHY AN EXECUTABLE PATH IS ADMISSIBLE HERE AND INADMISSIBLE ABOVE - READ THIS BEFORE CONCLUDING THE
+    /// DEFECT WAS REINTRODUCED. The rule this class enforces is that a Director is never IDENTIFIED by its
+    /// image path, and that rule is untouched: <see cref="Resolve"/> never consults the path, and a single
+    /// claimant is resolved without looking at it. The reason is that every named instance of one install
+    /// runs the SAME executable - <c>cc-director.exe</c> and <c>cc-director.exe --instance work</c> are
+    /// one image - so a path cannot tell two instances apart. That case is the defect, and it is still
+    /// REFUSED below.
+    ///
+    /// What a path CAN tell apart is an INSTALL from a development build, because those are different
+    /// images in different places. That is a different question from "which Director is this", and it has
+    /// an answer the launcher is entitled to act on: it supervises the installed application, a slot build
+    /// somebody is testing is not the machine's Director of record, and refusing to update or stop the
+    /// real one because a test build sits in the same instance home helps nobody. So the tie-break narrows
+    /// the refusal to the case that is genuinely undecidable rather than refusing on every conflict.
+    ///
+    /// THIS IS NOT A FALLBACK. That rule forbids two PATHS to one capability - try one thing, fall back to
+    /// another - because the second path is a door the mission exists to close. This is one path with a
+    /// tie-break on an ambiguous input: no second mechanism, nothing retried, and the undecidable case
+    /// still ends in a refusal rather than a guess.
+    ///
+    /// A CLAIMANT WHOSE IMAGE CANNOT BE READ POISONS THE TIE-BREAK. An elevated process will not say what
+    /// it is running, and "I could not check" is not "it is not the install" - treating it as the latter
+    /// would let the guard fail open in exactly the case where something unusual is going on. Unknown
+    /// means refuse.
+    /// </summary>
+    private DirectorLookup BreakTheTie(List<SupervisedDirector> live, List<string> described)
+    {
+        var conflict = $"{live.Count} live processes claim the instance at {_instanceHome}: "
+                       + string.Join(" | ", described);
+
+        if (live.Any(d => d.ExecutablePath.Length == 0))
         {
-            FileLog.Write($"[DirectorInstanceLocator] {live.Count} live processes all claim the instance at "
-                          + $"{_instanceHome}, so which one the launcher supervises is UNDECIDABLE and nothing will "
-                          + "be stopped, restarted or updated until it is not. Claimants: "
-                          + string.Join(" | ", described));
-            return new DirectorLookup(DirectorResolution.Ambiguous, null, described);
+            FileLog.Write($"[DirectorInstanceLocator] REFUSING to choose: {conflict}. At least one claimant would "
+                          + "not say what image it is running, so it cannot be ruled out as a second copy of the "
+                          + "installed Director. Nothing will be stopped, restarted or updated until this is fixed.");
+            return new DirectorLookup(DirectorResolution.Ambiguous, null, described, conflict);
         }
 
-        return new DirectorLookup(DirectorResolution.Running, live[0], described);
+        var installed = live.Where(d => IsInstalledDirector(d.ExecutablePath)).ToList();
+        if (installed.Count != 1)
+        {
+            FileLog.Write($"[DirectorInstanceLocator] REFUSING to choose: {conflict}. "
+                          + (installed.Count == 0
+                              ? "None of them is the installed Director, so there is nothing here this launcher "
+                                + "supervises."
+                              : $"{installed.Count} of them run the SAME installed executable, which is the case a "
+                                + "path cannot decide - two named instances of one install look identical. This is "
+                                + "the defect this launcher refuses to guess about.")
+                          + " Nothing will be stopped, restarted or updated until this is fixed.");
+            return new DirectorLookup(DirectorResolution.Ambiguous, null, described, conflict);
+        }
+
+        // Decided - and the machine is STILL WRONG. The whole reason this defect went unnoticed is that
+        // everything carried on working, so it is said at every pass and handed to the caller to put
+        // somewhere other than this log.
+        FileLog.Write($"[DirectorInstanceLocator] CONFLICT - {conflict}. Resolved to the INSTALLED Director "
+                      + $"(directorId={installed[0].DirectorId} pid={installed[0].Pid} exe={installed[0].ExecutablePath}) "
+                      + "because the others are not the installed application. THIS MACHINE IS STILL IN A WRONG "
+                      + "STATE: two processes should never share one instance home, and the single-instance guard "
+                      + "does not prevent it because it is keyed by executable slot rather than by instance.");
+        return new DirectorLookup(DirectorResolution.Running, installed[0], described, conflict);
+    }
+
+    /// <summary>True when this image is the installed Director (inside the bundle on macOS).</summary>
+    private bool IsInstalledDirector(string executablePath)
+    {
+        if (executablePath.Length == 0 || _installedDirectorPath.Length == 0) return false;
+        return OperatingSystem.IsWindows()
+            ? string.Equals(executablePath, _installedDirectorPath, StringComparison.OrdinalIgnoreCase)
+            : string.Equals(executablePath, _installedDirectorPath, StringComparison.Ordinal)
+              || executablePath.StartsWith(_installedDirectorPath + "/", StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The image a process is running, or "" when it will not say. Windows reads the main module; macOS
+    /// and Linux ask /bin/ps, because MainModule is unreliable there.
+    /// </summary>
+    private static string ExecutablePathOf(Process process)
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            try
+            {
+                return process.MainModule?.FileName ?? "";
+            }
+            catch (Exception ex)
+            {
+                FileLog.Write($"[DirectorInstanceLocator] pid={process.Id} would not say what image it is "
+                              + $"running: {ex.Message}");
+                return "";
+            }
+        }
+
+        try
+        {
+            var psi = new ProcessStartInfo
+            {
+                FileName = "/bin/ps",
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+            };
+            psi.ArgumentList.Add("-o");
+            psi.ArgumentList.Add("comm=");
+            psi.ArgumentList.Add("-p");
+            psi.ArgumentList.Add(process.Id.ToString());
+
+            using var ps = Process.Start(psi);
+            if (ps is null) return "";
+            var output = ps.StandardOutput.ReadToEnd().Trim();
+            ps.WaitForExit();
+            return ps.ExitCode == 0 ? output : "";
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[DirectorInstanceLocator] pid={process.Id} image path could not be read: {ex.Message}");
+            return "";
+        }
     }
 
     /// <summary>
