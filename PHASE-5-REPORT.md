@@ -99,6 +99,17 @@ against `NoGateway` (no Gateway connection right now - the mission's accepted no
 never painted as a broken install, never offered a repair). The green-to-red flip the brief warned
 about cannot happen: nothing in the check dials the Director at all.
 
+**One defect found while building the probe, and fixed before it could ship.** The first version
+returned "no verdict available" for three different situations - no Gateway configured, no tunnel,
+and *the Gateway refusing to register the probe key* - and the caller rendered all three as the
+benign `NoGateway` state. The third is not benign: it is a connected Gateway rejecting us, dressed
+up as an expected trade the owner has already accepted, which is exactly the plausible-but-wrong
+shape this mission keeps catching. It is not hypothetical either - registration is keyed by session
+id and the hub does NOT check that the id belongs to a live session of the calling Director (the
+mission's own inspection filed that as finding 2), so this probe's synthetic id is precisely what
+stops being accepted if that hole is closed. A refusal now THROWS, and the desktop turns it into no
+verdict plus a loud log, so the day the hub is hardened this check says so instead of going quiet.
+
 Two neighbouring surfaces were the same defect in other clothes and were rebuilt with it:
 
 - **The connectivity troubleshooter** diagnosed the inbound model - is Tailscale up, is the Serve

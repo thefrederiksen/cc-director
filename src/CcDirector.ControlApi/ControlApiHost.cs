@@ -526,11 +526,24 @@ public sealed class ControlApiHost : IAsyncDisposable
     /// experience. Registration is AWAITED here (unlike a session launch) because the probe is
     /// about to present the key immediately and a race would report a healthy machine as broken.
     ///
-    /// Returns null when no Gateway is configured, the tunnel is not up, or the registration did
-    /// not land - in every one of those states the honest verdict is "the tools have no Gateway to
-    /// reach", not "the tools are broken". The caller MUST invoke the returned Revoke when the
-    /// probe is done; the key is bound to a probe-only id that never joins the session roster, so
-    /// nothing else will ever end it.
+    /// Returns null for ONE state and one only: there is no Gateway to reach (none configured, or
+    /// no tunnel). That is a fact about this machine's connection and the caller renders it as the
+    /// mission's accepted no-Gateway trade.
+    ///
+    /// A Gateway that is connected and REFUSES the registration THROWS instead, and the difference
+    /// matters more than it looks. Returning null there would report "no Gateway" - a benign,
+    /// expected state - for a Gateway that is right there and rejecting us, which is a real fault
+    /// wearing a harmless label, and precisely the kind of plausible-but-wrong state this mission
+    /// keeps finding. The caller turns the exception into NO VERDICT plus a loud log, never a pass
+    /// and never a false calm.
+    ///
+    /// This is not hypothetical. The registration is keyed by session id and the hub does not check
+    /// that the id belongs to a live session of the calling Director - the mission's own inspection
+    /// filed that as a defect. If it is hardened, THIS probe's synthetic id is exactly what stops
+    /// being accepted, and the failure must be audible on the day it happens.
+    ///
+    /// The caller MUST invoke the returned Revoke when the probe is done; the key is bound to a
+    /// probe-only id that never joins the session roster, so nothing else will ever end it.
     /// </summary>
     public async Task<FleetToolProbeCredential?> MintFleetToolProbeCredentialAsync()
     {
@@ -543,8 +556,11 @@ public sealed class ControlApiHost : IAsyncDisposable
         var registration = _sessionGatewayKeys.RegistrationFor(probeId);
         if (registration is null)
         {
+            // The key was just minted, so its registration must exist; if it does not, the store
+            // itself is wrong and saying so beats reporting a connection state that is not the fault.
             _sessionGatewayKeys.Forget(probeId);
-            return null;
+            throw new InvalidOperationException(
+                "the fleet-tool probe key was minted but no registration could be built for it");
         }
 
         var registered = await stream.RegisterSessionKeyAsync(registration).ConfigureAwait(false);
@@ -552,7 +568,9 @@ public sealed class ControlApiHost : IAsyncDisposable
         {
             if (_sessionGatewayKeys.Forget(probeId))
                 _streamClient?.RevokeSessionKey(probeId.ToString());
-            return null;
+            throw new InvalidOperationException(
+                "the Gateway is connected but refused to register the fleet-tool probe key, so the "
+                + "tools cannot be checked - this is a Gateway-side refusal, not a missing Gateway");
         }
 
         return new FleetToolProbeCredential(gatewayConfig.Url, key, () =>

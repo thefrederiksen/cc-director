@@ -1413,6 +1413,9 @@ public partial class MainWindow : Window
         catch (Exception ex)
         {
             // Never let a probe failure take the window down, and never let it read as a pass either.
+            // NO VERDICT is the honest outcome here, and it is deliberately NOT the no-Gateway
+            // verdict: a Gateway that refused the probe key throws into this branch, and calling
+            // that "no Gateway" would dress a real refusal up as an expected, benign state.
             FileLog.Write($"[MainWindow] RefreshFleetToolReachabilityAsync FAILED: {ex.Message}");
             _lastFleetToolCheck = null;
         }
