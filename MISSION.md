@@ -508,3 +508,16 @@ the artifacts rather than the handover's wording:
 The founding Architect's sign-off added one instruction worth keeping verbatim: the QA report must
 state POSITIVELY, with evidence, what an agent can still do - "a guard exists" is not an answer to
 the owner's actual fear, which is agents ending up able to do less.
+
+## Owner directive on Manager context - 2026-08-04
+
+Long-context Managers are restarted, not run to exhaustion - context exhaustion kills a seat
+quietly, mid-report. The standing practice, now explicit:
+
+- Every Manager is retired at its phase boundary and the next phase gets a FRESH seat. Already the
+  rule; the owner has re-affirmed it.
+- When a Manager is mid-phase and what remains is more than mechanical, the Architect asks it for an
+  honest headroom self-assessment and offers the handover. Applied to the Phase 6 Manager, whose
+  answer was the model: comfortable headroom, about ten mechanical tool calls left, and an explicit
+  commitment to STOP and write a compact handover if the remaining test result needs fresh
+  investigation rather than digging with a depleted context.
