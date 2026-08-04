@@ -96,7 +96,7 @@ Register-ScheduledTask -TaskName "cc-director-launch" -Action $action -Trigger $
 Start-ScheduledTask -TaskName "cc-director-launch"
 ```
 
-The Director boots with parent = `svchost.exe`, port-allocates a fresh Control API port (check the log at `%LOCALAPPDATA%\cc-director\logs\director\director-YYYY-MM-DD-<PID>.log` for the line `[ControlApiHost] Kestrel listening on http://0.0.0.0:<port>`), and you can drive it via REST normally.
+The Director boots with parent = `svchost.exe` and binds NOTHING - the remove-the-network-port mission deleted its Control API, so there is no port to find and no REST to drive. Readiness is the instance registration the running process writes (`<root>\instances\<slug>\config\director\instances\<directorId>.json`, whose `Pid` is your process); its log is at `%LOCALAPPDATA%\cc-director\logs\director\director-YYYY-MM-DD-<PID>.log`. Drive a test Director through the Gateway it is connected to, and stop it with the named signal described below.
 
 #### Slot convention to avoid colliding with the user's running Directors
 

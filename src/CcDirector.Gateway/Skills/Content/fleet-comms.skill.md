@@ -1,12 +1,14 @@
-# Fleet communication between sessions
+﻿# Fleet communication between sessions
 
 DevThrottle lets a session talk to other sessions running anywhere in the fleet, meaning any
 machine whose Director is attached to the same Gateway. Use the single `cc-devthrottle` command.
 You never need the Gateway URL or any token; your own Director relays for you.
 
-Every session is launched with two environment values the command relies on:
-`CC_DIRECTOR_API` is your own Director's address, and `CC_SESSION_ID` is your own id.
-`cc-devthrottle` reads them automatically.
+Every session is launched with the environment values the command relies on: `CC_GATEWAY_URL` (the
+Gateway's address), `CC_GATEWAY_SESSION_KEY` (this session's own credential for it),
+`CC_DIRECTOR_ID` (which Director you belong to) and `CC_SESSION_ID` (your own id).
+`cc-devthrottle` reads them automatically. The Director itself listens on nothing - the
+remove-the-network-port mission deleted its HTTP surface - so every command is a Gateway call.
 
 ## Discover actions
 
@@ -81,50 +83,11 @@ If you cannot answer the third, the session has no exit and will not acquire one
 is being driven to done. Three is a mess if none of them are. What matters is closing, not
 counting - so drive one thing all the way to dead-and-deleted before you pick up the next.
 
-### If rename, done, or "message send all" answers "HTTP 404 from the Director"
+### If a command fails against an old Director
 
-The command is right and the code is right. The Director you are talking to is too old.
-
-These verbs travel to the Director's loopback floor - rename to `POST /fleet/rename`, done to
-`POST /fleet/done`, send-all to `POST /fleet/broadcast`. All three were restored to the floor
-AFTER the v1.1.0 release, so a Director built before that restoration does not have those
-routes and answers 404 to a perfectly correct call.
-
-**Do NOT use `/healthz` version to decide this.** The version comes from
-`Directory.Build.props`, which still reads `1.1.0` on main - so the shipped v1.1.0 Director
-that LACKS the routes and a fresh build from main that HAS them both report `"version":"1.1.0"`.
-Verified 2026-07-14 by running both side by side. The version cannot tell them apart.
-
-Probe the route itself, and compare it against a route you know is fake.
-
-The Director's floor requires a credential on every route but `/healthz`, so a probe sent without one
-is answered 401 and says nothing about whether the route exists. Present the credential your session
-was given at launch:
-
-```
-curl -s -o /dev/null -w "%{http_code}\n" -X POST http://127.0.0.1:7879/fleet/rename \
-  -H "Authorization: Bearer $CC_DIRECTOR_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"toSessionId":"00000000-0000-0000-0000-000000000000","name":"probe"}'
-curl -s -o /dev/null -w "%{http_code}\n" -X POST http://127.0.0.1:7879/fleet/definitely-not-a-route \
-  -H "Authorization: Bearer $CC_DIRECTOR_TOKEN" -d '{}'
-```
-
-**Read 401 and 403 as answers about your CREDENTIAL, never about the route.** A session credential is
-deliberately refused on `/fleet/rename` and the rest of the dangerous set, so BOTH probes answering
-403 means your credential cannot reach either - which is a different fact from the route being
-missing, and reading it as "the route is gone" would send you to update a Director that is fine. Run
-the comparison through `cc-devthrottle`, which carries full authority, when you need to tell those
-apart.
-
-- Both 404 -> the route genuinely is not there. The Director is older than the restoration;
-  update it. There is no workaround.
-- The real route answers something OTHER than 404 (a JSON body, 400, 502) while the fake one
-  404s -> the route exists and your problem is elsewhere. A 502 with a JSON body just means it
-  ran and the relay failed - that is the route working.
-
-Do NOT reach for the Gateway as a substitute route; it answers 401 for this and is not the
-agent-facing surface.
+The remove-the-network-port mission ended the era of probing the Director's routes to date it -
+there are no routes. Commands go to the Gateway, which reaches the owning Director over its
+tunnel; a Director too old for a verb fails with the Gateway's own words naming the machine.
 
 This is worth a beat of suspicion generally: a Director, a `cc-devthrottle`, and a checkout can
 each be older than origin/main, and a stale one will contradict the code you just read. Verify
@@ -228,5 +191,8 @@ cc-devthrottle setup status
 - Address a session by a short id prefix or by exact name.
 - For a simple current-session rename, run `cc-devthrottle session rename "New Name"` directly.
 - If a target is ambiguous, rerun with a longer id prefix.
-- If a command says `CC_DIRECTOR_API` is missing, you are outside a DevThrottle-launched session.
-- The command never exposes the Gateway token to the session.
+- If a command says `CC_GATEWAY_URL` or `CC_GATEWAY_SESSION_KEY` is not set, you are outside a
+  DevThrottle-launched session (or this machine has no Gateway - and no Gateway means no agent
+  tooling, by design).
+- The account-wide Gateway token never enters a session; your session key is yours alone and ends
+  with the session.

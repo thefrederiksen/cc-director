@@ -4,9 +4,9 @@
     Per-session isolation harness for agent test Directors (issue #299).
 
 .DESCRIPTION
-    Gives each implementation/QA session its own test slot, build output, and
-    Control API port so two sessions can run concurrently on one machine without
-    colliding. Three subcommands:
+    Gives each implementation/QA session its own test slot and build output so two
+    sessions can run concurrently on one machine without colliding. Three
+    subcommands:
 
       allocate  - Find and RESERVE the lowest free slot N >= 6 for a worktree.
                   "Free" means: no running process whose image is cc-director<N>.exe
@@ -20,18 +20,16 @@
       launch    - Start the session's test Director via ITS OWN scheduled task
                   (clean svchost parentage, CLAUDE.md rule 0b - never from the
                   agent's process tree). Resolves the new PID by exact image path,
-                  then reads the Director's own log for the self-allocated Control
-                  API port ("Kestrel listening on ..."). Updates the manifest with
-                  pid/port/logFile. The whole start->port-discovered window runs
-                  under a machine-wide named mutex: the Director's PortAllocator
-                  probes for a free port BEFORE Kestrel binds it, so two Directors
-                  starting in the same instant can pick the same port (proven
-                  live: simultaneous starts both allocated 7892 and one failed
-                  with "address already in use"). Serializing launches means each
-                  Director has BOUND its port before the next one probes. If the
-                  port never appears in the log, the just-launched process is
-                  stopped (exact image path confirmed first) so a failed launch
-                  never leaks an orphan Director.
+                  then waits for the instance REGISTRATION the running process
+                  writes (Remove-the-network-port mission, phase 5: the Director
+                  binds NOTHING, so there is no port to discover - the registration
+                  file naming the PID is the readiness signal, and it carries the
+                  identifier the named-signal teardown needs). Updates the manifest
+                  with pid/directorId/logFile. Launches still serialize under a
+                  machine-wide named mutex so two starts never interleave their
+                  startup work. If the registration never appears, the
+                  just-launched process is stopped (exact image path confirmed
+                  first) so a failed launch never leaks an orphan Director.
 
       teardown  - Stop ONLY the session's own Director (image path must match the
                   manifest exe exactly - refuses anything else), unregister the
@@ -40,10 +38,8 @@
 
     Slots 1-5 and the main build are NEVER touched: slot 5 stays the legacy/manual
     default and may be in use by a human-driven session; the allocator starts at 6.
-    This script never binds a port itself - the Director self-allocates its Control
-    API port at startup (PortAllocator), and the launch mutex guarantees the
-    allocation-to-bind window of one Director never overlaps another's, so two
-    sessions cannot collide on a port.
+    This script never binds a port, and neither does the Director: everything an
+    agent does to a test Director goes through the Gateway it is connected to.
 
 .PARAMETER Command
     allocate | launch | teardown
@@ -70,7 +66,7 @@
     #   -> SLOT=6, MANIFEST=C:\repos\wt-issue-123\local_builds\agent-session-slot6.json
     powershell -NoProfile -File C:\repos\wt-issue-123\scripts\local-build-avalonia.ps1 -Slot 6
     powershell -NoProfile -File scripts\agent-session-isolation.ps1 launch -Manifest C:\repos\wt-issue-123\local_builds\agent-session-slot6.json
-    #   -> PID=12345, PORT=7881; probe http://127.0.0.1:7881/healthz
+    #   -> PID=12345, DIRECTOR_ID=<guid>; the Director binds nothing - drive it through its Gateway
     powershell -NoProfile -File scripts\agent-session-isolation.ps1 teardown -Manifest C:\repos\wt-issue-123\local_builds\agent-session-slot6.json
 #>
 param(
@@ -189,7 +185,7 @@ function Invoke-Allocate {
         exePath     = (Join-Path $localBuilds (Get-SlotExeName $allocated))
         taskName    = (Get-SlotTaskName $allocated)
         pid         = 0
-        port        = 0
+        directorId  = ""
         logFile     = ""
         allocatedAt = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
         launchedAt  = ""
@@ -242,12 +238,11 @@ function Get-DirectorIdForPid([int]$DirectorPid) {
     return ''
 }
 
-# Stop a Director the RIGHT way (issue #960): ask it to shut down through its Control API so it
-# kills its own sessions and deletes its crash journal - a clean shutdown leaves NO "interrupted"
-# entry, exactly like quitting from the UI, even mid-run. A force-kill cannot clean up after
-# itself, so it is the LAST RESORT, used only when the graceful shutdown does not exit in time
-# (the Director is genuinely stuck) or when no Control API port is known.
-function Stop-DirectorCleanly([int]$DirectorPid, [int]$Port, [string]$ExePath) {
+# Stop a Director the RIGHT way (issue #960): ask it to shut down so it kills its own sessions and
+# deletes its crash journal - a clean shutdown leaves NO "interrupted" entry, exactly like quitting
+# from the UI, even mid-run. A force-kill cannot clean up after itself, so it is the LAST RESORT,
+# used only when the graceful shutdown does not exit in time (the Director is genuinely stuck).
+function Stop-DirectorCleanly([int]$DirectorPid, [string]$ExePath) {
     $exited = $false
 
     # The clean stop is a NAMED SIGNAL, not a post to the Director's Control API. It is named for
@@ -317,13 +312,12 @@ function Invoke-Launch {
     $localBuilds = Split-Path -Parent $m.exePath
     New-SlotTaskRegistration -Slot $m.slot -ExePath $m.exePath -WorkingDir $localBuilds -Force $true
 
-    # MACHINE-WIDE LAUNCH MUTEX. The Director's PortAllocator probes for a free
-    # port and only LATER binds it (Kestrel). Two Directors starting in the same
-    # instant can therefore allocate the SAME port - proven live: two simultaneous
-    # launches both allocated 7892 and the loser's Control API died with "address
-    # already in use". Holding this mutex from task start until the port is read
-    # from the Director's log (i.e. Kestrel has bound it) guarantees the next
-    # session's Director sees the port as busy and picks another.
+    # MACHINE-WIDE LAUNCH MUTEX. This began as the guard for a port-allocation race
+    # (two Directors starting in the same instant could probe the same free port and
+    # one died binding it). The port and its allocator are GONE - nothing binds - but
+    # serializing launches is kept: two Directors starting at once still interleave
+    # their startup work (registrations, log files, task starts), and one launch at a
+    # time is what keeps a failed one attributable.
     $mutex = New-Object System.Threading.Mutex($false, "Global\cc-director-agent-session-launch")
     $acquired = $false
     try {
@@ -356,51 +350,48 @@ function Invoke-Launch {
         }
         Write-Host "[launch] PID=$directorPid"
 
-        # Discover the self-allocated Control API port from the Director's own log:
-        # %LOCALAPPDATA%\cc-director\logs\director\director-<date>-<PID>.log contains
-        # "[ControlApiHost] Kestrel listening on http://<host>:<port>".
+        # Wait for the Director to REGISTER (Remove-the-network-port mission, phase 5: there is no
+        # Control API port to discover any more - nothing listens). The registration file the running
+        # process writes into its instance home, carrying its own PID, is the readiness signal, and it
+        # is also what the named-signal teardown resolves the Director's identifier from.
         $logDir = Join-Path $env:LOCALAPPDATA "cc-director\logs\director"
-        $deadlinePort = (Get-Date).AddSeconds(120)
-        $port = 0
-        $logFile = ""
-        while ((Get-Date) -lt $deadlinePort) {
-            $candidates = @(Get-ChildItem -Path $logDir -Filter "director-*-$directorPid.log" -ErrorAction SilentlyContinue)
-            foreach ($f in $candidates) {
-                $hit = Select-String -Path $f.FullName -Pattern "Kestrel listening on http://[^:]+:(\d+)" -ErrorAction SilentlyContinue | Select-Object -First 1
-                if ($hit) {
-                    $port = [int]$hit.Matches[0].Groups[1].Value
-                    $logFile = $f.FullName
-                    break
-                }
-            }
-            if ($port -ne 0) { break }
+        $deadlineReg = (Get-Date).AddSeconds(120)
+        $directorId = ''
+        while ((Get-Date) -lt $deadlineReg) {
+            $directorId = Get-DirectorIdForPid $directorPid
+            if ($directorId) { break }
             # The Director may have exited (bad build, startup crash) - fail fast.
             $alive = Get-Process -Id $directorPid -ErrorAction SilentlyContinue
             if ($null -eq $alive) {
-                Fail "Director PID $directorPid exited before reporting its Control API port. Check the newest log in $logDir."
+                Fail "Director PID $directorPid exited before writing its instance registration. Check the newest log in $logDir."
             }
             Start-Sleep -Milliseconds 500
         }
-        if ($port -eq 0) {
-            # Never leak an orphan: the Director is up but unreachable (no Control
-            # API). Stop it (exact-path confirmed) before failing.
+        if (-not $directorId) {
+            # Never leak an orphan: the Director is up but never registered. Stop it
+            # (exact-path confirmed) before failing.
             Stop-OwnLaunchedDirector -DirectorPid $directorPid -ExePath $m.exePath
-            Fail "Control API port not found in Director log within 120s (PID $directorPid, dir $logDir). The just-launched process has been stopped."
+            Fail "No instance registration named PID $directorPid within 120s. The just-launched process has been stopped."
         }
+        $logFile = @(Get-ChildItem -Path $logDir -Filter "director-*-$directorPid.log" -ErrorAction SilentlyContinue |
+            Sort-Object LastWriteTime -Descending | Select-Object -First 1 | ForEach-Object { $_.FullName })
+        if (-not $logFile) { $logFile = "" }
     } finally {
         if ($acquired) { $mutex.ReleaseMutex() | Out-Null }
         $mutex.Dispose()
     }
 
     $m.pid = $directorPid
-    $m.port = $port
+    # Add-Member -Force rather than a bare assignment: a manifest written by an older allocate has
+    # no directorId field, and assigning a property a PSCustomObject does not carry throws.
+    $m | Add-Member -NotePropertyName directorId -NotePropertyValue $directorId -Force
     $m.logFile = $logFile
     $m.launchedAt = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
     Write-Manifest $m $Manifest
 
-    Write-Host "[launch] PORT=$port"
+    Write-Host "[launch] DIRECTOR_ID=$directorId"
     Write-Host "[launch] LOG=$logFile"
-    Write-Host "[launch] Control API: http://127.0.0.1:$port (probe GET /healthz)"
+    Write-Host "[launch] No inbound port: the Director accepts nothing; drive it through its Gateway."
     Write-Host "[launch] MANIFEST=$Manifest (updated)"
 }
 
@@ -425,9 +416,9 @@ function Invoke-Teardown {
     }
     foreach ($p in $targets) {
         Write-Host "[teardown] stopping PID $($p.Id) ($($p.Path))"
-        # Clean shutdown via the Control API (force-kill only as a last resort) so this test
+        # Clean shutdown via the named signal (force-kill only as a last resort) so this test
         # Director does not leave a phantom "interrupted" crash journal (issue #960).
-        Stop-DirectorCleanly -DirectorPid $p.Id -Port ([int]$m.port) -ExePath $m.exePath
+        Stop-DirectorCleanly -DirectorPid $p.Id -ExePath $m.exePath
         Write-Host "[teardown] PID $($p.Id) exited"
     }
 

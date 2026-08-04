@@ -1,9 +1,10 @@
 """Automation-browser operations for cc-devthrottle.
 
 These verbs manage DevThrottle's OWN drivable browsers - the signed-in-once Chromium instances an
-agent attaches to through browser-harness. They act on the LOCAL Director (CC_DIRECTOR_API): a
-browser's debug port is loopback and its data directory is on this machine, so browsers are
-machine-local and only an agent on the same machine can drive them.
+agent attaches to through browser-harness. They act on the Director this session belongs to
+(named by CC_DIRECTOR_ID, reached through the Gateway): a browser's debug port is loopback and its
+data directory is on this machine, so browsers are machine-local and only an agent on the same
+machine can drive them.
 
 All rendering decisions the user sees (status label, account, the attach environment) are FOLDED by
 the Director and returned on the DTO; this module only lays them out.

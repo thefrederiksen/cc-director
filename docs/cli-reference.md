@@ -629,9 +629,10 @@ OPTIONS:
 ## DevThrottle Command (cc-devthrottle)
 
 Unified DevThrottle command surface for session-to-session messaging, session management, Gateway
-schedules, settings, and local setup diagnostics. Fleet/session/message commands run inside a
-DevThrottle session and talk to that session's own Director through `CC_DIRECTOR_API`. Schedule
-commands talk to the Gateway using `gateway.url` and `gateway.token` from config.
+schedules, settings, and local setup diagnostics. Every command runs inside a DevThrottle session
+and talks to the GATEWAY, presenting the session's own key (`CC_GATEWAY_URL` +
+`CC_GATEWAY_SESSION_KEY`, stamped into the environment at launch). The Director itself listens on
+nothing - the remove-the-network-port mission deleted its HTTP surface.
 
 ### cc-devthrottle
 
@@ -1112,52 +1113,14 @@ COMMANDS:
 
 ---
 
-## Director Control API
+## Director Control API - removed
 
-The Director exposes a loopback REST API (default port range 7879-7898). All session
-endpoints are under `/sessions/{sessionId}/`.
+The Director no longer exposes any HTTP surface. The remove-the-network-port mission deleted the
+listener, the loopback port range 7879-7898, and every route that lived on it (the voice-turn
+endpoint documented here had already been superseded by the Gateway voice path). Drive the fleet
+with `cc-devthrottle`, which talks to the Gateway; see docs/public/api/01-control-api.md for the
+full mapping of what replaced each piece.
 
-### POST /sessions/{id}/voice-turn
-
-Server-side walkie-talkie turn (issue #351). One call = one complete turn:
-audio or pre-transcribed text goes in, a spoken summary comes out.
-
-**Input:** `multipart/form-data` or JSON
-
-| Field | Type | Required | Notes |
-|-------|------|----------|-------|
-| `audio` | binary | either/or | Raw audio bytes (AAC, WAV, WebM). Director transcribes via Whisper. |
-| `text`  | string | either/or | Pre-transcribed text. Bypasses transcription - used by tests and non-audio callers. |
-
-**Response:** `text/event-stream` (Server-Sent Events). One `data:` JSON per stage,
-then a final `reply` event.
-
-```
-data: {"stage":"transcribing"}
-data: {"stage":"transcript","text":"what should we focus on next?"}
-data: {"stage":"waiting"}
-data: {"stage":"thinking"}
-data: {"stage":"summarizing"}
-data: {"stage":"reply","summary":"Here is what I found. The main decision is X.","audioBase64":"<mp3 bytes base64>"}
-```
-
-On any error the stream ends with `{"stage":"error","message":"<reason>"}`.
-
-The `summary` field is the wingman-produced plain-prose spoken version (2-3 sentences,
-no markdown). The `audioBase64` field contains the TTS bytes (MP3) for that summary.
-If the wingman or TTS is unavailable, the fallback path fires: a plain-text excerpt is
-synthesized instead. The reply event is always emitted - never goes silent.
-
-**Status codes:**
-- `200` - SSE stream (even on turn errors, which surface as `{"stage":"error",...}`)
-- `400` - Invalid session id format (JSON body)
-- `404` - Session not found (JSON body)
-- `410` - Session has already exited (JSON body)
-
-**Multiple turns = multiple calls.** No persistent voice session state on the server
-between calls.
-
----
 
 ## Common Flag Patterns
 

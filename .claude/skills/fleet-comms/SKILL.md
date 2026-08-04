@@ -9,9 +9,11 @@ DevThrottle lets a session talk to other sessions running anywhere in the fleet,
 machine whose Director is attached to the same Gateway. Use the single `cc-devthrottle` command.
 You never need the Gateway URL or any token; your own Director relays for you.
 
-Every session is launched with two environment values the command relies on:
-`CC_DIRECTOR_API` is your own Director's address, and `CC_SESSION_ID` is your own id.
-`cc-devthrottle` reads them automatically.
+Every session is launched with the environment values the command relies on: `CC_GATEWAY_URL` (the
+Gateway's address), `CC_GATEWAY_SESSION_KEY` (this session's own credential for it),
+`CC_DIRECTOR_ID` (which Director you belong to) and `CC_SESSION_ID` (your own id).
+`cc-devthrottle` reads them automatically. The Director itself listens on nothing - the
+remove-the-network-port mission deleted its HTTP surface - so every command is a Gateway call.
 
 ## Discover actions
 
@@ -32,7 +34,16 @@ cc-devthrottle session spawn D:\path\to\repo --purpose "implement #799"
 cc-devthrottle session spawn D:\path\to\repo --name "Frontend review"
 cc-devthrottle session spawn D:\path\to\repo --purpose "run the test suite" --agent ClaudeCode --prompt "Run the tests and report failures."
 cc-devthrottle session spawn D:\path\to\repo --name "frontend" --agent RawCli --command cmd
+cc-devthrottle director list
+cc-devthrottle session spawn D:\path\to\repo --name "build" --director "North build"
 ```
+
+`--machine <name>` starts the session on another COMPUTER; `--director <id-or-name>` starts it on ONE
+named Director. They answer different questions: a computer runs several named Director instances, so
+`--machine` lands on whichever is listed first. Name the Director when it has to be that one -
+`director list` gives you the id, and a Director's toolbar Copy button hands out its name, id, and
+machine for pasting. An unregistered or ambiguous name fails loudly and never falls back to another
+Director.
 
 Always name your session. On this fleet many sessions run in the SAME checkout, so a session with
 no name displays as the bare folder name and is impossible to tell apart. Lead with `--name`
@@ -40,50 +51,48 @@ no name displays as the bare folder name and is impossible to tell apart. Lead w
 `implement #799`); spawn warns when you give neither. A blank name, or a name equal to the bare
 repository folder name, is rejected - pass something meaningful or a purpose.
 
-### If rename, done, or "message send all" answers "HTTP 404 from the Director"
+### Spawning is a commitment, not a resource request
 
-The command is right and the code is right. The Director you are talking to is too old.
+**When you spawn a session, it is YOUR worker and you own finishing it.** You do not hand it a
+task and walk away. From the moment it exists it is your job to drive it to completion as quickly
+as possible, and to get its work somewhere safe.
 
-These verbs travel to the Director's loopback floor - rename to `POST /fleet/rename`, done to
-`POST /fleet/done`, send-all to `POST /fleet/broadcast`. All three were restored to the floor
-AFTER the v1.1.0 release, so a Director built before that restoration does not have those
-routes and answers 404 to a perfectly correct call.
+**A session is not complete when its work is written. It is complete when ALL of these are true:**
 
-**Do NOT use `/healthz` version to decide this.** The version comes from
-`Directory.Build.props`, which still reads `1.1.0` on main - so the shipped v1.1.0 Director
-that LACKS the routes and a fresh build from main that HAS them both report `"version":"1.1.0"`.
-Verified 2026-07-14 by running both side by side. The version cannot tell them apart.
+1. its code has been reviewed by a session OTHER than the one that wrote it;
+2. its output is SAFE (see the two destinations below);
+3. its worktree is gone, if it had its own;
+4. the session itself is dead (`cc-devthrottle session done <target>`).
 
-Probe the route itself, and compare it against a route you know is fake.
+Any one of those missing means it is still open, still yours, and still costing something.
 
-The Director's floor requires a credential on every route but `/healthz`, so a probe sent without one
-is answered 401 and says nothing about whether the route exists. Present the credential your session
-was given at launch:
+**"Safe" means one of two different things, and you choose which at spawn time:**
 
-```
-curl -s -o /dev/null -w "%{http_code}\n" -X POST http://127.0.0.1:7879/fleet/rename \
-  -H "Authorization: Bearer $CC_DIRECTOR_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"toSessionId":"00000000-0000-0000-0000-000000000000","name":"probe"}'
-curl -s -o /dev/null -w "%{http_code}\n" -X POST http://127.0.0.1:7879/fleet/definitely-not-a-route \
-  -H "Authorization: Bearer $CC_DIRECTOR_TOKEN" -d '{}'
-```
+- **The child works in YOUR worktree.** Its output is safe once merged into your tree and you
+  carry it forward. You are now responsible for that code.
+- **The child has its OWN worktree.** Its output is safe ONLY on `origin/main`. That worktree
+  will be deleted, and anything left in it - uncommitted changes, a branch never pushed, a patch
+  on disk - dies with it.
 
-**Read 401 and 403 as answers about your CREDENTIAL, never about the route.** A session credential is
-deliberately refused on `/fleet/rename` and the rest of the dangerous set, so BOTH probes answering
-403 means your credential cannot reach either - which is a different fact from the route being
-missing, and reading it as "the route is gone" would send you to update a Director that is fine. Run
-the comparison through `cc-devthrottle`, which carries full authority, when you need to tell those
-apart.
+Know which one you took on before you spawn; the obligation is different.
 
-- Both 404 -> the route genuinely is not there. The Director is older than the restoration;
-  update it. There is no workaround.
-- The real route answers something OTHER than 404 (a JSON body, 400, 502) while the fake one
-  404s -> the route exists and your problem is elsewhere. A 502 with a JSON body just means it
-  ran and the relay failed - that is the route working.
+**Three questions you must be able to answer for every session you started:**
 
-Do NOT reach for the Gateway as a substitute route; it answers 401 for this and is not the
-agent-facing surface.
+- when did it start?
+- how long has it been open?
+- what specifically has to happen to close it?
+
+If you cannot answer the third, the session has no exit and will not acquire one by itself.
+
+**This is not a limit on how many sessions you may run.** A hundred sessions is fine if every one
+is being driven to done. Three is a mess if none of them are. What matters is closing, not
+counting - so drive one thing all the way to dead-and-deleted before you pick up the next.
+
+### If a command fails against an old Director
+
+The remove-the-network-port mission ended the era of probing the Director's routes to date it -
+there are no routes. Commands go to the Gateway, which reaches the owning Director over its
+tunnel; a Director too old for a verb fails with the Gateway's own words naming the machine.
 
 This is worth a beat of suspicion generally: a Director, a `cc-devthrottle`, and a checkout can
 each be older than origin/main, and a stale one will contradict the code you just read. Verify
@@ -187,5 +196,8 @@ cc-devthrottle setup status
 - Address a session by a short id prefix or by exact name.
 - For a simple current-session rename, run `cc-devthrottle session rename "New Name"` directly.
 - If a target is ambiguous, rerun with a longer id prefix.
-- If a command says `CC_DIRECTOR_API` is missing, you are outside a DevThrottle-launched session.
-- The command never exposes the Gateway token to the session.
+- If a command says `CC_GATEWAY_URL` or `CC_GATEWAY_SESSION_KEY` is not set, you are outside a
+  DevThrottle-launched session (or this machine has no Gateway - and no Gateway means no agent
+  tooling, by design).
+- The account-wide Gateway token never enters a session; your session key is yours alone and ends
+  with the session.
