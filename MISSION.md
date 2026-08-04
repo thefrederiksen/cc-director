@@ -766,11 +766,11 @@ Two consequences, both acted on:
 1. **The Manager's arms remain internally valid** - both sides lack the fix equally, so the
    comparative conclusion stands. It was told to finish as planned and to spend NO effort reducing
    that noise, which is expected on its base and not its to fix.
-2. **The Architect's release gate on the merged tip is the first real re-measurement of whether
-   v1.9.8's fix actually works.** The QA draft records that issue as open pending re-measurement;
-   this settles it as a by-product of the release gate. If the storm survives on a tree that contains
-   the fix, the fix did not work, and that is a fleet-wide finding the owner needs - every merge in
-   this repository rides on a signal this race corrupts.
+2. **The Architect's release gate on the merged tip is the first OBSERVATION of that exception's
+   behaviour on a tree carrying the fix.** Not a controlled experiment - see the correction below.
+   If the storm survives there, the fix did not eliminate the race, and that IS a fleet-wide finding
+   the owner needs, because every merge in this repository rides on a signal this race corrupts. If
+   it does not recur, that is consistent with the fix working and is reported as exactly that.
 
 ### How that measurement must be read - the protocol, fixed BEFORE the run
 
@@ -788,7 +788,26 @@ rules and they are adopted:
 | Claim | Bar |
 |---|---|
 | The release may proceed | ONE run of the merged tip whose failures are all EXPLAINED. A run carrying only the known signature still passes this. |
-| v1.9.8 KILLED the race (a fleet-wide claim) | MORE THAN ONE run of the merged tip showing ZERO instances of that exception. A single instance on the first run answers "no" immediately, and no further runs are needed. |
+| The exception did not RECUR on a tree that has the fix | MORE THAN ONE run of the merged tip showing ZERO instances of that exception. A single instance on the first run answers "it still occurs" immediately, and no further runs are needed. |
+
+**The Architect overclaimed this and the Manager corrected it - recorded because the correction is
+the point.** The Architect called the merged-tip run a "before and after" for `ab78c36b1` and it is
+not one. Two reasons, both the Manager's:
+
+1. **"Present and large" is a property of a RUN, not of a tree.** The same unchanged commit gave 1
+   failure and then 54. So the honest "before" is *the exception occurred on both runs of a tree
+   lacking the fix* - which is exactly what makes the repetition requirement load-bearing rather
+   than merely cautious.
+2. **The merged tip differs from that arm by far more than the logging fix** - everything else main
+   brought in, plus all seven fix commits. A zero there is CONSISTENT WITH the fix working; it does
+   not attribute the improvement to it. The controlled comparison would be main-before against
+   main-after on the same tree, which is not what this run is.
+
+**So the reportable claim is the Manager's wording, and no stronger:** *the exception did not recur
+across N runs of a tree that has the fix, having occurred on both runs of a tree that lacked it* -
+and causation is left to the reader. This is the fifth time on this mission that a Manager has
+corrected an Architect's framing on evidence, which is the system working exactly as the founding
+Architect said it should.
 
 This keeps the research question off the release's critical path without letting the release's
 weaker evidence be reported as the stronger finding.
