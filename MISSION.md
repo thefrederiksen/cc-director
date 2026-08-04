@@ -716,3 +716,33 @@ The branch also takes main's version, `1.9.8`, so the release bump starts from t
 
 **Order note for the fix branch:** checked before merging that `mission/remove-network-port-fix`
 touches NEITHER conflicted file, so landing main first cannot disturb it.
+
+## THE PARKED RUN CAUGHT A REAL REGRESSION THE DEFAULT GATE COULD NOT SEE - 2026-08-04
+
+The fix branch's default gate was FULLY GREEN - 4,217 tests, nine projects, zero failures. Its parked
+arm then failed in two projects, and **three of the four failures were a genuine regression the
+Manager had introduced**, reported against itself before being asked.
+
+The cause: fixing inspection finding 2 split the launcher refusal into three distinct answers, and in
+doing so the too-old case stopped saying "not connected" - which three tests assert as a literal
+substring. Nothing in the default gate touches those tests.
+
+**This is the strongest single argument in the mission for the parked suites, and it belongs in the
+QA report.** The default gate is not a subset of the truth - it is a different question. A green
+default run said nothing at all about the behaviour this change actually altered, and had the
+coverage-gap warning been treated as advisory, the regression would have landed with a green gate
+behind it.
+
+**Architect ruling on how it gets fixed - the fix goes in the MESSAGE, not the tests.** "Not
+connected" is TRUE in both of the split cases: a launcher too old to open a command stream is not
+connected either. The split adds *why*; it does not make the shared fact false. So every refusal
+meaning no-stream keeps stating that shared truth and ADDS its distinguishing evidence, and the three
+tests then pass untouched - which is the only outcome that proves the change did not quietly narrow
+behaviour. If forcing the shared phrase genuinely worsens a message, the Manager brings the exact
+wording to the Architect for a ruling on the record rather than editing assertions unilaterally. The
+mission has exactly one deleted test (`CleanInstallCliAuthenticationTests`) and it is on the record
+for precisely this reason: so it can never be read later as a test dropped to get green.
+
+The fourth failure, `WingmanInstructionsStoreTests.Save_EmptyOrOversized_Throws`, is a
+save-validation test nowhere near the change. The Manager correctly refused to call it flake before
+the parent arm rules on it.

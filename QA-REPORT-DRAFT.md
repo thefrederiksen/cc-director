@@ -182,6 +182,15 @@ authoritative.**
    two independent lines of evidence. v1.9.8 contains a fix that removes the exception; the issue
    stays open pending re-measurement, because a single green run is the exact false signal it is about.
 
+3. **A fully green gate can be silent about the very thing a change altered.** Late in this work a
+   branch passed the standard gate completely - 4,217 tests, every project, zero failures - and the
+   deeper suites that are normally skipped then caught a real regression it had introduced. Nothing
+   in the standard gate touched the affected behaviour. The gate is not a smaller version of the
+   truth; it is a different question, and its own warning that a change reaches skipped coverage has
+   to be treated as an instruction rather than a note. **This is the clearest argument in the whole
+   mission for running the deeper suites**, and it was caught only because the person running it
+   treated that warning as mandatory.
+
 **Consequence for you:** every piece of work in this repository merges on "the tests are green", and
 that signal has been corrupted. The mission's landing criterion is therefore COMPARATIVE - a run counts
 only against a run of its parent, and the parent must be run more than once, because on this mission a
