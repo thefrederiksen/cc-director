@@ -746,3 +746,28 @@ for precisely this reason: so it can never be read later as a test dropped to ge
 The fourth failure, `WingmanInstructionsStoreTests.Save_EmptyOrOversized_Throws`, is a
 save-validation test nowhere near the change. The Manager correctly refused to call it flake before
 the parent arm rules on it.
+
+### The 54-failure storm, and why the fix branch was always going to see it
+
+The parked re-run produced **54 failures in `Gateway.UnitTests` where the previous run of the same
+code produced 1.** The Manager characterised it from the artifact rather than assuming: all 54 carry
+the IDENTICAL exception (`FileLogWriter.Enqueue` on a completed `BlockingCollection`), all 54 start
+and end inside 0.133 seconds, and they span three classes plus four path cases the branch does not
+touch. One instantaneous assembly-wide event; the count is its blast radius. The same shape as this
+mission's earlier 62-failure outlier at 0.101 seconds, and the moving-victim signature already named.
+
+**The Architect then established, with `git merge-base` rather than by reasoning, the fact that
+reframes it: main's logging fix `ab78c36b1` - the v1.9.8 change aimed at EXACTLY this exception - is
+NOT an ancestor of the fix branch.** That branch was cut from `5dc4fef6a`, before main was merged
+into the mission branch. So both of its arms run WITHOUT the fix for the race generating their noise.
+
+Two consequences, both acted on:
+
+1. **The Manager's arms remain internally valid** - both sides lack the fix equally, so the
+   comparative conclusion stands. It was told to finish as planned and to spend NO effort reducing
+   that noise, which is expected on its base and not its to fix.
+2. **The Architect's release gate on the merged tip is the first real re-measurement of whether
+   v1.9.8's fix actually works.** The QA draft records that issue as open pending re-measurement;
+   this settles it as a by-product of the release gate. If the storm survives on a tree that contains
+   the fix, the fix did not work, and that is a fleet-wide finding the owner needs - every merge in
+   this repository rides on a signal this race corrupts.
