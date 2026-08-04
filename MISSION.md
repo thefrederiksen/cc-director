@@ -792,3 +792,11 @@ rules and they are adopted:
 
 This keeps the research question off the release's critical path without letting the release's
 weaker evidence be reported as the stronger finding.
+
+**And "EXPLAINED" has a definition, because that is the word that rots quietly.** A run counts as
+explained only when the exception AND the instant were read out of the RESULT FILE for THAT run.
+Never when the count merely looked familiar. The Manager's own two runs are the proof: 1 failure and
+54 failures would both have read as "the usual thing" from a summary line, and only opening the
+artifact showed a single exception type inside a 0.133-second window. **A run declared explained
+without opening the artifact is the same failure as a green nobody looked at** - which is this
+mission's oldest law, arriving in a new disguise.
