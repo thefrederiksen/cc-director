@@ -336,3 +336,11 @@ ran the suites in a clean worktree at `f09d55ff` on SOREN_NORTH with `obj` and `
 No reds, no reruns needed. Note what the 16-of-16 also says: the coalescing pair and the backslash
 names test, red on macOS, are green on Windows - they are Unix-arm findings exactly as recorded above,
 not shared-suite flakiness.
+
+**And that discrimination deserves stating as a rule, because this repository keeps needing it.** The
+default explanation here for an unexplained red has been "flaky", and this mission has now twice
+caught that label hiding a specific cause: once in the log-writer teardown race that turned out to be
+behind most of the gate's supposedly random failures, and now here. A red that reproduces on one
+platform and never on the other is not noise - it is a platform finding wearing noise as a disguise,
+and the cheapest way to unmask it is exactly what happened above: run the same suite on both platforms
+from clean assemblies and compare, rather than rerunning on one platform until the red goes away.
