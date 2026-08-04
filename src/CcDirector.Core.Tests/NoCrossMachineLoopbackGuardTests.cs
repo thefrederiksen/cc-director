@@ -31,6 +31,7 @@ public sealed class NoCrossMachineLoopbackGuardTests
         // --- Loopback BIND / same-machine control surface (the deliberate security boundary) ---
         ["src/CcDirector.ControlApi/ControlApiHost.cs"] = "Binds Kestrel to loopback (tailscale mode); same-machine ControlApiBaseUrl for in-session agents.",
         ["src/CcDirector.ControlApi/InstanceRegistration.cs"] = "FSW same-machine ControlEndpoint is http://127.0.0.1:{port} by design.",
+        ["src/CcDirector.ControlApi/PortAllocator.cs"] = "Doc comments only. The availability probe asks whether the Control API can bind LOOPBACK - the address ControlApiHost actually binds - so the comments name 127.0.0.1 to say which bind is being tested. Same machine by definition: it is asking about its own bind.",
         ["src/CcDirector.ControlApi/TailscaleServeSelfProvisioner.cs"] = "Maps the tailnet front door to local loopback backend.",
         ["src/CcDirector.ControlApi/GatewayConnectivitySelfTest.cs"] = "Probes the local loopback Control API as part of self-test.",
         ["src/CcDirector.ControlApi/GatewayEnrollmentClient.cs"] = "Epic #1069 A: doc comment on EnrollSignedInAsync states the same-machine caller MUST pass a LOOPBACK gatewayUrl (http://127.0.0.1:<local gateway port>) so the Gateway's guardrail-1 IsLoopback check passes. Documents the policy; the literal address is built by the panel's BuildLoopbackEnrollUrl.",

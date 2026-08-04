@@ -185,17 +185,76 @@ public static class PortAllocator
         return false;
     }
 
+    /// <summary>
+    /// Can the Control API listen on this port? The question is asked about LOOPBACK, because that
+    /// is the address ControlApiHost binds in every addressing mode - the probe must not test a
+    /// wider door than the one the Director actually walks through. Both halves used to.
+    ///
+    /// The bind half opened the candidate port on ALL interfaces (IPAddress.Any) purely to test a
+    /// port it would then bind on loopback only. Windows saw a program opening itself to the network
+    /// and raised the "allow this app on public and private networks?" question against
+    /// cc-director.exe. On a first launch that dialog lands on top of the setup wizard and eats the
+    /// clicks aimed at it, so the wizard looks frozen with no error anywhere. A loopback listener
+    /// raises no such question.
+    ///
+    /// The scan half rejected on the port NUMBER alone, ignoring the listening address, so an
+    /// unrelated program holding (say) 192.168.1.5:7885 wrote that port off for every Director on the
+    /// machine - out of a range of twenty. See <see cref="ConflictsWithLoopbackBind"/>.
+    ///
+    /// The scan is an optimisation, not the authority: the bind below is the real test and catches
+    /// anything the scan lets through.
+    /// </summary>
     private static bool IsPortFree(int port)
+        => IsPortFree(
+            port,
+            static () => IPGlobalProperties.GetIPGlobalProperties().GetActiveTcpListeners(),
+            TryBind);
+
+    /// <summary>
+    /// The body, with BOTH collaborators injected: the listener enumeration and the bind. It is the
+    /// same shape <see cref="CollectLivePortReservations"/> already uses for its own probe.
+    ///
+    /// Both are injected so a test can drive THIS method - the real one - and pin both decisions
+    /// deterministically, with no operating-system socket and therefore no free-port race:
+    ///   * revert the scan to a port-number-only comparison and it returns before the bind delegate is
+    ///     ever invoked, which a test can see;
+    ///   * revert the bind to all interfaces and the address handed to the delegate changes, which a
+    ///     test can capture.
+    ///
+    /// Earlier attempts to cover these two lines all failed, and each failure is why this shape is
+    /// what it is. Testing <see cref="ConflictsWithLoopbackBind"/> alone left the CALL SITE free to
+    /// revert. Binding a real socket could not tell the two addresses apart (Windows lets an
+    /// all-interfaces bind coexist with a listener already holding a specific address) and raced on
+    /// port reuse, going red at random on correct code. Reading the source could be defeated by moving
+    /// the construction into a helper and leaving the expected text in a comment - a review restored
+    /// the defect exactly that way and got a full green.
+    /// </summary>
+    internal static bool IsPortFree(
+        int port, Func<IPEndPoint[]> listActiveTcpListeners, Func<IPAddress, int, bool> tryBind)
     {
         try
         {
-            // Check listeners on all addresses (0.0.0.0 binding would conflict with anything bound there)
-            var props = IPGlobalProperties.GetIPGlobalProperties();
-            foreach (var ep in props.GetActiveTcpListeners())
-                if (ep.Port == port) return false;
+            foreach (var ep in listActiveTcpListeners())
+                if (ConflictsWithLoopbackBind(ep, port)) return false;
 
-            // Try binding to confirm
-            using var listener = new TcpListener(IPAddress.Any, port);
+            return tryBind(IPAddress.Loopback, port);
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// The real bind: can we listen on this address and port right now? Opening a listener is the only
+    /// authoritative answer - the scan above is an optimisation that can be stale by the time we act
+    /// on it.
+    /// </summary>
+    private static bool TryBind(IPAddress address, int port)
+    {
+        try
+        {
+            using var listener = new TcpListener(address, port);
             listener.Start();
             listener.Stop();
             return true;
@@ -204,6 +263,25 @@ public static class PortAllocator
         {
             return false;
         }
+    }
+
+    /// <summary>
+    /// True when an existing listener would block a bind to <c>127.0.0.1:port</c>: it is on the same
+    /// port AND on an address that covers loopback - loopback itself, or a wildcard listener
+    /// (<c>0.0.0.0</c> / <c>::</c>) which already includes it.
+    ///
+    /// A listener on a SPECIFIC non-loopback address - a local network address, a virtual adapter, a
+    /// tunnel - does not collide with a loopback bind, and treating it as if it did costs the
+    /// Director a port it could have used. Pure - unit-tested.
+    /// </summary>
+    internal static bool ConflictsWithLoopbackBind(IPEndPoint listener, int port)
+    {
+        if (listener.Port != port) return false;
+
+        var address = listener.Address;
+        return IPAddress.IsLoopback(address)
+            || address.Equals(IPAddress.Any)
+            || address.Equals(IPAddress.IPv6Any);
     }
 
     private static HashSet<int> ReadPortsInUseByOtherDirectors(string except)
