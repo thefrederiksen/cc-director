@@ -824,6 +824,15 @@ is met*. If later runs show the exception more often on the fix tip than the par
 EXPECTED shape of this hypothesis and not evidence of a regression - the Manager was told not to
 chase it.
 
+**The sharp version of that hypothesis was then EXCLUDED by measurement rather than left to
+argument.** In the 54-failure run, all ten added tests ran between 16:22:45.610 and 16:22:47.817 and
+every one PASSED - the last finishing 2.2 seconds BEFORE the storm window opened at 16:22:50.012,
+with `GatewayAccountMembershipTests` and `GatewayDeviceKeyStoreTests` immediately adjacent to it,
+neither of them the branch's. So "one of the new tests triggered the disposal" is ruled out by the
+timeline. **The occupancy version survives untouched**, because occupancy is about total parallel
+load rather than adjacency, and adjacency evidence cannot settle it - that would need many runs at
+two test counts, which is separate work.
+
 This is the fifth time on this mission a Manager has corrected an Architect's framing on evidence,
 and the second time one has corrected its own.
 
