@@ -219,7 +219,22 @@ switch ($Command) {
         $lines += ("  pid={0} exe={1} listeners={2}" -f $p.Id, $p.Path, $listens.Count)
         $listens | ForEach-Object { $lines += "    LISTEN $($_.LocalAddress):$($_.LocalPort)" }
     }
-    if ($others.Count -eq 0) { $lines += "  (none running)" }
+    if ($others.Count -eq 0) { $lines += "  (none running - the positive control is then absent, and this scan proves less; say so rather than reading zero as proof)" }
+    $lines += ""
+
+    # THE LAUNCHER IS PHASE 6, NOT THIS PHASE. The mission's requirements name both the Director and
+    # the launcher, so a scan that silently omitted the launcher would let a reader take this file as
+    # proof of something it never measured. Reported explicitly, whatever it says.
+    $lines += "Scope note - cc-launcher processes (PHASE 6's listener, deliberately still present):"
+    $launchers = @(Get-Process | Where-Object { $_.ProcessName -like 'cc-launcher*' })
+    foreach ($p in $launchers) {
+        $listens = @($tcpAll | Where-Object { [int]$_.OwningProcess -eq $p.Id -and $_.State -eq 'Listen' })
+        $lines += ("  pid={0} exe={1} listeners={2}" -f $p.Id, $p.Path, $listens.Count)
+        $listens | ForEach-Object { $lines += "    LISTEN $($_.LocalAddress):$($_.LocalPort)" }
+    }
+    if ($launchers.Count -eq 0) { $lines += "  (no launcher running on this machine right now)" }
+    $lines += "  This phase removed the DIRECTOR's listener only. Any launcher listener above is expected"
+    $lines += "  and is phase 6's work; it is NOT evidence about phase 5 either way."
     $lines += ""
 
     $verdict = if ($rigTcpListen.Count -eq 0 -and $rigUdp.Count -eq 0) { 'PASS: the rig Directors, alive and registered, own ZERO listening sockets' }

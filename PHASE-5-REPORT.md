@@ -191,22 +191,41 @@ broke the build. It did not: the break entered with `a641109fe` and left with `e
 
 ## The gate, comparatively
 
-(RUNS IN PROGRESS - this section is completed from the result files, not from memory.)
+Every `obj` and `bin` under `src\` and `tools\` was deleted before the phase arm's first run, per
+the mission's standing stale-assembly rule.
 
-Phase arm (commit `e5132c9af`+, clean `obj`/`bin` deleted first):
+**Phase arm** (commit `e5132c9af` onward, in this worktree):
 
-- Default gate run 1: FAILED in 2 projects - `GatewayInputStatsAggregatorTests.TokenSpend_RepeatedIdenticalSnapshot_DoesNotDoubleCount`
-  ("The collection has been marked as complete with regards to additions" - the mission's named
-  fleet-wide FileLog teardown race, an arbitrary victim) and
-  `ReleaseSourceTests.FetchLatestAsync_403ThenSuccess_RecoversAndDelaysBetweenAttempts`
-  ("expected a non-zero backoff before the retry" - a timing assertion in the setup engine).
-  Neither is in code this phase touched; judgement deferred to the parent arm below.
-- Parked `CcDirector.Core.Tests`: pending.
-- Parked `CcDirector.Gateway.Tests`: pending.
+- Default gate, run 1: FAILED in 2 projects.
+  - `GatewayInputStatsAggregatorTests.TokenSpend_RepeatedIdenticalSnapshot_DoesNotDoubleCount` -
+    `InvalidOperationException: The collection has been marked as complete with regards to
+    additions`. That is verbatim the mission's named fleet-wide defect: the `FileLog` teardown
+    race, whose victim is arbitrary and whose cause is not. Phase 4 recorded eight of nine
+    failures sharing this exception.
+  - `ReleaseSourceTests.FetchLatestAsync_403ThenSuccess_RecoversAndDelaysBetweenAttempts` -
+    "expected a non-zero backoff before the retry", a wall-clock timing assertion in the setup
+    engine. Run in isolation THREE times on each arm afterwards: 9/9 passed every time, on both.
+    A timing assertion that only fails under a loaded parallel run is the same class of noise.
+- Parked `CcDirector.Core.Tests`: 4200 passed, 1 failed, 8 skipped, in 32m53s. The one failure was
+  OURS and is fixed: see the print-ban audit above. Re-run of that test: green.
+- Parked `CcDirector.Gateway.Tests`: (result pending; filled from the run.)
 
-Parent arm (commit `f09d55ff4`, fresh worktree, clean by construction): pending, to be run more
-than once per the mission's standing rule - parent run one being green would otherwise convict
-this phase of noise it did not cause.
+**Parent arm** (commit `f09d55ff4`, a separate detached worktree, clean by construction), run
+more than once as the mission's rule requires - a single-run control on this repository's gate is
+itself a coin toss:
+
+- Run 1: FAILED in 1 project -
+  `WorkListStoreCaseParityTests.StoreNameCollision_ExactlyMatchesOrdinalIgnoreCase_ForEveryPair`,
+  with the SAME exception as the phase arm's first failure ("The collection has been marked as
+  complete with regards to additions") in a DIFFERENT test. Different victim, one cause - which is
+  exactly the shape the mission documented.
+- Run 2: fully green, every project, zero failures.
+
+**Judgement.** Both default-gate failures on the phase arm are absent from the parent's green run
+and one of them appears on the parent arm as a different victim of the same named exception, so by
+the mission's comparative criterion neither is this phase's. The failure that WAS this phase's came
+from the parked suite the default run never touches - which is the coverage gap the gate itself
+warns about, and the reason the parked suites were run rather than waved through.
 
 ## The live proof
 
