@@ -855,6 +855,16 @@ Written before parent run 2 exists, so its result cannot be fitted to a reading:
 Neither outcome blocks the merge. The three real failures were the only thing on either arm that a
 human should care about, and they are fixed and gone.
 
+**The Manager's caveat, adopted: two versus zero across two runs per arm is NOT A RATE, and must
+never harden into a believed asymmetry by being repeated.** This mission's own history is the
+argument - the parent that produced 0, then 4, then 2 failures on one unchanged commit proves that
+two runs cannot distinguish *never happens here* from *did not happen twice*. So the sentence, if it
+is needed, is: *the exception occurred on two of two fix-tip runs and zero of two parent runs, a
+sample far too small to establish a rate, consistent with the occupancy hypothesis and not evidence
+of a regression* - an open question, not a finding, and **explicitly not a number to be quoted as a
+ratio.** A figure repeated often enough starts being treated as measured, which is how this
+repository came to believe its gate was trustworthy in the first place.
+
 This keeps the research question off the release's critical path without letting the release's
 weaker evidence be reported as the stronger finding.
 
