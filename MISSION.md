@@ -76,7 +76,7 @@ the Gateway calling in, and can become pushes down the connection it already has
 | I1 | Independent inspection of 1b + 2 (Codex) | DONE - 8 proved defects, 4 high |
 | 3 | Session hooks stop needing an API | DONE - see PHASE-3-REPORT.md |
 | 4 | Lifecycle off HTTP | DONE - see PHASE-4-REPORT.md |
-| 5 | Delete the Director's listener | not started |
+| 5 | Delete the Director's listener | DONE AND PROVEN - see PHASE-5-REPORT.md |
 | 6 | Delete the launcher's listener | not started |
 | 7 | The guard test | not started |
 
@@ -464,3 +464,27 @@ That matters beyond this mission. This repository's default explanation for an u
 flakiness, and the mission has now twice caught that label hiding a specific cause - first the
 log-writer teardown race behind most gate failures, now this. **A red that reproduces on one platform
 and never on the other is not noise; it is a platform finding wearing noise as a disguise.**
+
+## PHASE 5 COMPLETE - the Director is portless and proven - 2026-08-04
+
+**Two Directors from this branch, alive and registered, own ZERO listening sockets** while holding 14
+established OUTBOUND connections to their Gateway. Evidence: `docs/qa/phase5-noport/`.
+
+**What makes it proof rather than an absence:** the same query, in the same instant, caught the owner's
+own two Directors LISTENING on 7879 and 7881. The scan can see listeners. Zero therefore means zero,
+not a broken query - the distinction this mission has been caught by four times.
+
+Also proven: 17 of 17 `cc-*` commands green from a real keyed session whose own environment dump shows
+`CC_DIRECTOR_API` and `CC_DIRECTOR_TOKEN` ABSENT. So the tooling works AND the address is genuinely
+gone, not merely unused. The launcher's listener on 7900 is still present and the artifact says so
+explicitly - that is Phase 6, and stating it is why the rest can be believed.
+
+Two findings raised in their own right: a test that had been **vacuous for 22 days**, dated by running
+it either side of the commit that broke it rather than described; and the rig hazard that the obvious
+shim runs the INSTALLED command line rather than the branch, stated as a property of the setup because
+two independent Managers hit it.
+
+## ARCHITECT RESET - 2026-08-04
+
+The founding Architect (`bc291ea4`) is standing down for context, not for cause. `ARCHITECT-HANDOVER.md`
+in this directory is the successor's brief. Nothing important lives only in the old conversation.
