@@ -291,7 +291,10 @@ the mission's standing stale-assembly rule.
 
 **Phase arm** (commit `e5132c9af` onward, in this worktree):
 
-- Default gate, run 1: FAILED in 2 projects.
+- Default gate, FINAL run (after every fix): **all projects exited zero.** The gate still prints its
+  coverage-gap warning naming the two parked suites, which is the gate being honest about what it
+  did not run - both were run separately and are recorded below.
+- Default gate, run 1 (before the fixes): FAILED in 2 projects.
   - `GatewayInputStatsAggregatorTests.TokenSpend_RepeatedIdenticalSnapshot_DoesNotDoubleCount` -
     `InvalidOperationException: The collection has been marked as complete with regards to
     additions`. That is verbatim the mission's named fleet-wide defect: the `FileLog` teardown
