@@ -836,6 +836,25 @@ two test counts, which is separate work.
 This is the fifth time on this mission a Manager has corrected an Architect's framing on evidence,
 and the second time one has corrected its own.
 
+### How the final parent run will be read - fixed BEFORE it lands
+
+Parent run 1 came back fully clean across all eleven projects, which independently re-confirms this
+mission's oldest gate finding: a parent's FIRST run can be perfectly clean, and a single control
+would once have convicted this mission of a regression it did not cause.
+
+Written before parent run 2 exists, so its result cannot be fitted to a reading:
+
+- **If parent run 2 shows teardown cases:** the race is demonstrated on both trees and the matter is
+  closed.
+- **If parent run 2 is ALSO clean:** across four runs the exception appeared twice on the fix tip and
+  zero times on the parent. **This is NOT to be read as a regression.** The failing classes are ones
+  the branch never touches, and the sharp version - that a new test triggered the disposal - is
+  already excluded by the timeline measurement. It is to be reported as CONSISTENT WITH the occupancy
+  hypothesis, in those words, as an open question rather than a finding.
+
+Neither outcome blocks the merge. The three real failures were the only thing on either arm that a
+human should care about, and they are fixed and gone.
+
 This keeps the research question off the release's critical path without letting the release's
 weaker evidence be reported as the stronger finding.
 
