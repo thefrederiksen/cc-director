@@ -406,10 +406,96 @@ the Control API classes in `CcDirector.Gateway.Tests` 140/140; `LauncherStopperT
 
 ---
 
+## Does this phase make the open items better, worse, or unchanged?
+
+Asked by the Architect, and it is the right question: a pre-existing defect the mission's own changes
+INTERACT with is not the same as one it merely walked past. Answered one at a time, with the confidence
+of each answer labelled, because two of these are inferences from reading code and two are observations.
+
+### 1. A Director started with no instance flag blocks on the picker - UNCHANGED in outcome
+
+**Every update rolls back on a machine with several named instances, before this phase and after it.**
+The launcher starts the Director with no instance flag; on such a machine that Director shows the picker
+and never finishes starting; the new build therefore never reports its version and the previous build is
+restored. Phase 4 changes neither half of that.
+
+It could not have, and this is worth stating because it looks like the kind of thing this phase would
+touch: the OLD path asked `/healthz`, which a Director blocked at the picker never serves because its
+Control API is never started; the NEW path reads the registration, which that same Director never writes.
+Both are silent in the same way for the same reason. Only the mechanism moved.
+
+**One behavioural difference, and it is a code reading rather than an observation** - I did not run the
+old code through this scenario, and say so rather than implying I did. The blocked process holds the
+single-instance mutex but never registers. Under the old name scan it MATCHED, so the launcher counted it
+as a running Director: `IsRunning` was true, health was null, and every later update pass concluded
+`HeldBecauseUnknown` for ever. Under the locator it does not match, so the launcher says
+`HeldBecauseDirectorNotRunning` - which is the truer statement, and it does not disguise a hung process
+as a healthy Director. In the roll-back itself the restored build is now actually launched and exits
+loudly on the mutex (`SingleInstanceGuard: Another instance holds`, observed in the rig) where the old
+code would have skipped the start without a word. Same end state, louder trail.
+
+### 2. `SingleInstanceGuard` is keyed by executable slot, not instance - BETTER and WORSE, and the worse one is live on the owner's machine
+
+This is the one that must not be blurred, so both directions are stated.
+
+**BETTER - the blast radius.** When this defect fires, the old launcher picked an arbitrary one of the
+claimants and could stop it, or read its session count and update over it. The locator refuses. The
+defect can no longer cause an action aimed at the wrong Director. The cause is untouched; what changed is
+what it can do.
+
+**WORSE - availability, on this machine, today.** Phase 4 chose to refuse rather than guess, and refusing
+is not free. Run read-only against the owner's real storage root, the phase-4 launcher decides:
+
+```
+outcome=Ambiguous
+  candidate: directorId=6d4523e2-... pid=34032 version=1.9.7  ...\cc-director\app\cc-director.exe
+  candidate: directorId=7a7a040a-... pid=15700 version=1.9.1  D:\ReposFred\dt-slot2\...\cc-director2.exe
+status: (none - nothing may be done to this machine's supervised Director)
+isRunning=True
+```
+
+Two live processes, both registered in `instances/default`. **After this phase ships, the launcher on
+that machine will not stop, restart, or update his Director** - every update pass returns
+`HeldBecauseUnknown` - until one of the two claimants leaves that instance home.
+
+Today it works, and it is important to be exact about WHY: the name scan finds only 34032 because the
+slot build happens to be called `cc-director2.exe`. It works by accident, not by design - two Directors
+of the SAME executable would have been picked between arbitrarily. So this is not a working state that
+Phase 4 broke; it is a lucky state that Phase 4 stopped relying on. It is still a behaviour change the
+owner would notice, and it is caused by this phase.
+
+**A decision for the Architect rather than something I have done.** The two claimants differ by
+EXECUTABLE PATH. The rule "never the exe path" exists because a path cannot tell two INSTANCES of one
+install apart - which is true, and is the defect. But it does tell an INSTALL from a development slot
+build. Narrowing the refusal to "ambiguous only when the claimants share an executable, otherwise prefer
+the installed one" would resolve this machine without reintroducing anything: the case it would decide is
+decidable, and the case that made the original scan wrong stays refused. I have not done it, because it
+touches a rule you set and the phase is accepted; say the word either way.
+
+### 3. An unknown `--instance` slug silently becomes the default - same family as 2
+
+Cause untouched. Consequence better for the same reason and at the same cost: it is one of the ways two
+processes come to claim one instance home, and that state is now refused rather than resolved
+arbitrarily. This is how it happened in the rig, which is how it was found.
+
+### 4. macOS and Linux - WORSE, and not merely "still unproven"
+
+The mission already records macOS and Linux as an open hole from Phase 3. That record understates what
+this phase did to them, so it is corrected here rather than inherited.
+
+Before Phase 4, lifecycle on macOS worked over HTTP - the same mechanism as Windows, proven to the extent
+that shipping proves anything. After Phase 4, macOS lifecycle depends on a **new** mechanism written for
+this phase (a polled request file) that **has never been run on that platform**. A proven-by-shipping path
+was replaced with an untested one. That is strictly worse there until somebody runs it, and it is a
+different statement from "macOS was already unproven".
+
+---
+
 ## Recorded open, not closed
 
-- **Windows only.** The Unix arm of the signal is implemented and reasoned about but is not proved by this
-  phase. That is the mission's existing recorded position on macOS and Linux, unchanged and not improved.
+- **Windows only, and this phase made macOS worse rather than leaving it as it found it.** See item 4
+  above: a proven-by-shipping HTTP path was replaced there by a mechanism that has never been run on that
+  platform.
 - **`SingleInstanceGuard` does not prevent two executables from claiming one instance home.** Found while
   building the rig, present on this machine, and outside this phase. The locator refuses rather than
   guessing when it happens, which contains the damage but does not remove the cause.
