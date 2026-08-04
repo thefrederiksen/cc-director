@@ -14,9 +14,19 @@ namespace CcDirector.Gateway.Tests;
 /// into a helper in another file and leaving the expected text in a comment, and every assertion stayed
 /// green. A guard that greps for TcpListener or Listen has exactly that weakness, and it is the weakness
 /// that matters, because whoever reintroduces a listener in two years will do it in a refactor - which
-/// is indirection by definition. A process cannot listen on a port without the hosting machinery to do
-/// it, so what is asserted here is that the machinery is ABSENT: text can be moved, a dependency cannot
-/// be hidden.
+/// is indirection by definition. What is asserted here is that the ASP.NET hosting machinery is ABSENT:
+/// text can be moved, a dependency cannot be hidden.
+///
+/// THIS GUARD IS HALF THE ANSWER, AND ITS ORIGINAL PREMISE WAS FALSE. It used to say a process cannot
+/// listen without hosting machinery. It can: TcpListener, HttpListener and Socket.Bind are base class
+/// library types that need no framework reference at all, and independent inspection proved the point by
+/// building a project with ordinary SDK references and binding 127.0.0.1 while every assertion here
+/// stayed green. This file still earns its place - the ASP.NET surface is the expensive one to
+/// reintroduce and the cheapest to detect - but the base class library surface is covered next door in
+/// NoListenerReachabilityGuardTests, which walks the CALL GRAPH because Core legitimately contains
+/// listeners and an assembly-level assertion cannot tell containing one from using one. Neither file is
+/// sufficient alone, and the reason is written here so the next reader does not trust this one for more
+/// than it proves.
 ///
 /// TWO LEVELS, BECAUSE EACH CATCHES WHAT THE OTHER CANNOT:
 ///   1. PROJECT level - the .csproj files carry no Microsoft.AspNetCore.App framework reference, which
