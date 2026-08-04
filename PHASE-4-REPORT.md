@@ -423,7 +423,13 @@ This mission has already recorded that the local gate is luck - ten distinct fai
 no repeats. These seven runs narrow that considerably: **eight distinct failures, all `FileLogWriter.Enqueue`
 on a completed `BlockingCollection`, plus one "cannot access a disposed object" against the test database
 which is the same shape against a different shared object.** **Filed as issue #2445** with the full run-by-run
-evidence, on the Architect's ruling that it is not this mission's work to fix - a race in the logging
+evidence, and a SECOND independent line added to it by the Architect: `SkillStoreTests`
+`A_dangerous_file_path_is_refused` dying with the same exception INSIDE the `SkillStore` constructor,
+nowhere near a path check, in a different suite reached by a different entry path - the clearest
+demonstration that the victim is arbitrary, because that victim's NAME points somewhere completely
+unrelated. The hypothesis at the time was a shared temporary directory; it was wrong and was struck on
+that stack, and the issue records the dead hypothesis on purpose because the next reader will form it too.
+The finding is filed rather than fixed on the Architect's ruling that it is not this mission's work to fix - a race in the logging
 teardown deserves its own change with its own proof rather than being smuggled in beside a port removal.
 
 That is not randomness, it is one
