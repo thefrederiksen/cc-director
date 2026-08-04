@@ -255,17 +255,22 @@ walking away from it. Merge without waiting; come back for the answer.
 release workflow runs ZERO tests - it builds and publishes artifacts - and a pushed tag cannot be
 un-pushed. So a defect that the default gate never looked at ships, and "fix it forward" is not
 available to a release that is already out. **The release gate runs on merged `main` at the exact
-commit about to be tagged, and it is three commands, not one:**
+commit about to be tagged, and it is ONE command:**
 
     .\scripts\test-local.ps1 -Parked -Configuration Release
-    dotnet test tools/cc-director-setup.Tests/ -c Release
-    dotnet test tools/cc-director-setup-engine.Tests/ -c Release
 
 `-Parked` adds the two skipped suites. `-Configuration Release` matches what users download,
 because the script defaults to Debug while the continuous integration job it replaced ran Release.
-The two installer projects are **not in `cc-director.sln`**, so `test-local.ps1` never runs them -
-it runs nine projects, all under `src\` - and the release publishes `cc-director-setup.exe`, so
-omitting them ships the installer with nothing behind it.
+
+**Corrected 2026-08-04, on evidence, by the remove-the-network-port mission.** This section used to
+say the gate was THREE commands, because the two installer projects were not in `cc-director.sln`
+and the script "runs nine projects, all under `src\`". That is no longer true of the script: it
+names `tools\cc-director-setup.Tests` and `tools\cc-director-setup-engine.Tests` in its own project
+list, its default run reports both (25 and 454 tests), and a `-Parked` run produces ELEVEN result
+files. Verified twice - a Manager's eleven result files, and the Architect reading the project list
+in `scripts\test-local.ps1` - rather than taken from either report. The two extra `dotnet test`
+commands were re-running suites the gate had already run. **If you are about to release, run the one
+command; the installer IS covered.**
 
 An earlier run does not count: the version bump and anything merged since is untested by it, and a
 run against a pull-request head is not a run against the squashed commit that gets tagged. This is
