@@ -30,6 +30,7 @@ import { SegmentRecorder } from "./segmentRecorder";
 import {
   deleteRecording,
   getRecording,
+  listChunks,
   recordingStoreAvailable,
   saveChunk,
   saveRecording,
@@ -103,25 +104,64 @@ function owns(recordingId: string): boolean {
   return active !== null && active.recordingId === recordingId;
 }
 
-/** Finalize the active capture into the automatic upload path. Runs at most once per capture.
- *  interruptedReason is null for a user stop; for a system stop it is recorded on the row AND as a
- *  timestamped note, which rides the complete call into the transcript - so the truncation stays
- *  visible after the delivered local row is deleted. */
-async function finalizeActive(interruptedReason: string | null): Promise<void> {
-  const rec = active;
-  if (rec === null || finalized === rec.recordingId) return;
-  finalized = rec.recordingId;
+// The lease heartbeat: touch the header's updatedAt every minute in EVERY non-idle phase, so
+// another tab's recovery never mistakes a paused capture (no segment rotations) or a long start
+// (permission prompt left open) for an orphan. Segment writes also refresh it; this covers the
+// quiet phases.
+let heartbeat: ReturnType<typeof setInterval> | null = null;
+
+function startHeartbeat(recordingId: string): void {
+  stopHeartbeat();
+  heartbeat = setInterval(() => {
+    if (!owns(recordingId)) {
+      stopHeartbeat();
+      return;
+    }
+    void chainHeaderWrite(async () => {
+      if (!owns(recordingId) || finalized === recordingId) return;
+      const fresh = await getRecording(recordingId);
+      if (fresh === null || fresh.state !== "recording") return;
+      fresh.updatedAt = Date.now();
+      await saveRecording(fresh);
+    }).catch(() => {
+      /* a missed heartbeat is recovered by the next one; recovery needs three minutes of silence */
+    });
+  }, 60_000);
+}
+
+function stopHeartbeat(): void {
+  if (heartbeat !== null) {
+    clearInterval(heartbeat);
+    heartbeat = null;
+  }
+}
+
+/** Finalize ONE SPECIFIC capture into the automatic upload path. Keyed to the recording id and run
+ *  at most once per capture: a stale continuation from an earlier capture can never finalize a
+ *  newer one. The header is reconciled from the chunks actually on disk, so a transient header
+ *  write failure during capture can neither make a real recording look empty (and get deleted) nor
+ *  under-count its segments. interruptedReason is null for a user stop; for a system stop it is
+ *  recorded on the row AND as a timestamped note, which rides the complete call into the
+ *  transcript - so the truncation stays visible after the delivered local row is deleted. */
+async function finalizeActive(recordingId: string, interruptedReason: string | null): Promise<void> {
+  if (!owns(recordingId) || finalized === recordingId) return;
+  finalized = recordingId;
+  stopHeartbeat();
   let queuedId: string | null = null;
   try {
     await chainHeaderWrite(async () => {
-      const fresh = await getRecording(rec.recordingId);
+      const fresh = await getRecording(recordingId);
       if (fresh === null) return;
-      if (fresh.segments === 0) {
+      // Reconcile from disk, not from the header's own counters: the chunks are the truth.
+      const chunks = await listChunks(recordingId);
+      if (chunks.length === 0) {
         // Nothing was captured (stopped within the first second) - an empty recording can never
         // pass the server's completeness gate, so it is removed rather than shown as sendable.
-        await deleteRecording(fresh.recordingId);
+        await deleteRecording(recordingId);
         return;
       }
+      fresh.segments = chunks.reduce((max, c) => Math.max(max, c.index + 1), 0);
+      fresh.durationMs = chunks.reduce((sum, c) => sum + c.durationMs, 0);
       // Stop finalizes AND queues the upload - no Send step (the Android recorder's "uploaded
       // automatically" bar, issue devthrottle_internal#966).
       fresh.state = "queued";
@@ -142,8 +182,10 @@ async function finalizeActive(interruptedReason: string | null): Promise<void> {
     // and recovery will pick the row up on the next open; what must NOT happen is a lying UI.
     emit({ error: `The recording could not be finalized: ${err instanceof Error ? err.message : String(err)}` });
   } finally {
-    active = null;
-    recorder = null;
+    if (owns(recordingId)) {
+      active = null;
+      recorder = null;
+    }
     emit({ phase: "idle", recordingId: null, title: "", notes: [] });
     bumpLibrary();
   }
@@ -156,14 +198,15 @@ async function finalizeActive(interruptedReason: string | null): Promise<void> {
   }
 }
 
-/** The capture died under us (persist failure or the system suspending the microphone). Surface it
- *  and finalize what exists - the recording keeps everything captured and says it was cut short.
- *  The phase flips to "stopping" IMMEDIATELY so the banner never pulses "Recording" over a dead
- *  microphone, and so a user Stop pressed during this finalize is a harmless no-op. */
-function handleCaptureLoss(message: string): void {
-  if (active === null || finalized === active.recordingId) return;
+/** The capture died under us (persist failure or the system suspending the microphone). Keyed to
+ *  the recorder INSTANCE that reported it, so a late error from an already-replaced capture is
+ *  ignored. Surfaces the loss and finalizes what exists - the recording keeps everything captured
+ *  and says it was cut short. The phase flips to "stopping" IMMEDIATELY so the banner never pulses
+ *  "Recording" over a dead microphone, and a user Stop pressed during this finalize is a no-op. */
+function handleCaptureLoss(from: SegmentRecorder, recordingId: string, message: string): void {
+  if (recorder !== from || !owns(recordingId) || finalized === recordingId) return;
   emit({ phase: "stopping", error: `Recording stopped: ${message}` });
-  void finalizeActive(message).catch(() => {
+  void finalizeActive(recordingId, message).catch(() => {
     // finalizeActive contains its own failure handling; this guard only prevents an unhandled
     // rejection from a double-failure.
   });
@@ -256,42 +299,55 @@ export const recordingSession = {
           });
         },
         onError: (message) => {
-          handleCaptureLoss(message);
+          handleCaptureLoss(r, recordingId, message);
         },
       });
       recorder = r;
+      startHeartbeat(recordingId);
       await r.start();
-      // The microphone can die during the await above (handleCaptureLoss finalizes and clears the
-      // session). A stale continuation must not resurrect the row or claim to be recording.
-      if (!owns(recordingId) || recorder !== r) return;
+      // The microphone can die during the await above (handleCaptureLoss flips the phase and
+      // finalizes). A stale continuation must not resurrect the row or claim to be recording, so
+      // every guard is re-checked after every await - including the phase and the finalize marker.
+      const stillStarting = () =>
+        owns(recordingId) && recorder === r && finalized !== recordingId && state.phase === "starting";
+      if (!stillStarting()) return;
       // Now that the browser has chosen the container, stamp the real codec + sample rate.
       await chainHeaderWrite(async () => {
+        if (!owns(recordingId) || finalized === recordingId) return;
         const fresh = await getRecording(recordingId);
         if (fresh === null) return;
         fresh.codec = r.codecLabel;
         fresh.sampleRateHz = r.sampleRateHz;
         await saveRecording(fresh);
       });
-      if (!owns(recordingId) || recorder !== r) return;
+      if (!stillStarting()) return;
       emit({ phase: "recording" });
     } catch (err) {
       // Only unwind a capture this continuation still owns - a concurrent loss handler may have
       // already salvaged and finalized it, and deleting the row out from under that would lose it.
-      if (owns(recordingId) || active === null) {
+      const owned = owns(recordingId);
+      if (owned) {
         recorder?.dispose();
         recorder = null;
         active = null;
+        stopHeartbeat();
         try {
           if (finalized !== recordingId) await deleteRecording(recordingId);
         } catch {
           /* the row stays; recovery on next open cleans an empty shell */
         }
       }
-      emit({
-        phase: "idle",
-        recordingId: null,
-        error: err instanceof Error ? err.message : String(err),
-      });
+      // Do not clobber the state of a capture this continuation no longer owns; the finalizer that
+      // took over already emitted the truthful state. Surface the start error either way.
+      if (owned || state.recordingId === recordingId || state.recordingId === null) {
+        emit({
+          phase: "idle",
+          recordingId: null,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      } else {
+        emit({ error: err instanceof Error ? err.message : String(err) });
+      }
     }
   },
 
@@ -300,9 +356,15 @@ export const recordingSession = {
     const r = recorder;
     if (r === null || state.phase !== "recording") return;
     const id = state.recordingId;
-    await r.pause();
-    // A stop or loss that landed during the await owns the phase now.
-    if (recorder === r && id !== null && owns(id) && state.phase === "recording") emit({ phase: "paused" });
+    try {
+      await r.pause();
+      // A stop or loss that landed during the await owns the phase now.
+      if (recorder === r && id !== null && owns(id) && state.phase === "recording") emit({ phase: "paused" });
+    } catch (err) {
+      if (recorder === r && id !== null && owns(id)) {
+        emit({ error: err instanceof Error ? err.message : String(err) });
+      }
+    }
   },
 
   /** Resume a paused capture. A failed microphone reopen surfaces as error; capture stays paused. */
@@ -314,7 +376,10 @@ export const recordingSession = {
       await r.resume();
       if (recorder === r && id !== null && owns(id) && state.phase === "paused") emit({ phase: "recording" });
     } catch (err) {
-      emit({ error: err instanceof Error ? err.message : String(err) });
+      // A late rejection from a capture that already ended must not raise a false alarm.
+      if (recorder === r && id !== null && owns(id)) {
+        emit({ error: err instanceof Error ? err.message : String(err) });
+      }
     }
   },
 
@@ -322,14 +387,22 @@ export const recordingSession = {
    *  is already in flight is a no-op (that finalize owns the ending). */
   async stop(): Promise<void> {
     const r = recorder;
-    if (r === null || (state.phase !== "recording" && state.phase !== "paused")) return;
+    const id = state.recordingId;
+    if (r === null || id === null || (state.phase !== "recording" && state.phase !== "paused")) return;
     emit({ phase: "stopping" });
+    let flushFailure: string | null = null;
     try {
       await r.stop();
-    } catch {
-      // The recorder is already dead; finalize still queues everything that reached disk.
+    } catch (err) {
+      // The final flush failed: everything already rotated to disk still uploads, but this must
+      // not present as a clean stop - the tail of the audio may be missing.
+      flushFailure =
+        "the final part of the recording could not be saved (" +
+        (err instanceof Error ? err.message : String(err)) +
+        ")";
+      emit({ error: `Recording stopped: ${flushFailure}` });
     }
-    await finalizeActive(null);
+    await finalizeActive(id, flushFailure);
   },
 
   /** Update the working title (editable until stop). Persisted via persistTitle / at finalize. */

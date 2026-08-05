@@ -226,9 +226,10 @@ export function Recorder() {
       rec.lastError = undefined;
       await saveRecording(rec);
       await refreshLocal();
-      void driveRecordingUpload(recordingId, () => recordingSession.notifyLibraryChanged()).then(() => {
-        recordingSession.notifyLibraryChanged();
-      });
+      void driveRecordingUpload(recordingId, () => recordingSession.notifyLibraryChanged()).then(
+        () => recordingSession.notifyLibraryChanged(),
+        () => recordingSession.notifyLibraryChanged(),
+      );
     },
     [refreshLocal],
   );
@@ -256,6 +257,7 @@ export function Recorder() {
   const playRecording = useCallback(
     async (row: LibraryRow) => {
       stopPlayback();
+      setPlaybackError(null);
       const token = ++playTokenRef.current;
       const audio = audioRef.current ?? new Audio();
       audioRef.current = audio;
@@ -359,7 +361,10 @@ export function Recorder() {
 
       {playbackError !== null && (
         <div className="banner banner-error" role="alert">
-          {playbackError}
+          {playbackError}{" "}
+          <button type="button" className="rec-row-btn" onClick={() => setPlaybackError(null)}>
+            Dismiss
+          </button>
         </div>
       )}
 
