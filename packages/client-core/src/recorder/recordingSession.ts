@@ -182,11 +182,17 @@ async function finalizeActive(recordingId: string, interruptedReason: string | n
     // and recovery will pick the row up on the next open; what must NOT happen is a lying UI.
     emit({ error: `The recording could not be finalized: ${err instanceof Error ? err.message : String(err)}` });
   } finally {
-    if (owns(recordingId)) {
+    // Only reset session state this finalizer still owns: a new capture may have legitimately
+    // begun (start() refuses while non-idle, but a stale catch could have force-idled the phase),
+    // and its state must never be clobbered by an older capture's finalizer.
+    const owned = owns(recordingId);
+    if (owned) {
       active = null;
       recorder = null;
     }
-    emit({ phase: "idle", recordingId: null, title: "", notes: [] });
+    if (owned || state.recordingId === recordingId) {
+      emit({ phase: "idle", recordingId: null, title: "", notes: [] });
+    }
     bumpLibrary();
   }
   if (queuedId !== null) {
@@ -248,6 +254,8 @@ export const recordingSession = {
     }
     emit({ error: null, phase: "starting" });
     const recordingId = crypto.randomUUID();
+    let r: SegmentRecorder | null = null;
+    let registered = false;
     const rec: LocalRecording = {
       recordingId,
       title: state.title.trim() || defaultTitle(),
@@ -270,10 +278,11 @@ export const recordingSession = {
       // segment lands in IndexedDB the moment the recorder rotates past it.
       await saveRecording(rec);
       active = rec;
+      registered = true;
       finalized = null;
       emit({ recordingId, title: rec.title, notes: [] });
 
-      const r = new SegmentRecorder({
+      const rr = new SegmentRecorder({
         onSegment: async (seg) => {
           const sha = await sha256Hex(seg.blob);
           await saveChunk({
@@ -299,55 +308,59 @@ export const recordingSession = {
           });
         },
         onError: (message) => {
-          handleCaptureLoss(r, recordingId, message);
+          handleCaptureLoss(rr, recordingId, message);
         },
       });
-      recorder = r;
+      r = rr;
+      recorder = rr;
       startHeartbeat(recordingId);
-      await r.start();
+      await rr.start();
       // The microphone can die during the await above (handleCaptureLoss flips the phase and
       // finalizes). A stale continuation must not resurrect the row or claim to be recording, so
       // every guard is re-checked after every await - including the phase and the finalize marker.
       const stillStarting = () =>
-        owns(recordingId) && recorder === r && finalized !== recordingId && state.phase === "starting";
+        owns(recordingId) && recorder === rr && finalized !== recordingId && state.phase === "starting";
       if (!stillStarting()) return;
       // Now that the browser has chosen the container, stamp the real codec + sample rate.
       await chainHeaderWrite(async () => {
         if (!owns(recordingId) || finalized === recordingId) return;
         const fresh = await getRecording(recordingId);
         if (fresh === null) return;
-        fresh.codec = r.codecLabel;
-        fresh.sampleRateHz = r.sampleRateHz;
+        fresh.codec = rr.codecLabel;
+        fresh.sampleRateHz = rr.sampleRateHz;
         await saveRecording(fresh);
       });
       if (!stillStarting()) return;
       emit({ phase: "recording" });
     } catch (err) {
-      // Only unwind a capture this continuation still owns - a concurrent loss handler may have
-      // already salvaged and finalized it, and deleting the row out from under that would lose it.
-      const owned = owns(recordingId);
-      if (owned) {
-        recorder?.dispose();
-        recorder = null;
-        active = null;
-        stopHeartbeat();
-        try {
-          if (finalized !== recordingId) await deleteRecording(recordingId);
-        } catch {
-          /* the row stays; recovery on next open cleans an empty shell */
-        }
+      const msg = err instanceof Error ? err.message : String(err);
+      // Failed before the session held anything: nothing to unwind, just report honestly.
+      if (!registered) {
+        emit({ phase: "idle", recordingId: null, error: msg });
+        return;
       }
-      // Do not clobber the state of a capture this continuation no longer owns; the finalizer that
-      // took over already emitted the truthful state. Surface the start error either way.
-      if (owned || state.recordingId === recordingId || state.recordingId === null) {
-        emit({
-          phase: "idle",
-          recordingId: null,
-          error: err instanceof Error ? err.message : String(err),
-        });
-      } else {
-        emit({ error: err instanceof Error ? err.message : String(err) });
+      // Unwind ONLY a capture this continuation provably still owns, with no loss-finalizer in
+      // flight. Anything else is a stale failure: the finalizer that took over already emitted the
+      // truthful state, and touching the session here could clobber a newer capture (the reviewer's
+      // A-fails-while-B-starts race).
+      // Read the phase through the getter: the guard at the top of start() narrowed state.phase to
+      // "idle" in the compiler's eyes, and emit() reassignments do not reset that narrowing here.
+      const stillMine =
+        owns(recordingId) &&
+        recorder === r &&
+        finalized !== recordingId &&
+        recordingSession.getState().phase === "starting";
+      if (!stillMine) return;
+      r?.dispose();
+      recorder = null;
+      active = null;
+      stopHeartbeat();
+      try {
+        await deleteRecording(recordingId);
+      } catch {
+        /* the row stays; recovery on next open cleans an empty shell */
       }
+      emit({ phase: "idle", recordingId: null, error: msg });
     }
   },
 
