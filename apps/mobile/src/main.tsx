@@ -23,6 +23,8 @@ import { installGlobalErrorReporting } from "@devthrottle/client-core/errors/rep
 import { CreditsNotice } from "./components/CreditsNotice";
 import { ConnectionBanner } from "./components/ConnectionBanner";
 import { VoiceModeBanner } from "./components/VoiceModeBanner";
+import { RecordingBanner } from "./components/RecordingBanner";
+import { recordingSession } from "@devthrottle/client-core/recorder/recordingSession";
 import { useVisibleViewportHeight } from "./hooks/useVisibleViewportHeight";
 import { useScreenWakeLock } from "./hooks/useScreenWakeLock";
 import { useKeepWarm } from "@devthrottle/client-core/net/useKeepWarm";
@@ -80,6 +82,11 @@ function GatedLayout() {
           to catch, not a way out. Here it is on the session screen auto-speak just dropped you into. It
           renders nothing at all when voice mode is off. */}
       <VoiceModeBanner />
+      {/* The recording banner is mounted here for the same reason as the voice-mode banner: a live
+          recording survives navigation (the session lives above the router), so its indicator must
+          be on every screen too. Renders nothing while no recording is running, and nothing on the
+          Recorder page itself. */}
+      <RecordingBanner />
       <Outlet />
     </>
   );
@@ -118,6 +125,13 @@ if ("serviceWorker" in navigator && navigator.serviceWorker.controller !== null)
   let reloadingForNewWorker = false;
   navigator.serviceWorker.addEventListener("controllerchange", () => {
     if (reloadingForNewWorker) return;
+    // NEVER reload over a live recording (recorder-unlimited-capture mission): a deploy landing
+    // mid-capture would kill the microphone and truncate the recording to force an update the user
+    // never asked for. The stale shell keeps running; the new build takes over on the next open.
+    if (recordingSession.isCapturing()) {
+      console.log("[mobile] a new service worker took control - reload deferred, a recording is live");
+      return;
+    }
     reloadingForNewWorker = true;
     console.log("[mobile] a new service worker took control - reloading to run the latest build");
     window.location.reload();

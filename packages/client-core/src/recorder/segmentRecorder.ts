@@ -65,16 +65,15 @@ export interface SegmentRecorderOptions {
   onSegment: (segment: FinalizedSegment) => Promise<void>;
   /** A segment could not be persisted or the recorder failed mid-capture. The capture is stopped. */
   onError: (message: string) => void;
-  /** Total capture reached the cap and the recorder stopped itself. */
+  /** Total capture reached the opt-in cap and the recorder stopped itself. */
   onAutoStop?: () => void;
-  /** Auto-stop cap on total captured (non-paused) time. Default 30 minutes. */
+  /** OPT-IN auto-stop cap on total captured (non-paused) time. There is deliberately NO default:
+   *  recording is unlimited (recorder-unlimited-capture mission - a 30-minute default cap silently
+   *  truncated a conference talk). A caller that wants a bound passes one explicitly. */
   maxDurationMs?: number;
   /** Rotation interval override for tests. Default SEGMENT_MS. */
   segmentMs?: number;
 }
-
-/** Default cap: 30 minutes of captured audio (the issue's stated maximum). */
-export const MAX_RECORDING_MS = 30 * 60_000;
 
 export class SegmentRecorder {
   private readonly opts: SegmentRecorderOptions;
@@ -223,6 +222,14 @@ export class SegmentRecorder {
       if (timer !== undefined) clearTimeout(timer);
     }
 
+    // The system can close the microphone under us - screen lock, another app claiming it, the
+    // browser suspending the page. A track's "ended" event fires ONLY for such external causes
+    // (never for our own track.stop()), so this is the honest signal that capture died. Salvage
+    // what the recorder flushed and stop loudly: a capture that dies must never look complete.
+    for (const track of this.stream.getTracks()) {
+      track.addEventListener("ended", () => this.onTrackEnded());
+    }
+
     // Live level meter on the captured stream (display only).
     const AudioCtor =
       window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
@@ -259,8 +266,8 @@ export class SegmentRecorder {
         await this.finalizeSegment();
         // finalizeSegment stops the capture itself when the segment could not be persisted.
         if (this.stopped || this.failed) return;
-        const cap = this.opts.maxDurationMs ?? MAX_RECORDING_MS;
-        if (this.elapsedBeforeSegment >= cap) {
+        const cap = this.opts.maxDurationMs;
+        if (cap !== undefined && this.elapsedBeforeSegment >= cap) {
           // The cap is enforced here, at a segment boundary, so the capped recording is made of
           // exactly the finalized segments already persisted - nothing is truncated or lost.
           this.stopped = true;
@@ -271,6 +278,23 @@ export class SegmentRecorder {
         this.startSegment();
       });
     }, segmentMs);
+  }
+
+  private onTrackEnded(): void {
+    void this.enqueue(async () => {
+      // A pause released the stream on purpose; a stop already finished. Only a LIVE capture whose
+      // track died externally is a loss to report.
+      if (this.stopped || this.paused || this.failed) return;
+      this.failed = true;
+      this.stopped = true;
+      this.clearRotateTimer();
+      await this.finalizeSegment();
+      this.releaseStream();
+      this.opts.onError(
+        "the phone suspended the microphone (screen lock, another app took it, or the browser " +
+          "paused the page). Everything captured up to that point is saved.",
+      );
+    });
   }
 
   private clearRotateTimer(): void {

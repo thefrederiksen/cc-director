@@ -7,17 +7,17 @@ import {
   listRecordings,
   recordingStoreAvailable,
   recoverInterrupted,
-  saveChunk,
   saveRecording,
   type LocalRecording,
 } from "@devthrottle/client-core/recorder/recordingStore";
-import { SegmentRecorder, MAX_RECORDING_MS } from "@devthrottle/client-core/recorder/segmentRecorder";
+import {
+  recordingSession,
+  useRecordingSession,
+} from "@devthrottle/client-core/recorder/recordingSession";
 import {
   driveRecordingUpload,
   resumePendingRecordingUploads,
-  sha256Hex,
 } from "@devthrottle/client-core/recorder/ingestUpload";
-import { getInstallId } from "@devthrottle/client-core/auth/deviceKey";
 import {
   getRecordings,
   getTranscript,
@@ -71,12 +71,6 @@ function formatWhen(iso: string): string {
   return isNaN(d.getTime()) ? iso : d.toLocaleString([], { dateStyle: "medium", timeStyle: "short" });
 }
 
-function defaultTitle(): string {
-  return `Recording ${new Date().toLocaleString([], { dateStyle: "medium", timeStyle: "short" })}`;
-}
-
-type Phase = "idle" | "starting" | "recording" | "paused" | "stopping";
-
 /** One library row: a local (not yet delivered) recording OR a server-side one, never both - the
  *  local copy is deleted exactly when the server acknowledges it holds everything. */
 interface LibraryRow {
@@ -107,30 +101,29 @@ function Cross() {
 export function Recorder() {
   const storeOk = recordingStoreAvailable();
 
-  const [phase, setPhase] = useState<Phase>("idle");
+  // The capture lifecycle lives in the app-level recording session, NOT in this page: leaving this
+  // page must not stop the recording (recorder-unlimited-capture mission). This page renders the
+  // session's state and drives its controls; the live numbers are polled on a display tick.
+  const session = useRecordingSession();
+  const { phase, title, error } = session;
+  const activeNotes = session.notes;
+
   const [elapsedMs, setElapsedMs] = useState(0);
   const [segmentCount, setSegmentCount] = useState(0);
   const [level, setLevel] = useState(0);
-  const [title, setTitle] = useState("");
   const [noteText, setNoteText] = useState("");
-  const [activeNotes, setActiveNotes] = useState<{ tMs: number; text: string }[]>([]);
-  const [error, setError] = useState<string | null>(null);
-  const [autoStopped, setAutoStopped] = useState(false);
 
   const [localRecordings, setLocalRecordings] = useState<LocalRecording[]>([]);
   const [serverRecordings, setServerRecordings] = useState<RecordingListItem[]>([]);
   const [serverError, setServerError] = useState<string | null>(null);
 
   const [playingId, setPlayingId] = useState<string | null>(null);
+  const [playbackError, setPlaybackError] = useState<string | null>(null);
   const [transcriptFor, setTranscriptFor] = useState<{ id: string; text: string } | null>(null);
   const [confirmDiscard, setConfirmDiscard] = useState<string | null>(null);
 
-  const recorderRef = useRef<SegmentRecorder | null>(null);
-  const activeRef = useRef<LocalRecording | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const playTokenRef = useRef(0);
-  const titleRef = useRef("");
-  titleRef.current = title;
 
   const refreshLocal = useCallback(async () => {
     setLocalRecordings(await listRecordings());
@@ -152,7 +145,9 @@ export function Recorder() {
   useEffect(() => {
     const controller = new AbortController();
     void (async () => {
-      await recoverInterrupted();
+      // The LIVE capture (if any) is excluded from recovery: the session survives navigation, so a
+      // "recording" row may be the healthy capture running right now, not an orphan.
+      await recoverInterrupted(recordingSession.getState().recordingId ?? undefined);
       await refreshLocal();
       await refreshServer(controller.signal);
       void resumePendingRecordingUploads(() => void refreshLocal()).then(() => {
@@ -173,195 +168,54 @@ export function Recorder() {
       controller.abort();
       clearInterval(poll);
       window.removeEventListener("online", onOnline);
-      // Leaving the screen mid-capture stops cleanly: every finalized segment is already durable,
-      // and stop() finalizes the open one before releasing the microphone.
-      const rec = recorderRef.current;
-      if (rec !== null) void rec.stop();
+      // Leaving the screen does NOT touch the capture - the session lives above the router and
+      // recording continues (the global recording banner keeps it visible). Only playback stops.
       const audio = audioRef.current;
       if (audio !== null) audio.pause();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Re-read the library whenever the session finalized, queued, or progressed an upload.
+  useEffect(() => {
+    void refreshLocal();
+    void refreshServer();
+  }, [session.libraryVersion, refreshLocal, refreshServer]);
+
   // The live tick: timer, level meter, segment count - only while capturing.
   useEffect(() => {
     if (phase !== "recording" && phase !== "paused") return;
     const t = setInterval(() => {
-      const rec = recorderRef.current;
-      if (rec === null) return;
-      setElapsedMs(rec.elapsedMs);
-      setSegmentCount(rec.segmentCount);
-      setLevel(rec.level());
+      setElapsedMs(recordingSession.elapsedMs());
+      setSegmentCount(recordingSession.segmentCount());
+      setLevel(recordingSession.level());
     }, TICK_MS);
     return () => clearInterval(t);
   }, [phase]);
 
-  const finalizeActive = useCallback(
-    async (recovered: boolean) => {
-      const rec = activeRef.current;
-      if (rec === null) return;
-      let queuedId: string | null = null;
-      const fresh = await getRecording(rec.recordingId);
-      if (fresh !== null) {
-        if (fresh.segments === 0) {
-          // Nothing was captured (stopped within the first second) - an empty recording can never
-          // pass the server's completeness gate, so it is removed rather than shown as sendable.
-          await deleteRecording(fresh.recordingId);
-        } else {
-          // Stop finalizes AND queues the upload - no Send step (the Android recorder's "uploaded
-          // automatically" bar, issue devthrottle_internal#966).
-          fresh.state = "queued";
-          fresh.endedAt = new Date().toISOString();
-          fresh.title = titleRef.current.trim() || fresh.title;
-          if (recovered) fresh.recovered = true;
-          await saveRecording(fresh);
-          queuedId = fresh.recordingId;
-        }
-      }
-      activeRef.current = null;
-      recorderRef.current = null;
-      setPhase("idle");
+  // Reset the displayed numbers when the capture ends (the tick above stops running).
+  useEffect(() => {
+    if (phase === "idle") {
       setElapsedMs(0);
       setSegmentCount(0);
       setLevel(0);
-      setActiveNotes([]);
-      setTitle("");
-      await refreshLocal();
-      if (queuedId !== null) {
-        void driveRecordingUpload(queuedId, () => void refreshLocal()).then(() => {
-          void refreshLocal();
-          void refreshServer();
-        });
-      }
-    },
-    [refreshLocal, refreshServer],
-  );
-
-  const startRecording = useCallback(async () => {
-    if (!storeOk) return;
-    setError(null);
-    setAutoStopped(false);
-    setPhase("starting");
-    const recordingId = crypto.randomUUID();
-    const rec: LocalRecording = {
-      recordingId,
-      title: titleRef.current.trim() || defaultTitle(),
-      deviceId: getInstallId(),
-      startedAt: new Date().toISOString(),
-      endedAt: null,
-      codec: "webm-opus",
-      sampleRateHz: 48000,
-      channels: 1,
-      state: "recording",
-      completed: false,
-      segments: 0,
-      durationMs: 0,
-      notes: [],
-      createdAt: Date.now(),
-    };
-    try {
-      // The durable shell exists BEFORE the microphone opens - from here on, every finalized
-      // segment lands in IndexedDB the moment the recorder rotates past it.
-      await saveRecording(rec);
-      activeRef.current = rec;
-      setTitle(rec.title);
-      setActiveNotes([]);
-
-      const recorder = new SegmentRecorder({
-        onSegment: async (seg) => {
-          const sha = await sha256Hex(seg.blob);
-          await saveChunk({
-            recordingId,
-            index: seg.index,
-            blob: seg.blob,
-            startMs: seg.startMs,
-            durationMs: seg.durationMs,
-            bytes: seg.blob.size,
-            sha256: sha,
-            uploaded: false,
-          });
-          const fresh = await getRecording(recordingId);
-          if (fresh !== null) {
-            fresh.segments = Math.max(fresh.segments, seg.index + 1);
-            fresh.durationMs += seg.durationMs;
-            fresh.title = titleRef.current.trim() || fresh.title;
-            await saveRecording(fresh);
-          }
-        },
-        onError: (message) => {
-          setError(`Recording stopped: ${message}`);
-          void finalizeActive(false);
-        },
-        onAutoStop: () => {
-          setAutoStopped(true);
-          void finalizeActive(false);
-        },
-      });
-      recorderRef.current = recorder;
-      await recorder.start();
-      // Now that the browser has chosen the container, stamp the real codec + sample rate.
-      rec.codec = recorder.codecLabel;
-      rec.sampleRateHz = recorder.sampleRateHz;
-      await saveRecording(rec);
-      setPhase("recording");
-    } catch (err) {
-      recorderRef.current?.dispose();
-      recorderRef.current = null;
-      activeRef.current = null;
-      await deleteRecording(recordingId);
-      setError(err instanceof Error ? err.message : String(err));
-      setPhase("idle");
-    }
-  }, [storeOk, finalizeActive]);
-
-  const pauseResume = useCallback(async () => {
-    const recorder = recorderRef.current;
-    if (recorder === null) return;
-    if (phase === "recording") {
-      await recorder.pause();
-      setPhase("paused");
-    } else if (phase === "paused") {
-      try {
-        await recorder.resume();
-        setPhase("recording");
-      } catch (err) {
-        setError(err instanceof Error ? err.message : String(err));
-      }
     }
   }, [phase]);
 
-  const stopRecording = useCallback(async () => {
-    const recorder = recorderRef.current;
-    if (recorder === null) return;
-    setPhase("stopping");
-    await recorder.stop();
-    await finalizeActive(false);
-  }, [finalizeActive]);
+  // Capture controls are thin wrappers over the app-level session, which owns the whole lifecycle
+  // (durable shell, segment persistence, finalize-and-queue-upload, truncation surfacing).
+  const startRecording = useCallback(() => recordingSession.start(), []);
+  const pauseResume = useCallback(
+    () => (phase === "paused" ? recordingSession.resume() : recordingSession.pause()),
+    [phase],
+  );
+  const stopRecording = useCallback(() => recordingSession.stop(), []);
+  const persistTitle = useCallback(() => recordingSession.persistTitle(), []);
 
   const addNote = useCallback(async () => {
-    const text = noteText.trim();
-    const recorder = recorderRef.current;
-    const active = activeRef.current;
-    if (text === "" || recorder === null || active === null) return;
-    const note = { tMs: Math.round(recorder.elapsedMs), text };
-    const fresh = await getRecording(active.recordingId);
-    if (fresh !== null) {
-      fresh.notes = [...fresh.notes, note];
-      await saveRecording(fresh);
-      setActiveNotes(fresh.notes);
-    }
+    await recordingSession.addNote(noteText);
     setNoteText("");
   }, [noteText]);
-
-  const persistTitle = useCallback(async () => {
-    const active = activeRef.current;
-    if (active === null) return;
-    const fresh = await getRecording(active.recordingId);
-    if (fresh !== null) {
-      fresh.title = titleRef.current.trim() || fresh.title;
-      await saveRecording(fresh);
-    }
-  }, []);
 
   // Manual retry for a PARKED (saved-and-retryable) row only - the happy path uploads by itself.
   const retryUpload = useCallback(
@@ -372,12 +226,11 @@ export function Recorder() {
       rec.lastError = undefined;
       await saveRecording(rec);
       await refreshLocal();
-      void driveRecordingUpload(recordingId, () => void refreshLocal()).then(() => {
-        void refreshLocal();
-        void refreshServer();
+      void driveRecordingUpload(recordingId, () => recordingSession.notifyLibraryChanged()).then(() => {
+        recordingSession.notifyLibraryChanged();
       });
     },
-    [refreshLocal, refreshServer],
+    [refreshLocal],
   );
 
   const discardRecording = useCallback(
@@ -440,7 +293,7 @@ export function Recorder() {
           cleanup();
           if (playTokenRef.current === token) {
             setPlayingId(null);
-            setError("Playback failed - this segment could not be decoded.");
+            setPlaybackError("Playback failed - this segment could not be decoded.");
           }
         };
         void audio.play().catch(() => {
@@ -478,7 +331,6 @@ export function Recorder() {
   ].sort((a, b) => (a.startedAt < b.startedAt ? 1 : -1));
 
   const recording = phase === "recording" || phase === "paused";
-  const remainingMs = Math.max(0, MAX_RECORDING_MS - elapsedMs);
 
   return (
     <div className="screen">
@@ -502,9 +354,9 @@ export function Recorder() {
         </div>
       )}
 
-      {autoStopped && (
-        <div className="banner rec-banner-info" role="status">
-          Recording reached the 30 minute limit and was stopped. Everything captured is saved below.
+      {playbackError !== null && (
+        <div className="banner banner-error" role="alert">
+          {playbackError}
         </div>
       )}
 
@@ -520,7 +372,6 @@ export function Recorder() {
         </div>
         <div className="rec-segments">
           {segmentCount} segment{segmentCount === 1 ? "" : "s"} captured
-          {recording && remainingMs < 5 * 60_000 && ` - ${formatDuration(remainingMs)} left`}
         </div>
         <div className="rec-level" aria-hidden="true">
           <div className="rec-level-fill" style={{ width: `${Math.round(level * 100)}%` }} />
@@ -532,10 +383,19 @@ export function Recorder() {
         type="text"
         placeholder="Title (optional, edit anytime until you stop)"
         value={title}
-        onChange={(e) => setTitle(e.target.value)}
+        onChange={(e) => recordingSession.setTitle(e.target.value)}
         onBlur={() => void persistTitle()}
         disabled={phase === "stopping"}
       />
+
+      {recording && (
+        <div className="rec-section-hint">
+          There is no time limit - recording continues while you use the rest of the app, and the
+          red bar up top shows it is live. Keep the screen on: if the phone locks or the browser
+          suspends the page, the microphone is cut - the recording then stops, saves everything
+          captured, and says here that it was cut short.
+        </div>
+      )}
 
       {!recording ? (
         <button
@@ -653,6 +513,11 @@ export function Recorder() {
               {l !== undefined && l.state === "retry" && (
                 <div className="rec-row-err">
                   {l.lastError ?? "Send failed - the recording is saved on this phone and will be retried."}
+                </div>
+              )}
+              {l?.interrupted !== undefined && (
+                <div className="rec-row-err">
+                  Cut short: {l.interrupted}
                 </div>
               )}
               {transcribeFailed && (

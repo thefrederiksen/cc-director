@@ -21,7 +21,7 @@
      whichever bar it did not account for. The screens that are pinned out of the document flow
      (.terminal-screen) cannot be pushed down by anything rendered above them, so they
      read this directly; the screens in normal flow are pushed by body's padding-top below. */
-  --topbars-h: calc(var(--connbanner-h, 0px) + var(--voicemode-h, 0px));
+  --topbars-h: calc(var(--connbanner-h, 0px) + var(--voicemode-h, 0px) + var(--recbanner-h, 0px));
 }
 
 * {
@@ -2502,6 +2502,74 @@ a.banner-btn {
 .voicemode-off:disabled {
   opacity: 0.6;
   cursor: default;
+}
+
+/* The recording banner (recorder-unlimited-capture mission): on every screen while a recording is
+   live, exactly as the voice-mode banner is on every screen while the fleet narrates. The whole bar
+   is one button - its job is "glance, and tap to get back to Stop". Parks below the other two bars
+   and publishes --recbanner-h into --topbars-h so the pinned screens give up its height too. */
+.recbanner {
+  position: sticky;
+  top: calc(var(--connbanner-h, 0px) + var(--voicemode-h, 0px));
+  z-index: 6;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 44px;
+  padding: 9px 14px;
+  border: none;
+  border-bottom: 1px solid #7f2d33;
+  background: #331116;
+  color: #fadfe1;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.recbanner-dot {
+  flex: 0 0 auto;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #e5484d;
+  animation: recbanner-pulse 1.6s ease-in-out infinite;
+}
+
+/* Paused is amber and still - a pulsing red dot over a paused capture would claim audio is being
+   captured when none is. The indicator must tell the truth at a glance. */
+.recbanner-dot-paused {
+  background: #e8b339;
+  animation: none;
+}
+
+@keyframes recbanner-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+
+.recbanner-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 14px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.recbanner-open {
+  flex: 0 0 auto;
+  padding: 6px 12px;
+  border-radius: 10px;
+  background: #7f2d33;
+  color: #ffffff;
+  font-size: 13px;
+  font-weight: 700;
 }
 
 /* The standing statement of what this tab does to the fleet: every session on the Gateway is a voice
