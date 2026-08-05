@@ -22,15 +22,21 @@ public sealed class TenantSettingsResolverTests
     private static TenantSettingsResolver NewResolver(GatewayDbTestHarness h)
         => new(new TenantSettingsStore(h.Open()));
 
+    // Override values in these tests are DevThrottle internal included ids: since the Included AI
+    // mission (issue #1360) a non-devthrottle override is not honored - it would bill credits on an
+    // internal feature - so resolution falls forward to the operator default. The wingman "thinking"
+    // override is deliberately set to the FAST id (and vice versa) where two distinct values are
+    // needed, which still proves the cells are stored separately.
+
     [Fact]
     public void CarModeModel_OverrideSet_ReturnsOverride()
     {
         using var h = new GatewayDbTestHarness();
         var r = NewResolver(h);
 
-        r.SetCarModeModel(TenantA, "a-custom-model", Now);
+        r.SetCarModeModel(TenantA, "devthrottle/wingman", Now);
 
-        Assert.Equal("a-custom-model", r.CarModeModel(TenantA));
+        Assert.Equal("devthrottle/wingman", r.CarModeModel(TenantA));
     }
 
     [Fact]
@@ -43,17 +49,31 @@ public sealed class TenantSettingsResolverTests
     }
 
     [Fact]
+    public void CarModeModel_CatalogIdOverride_FallsForwardToOperatorGlobalDefault()
+    {
+        using var h = new GatewayDbTestHarness();
+        var r = NewResolver(h);
+
+        // The Included AI revert-proof (issue #1360): a catalog-id Car Mode override saved by an older
+        // release must not reach the proxy - it would bill credits on an internal feature.
+        r.SetCarModeModel(TenantA, "zai-org/GLM-5.2", Now);
+
+        Assert.Equal(CarModeModelConfig.Resolve(), r.CarModeModel(TenantA));
+    }
+
+    [Fact]
     public void OneTenantsOverride_DoesNotLeakToAnother_WhoGetsTheGlobalDefault()
     {
         using var h = new GatewayDbTestHarness();
         var r = NewResolver(h);
 
-        r.SetCarModeModel(TenantA, "a-custom-model", Now);
+        // The thinking id: distinct from the fast-id operator default, so a leak is visible.
+        r.SetCarModeModel(TenantA, "devthrottle/wingman", Now);
 
         // Tenant B never set an override: it must get the OPERATOR global default, never tenant A's value.
-        Assert.Equal("a-custom-model", r.CarModeModel(TenantA));
+        Assert.Equal("devthrottle/wingman", r.CarModeModel(TenantA));
         Assert.Equal(CarModeModelConfig.Resolve(), r.CarModeModel(TenantB));
-        Assert.NotEqual("a-custom-model", r.CarModeModel(TenantB));
+        Assert.NotEqual("devthrottle/wingman", r.CarModeModel(TenantB));
     }
 
     [Fact]
@@ -62,11 +82,25 @@ public sealed class TenantSettingsResolverTests
         using var h = new GatewayDbTestHarness();
         var r = NewResolver(h);
 
-        r.SetWingmanModel(TenantA, WingmanModelRole.Thinking, "thinker", Now);
-        r.SetWingmanModel(TenantA, WingmanModelRole.Fast, "sprinter", Now);
+        // Crossed on purpose: each role must read its OWN stored cell.
+        r.SetWingmanModel(TenantA, WingmanModelRole.Thinking, "devthrottle/wingman-fast", Now);
+        r.SetWingmanModel(TenantA, WingmanModelRole.Fast, "devthrottle/wingman", Now);
 
-        Assert.Equal("thinker", r.WingmanModel(TenantA, Mode, WingmanModelRole.Thinking));
-        Assert.Equal("sprinter", r.WingmanModel(TenantA, Mode, WingmanModelRole.Fast));
+        Assert.Equal("devthrottle/wingman-fast", r.WingmanModel(TenantA, Mode, WingmanModelRole.Thinking));
+        Assert.Equal("devthrottle/wingman", r.WingmanModel(TenantA, Mode, WingmanModelRole.Fast));
+    }
+
+    [Fact]
+    public void WingmanModel_CatalogIdOverride_FallsForwardToIncludedDefault()
+    {
+        using var h = new GatewayDbTestHarness();
+        var r = NewResolver(h);
+
+        // The Included AI revert-proof on the per-tenant wingman path (issue #1360).
+        r.SetWingmanModel(TenantA, WingmanModelRole.Thinking, "Qwen/Qwen2.5-72B-Instruct", Now);
+
+        Assert.Equal(WingmanModelConfig.Resolve(Mode, WingmanModelRole.Thinking),
+            r.WingmanModel(TenantA, Mode, WingmanModelRole.Thinking));
     }
 
     [Fact]

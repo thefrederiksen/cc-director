@@ -109,7 +109,11 @@ public static class VoiceDisplayFold
             case HostedAiState.NeedsCredits:
             case HostedAiState.CapReached:
             case HostedAiState.NeedsKey:
-                // Carries the shared call-to-action (add credit / raise the cap / finish setup). The CTA
+            case HostedAiState.SubscriptionRequired:
+            case HostedAiState.FairUseLimitReached:
+            case HostedAiState.Unavailable:
+                // Carries the shared call-to-action where one exists (add credit / raise the cap /
+                // finish setup / view plans - the fair-use and unknown states have none). The CTA
                 // IS a real action, so it rides in Reason; a generate button is still wrong (it would hit
                 // the same wall), so CanGenerate stays false.
                 return new VoiceDisplay
@@ -154,6 +158,9 @@ public static class VoiceDisplayFold
         HostedAiState.NeedsCredits => "Voice needs credit",
         HostedAiState.CapReached => "Monthly limit reached",
         HostedAiState.NeedsKey => "Finish setup",
+        // The two Included AI refusals (issue #1360): no cost words, no numbers.
+        HostedAiState.SubscriptionRequired => "Not included with this account",
+        HostedAiState.FairUseLimitReached => "Monthly fair-use limit reached",
         _ => "Voice unavailable",
     };
 }

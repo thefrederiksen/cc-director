@@ -137,10 +137,14 @@ public sealed class DesktopTtsPlayer : IDisposable
         return true;
     }
 
-    /// <summary>True when a failed generation's status is one of the out-of-credits / cap codes a 402
-    /// carries (issue #940), so the shared add-credits state should be surfaced.</summary>
+    /// <summary>True when a failed generation's status is one of the machine codes a 402 carries
+    /// (issue #940; the two Included AI codes added by issue #1360), so the shared hosted-AI
+    /// unavailable state should be surfaced with the right copy for the actual condition.</summary>
     private static bool IsOutOfCreditsStatus(string? status) =>
-        status == HostedAiErrorMapper.InsufficientCreditsCode || status == HostedAiErrorMapper.MonthlyLimitReachedCode;
+        status == HostedAiErrorMapper.InsufficientCreditsCode
+        || status == HostedAiErrorMapper.MonthlyLimitReachedCode
+        || status == HostedAiErrorMapper.SubscriptionRequiredCode
+        || status == HostedAiErrorMapper.FairUseLimitReachedCode;
 
     /// <summary>Stop any in-progress playback immediately.</summary>
     public void Stop()

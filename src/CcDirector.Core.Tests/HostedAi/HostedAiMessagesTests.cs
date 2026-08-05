@@ -69,9 +69,61 @@ public sealed class HostedAiMessagesTests
         Assert.Null(m.CtaUrl); // Settings is surface-local, not a web address
     }
 
+    [Fact]
+    public void SubscriptionRequired_PointsAtPricing_NamesNoCostAndNoCredits()
+    {
+        // Issue #1360: no live entitlement. The copy points at the PRICING page (design C5: no
+        // checkout to promise), and must carry NO credit words, NO numbers, and NO top-up prompt -
+        // the owner ruled a normal member sees no cost anywhere.
+        var m = HostedAiMessages.For(HostedAiState.SubscriptionRequired);
+        Assert.NotEmpty(m.Text);
+        Assert.Equal("View plans", m.CtaLabel);
+        Assert.Equal(HostedAiCtaAction.OpenPricing, m.CtaAction);
+        Assert.NotNull(m.CtaUrl);
+        Assert.EndsWith("/pricing", m.CtaUrl);
+        Assert.DoesNotContain("credit", m.Text, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("balance", m.Text, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("top up", m.Text, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotMatch("[0-9$]", m.Text);
+        Assert.True(HostedAiCopyRules.IsClean(m.Text));
+    }
+
+    [Fact]
+    public void FairUseLimitReached_PlainResetsNextMonth_NoNumbersNoCostNoCta()
+    {
+        // Issue #1360, owner verbatim "They should never know this": the fair-use cap is invisible,
+        // so the copy carries no numbers, no dollars, no credit words, and offers no call-to-action.
+        var m = HostedAiMessages.For(HostedAiState.FairUseLimitReached);
+        Assert.NotEmpty(m.Text);
+        Assert.Contains("resets", m.Text, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal("", m.CtaLabel);
+        Assert.Equal(HostedAiCtaAction.None, m.CtaAction);
+        Assert.Null(m.CtaUrl);
+        Assert.DoesNotContain("credit", m.Text, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotMatch("[0-9$%]", m.Text);
+        Assert.True(HostedAiCopyRules.IsClean(m.Text));
+    }
+
+    [Fact]
+    public void Unavailable_IsNeutral_NamesNoMoneyAndOffersNoCta()
+    {
+        // Issue #1360: the unknown-code state. Neutral by design - it must never claim credits.
+        var m = HostedAiMessages.For(HostedAiState.Unavailable);
+        Assert.NotEmpty(m.Text);
+        Assert.Equal("", m.CtaLabel);
+        Assert.Equal(HostedAiCtaAction.None, m.CtaAction);
+        Assert.Null(m.CtaUrl);
+        Assert.DoesNotContain("credit", m.Text, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotMatch("[0-9$]", m.Text);
+        Assert.True(HostedAiCopyRules.IsClean(m.Text));
+    }
+
     [Theory]
     [InlineData(HostedAiState.NeedsCredits)]
     [InlineData(HostedAiState.CapReached)]
+    [InlineData(HostedAiState.SubscriptionRequired)]
+    [InlineData(HostedAiState.FairUseLimitReached)]
+    [InlineData(HostedAiState.Unavailable)]
     public void HostedCopy_PassesForbiddenLanguageRules(HostedAiState state)
     {
         var m = HostedAiMessages.For(state);

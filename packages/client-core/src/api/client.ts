@@ -317,22 +317,23 @@ async function readFailureDetail(res: Response): Promise<GatewayFailureDetail> {
 
 // The shared "hosted AI is unavailable" body every money endpoint returns on HTTP 402 (issue #939/#941;
 // consumed by mobile in #942): the single-source message + call-to-action. `text` is the message to show;
-// `ctaUrl` deep-links to Billing.
+// `ctaUrl` deep-links to the call-to-action page when there is one.
 export interface HostedAiUnavailable {
-  state: string;      // "NeedsCredits" | "CapReached" | "NeedsKey"
+  state: string;      // "NeedsCredits" | "CapReached" | "NeedsKey" | "SubscriptionRequired" | "FairUseLimitReached" | "Unavailable"
   text: string;
   ctaLabel: string;
-  ctaAction: string;  // "OpenBilling" | "OpenSettings"
+  ctaAction: string;  // "OpenBilling" | "OpenSettings" | "OpenPricing" | "None"
   ctaUrl: string | null;
 }
 
-// A 402 from a hosted-AI call (out of credits / cap / no key). Its `message` IS the shared text, so any
-// surface that already shows `err.message` displays the correct copy by construction; `info` carries the
-// call-to-action for the app-level notice (issue #942).
+// A 402 from a hosted-AI call. Its `message` IS the shared text, so any surface that already shows
+// `err.message` displays the correct copy by construction; `info` carries the call-to-action for the
+// app-level notice (issue #942). The fallback for a body with no text is NEUTRAL (issue #1360): a 402
+// we cannot read must never claim the account is out of credits.
 export class CreditsError extends GatewayError {
   readonly info: HostedAiUnavailable;
   constructor(info: HostedAiUnavailable) {
-    super(402, info.text || info.state || "Voice needs credit.");
+    super(402, info.text || "This AI feature is not available for your account right now.");
     this.name = "CreditsError";
     this.info = info;
   }
@@ -348,16 +349,18 @@ export function onCreditsNeeded(fn: CreditsListener): () => void {
   return () => { creditsListeners.delete(fn); };
 }
 
-// Build a CreditsError from an already-parsed 402 body and notify the app-level notice. Defaults keep the
-// message correct even if a field is missing. Call from the `!res.ok` branch of any hosted-AI call when
-// `res.status === 402` (the body is already the shared shape from the Gateway).
+// Build a CreditsError from an already-parsed 402 body and notify the app-level notice. Call from the
+// `!res.ok` branch of any hosted-AI call when `res.status === 402` (the body is already the shared
+// shape from the Gateway). The defaults for missing fields are NEUTRAL (issue #1360): a 402 whose body
+// cannot be read is an unknown money-shaped refusal, and it must never claim the account is out of
+// credits or offer a top-up button - the owner ruled a normal member sees no cost anywhere.
 export function creditsErrorFrom(body: unknown): CreditsError {
   const b = (body ?? {}) as Partial<HostedAiUnavailable> & { error?: string };
   const info: HostedAiUnavailable = {
-    state: b.state ?? "NeedsCredits",
-    text: b.text ?? b.error ?? "Voice needs credit. Add credits to turn it on.",
-    ctaLabel: b.ctaLabel ?? "Add credits",
-    ctaAction: b.ctaAction ?? "OpenBilling",
+    state: b.state ?? "Unavailable",
+    text: b.text ?? b.error ?? "This AI feature is not available for your account right now.",
+    ctaLabel: b.ctaLabel ?? "",
+    ctaAction: b.ctaAction ?? "None",
     ctaUrl: b.ctaUrl ?? null,
   };
   for (const fn of creditsListeners) { try { fn(info); } catch { /* a listener must never break the throw */ } }

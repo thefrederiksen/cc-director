@@ -16,6 +16,9 @@ public sealed class HostedAiPayloadTests
     [InlineData(HostedAiState.NeedsCredits, "NeedsCredits", "OpenBilling")]
     [InlineData(HostedAiState.CapReached, "CapReached", "OpenBilling")]
     [InlineData(HostedAiState.NeedsKey, "NeedsKey", "OpenSettings")]
+    [InlineData(HostedAiState.SubscriptionRequired, "SubscriptionRequired", "OpenPricing")]
+    [InlineData(HostedAiState.FairUseLimitReached, "FairUseLimitReached", "None")]
+    [InlineData(HostedAiState.Unavailable, "Unavailable", "None")]
     public void For_CarriesSharedCopy_AndErrorMirrorsText(HostedAiState state, string expectedState, string expectedAction)
     {
         var p = HostedAiPayload.For(state);
@@ -50,6 +53,9 @@ public sealed class HostedAiPayloadTests
     {
         Assert.Equal("CapReached", HostedAiPayload.FromBody("{\"error\":{\"code\":\"monthly_limit_reached\"}}").State);
         Assert.Equal("NeedsCredits", HostedAiPayload.FromBody("{\"error\":{\"code\":\"insufficient_credits\"}}").State);
-        Assert.Equal("NeedsCredits", HostedAiPayload.FromBody("not json").State); // default
+        Assert.Equal("SubscriptionRequired", HostedAiPayload.FromBody("{\"error\":{\"code\":\"subscription_required\"}}").State);
+        Assert.Equal("FairUseLimitReached", HostedAiPayload.FromBody("{\"error\":{\"code\":\"fair_use_limit_reached\"}}").State);
+        // An unreadable body is UNKNOWN and must stay neutral - never "out of credits" (issue #1360).
+        Assert.Equal("Unavailable", HostedAiPayload.FromBody("not json").State);
     }
 }

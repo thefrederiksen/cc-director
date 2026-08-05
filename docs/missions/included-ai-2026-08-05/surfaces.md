@@ -196,7 +196,7 @@ Admin surfaces that keep everything: `website/src/pages/AdminUsage.jsx`,
 - The catalog 402 wording for direct API callers ("top up" message): kept
   by design C4, byte-for-byte, owner-flagged in the final report.
 
-## Questions for the Architect (asked 5 August; building the unambiguous parts meanwhile)
+## Questions for the Architect (asked 5 August; ANSWERED same day - the rulings are recorded verbatim below each question)
 
 - Q1 (admin signal): the product repo has NO way to know the member's admin role
   today - no endpoint the Gateway or clients read carries `role`. So the
@@ -207,15 +207,52 @@ Admin surfaces that keep everything: `website/src/pages/AdminUsage.jsx`,
   admins use the website's admin pages. Alternative: the cloud
   `/api/v1/account/credits` learns to answer "hidden" for non-admins after the
   phase-1 merge, and the Gateway proxies that verdict verbatim.
+
+  RULING (Architect, 5 August 2026, verbatim): "Q1 APPROVED-REMOVE - kill every
+  in-product credit reader and the Car Mode/Assistant credits+spend voice tools
+  and their suggestion copy for EVERYONE (credits are a website concern; admins
+  use the website admin pages), but KEEP the Gateway /account/credits wire
+  endpoint alive for old-client compatibility - surfaces die, the wire stays."
 - Q2 (pre-flight balance gate): `HostedAiReadiness` blocks recording when the
   balance is at or below zero. After inclusion this blocks entitled zero-balance
   members the server would serve, failing the acceptance test's dictation
   round-trip. RECOMMENDATION: retire the balance consultation (pre-flight always
   Ready in DevThrottle mode; the runtime 402 stays the authoritative gate, as
   the class's own contract already states).
+
+  RULING (Architect, 5 August 2026, verbatim): "Q2 APPROVED - retire the
+  client-side balance pre-flight entirely (always Ready in DevThrottle mode);
+  the runtime 402 is the only gate."
 - Q3 (new 402 codes): `HostedAiErrorMapper` maps unknown codes to NeedsCredits,
   so `subscription_required` and `fair_use_limit_reached` would render as "Add
   $5" with a top-up button. RECOMMENDATION: two new states with no-numbers,
   no-cost copy (subscription wording per design C5 pointing at
   devthrottle.com/pricing; fair-use wording per the design's plain message), and
   the Android parser's hardcoded credit defaults updated the same way.
+
+  RULING (Architect, 5 August 2026, verbatim): "Q3 APPROVED-PLUS - two new
+  states subscription_required (wording per design C5, points at
+  devthrottle.com/pricing, no checkout promise) and fair_use_limit_reached
+  (plain, resets next month), no numbers no cost in either; update the Android
+  parser's hardcoded defaults identically; AND change the mapper's unknown-code
+  default from NeedsCredits to a neutral no-money 'hosted AI unavailable' state
+  - an unknown code must never claim credits."
+
+Further rulings from the same reply, recorded verbatim:
+
+- "Kind-4 approach endorsed (fall-forward to devthrottle ids for any
+  non-devthrottle saved model; Gateway serves only wingman ids for chat kind;
+  speech picker untouched)."
+- "Kind-6 KEEP confirmed for public signed-out marketing/docs pages - ruling 2
+  governs the signed-in product experience; flagged for the owner's report."
+
+Manager note on scope, applied under the Kind-4 endorsement: the Car Mode model
+setting (`CarModeModelConfig`, per-tenant `TenantSettingsResolver.CarModeModel`)
+defaults to the fast wingman constant and its saved value is honored verbatim,
+so the same fall-forward guard is applied there - a Car Mode pointed at a
+catalog id would bill credits on an internal feature, which ruling 1 forbids.
+Also discovered during the build: dictation cleanup is DETERMINISTIC in-process
+code today (`CleanupOrchestrator` - no language model call at all; the model
+string is a log label only), so the `devthrottle/dictation-cleanup` id switch
+affects the constant, the log label, and the `AgentOptions` default - there is
+no live cleanup traffic to re-route.

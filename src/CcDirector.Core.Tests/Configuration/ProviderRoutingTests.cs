@@ -11,13 +11,19 @@ namespace CcDirector.Core.Tests.Configuration;
 /// </summary>
 public sealed class ProviderRoutingTests
 {
+    // The wingman, fast wingman, and dictation-cleanup ids are the DEVTHROTTLE INTERNAL included ids
+    // (issue #1360, Included AI): the hosted proxy meters them as included services and never bills
+    // credits. These pins are the revert-proof for the alias switch - point a constant back at a
+    // catalog id (the pre-mission "zai-org/GLM-5.2" / "Qwen/Qwen2.5-72B-Instruct" / "o4-mini") and
+    // they go red, because a catalog id bills credits on an internal feature.
+
     [Fact]
-    public void ResolveWingman_DevThrottle_UsesProxyBaseAndGlmModel()
+    public void ResolveWingman_DevThrottle_UsesProxyBaseAndIncludedWingmanId()
     {
         var ep = TranscriptionEndpointResolver.ResolveWingman(TranscriptionMode.DevThrottle);
         Assert.Equal(TranscriptionEndpointResolver.DevThrottleBaseUrl, ep.BaseUrl);
         Assert.Equal(TranscriptionEndpointResolver.DevThrottleKeyName, ep.KeyName);
-        Assert.Equal("zai-org/GLM-5.2", ep.Model);
+        Assert.Equal("devthrottle/wingman", ep.Model);
     }
 
     [Fact]
@@ -26,16 +32,16 @@ public sealed class ProviderRoutingTests
         var ep = TranscriptionEndpointResolver.ResolveWingman(TranscriptionMode.Byo);
         Assert.Equal(TranscriptionEndpointResolver.DevThrottleBaseUrl, ep.BaseUrl);
         Assert.Equal(TranscriptionEndpointResolver.DevThrottleKeyName, ep.KeyName);
-        Assert.Equal("zai-org/GLM-5.2", ep.Model);
+        Assert.Equal("devthrottle/wingman", ep.Model);
     }
 
     [Fact]
-    public void ResolveWingmanFast_DevThrottle_UsesProxyBaseAndFastModel()
+    public void ResolveWingmanFast_DevThrottle_UsesProxyBaseAndIncludedFastId()
     {
         var ep = TranscriptionEndpointResolver.ResolveWingmanFast(TranscriptionMode.DevThrottle);
         Assert.Equal(TranscriptionEndpointResolver.DevThrottleBaseUrl, ep.BaseUrl);
         Assert.Equal(TranscriptionEndpointResolver.DevThrottleKeyName, ep.KeyName);
-        Assert.Equal("Qwen/Qwen2.5-72B-Instruct", ep.Model);
+        Assert.Equal("devthrottle/wingman-fast", ep.Model);
     }
 
     [Fact]
@@ -44,14 +50,29 @@ public sealed class ProviderRoutingTests
         var ep = TranscriptionEndpointResolver.ResolveWingmanFast(TranscriptionMode.Byo);
         Assert.Equal(TranscriptionEndpointResolver.DevThrottleBaseUrl, ep.BaseUrl);
         Assert.Equal(TranscriptionEndpointResolver.DevThrottleKeyName, ep.KeyName);
-        Assert.Equal("Qwen/Qwen2.5-72B-Instruct", ep.Model);
+        Assert.Equal("devthrottle/wingman-fast", ep.Model);
     }
 
     [Fact]
-    public void DictationCleanup_DefaultsToOpenAiStabilityModel()
+    public void DictationCleanup_DefaultsToIncludedCleanupId()
     {
-        Assert.Equal("o4-mini", TranscriptionEndpointResolver.DevThrottleDictationCleanupModel);
+        Assert.Equal("devthrottle/dictation-cleanup", TranscriptionEndpointResolver.DevThrottleDictationCleanupModel);
         Assert.Equal(TranscriptionEndpointResolver.DevThrottleDictationCleanupModel, CleanupOrchestrator.DefaultModel);
+    }
+
+    [Theory]
+    [InlineData("devthrottle/wingman", true)]
+    [InlineData("devthrottle/wingman-fast", true)]
+    [InlineData("devthrottle/dictation-cleanup", true)]
+    [InlineData("zai-org/GLM-5.2", false)]
+    [InlineData("Qwen/Qwen2.5-72B-Instruct", false)]
+    [InlineData("o4-mini", false)]
+    [InlineData("kimi-k2", false)]
+    [InlineData("", false)]
+    [InlineData(null, false)]
+    public void IsDevThrottleIncludedModel_AcceptsOnlyTheInternalPrefix(string? model, bool expected)
+    {
+        Assert.Equal(expected, TranscriptionEndpointResolver.IsDevThrottleIncludedModel(model));
     }
 
     [Fact]

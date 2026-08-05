@@ -1,9 +1,7 @@
 using System;
-using System.Net.Http;
 using System.Threading;
 using System.Threading.Tasks;
 using Avalonia.Controls;
-using CcDirector.Core.Account;
 using CcDirector.Core.Configuration;
 using CcDirector.Core.HostedAi;
 using CcDirector.Core.Transcription;
@@ -30,21 +28,18 @@ public static class DesktopHostedAiGate
     internal static Func<CancellationToken, Task<HostedAiState>>? CheckOverrideForTests;
 
     /// <summary>
-    /// Resolve the current hosted-AI state for the configured mode: reads the mode locally, the
-    /// bring-your-own key through the shared resolver, and the balance over HTTP from the Gateway. A
-    /// fresh resolver + client are built per call so the answer reflects the live state (adding $5 or a
-    /// key is picked up on the next check, no restart).
+    /// Resolve the current hosted-AI state for the configured mode. Since the Included AI mission
+    /// (issue #1360) this makes NO network call: the balance pre-flight is retired (a zero balance says
+    /// nothing about whether the server will serve an included call), so the check reads the mode
+    /// locally and answers Ready - the runtime 402, reported through the same shared dialog, is the
+    /// only gate.
     /// </summary>
     public static Task<HostedAiState> CheckAsync(CancellationToken ct = default)
     {
         var testOverride = CheckOverrideForTests;
         if (testOverride is not null) return testOverride(ct);
 
-        // A short timeout keeps the pre-flight from stalling the UI: a slow/unknown balance falls open to
-        // Ready (the runtime 402 stays the authoritative gate), so the feature is never blocked on a slow
-        // read - only on a definitive out-of-credits / no-key answer, which returns fast.
-        var credits = new GatewayAccountCreditsClient(new HttpClient { Timeout = TimeSpan.FromSeconds(2) });
-        var readiness = DirectorHostedAiReadiness.Create(new HostedAiKeyResolver(), credits);
+        var readiness = DirectorHostedAiReadiness.Create(new HostedAiKeyResolver());
         return readiness.CheckAsync(ct);
     }
 

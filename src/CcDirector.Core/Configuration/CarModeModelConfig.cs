@@ -11,9 +11,11 @@ namespace CcDirector.Core.Configuration;
 ///
 /// Resolution precedence (settled with the Architect):
 ///   1. the <c>CC_CARMODE_MODEL</c> environment variable (a per-install override / debug switch) - wins;
-///   2. the user's saved setting (config.json <c>car_mode_model</c>) - what the AI Settings dropdown writes;
-///   3. the default, <see cref="Default"/> (Qwen2.5-72B), the fast tier proven cleanest under the guardrail.
-/// GLM-5.2 remains a selectable option in the dropdown (slower but a strong tool-caller).
+///   2. the user's saved setting (config.json <c>car_mode_model</c>) - what the AI Settings dropdown
+///      writes - honored only when it is a DevThrottle internal included id (issue #1360);
+///   3. the default, <see cref="Default"/> (the fast wingman id), the fast tier proven cleanest under
+///      the guardrail. The thinking wingman id remains a selectable option in the dropdown (slower but
+///      a strong tool-caller).
 /// </summary>
 public static class CarModeModelConfig
 {
@@ -38,7 +40,11 @@ public static class CarModeModelConfig
         if (node is JsonValue v && v.GetValueKind() == JsonValueKind.String)
         {
             var model = v.GetValue<string>().Trim();
-            if (model.Length > 0) return model;
+            // Car Mode is an internal included feature (issue #1360): only a DevThrottle internal id
+            // is honored. A catalog id saved by an older release would bill credits, so it falls
+            // forward to the included default.
+            if (TranscriptionEndpointResolver.IsDevThrottleIncludedModel(model))
+                return model;
         }
         return Default;
     }

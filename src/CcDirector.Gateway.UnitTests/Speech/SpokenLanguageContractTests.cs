@@ -720,9 +720,7 @@ public sealed class SpokenLanguageContractTests
         public Task SwitchVoiceModeAsync(string sessionId, bool on, CancellationToken ct) => throw Unused();
         public Task SnoozeSessionAsync(string sessionId, CancellationToken ct) => throw Unused();
         public Task DeleteSessionAsync(string sessionId, CancellationToken ct) => throw Unused();
-        public Task<CarModeCredits> GetCreditsAsync(CancellationToken ct) => throw Unused();
         public Task<IReadOnlyList<CarModeMachineInfo>> ListMachinesAsync(CancellationToken ct) => throw Unused();
         public Task<IReadOnlyList<CarModeScheduleInfo>> ListSchedulesAsync(CancellationToken ct) => throw Unused();
-        public Task<CarModeSpendSummary> GetSpendAsync(int days, CancellationToken ct) => throw Unused();
     }
 }

@@ -96,28 +96,15 @@ public sealed class CarModeBrainTests
             return Task.CompletedTask;
         }
 
-        // Fleet-overview read tools (the cockpit Assistant build).
-        public int CreditsCalls;
-        public CarModeCredits CreditsResult { get; set; } = new(false, null, null);
+        // Fleet-overview read tools (the cockpit Assistant build). The credits and spend tools were
+        // removed by the Included AI mission (issue #1360, ruling Q1).
         public IReadOnlyList<CarModeMachineInfo> Machines { get; set; } = new List<CarModeMachineInfo>();
         public IReadOnlyList<CarModeScheduleInfo> Schedules { get; set; } = new List<CarModeScheduleInfo>();
-        public List<int> SpendDays { get; } = new();
-        public CarModeSpendSummary SpendResult { get; set; } = new(0, 0, DateTime.UtcNow, DateTime.UtcNow);
 
-        public Task<CarModeCredits> GetCreditsAsync(CancellationToken ct)
-        {
-            CreditsCalls++;
-            return Task.FromResult(CreditsResult);
-        }
         public Task<IReadOnlyList<CarModeMachineInfo>> ListMachinesAsync(CancellationToken ct)
             => Task.FromResult(Machines);
         public Task<IReadOnlyList<CarModeScheduleInfo>> ListSchedulesAsync(CancellationToken ct)
             => Task.FromResult(Schedules);
-        public Task<CarModeSpendSummary> GetSpendAsync(int days, CancellationToken ct)
-        {
-            SpendDays.Add(days);
-            return Task.FromResult(SpendResult);
-        }
     }
 
     private static CarModeToolCall Call(string name, string args = "{}") => new("call_1", name, args);
@@ -1017,35 +1004,47 @@ public sealed class CarModeBrainTests
     // ---- Fleet-overview read tools (the cockpit Assistant build) ----
 
     [Fact]
-    public async Task RunTurn_GetCredits_SignedIn_ReturnsDollarsToTheModel()
+    public async Task RunTurn_GetCredits_IsGone_TheBrainAnswersUnknownTool()
     {
-        var fleet = new FakeFleet { CreditsResult = new CarModeCredits(true, 12_340_000, 5_600) };
+        // Included AI revert-proof (issue #1360, ruling Q1): the credits tool must not exist. A model
+        // that still calls it gets the unknown-tool error, and no fleet read happens. Restoring the
+        // tool turns this into a real credits read and goes red.
+        var fleet = new FakeFleet();
         var chat = new ScriptedChat(
             new CarModeAssistantTurn(null, new[] { Call("get_credits") }),
-            Speak("You have about twelve dollars and thirty four cents left."));
+            Speak("Account questions are handled on the DevThrottle website."));
         var brain = new CarModeBrain(chat, _ => fleet, new CarModeConversationStore(), new CarModePendingStore(_ => { }), new CarModeSubjectStore(_ => { }), _ => SpokenLanguages.English, _ => { });
 
-        var result = await brain.RunTurnAsync(TenantId.Local, "device-a", "how are we doing on credits", CancellationToken.None);
+        await brain.RunTurnAsync(TenantId.Local, "device-a", "how are we doing on credits", CancellationToken.None);
 
-        Assert.Equal(1, fleet.CreditsCalls);
-        Assert.Contains("twelve dollars", result.Spoken);
-        // The tool result the model saw carries real dollars, converted from micro-dollars.
-        Assert.Contains("12.34", chat.SeenMessages[1]);
+        Assert.Contains("Unknown tool", chat.SeenMessages[1]);
     }
 
     [Fact]
-    public async Task RunTurn_GetCredits_SignedOut_TellsTheModelThereIsNoBalance()
+    public async Task RunTurn_GetSpend_IsGone_TheBrainAnswersUnknownTool()
     {
-        var fleet = new FakeFleet { CreditsResult = new CarModeCredits(false, null, null) };
+        // The spend half of the same removal (issue #1360, ruling Q1).
+        var fleet = new FakeFleet();
         var chat = new ScriptedChat(
-            new CarModeAssistantTurn(null, new[] { Call("get_credits") }),
-            Speak("The Gateway is not signed in, so there is no balance to read."));
+            new CarModeAssistantTurn(null, new[] { Call("get_spend") }),
+            Speak("Account questions are handled on the DevThrottle website."));
         var brain = new CarModeBrain(chat, _ => fleet, new CarModeConversationStore(), new CarModePendingStore(_ => { }), new CarModeSubjectStore(_ => { }), _ => SpokenLanguages.English, _ => { });
 
-        var result = await brain.RunTurnAsync(TenantId.Local, "device-a", "credits", CancellationToken.None);
+        await brain.RunTurnAsync(TenantId.Local, "device-a", "what have we spent", CancellationToken.None);
 
-        Assert.Contains("not signed in", chat.SeenMessages[1]);
-        Assert.Contains("no balance", result.Spoken);
+        Assert.Contains("Unknown tool", chat.SeenMessages[1]);
+    }
+
+    [Fact]
+    public void ToolCatalog_CarriesNoCreditsOrSpendTool_AndPromptDoesNotOfferThem()
+    {
+        // The model can only call what the catalog offers, so the catalog itself must not name the
+        // removed money tools - and the system prompt must not advertise them either.
+        Assert.DoesNotContain("get_credits", CarModeBrain.ToolCatalogJsonForTests);
+        Assert.DoesNotContain("get_spend", CarModeBrain.ToolCatalogJsonForTests);
+        var prompt = CarModeBrain.BuildSystemPrompt(SpokenLanguages.English);
+        Assert.DoesNotContain("get_credits", prompt);
+        Assert.DoesNotContain("get_spend", prompt);
     }
 
     [Fact]
@@ -1097,67 +1096,8 @@ public sealed class CarModeBrainTests
         Assert.Contains("Nightly hygiene", result.Spoken);
     }
 
-    [Fact]
-    public async Task RunTurn_GetSpend_DefaultsToSevenDays_AndConvertsDollars()
-    {
-        var fleet = new FakeFleet { SpendResult = new CarModeSpendSummary(2_500_000, 41, DateTime.UtcNow.AddDays(-7), DateTime.UtcNow) };
-        var chat = new ScriptedChat(
-            new CarModeAssistantTurn(null, new[] { Call("get_spend") }),
-            Speak("About two and a half dollars this week."));
-        var brain = new CarModeBrain(chat, _ => fleet, new CarModeConversationStore(), new CarModePendingStore(_ => { }), new CarModeSubjectStore(_ => { }), _ => SpokenLanguages.English, _ => { });
-
-        await brain.RunTurnAsync(TenantId.Local, "device-a", "what have we spent", CancellationToken.None);
-
-        Assert.Equal(new[] { 7 }, fleet.SpendDays);
-        Assert.Contains("2.5", chat.SeenMessages[1]);
-    }
-
-    [Fact]
-    public async Task RunTurn_GetSpend_InvalidDays_IsAToolError_NotASilentSevenDayAnswer()
-    {
-        // Codex review finding 6: an explicitly supplied but invalid window must come back to the model
-        // as a tool error it can correct - never silently become the seven-day default, which would
-        // answer a question the owner did not ask.
-        var fleet = new FakeFleet();
-        var chat = new ScriptedChat(
-            new CarModeAssistantTurn(null, new[] { Call("get_spend", "{\"days\":\"three weeks\"}") }),
-            Speak("How many days did you mean?"));
-        var brain = new CarModeBrain(chat, _ => fleet, new CarModeConversationStore(), new CarModePendingStore(_ => { }), new CarModeSubjectStore(_ => { }), _ => SpokenLanguages.English, _ => { });
-
-        await brain.RunTurnAsync(TenantId.Local, "device-a", "spend for three weeks", CancellationToken.None);
-
-        Assert.Empty(fleet.SpendDays);                     // the fleet was never asked
-        Assert.Contains("days must be a whole number", chat.SeenMessages[1]);
-    }
-
-    [Fact]
-    public async Task RunTurn_GetCredits_SignedInWithNoBalance_FailsLoud_NeverZeroDollars()
-    {
-        // Codex review finding 6: a signed-in credits read with no balance is a malformed payload. The
-        // fleet contract is to throw before the brain ever sees it; if a (fake or future) fleet hands the
-        // brain that shape anyway, the brain itself must fail loud - zero dollars is the classic
-        // plausible fabricated number and must be impossible to produce.
-        var fleet = new FakeFleet { CreditsResult = new CarModeCredits(true, null, null) };
-        var chat = new ScriptedChat(new CarModeAssistantTurn(null, new[] { Call("get_credits") }));
-        var brain = new CarModeBrain(chat, _ => fleet, new CarModeConversationStore(), new CarModePendingStore(_ => { }), new CarModeSubjectStore(_ => { }), _ => SpokenLanguages.English, _ => { });
-
-        await Assert.ThrowsAsync<InvalidOperationException>(
-            () => brain.RunTurnAsync(TenantId.Local, "device-a", "credits", CancellationToken.None));
-    }
-
-    [Fact]
-    public async Task RunTurn_GetSpend_HonorsTheDaysArgument()
-    {
-        var fleet = new FakeFleet { SpendResult = new CarModeSpendSummary(0, 0, DateTime.UtcNow.AddDays(-30), DateTime.UtcNow) };
-        var chat = new ScriptedChat(
-            new CarModeAssistantTurn(null, new[] { Call("get_spend", "{\"days\":\"30\"}") }),
-            Speak("Nothing in the last thirty days."));
-        var brain = new CarModeBrain(chat, _ => fleet, new CarModeConversationStore(), new CarModePendingStore(_ => { }), new CarModeSubjectStore(_ => { }), _ => SpokenLanguages.English, _ => { });
-
-        await brain.RunTurnAsync(TenantId.Local, "device-a", "spend for the month", CancellationToken.None);
-
-        Assert.Equal(new[] { 30 }, fleet.SpendDays);
-    }
+    // The get_spend default-window, invalid-days, and malformed-payload tests went with the tools
+    // themselves (issue #1360, ruling Q1) - there is no spend or credits read left to exercise.
 
     // ---- The one surface: the Assistant ----
 
@@ -1235,26 +1175,27 @@ public sealed class CarModeBrainTests
     [Fact]
     public async Task RunTurn_UnavailableTool_IsRelayedAsAToolError_NotATurnFailure()
     {
-        // A knowingly-unavailable tool (per-tenant credits on hosted, issue #2129) must reach the model
-        // as a tool error it can say in plain words - the turn succeeds, and the message carries the fact.
-        var fleet = new UnavailableCreditsFleet();
+        // A knowingly-unavailable tool (issue #2129) must reach the model as a tool error it can say in
+        // plain words - the turn succeeds, and the message carries the fact. (The original vehicle was
+        // the credits tool; that tool is gone (issue #1360), so the machines read carries the shape.)
+        var fleet = new UnavailableMachinesFleet();
         var chat = new ScriptedChat(
-            new CarModeAssistantTurn(null, new[] { Call("get_credits") }),
-            Speak("Credits are not available on the hosted Gateway yet."));
+            new CarModeAssistantTurn(null, new[] { Call("list_machines") }),
+            Speak("The machine list is not available here yet."));
         var brain = new CarModeBrain(chat, _ => fleet, new CarModeConversationStore(), new CarModePendingStore(_ => { }), new CarModeSubjectStore(_ => { }), _ => SpokenLanguages.English, _ => { });
 
-        var result = await brain.RunTurnAsync(TenantId.Local, "device-a", "how are my credits", CancellationToken.None);
+        var result = await brain.RunTurnAsync(TenantId.Local, "device-a", "which machines are online", CancellationToken.None);
 
         Assert.Contains("not available", result.Spoken);
-        Assert.Contains("not available per account on the hosted Gateway yet", chat.SeenMessages[1]);
+        Assert.Contains("not available on this deployment yet", chat.SeenMessages[1]);
     }
 
-    /// <summary>A fleet whose credits read is knowingly unavailable (the hosted refusal shape).</summary>
-    private sealed class UnavailableCreditsFleet : FakeFleet2
+    /// <summary>A fleet whose machines read is knowingly unavailable (the hosted refusal shape).</summary>
+    private sealed class UnavailableMachinesFleet : FakeFleet2
     {
-        public override Task<CarModeCredits> GetCreditsAsync(CancellationToken ct)
+        public override Task<IReadOnlyList<CarModeMachineInfo>> ListMachinesAsync(CancellationToken ct)
             => throw new CarModeToolUnavailableException(
-                "The credit balance is not available per account on the hosted Gateway yet. Sessions, machines, and schedules all still work.");
+                "The machine list is not available on this deployment yet. Sessions and schedules all still work.");
     }
 
     /// <summary>An overridable fake fleet for one-off shapes (FakeFleet's members are not virtual).</summary>
@@ -1274,13 +1215,9 @@ public sealed class CarModeBrainTests
             => Task.FromResult(new CarModeExplain("", false));
         public Task SwitchVoiceModeAsync(string sessionId, bool enabled, CancellationToken ct) => Task.CompletedTask;
         public Task SnoozeSessionAsync(string sessionId, CancellationToken ct) => Task.CompletedTask;
-        public virtual Task<CarModeCredits> GetCreditsAsync(CancellationToken ct)
-            => Task.FromResult(new CarModeCredits(false, null, null));
-        public Task<IReadOnlyList<CarModeMachineInfo>> ListMachinesAsync(CancellationToken ct)
+        public virtual Task<IReadOnlyList<CarModeMachineInfo>> ListMachinesAsync(CancellationToken ct)
             => Task.FromResult<IReadOnlyList<CarModeMachineInfo>>(new List<CarModeMachineInfo>());
         public Task<IReadOnlyList<CarModeScheduleInfo>> ListSchedulesAsync(CancellationToken ct)
             => Task.FromResult<IReadOnlyList<CarModeScheduleInfo>>(new List<CarModeScheduleInfo>());
-        public Task<CarModeSpendSummary> GetSpendAsync(int days, CancellationToken ct)
-            => Task.FromResult(new CarModeSpendSummary(0, 0, DateTime.UtcNow, DateTime.UtcNow));
     }
 }

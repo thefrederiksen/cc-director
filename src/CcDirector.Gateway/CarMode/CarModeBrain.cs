@@ -434,23 +434,8 @@ public sealed class CarModeBrain
                     Action: null,
                     ArmedConfirmation: true);
             }
-            case "get_credits":
-            {
-                var credits = await timer.TimeFleetAsync(() => fleet.GetCreditsAsync(ct));
-                if (!credits.SignedIn)
-                    return Result(new { signedIn = false, message = "The Gateway is not signed in to a DevThrottle account, so there is no balance to read." });
-                // The fleet guarantees a signed-in read carries a balance (it throws on a malformed
-                // payload); this throw is the same guarantee restated here so a fake fleet in a test -
-                // or a future second implementation - can never turn "no number" into zero dollars.
-                var balanceMicros = credits.BalanceMicros
-                    ?? throw new InvalidOperationException("get_credits: signed in but no balanceMicros - the fleet must fail loud on a malformed credits payload, never hand the brain a null balance.");
-                return Result(new
-                {
-                    signedIn = true,
-                    balanceDollars = Math.Round(balanceMicros / 1_000_000.0, 2),
-                    lastActionCostDollars = credits.LastDebitMicros is { } debit ? Math.Round(debit / 1_000_000.0, 4) : (double?)null,
-                });
-            }
+            // The get_credits and get_spend tools were removed by the Included AI mission (issue #1360,
+            // ruling Q1): the Assistant and Car Mode no longer speak balances, costs, or spend totals.
             case "list_machines":
             {
                 var machines = await timer.TimeFleetAsync(() => fleet.ListMachinesAsync(ct));
@@ -474,25 +459,6 @@ public sealed class CarModeBrain
                         s.Name, s.Enabled, s.Schedule, s.Machine, action = s.ActionSummary,
                         s.NextRunUtc, s.LastFiredUtc, s.LastStatus,
                     }),
-                });
-            }
-            case "get_spend":
-            {
-                // Codex review finding 6: seven days is the default for an OMITTED argument only. An
-                // explicitly supplied but invalid days value goes back to the model as a tool error it can
-                // correct - silently substituting 7 would answer a question the owner did not ask.
-                var daysText = ReadStringArg(call.ArgumentsJson, "days");
-                int days;
-                if (string.IsNullOrWhiteSpace(daysText))
-                    days = 7;
-                else if (!int.TryParse(daysText, out days) || days < 1 || days > 90)
-                    return Result(new { error = "days must be a whole number from 1 to 90, or omitted for the default 7." });
-                var spend = await timer.TimeFleetAsync(() => fleet.GetSpendAsync(days, ct));
-                return Result(new
-                {
-                    days,
-                    totalDollars = Math.Round(spend.TotalMicros / 1_000_000.0, 2),
-                    hostedActionCount = spend.DebitCount,
                 });
             }
             default:
@@ -631,12 +597,13 @@ public sealed class CarModeBrain
         + "- When a question is ABOUT THE FLEET - how many sessions there are, which need you, what a session "
         + "is doing, the latest one, or an action on a session - use the tools to get REAL facts first. Never "
         + "guess a count, a name, or a state.\n"
-        + "- Account and infrastructure questions have their own read tools: get_credits for the credit "
-        + "balance, get_spend for recent hosted AI spending, list_machines for which machines are online, and "
-        + "list_schedules for the scheduled jobs. Use them the same way - never guess a balance, a dollar "
-        + "figure, or a schedule. Sessions in list_sessions carry ageHours (how long open) and idleMinutes "
-        + "(how long since output), so \"open too long\" and \"is anything stuck\" are answered from those "
-        + "real numbers.\n"
+        + "- Infrastructure questions have their own read tools: list_machines for which machines are online, "
+        + "and list_schedules for the scheduled jobs. Use them the same way - never guess a machine list or a "
+        + "schedule. Questions about credits, balances, cost, or spending are NOT answerable here - there is "
+        + "no tool for them; say plainly that account and billing questions are handled on the DevThrottle "
+        + "website, and never guess or invent a dollar figure. Sessions in list_sessions carry ageHours (how "
+        + "long open) and idleMinutes (how long since output), so \"open too long\" and \"is anything stuck\" "
+        + "are answered from those real numbers.\n"
         + "- When the owner asks for HELP or how this works - \"help\", \"what can you do\", \"what can you "
         + "help me with\", \"how does this work\", \"how do I talk to you\" - call get_help and nothing else. "
         + "It speaks a fixed guided explanation; do NOT write your own and do NOT read the fleet for it.\n"
@@ -721,6 +688,10 @@ public sealed class CarModeBrain
         + "- Include concrete numbers (counts, hours, dollars) when you have them from the tools.\n"
         + "- Every answer goes through speak_answer, an action means calling its tool, and a destructive action "
         + "needs the owner's confirmation.";
+
+    /// <summary>Test window onto the tool catalog, so a guard can prove a removed tool (the Included AI
+    /// money tools, issue #1360) is really absent from what the model is offered.</summary>
+    internal static string ToolCatalogJsonForTests => ToolCatalogJson;
 
     // The tool catalog. Standard chat-completions function tools: reads, ordinary acts, and the
     // destructive delete (which the loop holds for a spoken confirmation - the model just requests it).
@@ -861,28 +832,6 @@ public sealed class CarModeBrain
               "name": "get_help",
               "description": "Explain to the owner what the Assistant can do and how to talk to it. Call this - and NOTHING else - when the owner asks for help or how this works: \"help\", \"what can you do\", \"what can you help me with\", \"how does this work\", \"how do I talk to you\". It speaks a fixed guided explanation of the two ways to talk to the Assistant; you do not write the words and you do not read the fleet for it.",
               "parameters": { "type": "object", "properties": {}, "required": [] }
-            }
-          },
-          {
-            "type": "function",
-            "function": {
-              "name": "get_credits",
-              "description": "Read the account's current credit balance in dollars, and what the last hosted action cost. Use for questions about credits, balance, subscription money, or \"are we running low\". Never guess a balance.",
-              "parameters": { "type": "object", "properties": {}, "required": [] }
-            }
-          },
-          {
-            "type": "function",
-            "function": {
-              "name": "get_spend",
-              "description": "Read the total hosted AI spend in dollars over the trailing window, and how many hosted actions it covers. Use for \"what have we spent\", \"how fast are we burning credits\", or pace questions. Defaults to the last 7 days.",
-              "parameters": {
-                "type": "object",
-                "properties": {
-                  "days": { "type": "string", "description": "The trailing window in days, 1 to 90. Omit for 7." }
-                },
-                "required": []
-              }
             }
           },
           {

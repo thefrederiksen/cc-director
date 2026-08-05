@@ -264,9 +264,12 @@ public sealed class HostedOwnerSettingsSelfHostControlTests : IAsyncLifetime
                 // transcription-mode is NOT here - it needs a seeded starting value to be distinguishable
                 // from a no-op, so it has its own test below.
                 data.Add(hosted, "PUT", "gateway/tts-voice", "{\"voice\":\"shimmer\"}", "tts-voice", "shimmer");
-                data.Add(hosted, "PUT", "gateway/ai/wingman-model", "{\"model\":\"hosted-wingman\"}", "wingman-model", "hosted-wingman");
-                data.Add(hosted, "PUT", "gateway/ai/wingman-fast-model", "{\"model\":\"hosted-fast\"}", "wingman-fast-model", "hosted-fast");
-                data.Add(hosted, "PUT", "gateway/ai/car-mode-model", "{\"model\":\"hosted-car\"}", "car-mode-model", "hosted-car");
+                // Model values are DevThrottle internal included ids (issue #1360: the resolver honors
+                // nothing else), each chosen OPPOSITE to its role's default so the re-read still proves
+                // a write rather than a no-op.
+                data.Add(hosted, "PUT", "gateway/ai/wingman-model", "{\"model\":\"devthrottle/wingman-fast\"}", "wingman-model", "devthrottle/wingman-fast");
+                data.Add(hosted, "PUT", "gateway/ai/wingman-fast-model", "{\"model\":\"devthrottle/wingman\"}", "wingman-fast-model", "devthrottle/wingman");
+                data.Add(hosted, "PUT", "gateway/ai/car-mode-model", "{\"model\":\"devthrottle/wingman\"}", "car-mode-model", "devthrottle/wingman");
                 data.Add(hosted, "PUT", "gateway/ai/car-mode-end-phrase", "{\"phrase\":\"finished here\"}", "car-mode-end-phrase", "finished here");
                 data.Add(hosted, "PUT", "gateway/ai/tts-model", "{\"model\":\"hosted-speech\"}", "tts-model", "hosted-speech");
             }
@@ -401,8 +404,10 @@ public sealed class HostedOwnerSettingsSelfHostControlTests : IAsyncLifetime
 
         // A value the reset cannot possibly produce, so "unchanged" and "reset" cannot be confused. The reset
         // now clears the TENANT's override (issue #2017), so the before-state is seeded as a tenant override -
-        // exactly what the AI tab writes - not a global config value.
-        const string Sentinel = "sentinel-model-no-provider-would-return";
+        // exactly what the AI tab writes - not a global config value. The sentinel carries the devthrottle/
+        // prefix because since issue #1360 the resolver honors only DevThrottle internal included ids - an
+        // unprefixed sentinel would fall forward to the default and could not seed a before-state at all.
+        const string Sentinel = "devthrottle/sentinel-model-no-reset-would-return";
         var mode = TranscriptionModeConfig.Get();
         _gateway.TenantSettingsResolver.SetWingmanModel(TenantId.Local, WingmanModelRole.Thinking, Sentinel, DateTime.UtcNow);
         Assert.Equal(Sentinel, _gateway.TenantSettingsResolver.WingmanModel(TenantId.Local, mode, WingmanModelRole.Thinking));
@@ -427,11 +432,13 @@ public sealed class HostedOwnerSettingsSelfHostControlTests : IAsyncLifetime
             var data = new TheoryData<string?, string, string, string, int, string>();
             foreach (var hosted in new string?[] { null, "0" })
             {
-                // The catalog and test-chat routes both resolve the provider credential out of the key
-                // vault first. With no credential stored they answer 503 with this exact sentence - a
-                // handler-unique receipt that costs no network round-trip. (Issue #2022 removed the
-                // brain-config receipt route along with the endpoint.)
-                data.Add(hosted, "GET", "gateway/ai/models", "",
+                // The SPEECH catalog and test-chat routes both resolve the provider credential out of
+                // the key vault first. With no credential stored they answer 503 with this exact
+                // sentence - a handler-unique receipt that costs no network round-trip. (Issue #2022
+                // removed the brain-config receipt route along with the endpoint; issue #1360 made the
+                // CHAT kind a fixed local list that needs no credential, so the receipt row pins the
+                // speech kind explicitly.)
+                data.Add(hosted, "GET", "gateway/ai/models?kind=speech", "",
                     503, "not signed in to DevThrottle - sign in on the Account tab");
                 data.Add(hosted, "POST", "gateway/ai/test-chat", "{\"model\":\"some-model\"}",
                     503, "not signed in to DevThrottle - sign in on the Account tab");

@@ -97,16 +97,37 @@ public static class TranscriptionEndpointResolver
     public const string DevThrottleModel = "gpt-4o-transcribe";
 
     /// <summary>
-    /// The dictation dictionary-cleanup model. Kept separate from the general Wingman fast model so
-    /// transcription cleanup can use the OpenAI stability route without moving unrelated chat traffic.
+    /// The dictation dictionary-cleanup model id. Kept separate from the general Wingman fast model so
+    /// dictation-flavored calls stay distinguishable from wingman chat. This is a DevThrottle-served
+    /// internal id (issue #1360): the hosted proxy maps it to its upstream and meters it as an included
+    /// service instead of billing credits. Catalog model ids bill credits on every path.
     /// </summary>
-    public const string DevThrottleDictationCleanupModel = "o4-mini";
+    public const string DevThrottleDictationCleanupModel = "devthrottle/dictation-cleanup";
 
-    /// <summary>The default DevThrottle thinking model.</summary>
-    public const string DevThrottleWingmanModel = "zai-org/GLM-5.2";
+    /// <summary>
+    /// The DevThrottle thinking model id. An internal DevThrottle-served id (issue #1360), not a catalog
+    /// model: the hosted proxy maps it to its upstream and meters it as the included wingman service,
+    /// never billing credits. A catalog id here would bill credits, which the Included AI ruling forbids
+    /// for an internal feature.
+    /// </summary>
+    public const string DevThrottleWingmanModel = "devthrottle/wingman";
 
-    /// <summary>The default DevThrottle fast model.</summary>
-    public const string DevThrottleWingmanFastModel = "Qwen/Qwen2.5-72B-Instruct";
+    /// <summary>The DevThrottle fast model id. Same contract as <see cref="DevThrottleWingmanModel"/>:
+    /// an internal DevThrottle-served id, metered as included wingman usage, never billed to credits.</summary>
+    public const string DevThrottleWingmanFastModel = "devthrottle/wingman-fast";
+
+    /// <summary>
+    /// The id prefix that marks a model as one of DevThrottle's internal included-service ids
+    /// (issue #1360). A saved wingman or Car Mode model that does NOT carry this prefix is a catalog
+    /// model - it would bill credits, so resolution falls forward to the included default instead of
+    /// honoring it.
+    /// </summary>
+    public const string DevThrottleIncludedModelPrefix = "devthrottle/";
+
+    /// <summary>True when <paramref name="model"/> is one of DevThrottle's internal included-service
+    /// ids (carries the <see cref="DevThrottleIncludedModelPrefix"/>).</summary>
+    public static bool IsDevThrottleIncludedModel(string? model)
+        => model is not null && model.TrimStart().StartsWith(DevThrottleIncludedModelPrefix, StringComparison.Ordinal);
 
     /// <summary>The default DevThrottle text-to-speech model.</summary>
     public const string DevThrottleTtsModel = "hexgrad/Kokoro-82M";

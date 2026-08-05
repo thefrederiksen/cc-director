@@ -4,26 +4,23 @@ using CcDirector.Core.Configuration;
 namespace CcDirector.Core.HostedAi;
 
 /// <summary>
-/// The Director/desktop-side hosted-AI readiness check (issue #940, epic #937). The desktop app runs
-/// transcription and text-to-speech in-process, so - unlike the Gateway - it must gather the readiness
-/// inputs itself: the mode from local config and the account balance over HTTP from the Gateway (the
-/// account token is Gateway-only, so the balance cannot be read locally).
+/// The Director/desktop-side hosted-AI readiness check (issue #940, epic #937).
 ///
-/// It does NOT re-implement the decision - it gathers the three inputs (async: the key and balance are
-/// I/O) and feeds them to the one shared, unit-tested <see cref="HostedAiReadiness"/>, so the desktop
-/// resolves the identical <see cref="HostedAiState"/> the Gateway does. An unknown balance (signed out /
-/// Gateway unreachable) does NOT block - the runtime 402 stays the authoritative gate - matching the
-/// foundation's contract.
+/// SINCE THE INCLUDED AI MISSION (issue #1360) this performs NO balance read - it defers to the shared
+/// <see cref="HostedAiReadiness"/>, which always answers Ready in DevThrottle mode. The internal AI
+/// features are included with an entitled account and never billed to credits, so a client-side
+/// balance gate would block exactly the members the server would serve; the runtime 402 is the only
+/// gate. This also removed the desktop's pre-dictation credit read over HTTP (and the last in-product
+/// consumer of the balance for a decision), per the Architect's phase-2 rulings Q1/Q2.
 /// </summary>
 public sealed class DirectorHostedAiReadiness
 {
     private readonly Func<TranscriptionMode> _modeProvider;
-    private readonly Func<CancellationToken, Task<long?>> _balanceMicrosProvider;
 
     /// <param name="modeProvider">Supplies the current mode (local config, read fresh per check).</param>
     /// <param name="byoKeyProvider">Legacy constructor parameter retained for compatibility; ignored.</param>
-    /// <param name="balanceMicrosProvider">Reads the account balance in micro-dollars over HTTP, null when
-    /// unknown (signed out / unreachable - do not block). Only consulted in DevThrottle mode.</param>
+    /// <param name="balanceMicrosProvider">Legacy constructor parameter retained for compatibility;
+    /// NEVER invoked (issue #1360 retired the client-side balance gate).</param>
     public DirectorHostedAiReadiness(
         Func<TranscriptionMode> modeProvider,
         Func<CancellationToken, Task<string?>> byoKeyProvider,
@@ -31,39 +28,34 @@ public sealed class DirectorHostedAiReadiness
     {
         _modeProvider = modeProvider ?? throw new ArgumentNullException(nameof(modeProvider));
         _ = byoKeyProvider ?? throw new ArgumentNullException(nameof(byoKeyProvider));
-        _balanceMicrosProvider = balanceMicrosProvider ?? throw new ArgumentNullException(nameof(balanceMicrosProvider));
+        _ = balanceMicrosProvider ?? throw new ArgumentNullException(nameof(balanceMicrosProvider));
     }
 
     /// <summary>
-    /// Wire the real desktop plumbing: the mode from <see cref="TranscriptionModeConfig"/>, the key from
-    /// the balance from <see cref="GatewayAccountCreditsClient"/> against the configured Gateway.
+    /// Wire the real desktop plumbing: the mode from <see cref="TranscriptionModeConfig"/>. No credits
+    /// client and no Gateway call - the balance is not consulted (issue #1360).
     /// </summary>
     public static DirectorHostedAiReadiness Create(
         HostedAiKeyResolver keyResolver,
-        GatewayAccountCreditsClient creditsClient,
-        Func<GatewayConfig>? gatewayProvider = null,
         Func<TranscriptionMode>? modeProvider = null)
     {
         if (keyResolver is null) throw new ArgumentNullException(nameof(keyResolver));
-        if (creditsClient is null) throw new ArgumentNullException(nameof(creditsClient));
-        var gateway = gatewayProvider ?? GatewayConfig.Load;
 
         return new DirectorHostedAiReadiness(
             modeProvider ?? TranscriptionModeConfig.Get,
             _ => Task.FromResult<string?>(null),
-            async ct => (await creditsClient.GetCreditsAsync(gateway(), ct)).BalanceMicros);
+            _ => Task.FromResult<long?>(null));
     }
 
     /// <summary>
-    /// Resolve whether hosted AI can run for the configured mode right now. Gathers the mode and
-    /// current account balance, then defers the decision to the shared <see cref="HostedAiReadiness"/>.
+    /// Resolve whether hosted AI can run for the configured mode right now. Defers the decision to the
+    /// shared <see cref="HostedAiReadiness"/> (always Ready in DevThrottle mode - the runtime 402 rules).
     /// </summary>
     public async Task<HostedAiState> CheckAsync(CancellationToken ct = default)
     {
         var mode = _modeProvider();
-        var balance = await _balanceMicrosProvider(ct).ConfigureAwait(false);
 
-        var readiness = new HostedAiReadiness(() => mode, _ => null, _ => Task.FromResult(balance));
+        var readiness = new HostedAiReadiness(() => mode, _ => null, _ => Task.FromResult<long?>(null));
         return await readiness.CheckAsync(ct).ConfigureAwait(false);
     }
 }

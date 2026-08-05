@@ -203,7 +203,8 @@ export function AiTab({ accountHref }: AiTabProps) {
             <span className="settings-provider-badge">Hosted</span>
           </span>
           <span className="settings-provider-desc">
-            Hosted models on your DevThrottle account. Billed to your account credits.
+            Hosted models on your DevThrottle account. Included with your account - transcription,
+            the wingman, and voice.
           </span>
         </div>
       </div>

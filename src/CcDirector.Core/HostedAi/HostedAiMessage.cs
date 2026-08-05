@@ -19,6 +19,11 @@ public enum HostedAiCtaAction
 
     /// <summary>Open the local Settings AI tab so the user can finish DevThrottle AI setup.</summary>
     OpenSettings = 2,
+
+    /// <summary>Open the public DevThrottle pricing page (issue #1360:
+    /// <see cref="HostedAiState.SubscriptionRequired"/>). Deliberately the PRICING page and not a
+    /// checkout - design C5: production has no purchasable checkout, so the copy must not promise one.</summary>
+    OpenPricing = 3,
 }
 
 /// <summary>
@@ -48,6 +53,9 @@ public static class HostedAiUrls
     /// <summary>The onboarding page for a brand-new account.</summary>
     public const string GetStartedPath = "/account/get-started";
 
+    /// <summary>The public pricing page (issue #1360: the subscription-required call-to-action).</summary>
+    public const string PricingPath = "/pricing";
+
     /// <summary>The website base (env override, else the production default), without a trailing slash.</summary>
     public static string WebsiteBase()
     {
@@ -59,4 +67,7 @@ public static class HostedAiUrls
 
     /// <summary>The absolute onboarding URL.</summary>
     public static string GetStarted => WebsiteBase() + GetStartedPath;
+
+    /// <summary>The absolute pricing URL for the subscription-required call-to-action.</summary>
+    public static string Pricing => WebsiteBase() + PricingPath;
 }
