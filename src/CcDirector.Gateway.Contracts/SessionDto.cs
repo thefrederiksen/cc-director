@@ -799,6 +799,16 @@ public sealed class SessionDto
     public string? CurrentModel { get; set; }
 
     /// <summary>
+    /// The FOLDED display verdict for <see cref="CurrentModel"/> (issue devthrottle_internal#1340): the
+    /// finished badge text, the full id for the tooltip, and WHICH of the two absences this is when there
+    /// is no model - computed once by <see cref="ModelDisplayFold"/> and rendered verbatim. Stamped by the
+    /// Gateway aggregator beside <see cref="EffectiveColor"/> and <see cref="StateLabel"/>; null in
+    /// Director-local responses, where the desktop rail folds the same function over the same two local
+    /// facts (see <see cref="ModelDisplay"/> for why that is one rule and not two).
+    /// </summary>
+    public ModelDisplay? ModelDisplay { get; set; }
+
+    /// <summary>
     /// This session's CUMULATIVE token spend (issue #1637), reported by the owning Director from the
     /// agent driver's own records (<c>ReadUsage</c>) and refreshed at every turn-end - the same moment
     /// and the same records read as <see cref="CurrentModel"/>, so the model that produced a turn and the
@@ -887,9 +897,9 @@ public sealed class SessionDto
     /// <c>/sessions</c> aggregation stamps scalar fields (EffectiveColor, DirectorId, MachineName,
     /// voice/transcription overlays, etc.) on the object it serves, so callers must never receive the
     /// cached instance itself or one request would contaminate the cache for later ones. Reference-type
-    /// members the aggregator could mutate in place are re-created here; <see cref="VoiceUnavailable"/>
-    /// and <see cref="VoiceDisplay"/> are only ever replaced wholesale by the aggregator (never mutated),
-    /// so sharing their references is safe.
+    /// members the aggregator could mutate in place are re-created here; <see cref="VoiceUnavailable"/>,
+    /// <see cref="VoiceDisplay"/> and <see cref="ModelDisplay"/> are only ever replaced wholesale by the
+    /// aggregator (never mutated), so sharing their references is safe.
     /// </summary>
     public SessionDto Clone()
     {

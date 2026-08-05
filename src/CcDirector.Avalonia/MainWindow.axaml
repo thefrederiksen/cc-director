@@ -645,17 +645,44 @@
                                                        FontSize="9"
                                                        FontWeight="SemiBold" />
                                         </Border>
-                                        <!-- Agent badge: shows which CLI this session is running -->
+                                        <!-- Agent badge: which CLI this session is running AND which model
+                                             it is running (issue internal#1340) - one badge, because they
+                                             are one identity and the rail has no room for two. The model
+                                             half is the recorded id shortened (the badge already says
+                                             "Claude Code", so a leading "claude-" is dropped); the full id
+                                             is in the tooltip. When there is no model the words say WHICH
+                                             absence it is - "no model yet" for a session that has not
+                                             finished a turn, "model not reported" for an agent that can
+                                             never report one - and never a blank, which would read as a
+                                             fact this rail failed to fetch. Every string here comes from
+                                             ModelDisplayFold, the same fold the Gateway stamps for the
+                                             browser clients; the rail composes none of them. -->
                                         <Border Background="{Binding AgentBadgeBrush}"
                                                 CornerRadius="6"
                                                 Padding="6,1"
                                                 VerticalAlignment="Center"
                                                 Margin="0,0,6,0"
-                                                ToolTip.Tip="Agent running in this session">
-                                            <TextBlock Text="{Binding AgentLabel}"
-                                                       Foreground="White"
-                                                       FontSize="9"
-                                                       FontWeight="SemiBold" />
+                                                ToolTip.Tip="{Binding AgentModelTooltip}">
+                                            <StackPanel Orientation="Horizontal">
+                                                <TextBlock Text="{Binding AgentLabel}"
+                                                           Foreground="White"
+                                                           FontSize="9"
+                                                           FontWeight="SemiBold" />
+                                                <!-- The divider is part of the badge, not a colour of its
+                                                     own: same white, held back so the eye reads two halves
+                                                     of one pill rather than two badges jammed together. -->
+                                                <TextBlock Text="|"
+                                                           Foreground="White"
+                                                           Opacity="0.5"
+                                                           FontSize="9"
+                                                           FontWeight="SemiBold"
+                                                           Margin="4,0" />
+                                                <TextBlock Text="{Binding ModelLabel}"
+                                                           Foreground="White"
+                                                           Opacity="{Binding ModelOpacity}"
+                                                           FontSize="9"
+                                                           FontWeight="Normal" />
+                                            </StackPanel>
                                         </Border>
                                     </StackPanel>
                                     <!-- LINE 3: live state. The changes badge is anchored
@@ -811,6 +838,24 @@
                                Foreground="White"
                                FontSize="16" FontWeight="Bold"
                                VerticalAlignment="Center" />
+                    <!-- Agent + model badge for the SELECTED session (issue internal#1340). The rail says
+                         it for every row; this says it for the one on screen, so the answer to "what is
+                         this session running" is on the screen you are actually looking at. Same fold, same
+                         words, same tooltip as the rail - set in code-behind beside the name, because this
+                         banner is code-driven rather than bound. -->
+                    <Border x:Name="HeaderAgentModelBadge"
+                            Background="#1E40AF"
+                            CornerRadius="4"
+                            Padding="8,3"
+                            Margin="8,0,0,0"
+                            VerticalAlignment="Center"
+                            IsVisible="False">
+                        <TextBlock x:Name="HeaderAgentModelText"
+                                   Text=""
+                                   Foreground="White"
+                                   FontSize="11"
+                                   FontWeight="SemiBold" />
+                    </Border>
                     <!-- Message count badge -->
                     <Border x:Name="HeaderMessageCountBadge"
                             Background="#1E40AF"

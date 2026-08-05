@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate, useOutletContext, useParams } from "react-router-dom";
-import { getQueue, type QueueItem } from "@devthrottle/client-core/api/client";
+import { getQueue, type QueueItem, type SessionDto } from "@devthrottle/client-core/api/client";
+import { modelChipOf } from "@devthrottle/client-core/sessions/model";
 import { TerminalPane } from "../panes/TerminalPane";
 import type { SessionsOutletContext } from "./SessionsView";
 import { SessionActionBar } from "./SessionActionBar";
@@ -112,6 +113,12 @@ export function SessionDetail() {
           >
             Source Control
           </button>
+          {/* Which agent and which MODEL the open session is running (issue devthrottle_internal#1340).
+              The roster says it for every row; this says it for the session actually on screen, so the
+              answer is on the surface you are looking at rather than one click away. Both the words and
+              the tooltip are the Gateway's fold, read through the same shared reader the roster and the
+              Fleet Map use. */}
+          {selected && <SessionModelChip session={selected} />}
           {/* The session menu (issue #1214): Rename, Hold/Resume, Handover info, Close - top right of
               the session header, driving the shared Gateway calls. */}
           {selected && <SessionMenu session={selected} variant="page" onClosed={() => navigate("/sessions")} />}
@@ -179,5 +186,25 @@ export function SessionDetail() {
         </div>
       </aside>
     </div>
+  );
+}
+
+/**
+ * The agent + model chip in the session header (issue devthrottle_internal#1340).
+ *
+ * The agent name comes from the session; every word about the MODEL - including which of the two absences
+ * applies when there is none - is the Gateway's fold, read verbatim through the shared reader. Renders
+ * nothing at all when the Gateway stamped no verdict (an older Gateway), because a placeholder invented
+ * here would be this client ruling in the Gateway's place.
+ */
+function SessionModelChip({ session }: { session: SessionDto }) {
+  const model = modelChipOf(session);
+  if (model === null) return null;
+  const agent = (session.agent ?? "").trim();
+  return (
+    <span className={model.absent ? "session-model absent" : "session-model"} title={model.title}>
+      {agent.length > 0 && <span className="session-model-agent">{agent}</span>}
+      {model.text}
+    </span>
   );
 }

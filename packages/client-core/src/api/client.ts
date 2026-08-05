@@ -21,7 +21,34 @@ export type SessionDto = components["schemas"]["SessionDto"] & {
    *  an older Gateway does not stamp it and a Director-local response leaves it null - see
    *  machineCanBeActedOn, which treats only an explicit false as unreachable. */
   machineReachable?: boolean | null;
+  /** The model this session's agent is running right now, exactly as the agent's own records spell it
+   *  (`claude-fable-5`, `gpt-5.6-sol`). Re-read at every turn-end by the owning Director, so a mid-session
+   *  model switch is reflected. Null when no turn has finished yet or when the agent cannot report a model
+   *  at all - which of those two it is comes from `modelDisplay`, never from guessing here. */
+  currentModel?: string | null;
+  /** The Gateway's folded model verdict (see the C# ModelDisplay): the badge text, the full id, and WHICH
+   *  of the two absences applies when there is no model. Rendered verbatim - a client never works out for
+   *  itself whether a missing model means "not yet" or "never". Null from an older Gateway and in
+   *  Director-local responses. */
+  modelDisplay?: ModelDisplay | null;
 };
+
+/** The Gateway-computed model display verdict (see the C# ModelDisplay), rendered verbatim by the Fleet
+ *  Map, the roster and the session view. Hand-written here for the same reason as `machineReachable`
+ *  above: the committed `schema.ts` predates the field. Delete it when the schema is next regenerated
+ *  properly - the two declarations agree, so it is harmless until then. */
+export interface ModelDisplay {
+  /** `reported` | `notRecordedYet` | `notReported`. A style key, never a decision to re-make. */
+  kind?: string;
+  /** The badge text, verbatim: the shortened model id, or the words for whichever absence this is. */
+  text?: string;
+  /** The full recorded id, for lane headers and tables; null in both absent states. */
+  modelId?: string | null;
+  /** The tooltip, verbatim: the full id, or the sentence saying which absence this is. */
+  tooltip?: string;
+  /** True in both absent states, so a card can mute the chip without branching on `kind`. */
+  isAbsent?: boolean;
+}
 
 // WHY THIS FIELD IS DECLARED HERE AND NOT IN THE GENERATED SCHEMA. `schema.ts` is produced by
 // openapi-typescript from a live Gateway's OpenAPI document, and regenerating it today does not produce a

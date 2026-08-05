@@ -24,6 +24,8 @@ import {
   directorsByMachine,
   groupByDirector,
   machineKeyOf,
+  modelChip,
+  modelKeyOf,
   shortDir,
   type DirectorGroup as FormatDirectorGroup,
 } from "./fleetMapFormat";
@@ -57,7 +59,7 @@ const ReachabilityContext = createContext<DirectorReachability[]>([]);
 // fleet page reads that one store, this map and the Sessions roster always agree on the fleet at the
 // same moment, and a hidden tab makes no roster requests at all.
 
-type Pivot = "machine" | "director" | "repo" | "worktree" | "agent" | "list" | "mission";
+type Pivot = "machine" | "director" | "repo" | "worktree" | "agent" | "model" | "list" | "mission";
 
 const PIVOTS: ReadonlyArray<{ key: Pivot; label: string; kindLabel: string }> = [
   { key: "machine", label: "By machine", kindLabel: "Machine" },
@@ -73,6 +75,13 @@ const PIVOTS: ReadonlyArray<{ key: Pivot; label: string; kindLabel: string }> = 
   { key: "repo", label: "By repository", kindLabel: "Repository" },
   { key: "worktree", label: "By working tree", kindLabel: "Working tree" },
   { key: "agent", label: "By agent", kindLabel: "Agent" },
+  // "By model" (issue devthrottle_internal#1340): the fleet laid out by the model each session is actually
+  // running, the same way it can be laid out by agent. It sits beside "By agent" because it answers the
+  // question one step down - not "which tool", but "which brain in that tool" - and that is the one the
+  // fleet's cost and quality actually turn on. The lane title is the model id exactly as the agent's own
+  // records spell it; the two absences ("no model yet", "model not reported") keep separate lanes rather
+  // than pooling, because pooling them in the layout would undo the distinction the fold exists to make.
+  { key: "model", label: "By model", kindLabel: "Model" },
   // The flat "Fleet list" pivot (issue #1212) absorbs the retired Fleet page: every session once, as
   // the same node card, no lane grouping (machines are already their own pivot).
   { key: "list", label: "Fleet list", kindLabel: "Session" },
@@ -84,7 +93,7 @@ const PIVOTS: ReadonlyArray<{ key: Pivot; label: string; kindLabel: string }> = 
 
 // The pivots that lay the fleet out on the node canvas (root -> lanes). "list" is a flat grid and
 // "mission" is its own board; neither uses the canvas or the title search.
-const CANVAS_PIVOTS: ReadonlySet<Pivot> = new Set<Pivot>(["machine", "director", "repo", "worktree", "agent"]);
+const CANVAS_PIVOTS: ReadonlySet<Pivot> = new Set<Pivot>(["machine", "director", "repo", "worktree", "agent", "model"]);
 
 // The grouping is sticky per browser: the map opens on whatever the user last chose (rather than a
 // "smart" default that guesses from the fleet shape), so returning to the map lands them exactly where
@@ -100,6 +109,7 @@ function initialPivot(): Pivot {
       saved === "repo" ||
       saved === "worktree" ||
       saved === "agent" ||
+      saved === "model" ||
       saved === "list" ||
       saved === "mission"
     )
@@ -683,6 +693,10 @@ function NodeCard({
   // only thing that could shrink and it was ellipsized to a few characters on every card. Null on the
   // agent pivot, where the lane header already states the agent and a per-card badge only repeats it.
   const agentBadge = agentBadgeText(s, pivot);
+  // Which model this session is running (issue devthrottle_internal#1340), beside the agent because the
+  // two are one identity. Every string is the Gateway's; this card chooses nothing about the wording, and
+  // in particular does not decide what a missing model means.
+  const model = modelChip(s, pivot);
 
   return (
     <article
@@ -714,10 +728,15 @@ function NodeCard({
         </span>
       </div>
 
-      {(showRole || agentBadge !== null || tags.length > 0) && (
+      {(showRole || agentBadge !== null || model !== null || tags.length > 0) && (
         <div className="fmap-card-tags">
           {showRole && <span className={`fmap-role ${sessionRole.toLowerCase()}`}>{sessionRole}</span>}
           {agentBadge !== null && <span className="fmap-agent">{agentBadge}</span>}
+          {model !== null && (
+            <span className={model.absent ? "fmap-model absent" : "fmap-model"} title={model.title}>
+              {model.text}
+            </span>
+          )}
           {tags.map((t) => (
             <span key={t.k} className="fmap-card-tag">
               <span className="fmap-card-tag-k">{t.k}</span>
@@ -769,6 +788,11 @@ function buildLanes(sessions: SessionDto[], pivot: Pivot, directors: DirectorRea
       // On-disk checkout folder - each worktree stands alone, even when it belongs to the same repository.
       const title = repoBasename(s.repoPath);
       return { key: title.toLowerCase(), title };
+    }
+    if (pivot === "model") {
+      // The FULL recorded model id, through the shared key so the lane is named the way the records name
+      // the model and both absences keep their own lanes (see fleetMapFormat.modelKeyOf).
+      return modelKeyOf(s);
     }
     const agent = (s.agent ?? "").trim();
     const title = agent.length === 0 ? "(unknown agent)" : agent;
@@ -934,7 +958,9 @@ function cardTags(s: SessionDto, pivot: Pivot): Array<{ k: string; v: string }> 
     out.push({ k: "repo", v: repoIdentity(s.repoName, s.repoPath) });
     return out;
   }
-  // Lane = agent, or the flat Fleet list (no lane at all); show machine + repository.
+  // Lane = agent or model, or the flat Fleet list (no lane at all); show machine + repository. A model
+  // lane wants the same two coordinates an agent lane does - a lane full of "claude-opus-5" cards says
+  // nothing about WHERE each one is running.
   const out: Array<{ k: string; v: string }> = [];
   if (machine.length > 0) out.push({ k: machine, v: repoIdentity(s.repoName, s.repoPath) });
   return out;

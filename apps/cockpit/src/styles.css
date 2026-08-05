@@ -938,6 +938,31 @@ body {
   color: #f5d060;
 }
 
+/* Which model this session is running (issue devthrottle_internal#1340). NOT uppercased and not
+   letter-spaced: these are recorded model ids, and shouting "CLAUDE-FABLE-5" prints a name the agent's
+   records do not contain. The full id is in the tooltip when the chip is shortened. */
+.roster-tag.model {
+  text-transform: none;
+  letter-spacing: 0;
+  background: #202a45;
+  border-color: #3a4668;
+  color: #c3ccdf;
+  max-width: 20ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Either absence - "no model yet" or "model not reported". Outlined instead of filled, so it reads as a
+   note rather than as a model with that name. The WORDS say which absence it is; nothing here pulses or
+   animates, because one of the two is never going to arrive. */
+.roster-tag.model.absent {
+  background: transparent;
+  border-style: dashed;
+  border-color: var(--border);
+  color: var(--text-dim);
+}
+
 /* A prompt to this session was NOT delivered - the user's words never reached the agent (issue
    internal#811). Alarm red, because this is the one chip that reports a LOSS rather than a state. The dot
    is deliberately untouched: the agent is doing exactly what it was doing, having heard nothing, and
@@ -1483,6 +1508,43 @@ body {
   background: var(--surface);
   border-bottom: 1px solid var(--border);
   flex: 0 0 auto;
+}
+
+/* Agent + model for the OPEN session (issue devthrottle_internal#1340), sitting at the right of the tab
+   strip. `margin-left: auto` pushes it away from the tabs; the session menu that follows it keeps its own
+   place at the far right. Aligned to the tab text rather than the strip, so it reads as part of the header
+   and not as a fifth tab. */
+.session-model {
+  margin-left: auto;
+  align-self: center;
+  margin-bottom: 6px;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  font-size: 11px;
+  padding: 2px 9px;
+  border-radius: 10px;
+  border: 1px solid #3a4668;
+  background: #202a45;
+  color: #c3ccdf;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+/* The agent half - context for the model beside it, so it is held back rather than competing with it. */
+.session-model-agent {
+  color: var(--text-dim);
+  font-weight: 500;
+}
+
+/* Either absence - "no model yet" or "model not reported". Outlined, never filled, and never animated:
+   one of the two absences is never going to resolve, and a spinner would say otherwise. */
+.session-model.absent {
+  background: transparent;
+  border-style: dashed;
+  border-color: var(--border);
+  color: var(--text-dim);
+  font-weight: 500;
 }
 
 .session-tab {

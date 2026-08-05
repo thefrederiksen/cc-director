@@ -3094,6 +3094,14 @@ public partial class MainWindow : Window
             : _activeSession.DisplayName;
         HeaderActivityLabel.Text = _activeSession.ActivityLabel;
 
+        // Issue internal#1340: which agent and which MODEL the selected session is running, in the same
+        // words as the rail badge because both read the one fold. The badge is always shown for a session -
+        // the fold's absent states are sentences ("no model yet" / "model not reported"), not blanks, so
+        // there is no case where hiding it is the honest answer.
+        HeaderAgentModelText.Text = $"{_activeSession.AgentLabel} | {_activeSession.ModelLabel}";
+        ToolTip.SetTip(HeaderAgentModelBadge, _activeSession.AgentModelTooltip);
+        HeaderAgentModelBadge.IsVisible = true;
+
         // GitHub Actions remote sessions get a links row (repo slug + thread + Actions).
         if (session.IsRemote)
         {

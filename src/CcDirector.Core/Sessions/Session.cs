@@ -955,6 +955,18 @@ public sealed class Session : IDisposable
     public string? CurrentModel { get; private set; }
 
     /// <summary>
+    /// Raised when <see cref="CurrentModel"/> changes, so the desktop rail repaints the model badge on a
+    /// mid-session model switch (issue internal#1340). Without it the badge would be right only by luck:
+    /// the model is re-read at turn-end, and the rail is told to re-read on activity/hold/role/number
+    /// changes - none of which a <c>/model</c> switch inside a working session has to raise. That is the
+    /// same shape as the role-stamp defect: a displayed fact with no invalidation path shows its old value
+    /// until something unrelated happens to repaint the row, which reads as deliberate and is worse than
+    /// blank. Same contract as <see cref="OnNumberChanged"/>: report what changed, decide nothing about
+    /// how it looks.
+    /// </summary>
+    public event Action? OnCurrentModelChanged;
+
+    /// <summary>
     /// Record the driver-reported current model (issue #1637). Idempotent per value: only logs on a
     /// change. A null/blank argument is IGNORED rather than clearing: a read that cannot determine
     /// the model (torn file, agent restarting) is a missed read, not evidence the session lost its
@@ -967,6 +979,8 @@ public sealed class Session : IDisposable
             return;
         CurrentModel = normalized;
         FileLog.Write($"[Session] SetCurrentModel: session={Id} model={normalized}");
+        try { OnCurrentModelChanged?.Invoke(); }
+        catch (Exception ex) { FileLog.Write($"[Session] {Id} OnCurrentModelChanged handler threw: {ex.Message}"); }
     }
 
     /// <summary>
