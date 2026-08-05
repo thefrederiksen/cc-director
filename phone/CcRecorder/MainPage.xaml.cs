@@ -180,8 +180,8 @@ public partial class MainPage : ContentPage
             case "Why was it interrupted?":
                 await DisplayAlert("Recording interrupted",
                     (row.CaptureError ?? "The recording was cut off before it was stopped.")
-                    + " Everything that could be saved up to that point was kept and uploaded;"
-                    + " up to the final minute may be missing.", "OK");
+                    + " Everything that could be saved was kept and uploaded;"
+                    + " the tail of the audio may be missing.", "OK");
                 break;
             case "Why did upload fail?": await DisplayAlert("Upload error", row.UploadError ?? "", "OK"); break;
             case "Why did transcription fail?": await DisplayAlert("Transcription error", row.TranscriptError ?? "", "OK"); break;

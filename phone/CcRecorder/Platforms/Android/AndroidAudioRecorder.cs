@@ -150,16 +150,18 @@ public sealed class AndroidAudioRecorder : IAudioRecorder
             catch
             {
                 // Start failed partway. Undo everything - including a recorder
-                // that already began capturing - so the app is honestly idle
-                // (not stuck showing "Recording"), and rethrow so the UI
-                // reports the real error.
+                // that already began capturing and a manifest already written -
+                // so the app is honestly idle (not stuck showing "Recording")
+                // and no half-born recording lingers on disk to be "recovered"
+                // later. Rethrow so the UI reports the real error.
+                _rollTimer?.Dispose();
+                _rollTimer = null;
                 IsRecording = false;
                 CaptureLive = false;
-                if (_recorder is not null)
-                {
-                    try { _recorder.Reset(); _recorder.Release(); } catch { /* never fully started */ }
-                    _recorder = null;
-                }
+                ReleaseRecorderQuietly();
+                try { if (Directory.Exists(_recordingDir)) Directory.Delete(_recordingDir, recursive: true); }
+                catch { /* at most milliseconds of audio from a start that already failed */ }
+                _manifest = null;
                 StopForegroundService();
                 throw;
             }
@@ -204,7 +206,9 @@ public sealed class AndroidAudioRecorder : IAudioRecorder
             _rollTimer = null;
             try
             {
-                if (_paused) { _recorder?.Resume(); _paused = false; } // so FinalizeSegment can stop cleanly
+                // Stop() is legal from the paused state, so a failed Resume must
+                // not fail the stop - it only exists so the file ends cleanly.
+                if (_paused) { try { _recorder?.Resume(); } catch { } _paused = false; }
                 FinalizeSegment();
                 if (_manifest is not null)
                 {
@@ -216,9 +220,10 @@ public sealed class AndroidAudioRecorder : IAudioRecorder
             catch (Exception ex)
             {
                 // A failed finalize must not leave the app stuck "recording"
-                // with the wake lock held. Keep every segment already on disk,
-                // say plainly that the tail may be missing, and still queue the
-                // recording for upload.
+                // with the wake lock held or the microphone owned. Keep every
+                // segment already on disk, say plainly that the tail may be
+                // missing, and still queue the recording for upload.
+                ReleaseRecorderQuietly();
                 if (_manifest is not null)
                 {
                     _manifest.EndedAt ??= DateTime.UtcNow.ToString("o");
@@ -521,9 +526,14 @@ public sealed class AndroidAudioRecorder : IAudioRecorder
         lock (_gate)
         {
             if (!IsRecording || !ReferenceEquals(_recorder, failed)) return;
+            // Salvage is best-effort and must not decide whether a replacement
+            // is attempted: a recorder that just reported a fatal error may
+            // well refuse to finalize, and that is no reason to give up on the
+            // rest of the recording.
+            try { FinalizeSegment(); }
+            catch { ReleaseRecorderQuietly(); }
             try
             {
-                FinalizeSegment();
                 StartSegment();
                 // The error cost an unknown slice of the current segment. Leave
                 // a timestamped note so the gap is visible in the transcript
@@ -538,7 +548,17 @@ public sealed class AndroidAudioRecorder : IAudioRecorder
                 {
                     // Respect an in-progress pause: the replacement recorder
                     // starts out capturing, so pause it again immediately.
-                    try { _recorder?.Pause(); } catch { /* device may not support; same as Pause() */ }
+                    try { _recorder?.Pause(); }
+                    catch
+                    {
+                        // The replacement will not pause. Reflect reality
+                        // rather than pretending: the recording is running, so
+                        // account the pause that just ended and re-arm the
+                        // roll timer. The UI updates via RaiseChanged below.
+                        _pausedAccum += DateTime.UtcNow - _pauseStartedUtc;
+                        _paused = false;
+                        _rollTimer?.Change(SegmentLength, SegmentLength);
+                    }
                 }
                 else
                 {
@@ -570,14 +590,7 @@ public sealed class AndroidAudioRecorder : IAudioRecorder
         // recorder in its own finally. If even salvage fails, release the dead
         // recorder; every earlier segment is already a finalized file.
         try { FinalizeSegment(); }
-        catch
-        {
-            if (_recorder is not null)
-            {
-                try { _recorder.Reset(); _recorder.Release(); } catch { /* already dead */ }
-                _recorder = null;
-            }
-        }
+        catch { ReleaseRecorderQuietly(); }
         IsRecording = false;
         _paused = false;
         CaptureLive = false;
@@ -594,6 +607,19 @@ public sealed class AndroidAudioRecorder : IAudioRecorder
         StopForegroundService();
         // If the enqueue fails, the next app open drains the queue instead.
         try { UploadScheduler.EnqueueNow(global::Android.App.Application.Context); } catch { }
+    }
+
+    /// <summary>
+    /// Release the native recorder without letting any step's failure skip the
+    /// next: Reset and Release are attempted independently, and the field is
+    /// always cleared so the microphone is never left owned by a dead handle.
+    /// </summary>
+    private void ReleaseRecorderQuietly()
+    {
+        if (_recorder is null) return;
+        try { _recorder.Reset(); } catch { }
+        try { _recorder.Release(); } catch { }
+        _recorder = null;
     }
 
     private void StartSegment()
