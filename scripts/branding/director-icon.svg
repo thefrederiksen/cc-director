@@ -23,9 +23,14 @@
       <stop offset="0.55" stop-color="#232327"/>
       <stop offset="1" stop-color="#161618"/>
     </linearGradient>
+    <!-- The stops read dark-to-light, which is the opposite of the macOS file and
+         of what the letter shows. The group that draws the "D" scales y by a
+         NEGATIVE factor to turn the font's y-up outline the right way up, and
+         that flip carries the gradient with it. Written this way the rendered
+         letter is light at the top and darker at the bottom, matching macOS. -->
     <linearGradient id="mono" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#F2F2F4"/>
-      <stop offset="1" stop-color="#C2C2C8"/>
+      <stop offset="0" stop-color="#C2C2C8"/>
+      <stop offset="1" stop-color="#F2F2F4"/>
     </linearGradient>
   </defs>
 
