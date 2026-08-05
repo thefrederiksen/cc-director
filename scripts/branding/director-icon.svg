@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<!--
+  The Director application icon for Windows.
+
+  Same mark as the macOS icon in scripts/local-build/mac/AppIcon.svg - a dark
+  tile, a light "D" for Director (issue #1821 renamed the app), and a blue
+  terminal prompt underline with a cursor block. Two things differ on purpose:
+
+  1. Geometry. macOS bakes a transparent margin and a drop shadow into the icon
+     because the Dock expects it. Windows draws its own shadow and expects the
+     art to fill the square, so this version is full bleed.
+  2. The "D" is an outline, not a <text> element. It is the Arial Bold glyph
+     converted to a path, so rendering does not depend on a font being
+     installed and the renderer cannot apply subpixel text antialiasing, which
+     leaves coloured fringes along the edges of the letter.
+
+  Regenerate the icon after editing this file:  python scripts/branding/generate_director_icon.py
+-->
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" version="1.1" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#33333A"/>
+      <stop offset="0.55" stop-color="#232327"/>
+      <stop offset="1" stop-color="#161618"/>
+    </linearGradient>
+    <linearGradient id="mono" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#F2F2F4"/>
+      <stop offset="1" stop-color="#C2C2C8"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Rounded tile, full bleed -->
+  <rect x="32" y="32" width="960" height="960" rx="216" ry="216" fill="url(#bg)"/>
+  <!-- Subtle top highlight for depth -->
+  <rect x="32" y="32" width="960" height="960" rx="216" ry="216"
+        fill="none" stroke="#FFFFFF" stroke-opacity="0.06" stroke-width="4"/>
+
+  <!-- "D" monogram, Arial Bold outline at 480 units, ink centred on x=512.
+       The transform flips the font's y-up coordinates and scales 2048 units
+       per em down to the 480 unit type size. -->
+  <g transform="translate(333.3125, 628.59375) scale(0.234375, -0.234375)">
+    <path fill="url(#mono)" d="M148 1466H689Q872 1466 968 1438Q1097 1400 1189.0 1303.0Q1281 1206 1329.0 1065.5Q1377 925 1377 719Q1377 538 1332 407Q1277 247 1175 148Q1098 73 967 31Q869 0 705 0H148ZM444 1218V247H665Q789 247 844 261Q916 279 963.5 322.0Q1011 365 1041.0 463.5Q1071 562 1071 732Q1071 902 1041.0 993.0Q1011 1084 957.0 1135.0Q903 1186 820 1204Q758 1218 577 1218Z"/>
+  </g>
+
+  <!-- Terminal cursor accent: blue prompt underline + blinking block -->
+  <rect x="294" y="678" width="336" height="30" rx="15" fill="#007ACC"/>
+  <rect x="649" y="666" width="82" height="55" rx="12" fill="#007ACC"/>
+</svg>
