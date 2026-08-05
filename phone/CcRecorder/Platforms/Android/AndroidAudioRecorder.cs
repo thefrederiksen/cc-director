@@ -144,20 +144,25 @@ public sealed class AndroidAudioRecorder : IAudioRecorder
             {
                 StartForegroundService();
                 StartSegment();
+                SaveManifest();
+                _rollTimer = new System.Threading.Timer(_ => RollSegment(), null, SegmentLength, SegmentLength);
             }
             catch
             {
-                // Capture never began. Undo everything so the app is honestly
-                // idle (not stuck showing "Recording") and rethrow so the UI
+                // Start failed partway. Undo everything - including a recorder
+                // that already began capturing - so the app is honestly idle
+                // (not stuck showing "Recording"), and rethrow so the UI
                 // reports the real error.
                 IsRecording = false;
                 CaptureLive = false;
+                if (_recorder is not null)
+                {
+                    try { _recorder.Reset(); _recorder.Release(); } catch { /* never fully started */ }
+                    _recorder = null;
+                }
                 StopForegroundService();
                 throw;
             }
-            SaveManifest();
-
-            _rollTimer = new System.Threading.Timer(_ => RollSegment(), null, SegmentLength, SegmentLength);
         }
         RaiseChanged();
         return Task.CompletedTask;
@@ -197,17 +202,39 @@ public sealed class AndroidAudioRecorder : IAudioRecorder
             if (!IsRecording) return Task.CompletedTask;
             _rollTimer?.Dispose();
             _rollTimer = null;
-            if (_paused) { _recorder?.Resume(); _paused = false; } // so FinalizeSegment can stop cleanly
-            FinalizeSegment();
-            IsRecording = false;
-            CaptureLive = false;
-            if (_manifest is not null)
+            try
             {
-                _manifest.EndedAt = DateTime.UtcNow.ToString("o");
-                _manifest.State = "Queued"; // queued for background upload; never deleted
-                SaveManifest();
+                if (_paused) { _recorder?.Resume(); _paused = false; } // so FinalizeSegment can stop cleanly
+                FinalizeSegment();
+                if (_manifest is not null)
+                {
+                    _manifest.EndedAt = DateTime.UtcNow.ToString("o");
+                    _manifest.State = "Queued"; // queued for background upload; never deleted
+                    SaveManifest();
+                }
             }
-            StopForegroundService();
+            catch (Exception ex)
+            {
+                // A failed finalize must not leave the app stuck "recording"
+                // with the wake lock held. Keep every segment already on disk,
+                // say plainly that the tail may be missing, and still queue the
+                // recording for upload.
+                if (_manifest is not null)
+                {
+                    _manifest.EndedAt ??= DateTime.UtcNow.ToString("o");
+                    _manifest.State = "Queued";
+                    _manifest.Interrupted = true;
+                    _manifest.CaptureError = "Stop failed: " + ex.Message;
+                    try { SaveManifest(); } catch { /* disk write failing is the very error being handled */ }
+                }
+            }
+            finally
+            {
+                IsRecording = false;
+                _paused = false;
+                CaptureLive = false;
+                StopForegroundService();
+            }
         }
         // Hand the queue to WorkManager so it uploads even if the app is
         // swiped closed (and after reboot), constrained to network availability.
@@ -463,7 +490,9 @@ public sealed class AndroidAudioRecorder : IAudioRecorder
     {
         lock (_gate)
         {
-            if (!IsRecording) return;
+            // Pause stops the roll timer, but a tick already in flight can
+            // land after the pause takes hold - never rotate a paused capture.
+            if (!IsRecording || _paused) return;
             try
             {
                 FinalizeSegment();
@@ -496,7 +525,27 @@ public sealed class AndroidAudioRecorder : IAudioRecorder
             {
                 FinalizeSegment();
                 StartSegment();
+                // The error cost an unknown slice of the current segment. Leave
+                // a timestamped note so the gap is visible in the transcript
+                // timeline instead of passing as continuous audio.
+                _manifest?.Notes.Add(new NoteInfo
+                {
+                    TMs = (long)(DateTime.UtcNow - _startedUtc).TotalMilliseconds,
+                    Text = $"[capture] Recorder error ({what}); a short audio gap may exist here.",
+                });
                 SaveManifest();
+                if (_paused)
+                {
+                    // Respect an in-progress pause: the replacement recorder
+                    // starts out capturing, so pause it again immediately.
+                    try { _recorder?.Pause(); } catch { /* device may not support; same as Pause() */ }
+                }
+                else
+                {
+                    // The new segment gets a full interval, not the remainder
+                    // of the one the dying recorder was in.
+                    _rollTimer?.Change(SegmentLength, SegmentLength);
+                }
             }
             catch (Exception ex)
             {
@@ -516,10 +565,18 @@ public sealed class AndroidAudioRecorder : IAudioRecorder
     {
         _rollTimer?.Dispose();
         _rollTimer = null;
-        if (_recorder is not null)
+        // Salvage the open segment where the recorder can still finalize it -
+        // FinalizeSegment keeps whatever landed on disk and releases the
+        // recorder in its own finally. If even salvage fails, release the dead
+        // recorder; every earlier segment is already a finalized file.
+        try { FinalizeSegment(); }
+        catch
         {
-            try { _recorder.Reset(); _recorder.Release(); } catch { /* already dead */ }
-            _recorder = null;
+            if (_recorder is not null)
+            {
+                try { _recorder.Reset(); _recorder.Release(); } catch { /* already dead */ }
+                _recorder = null;
+            }
         }
         IsRecording = false;
         _paused = false;
@@ -530,10 +587,13 @@ public sealed class AndroidAudioRecorder : IAudioRecorder
             _manifest.State = "Queued"; // whatever was captured still uploads
             _manifest.Interrupted = true;
             _manifest.CaptureError = reason;
-            SaveManifest();
+            // The service and wake lock below must be released even if this
+            // write fails; the manifest on disk then keeps its last good state.
+            try { SaveManifest(); } catch { }
         }
         StopForegroundService();
-        UploadScheduler.EnqueueNow(global::Android.App.Application.Context);
+        // If the enqueue fails, the next app open drains the queue instead.
+        try { UploadScheduler.EnqueueNow(global::Android.App.Application.Context); } catch { }
     }
 
     private void StartSegment()

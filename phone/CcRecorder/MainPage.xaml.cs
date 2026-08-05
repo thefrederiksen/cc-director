@@ -121,10 +121,11 @@ public partial class MainPage : ContentPage
             // Doze ignores wake locks from apps that are not on the battery
             // optimization exemption list, so all-day capture needs BOTH the
             // service's wake lock and this exemption. Shows the system consent
-            // dialog once; silently does nothing when already granted. Fired
-            // after StartAsync so the recording is already running regardless
-            // of what the user does with the dialog.
-            RequestIgnoreBatteryOptimizationsIfNeeded();
+            // dialog; does nothing once granted. Fired after StartAsync so the
+            // recording is already running regardless of what the user does
+            // with the dialog, and it handles its own errors so a refusal to
+            // show the dialog can never read as a recording-start failure.
+            await RequestIgnoreBatteryOptimizationsIfNeededAsync();
 #endif
         }
         catch (Exception ex)
@@ -179,7 +180,8 @@ public partial class MainPage : ContentPage
             case "Why was it interrupted?":
                 await DisplayAlert("Recording interrupted",
                     (row.CaptureError ?? "The recording was cut off before it was stopped.")
-                    + " Everything captured up to that point was kept and uploaded.", "OK");
+                    + " Everything that could be saved up to that point was kept and uploaded;"
+                    + " up to the final minute may be missing.", "OK");
                 break;
             case "Why did upload fail?": await DisplayAlert("Upload error", row.UploadError ?? "", "OK"); break;
             case "Why did transcription fail?": await DisplayAlert("Transcription error", row.TranscriptError ?? "", "OK"); break;
@@ -279,20 +281,35 @@ public partial class MainPage : ContentPage
     // One-tap system dialog asking to exempt the app from battery optimization.
     // Required for unlimited recording: Doze ignores wake locks from non-exempt
     // apps, so without this the capture CPU is suspended about half an hour
-    // after the screen turns off. No-op once granted.
-    private static void RequestIgnoreBatteryOptimizationsIfNeeded()
+    // after the screen turns off. No-op once granted; asked again on every
+    // record start until it is. Deliberately never blocks recording - a denied
+    // exemption still records, and a recording that later gets cut off is
+    // marked INTERRUPTED rather than hidden.
+    private async Task RequestIgnoreBatteryOptimizationsIfNeededAsync()
     {
-        var ctx = global::Android.App.Application.Context;
-        var pkg = ctx.PackageName;
-        if (string.IsNullOrEmpty(pkg)) return;
-        var pm = (global::Android.OS.PowerManager?)ctx.GetSystemService(
-            global::Android.Content.Context.PowerService);
-        if (pm is null || pm.IsIgnoringBatteryOptimizations(pkg)) return;
-        var intent = new global::Android.Content.Intent(
-            global::Android.Provider.Settings.ActionRequestIgnoreBatteryOptimizations,
-            global::Android.Net.Uri.Parse("package:" + pkg));
-        intent.AddFlags(global::Android.Content.ActivityFlags.NewTask);
-        ctx.StartActivity(intent);
+        try
+        {
+            var ctx = global::Android.App.Application.Context;
+            var pkg = ctx.PackageName;
+            if (string.IsNullOrEmpty(pkg)) return;
+            var pm = (global::Android.OS.PowerManager?)ctx.GetSystemService(
+                global::Android.Content.Context.PowerService);
+            if (pm is null || pm.IsIgnoringBatteryOptimizations(pkg)) return;
+            var intent = new global::Android.Content.Intent(
+                global::Android.Provider.Settings.ActionRequestIgnoreBatteryOptimizations,
+                global::Android.Net.Uri.Parse("package:" + pkg));
+            intent.AddFlags(global::Android.Content.ActivityFlags.NewTask);
+            ctx.StartActivity(intent);
+        }
+        catch (Exception ex)
+        {
+            // The recording is already running; tell the user exactly how to
+            // grant the exemption by hand instead of failing the start.
+            await DisplayAlert("Battery optimization",
+                "Android refused to show the exemption dialog (" + ex.Message + "). "
+                + "Recording continues, but for all-day capture please set it manually: "
+                + "Settings > Apps > CC Recorder > Battery > Unrestricted.", "OK");
+        }
     }
 #endif
 

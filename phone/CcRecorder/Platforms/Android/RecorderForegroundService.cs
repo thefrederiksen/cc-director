@@ -42,6 +42,10 @@ public sealed class RecorderForegroundService : Service
         // interrupted) by the recorder's next upload pass.
         if (!AndroidAudioRecorder.CaptureLive)
         {
+            // Kick the background upload worker so the orphaned recording is
+            // recovered and uploaded now, not on the next app open. If the
+            // enqueue fails the next app open still drains the queue.
+            try { UploadScheduler.EnqueueNow(this); } catch { }
             StopSelf();
             return StartCommandResult.NotSticky;
         }
