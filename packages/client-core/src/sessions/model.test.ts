@@ -24,7 +24,7 @@ describe("modelChipOf", () => {
       modelDisplay: {
         kind: "notRecordedYet",
         text: "no model yet",
-        tooltip: "No model recorded yet - this session has not completed a turn.",
+        tooltip: "No model recorded yet. It is read from the agent's own records at each turn-end.",
         isAbsent: true,
       },
     });

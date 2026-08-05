@@ -694,7 +694,7 @@ Output columns: number, short id, name, machine, repository, model, status. Your
 The MODEL column is the model that session's agent is actually running, read from the agent's own
 records at every turn-end - so it follows a mid-session model switch. Where there is no model, the
 column says which kind of absence it is rather than leaving the cell blank: `no model yet` for a
-session that has not completed a turn (it is coming), `model not reported` for an agent that cannot
+session with nothing recorded yet (it is read at each turn-end), `model not reported` for an agent that cannot
 report one at all (Gemini, Cursor - it is never coming), and `(unknown)` when the Gateway sent no
 verdict for that row.
 

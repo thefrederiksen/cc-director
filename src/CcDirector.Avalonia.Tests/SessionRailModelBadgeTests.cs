@@ -34,7 +34,7 @@ public sealed class SessionRailModelBadgeTests
 
         Assert.Equal("no model yet", vm.ModelLabel);
         Assert.True(vm.IsModelAbsent);
-        Assert.Contains("has not completed a turn", vm.AgentModelTooltip);
+        Assert.Contains("No model recorded yet", vm.AgentModelTooltip);
     }
 
     [Fact]

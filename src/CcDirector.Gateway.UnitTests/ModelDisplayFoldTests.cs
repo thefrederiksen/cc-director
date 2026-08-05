@@ -48,7 +48,12 @@ public sealed class ModelDisplayFoldTests
         Assert.Equal("no model yet", d.Text);
         Assert.Null(d.ModelId);
         Assert.True(d.IsAbsent);
-        Assert.Contains("has not completed a turn", d.Tooltip);
+        // The tooltip states the FACT and the MECHANISM. It must NOT name a cause: a null model is as
+        // consistent with a read that could not be taken as with a first turn that has not landed, and
+        // picking one reads as diagnosis (caught in review of pull request 2449).
+        Assert.Contains("No model recorded yet", d.Tooltip);
+        Assert.Contains("turn-end", d.Tooltip);
+        Assert.DoesNotContain("has not completed a turn", d.Tooltip);
     }
 
     [Fact]

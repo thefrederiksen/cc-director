@@ -114,8 +114,15 @@ public static class ModelDisplayFold
                 Kind = "notRecordedYet",
                 Text = NotRecordedYetText,
                 ModelId = null,
-                Tooltip = "No model recorded yet - this session has not completed a turn. "
-                          + "It is read from the agent's own records at every turn-end.",
+                // States the FACT (nothing recorded) and the MECHANISM (records, at turn-end), and stops
+                // there. It used to add "this session has not completed a turn", which was a cause nobody
+                // observed: a null model also means a read that could not be taken - torn records, the
+                // agent restarting, a session restored from a store the driver cannot read yet - and
+                // SessionRecordsWatcher keeps the last known value rather than clearing on those, so the
+                // null is exactly as consistent with a failed read as with a first turn. Naming the wrong
+                // one reads as diagnosis and sends a reader looking in the wrong place.
+                Tooltip = "No model recorded yet. It is read from the agent's own records at each "
+                          + "turn-end, and nothing has been recorded for this session so far.",
                 IsAbsent = true,
             }
             : new ModelDisplay
