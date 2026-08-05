@@ -1,5 +1,6 @@
-import type { SessionDto } from "@devthrottle/client-core/api/client";
+﻿import type { SessionDto } from "@devthrottle/client-core/api/client";
 import { type DirectorReachability } from "@devthrottle/client-core/fleet/fleetClient";
+import { modelChipOf, type ModelChip } from "@devthrottle/client-core/sessions/model";
 
 /**
  * Pure helpers for the Fleet Map's card rendering, kept out of FleetMapView.tsx so they can be unit
@@ -243,4 +244,40 @@ export function agentBadgeText(s: SessionDto, pivot: string): string | null {
   // An unknown agent still renders "?" rather than vanishing: a card with no agent is a fact worth
   // seeing, and a silently absent badge reads as "this card is fine" (issue #1625).
   return agent.length === 0 ? "?" : agent;
+}
+
+/**
+ * The model chip for a card's meta row (issue devthrottle_internal#1340), or null when the card must not
+ * show one.
+ *
+ * The chip's WORDS come from the shared reader (client-core `modelChipOf`), which reads the Gateway's fold
+ * and composes nothing - so this Fleet Map card, the session roster and the desktop rail cannot word one
+ * session three ways. All this function adds is the map's own suppression, the same one the agent badge
+ * has: on the "By model" pivot the lane header already states the model for every card in it, and a
+ * per-card chip would only repeat the lane.
+ */
+export function modelChip(s: SessionDto, pivot: string): ModelChip | null {
+  if (pivot === "model") return null;
+  return modelChipOf(s);
+}
+
+/**
+ * The model identity used by the "By model" pivot: the FULL recorded id, so a lane is named the way the
+ * agent's own records name the model, never the shortened badge form.
+ *
+ * Both absences get their own lane rather than being pooled into one "(no model)" bucket - pooling them
+ * would undo, in the layout, exactly the distinction the fold exists to make. A card whose Gateway stamped
+ * no verdict at all lands in its own third lane, because "we were not told" is not the same as either.
+ */
+export function modelKeyOf(s: SessionDto): { key: string; title: string } {
+  const d = s.modelDisplay;
+  // The two absences and the unstamped case key through a reserved "absent:" prefix so they can never
+  // collide with a real model id. It buys nothing in lane ORDER - lanes sort by session count and then by
+  // title, exactly like every other pivot - and it is not trying to.
+  if (d === null || d === undefined) return { key: "absent:unstamped", title: "Gateway sent no model verdict" };
+  const id = (d.modelId ?? "").trim();
+  if (id.length > 0) return { key: id.toLowerCase(), title: id };
+  // An absent model keeps the fold's own words as the lane title, so the lane states which absence it is.
+  const text = (d.text ?? "").trim();
+  return { key: "absent:" + (d.kind ?? "unknown"), title: text.length === 0 ? "No model" : text };
 }

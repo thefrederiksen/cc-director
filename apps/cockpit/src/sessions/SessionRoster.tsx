@@ -20,6 +20,7 @@ import {
   promptDeliveryTitle,
 } from "@devthrottle/client-core/sessions/delivery";
 import { supervisionStats } from "@devthrottle/client-core/sessions/supervision";
+import { modelChipOf } from "@devthrottle/client-core/sessions/model";
 import { machinePortLabel } from "@devthrottle/client-core/fleet/directorEndpoint";
 import { isDataStale } from "@devthrottle/client-core/fleet/directorPresentation";
 import { useNow, waitingLabel } from "@devthrottle/client-core/sessions/waiting";
@@ -323,10 +324,16 @@ function RosterRow({
   // A prompt to this session did not go and nothing has landed since (issue internal#811). The Gateway
   // decides that and writes the words; the card only has to refuse to be quiet about it.
   const undelivered = hasUndeliveredPrompt(session);
-  // The tag row (not-delivered / changes / voice / hold-time / snooze-ended / winding-down / last-seen /
-  // waiting) renders only when it has something to say, so a plain working session stays a compact two
-  // lines (name + state).
+  // Which model this session is actually running (issue devthrottle_internal#1340). The Gateway folds the
+  // words - including which of the two absences applies - and this card renders them; it is read through
+  // the same shared reader the Fleet Map card uses, so the two cannot word one session two ways.
+  const model = modelChipOf(session);
+  // The tag row (model / not-delivered / changes / voice / hold-time / snooze-ended / winding-down /
+  // last-seen / waiting) renders only when it has something to say. It used to say that a plain working
+  // session stays a compact two lines; the model changes that on purpose - it is the fact the fleet's cost
+  // and quality turn on, and it was previously visible nowhere while a session was alive.
   const hasTags =
+    model !== null ||
     undelivered ||
     changes !== null ||
     holdCountdown !== null ||
@@ -376,6 +383,13 @@ function RosterRow({
               {changes !== null && (
                 <span className="roster-tag changes" title={changesTitle(session) ?? undefined}>
                   {changes}
+                </span>
+              )}
+              {/* Which model this session is running. Muted when the Gateway's verdict is one of the two
+                  absences, so an absence never carries the weight of a fact - the words say which. */}
+              {model !== null && (
+                <span className={model.absent ? "roster-tag model absent" : "roster-tag model"} title={model.title}>
+                  {model.text}
                 </span>
               )}
               {session.voiceMode && <span className="roster-tag voice">voice</span>}

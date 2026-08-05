@@ -4255,6 +4255,12 @@ internal static class GatewayEndpoints
                               "docs/new_architecture/session-state.html.");
             s.EffectiveColorHex = SessionColorPalette.HexFor(effectiveColor);
             s.StateLabel = SessionOrdering.StateLabel(s);
+            // Which model this session is running, folded to finished words (issue internal#1340). The raw
+            // CurrentModel keeps riding beside it for the statistics dimension; this is the DISPLAY, and it
+            // is folded here so no client has to work out for itself whether a missing model means "the
+            // first turn has not finished yet" or "this agent can never report one" - two absences that mean
+            // opposite things and that four clients would have rendered four ways.
+            s.ModelDisplay = ModelDisplayFold.For(s);
             // The words for a prompt that did not go (issue internal#811), folded here beside the colour and
             // the label so every client renders one sentence it did not compose. Null on a session that has
             // not lost anything, which is almost all of them.
