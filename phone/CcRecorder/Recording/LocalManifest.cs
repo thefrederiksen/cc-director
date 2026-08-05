@@ -58,6 +58,14 @@ public sealed class LocalManifest
     public string? VaultDocId { get; set; }
     public string? Transcript { get; set; }
 
+    // TRUNCATION surfacing. True when this recording did NOT end with the user
+    // pressing Stop - the process was killed mid-capture (recovered later), or
+    // the recorder failed and could not be restarted. The library shows this
+    // plainly so a cut-off recording is never presented as a complete one.
+    // CaptureError carries the reason when one is known.
+    public bool Interrupted { get; set; }
+    public string? CaptureError { get; set; }
+
     // True once the server has ACKNOWLEDGED the complete call (HTTP 202): the
     // manifest - including the NOTES - is delivered and server-side transcription
     // is queued. This is the phone's real terminal condition, NOT State=="Uploaded".
@@ -100,4 +108,6 @@ public sealed record RecordingSummary(
     int UploadTotal,
     string? TranscriptionState,
     string? TranscriptError,
-    bool Completed = false);
+    bool Completed = false,
+    bool Interrupted = false,
+    string? CaptureError = null);

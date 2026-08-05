@@ -7,6 +7,13 @@
 	<uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
 	<uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
 	<uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+	<!-- All-day capture: the recording service holds a partial wake lock so the
+	     segment-roll timer keeps firing with the screen off, and the app asks to
+	     be exempted from battery optimization because Doze ignores wake locks
+	     from non-exempt apps. Without BOTH, Android suspends capture about half
+	     an hour after screen-off. -->
+	<uses-permission android:name="android.permission.WAKE_LOCK" />
+	<uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
 	<!-- Issue #687: re-arm the background upload workers after a device reboot so
 	     pending recordings drain without the user opening the app. -->
 	<uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
