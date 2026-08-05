@@ -1491,22 +1491,19 @@ public sealed class GatewayHost : IAsyncDisposable
         // this Gateway's loopback base. The webhook client is short-timeout, best-effort.
         var cronNotifier = new Running.GatewayCronNotifier(
             DirectorEvents,
-            directorId =>
-            {
-                // MTR-01: the registry has no bare-id accessor. A cron notification's deep link resolves the
-                // Director in the tenant of the CURRENT unit of work (the per-tenant cron pass), the same way
-                // SendCommandAsync resolves the down-channel connection - never a hard-coded Local. No tenant in
-                // scope yields no deep link, which is deny-by-default for a best-effort convenience link.
-                if (_tenantPass.Current is not { } t) return null;
-                var d = Registry.Get(t, directorId);
-                return d is null ? null : (d.TailnetEndpoint ?? d.ControlEndpoint);
-            },
             // Issue #2161: a delegate, not a string. This runs in the constructor, long before the listener
             // binds, so a formatted address here would freeze the pre-bind port into every deep link.
+            //
+            // This is now the ONLY root of a cron deep link. It used to be the Director's own registered
+            // endpoint, resolved per notification out of the registry - and the remove-the-network-port
+            // mission deleted that endpoint, so a current Director registers an empty one and every
+            // run-complete notification carried NO link at all. Not a broken link somebody would report;
+            // no link, which reads as a notification that simply does not have one.
             () => $"http://127.0.0.1:{Port}",
             new HttpClient { Timeout = TimeSpan.FromSeconds(10) },
-            // MTR-01 (Codex round 1): file the run-complete event into the current cron pass's OWN tenant ring,
-            // the same per-tenant seam the deep-link resolver above reads. On self-host this is always Local.
+            // MTR-01 (Codex round 1): file the run-complete event into the current cron pass's OWN tenant ring.
+            // A null return is DENY - no tenant in scope means the best-effort ring event is skipped rather
+            // than filed under a guessed owner. On self-host this is always Local.
             resolveTenant: () => _tenantPass.Current);
         var cronClock = new Running.SystemClock();
         _cronEngine = new Running.CronEngine(

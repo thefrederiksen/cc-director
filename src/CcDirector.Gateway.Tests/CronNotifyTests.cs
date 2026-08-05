@@ -189,11 +189,7 @@ public sealed class CronNotifyTests : IDisposable
         var events = new DirectorEventLog();
         var capture = new CapturingHandler();
         using var http = new HttpClient(capture);
-        var notifier = new GatewayCronNotifier(
-            events,
-            directorId => directorId == "director-1" ? "https://host.ts.net" : null,
-            () => "http://127.0.0.1:7879",
-            http);
+        var notifier = new GatewayCronNotifier(events, () => "http://127.0.0.1:7879", http);
 
         var job = SeedJob(CronNotify.Always, webhook: "https://example.com/hook");
         job.Id = "cj_test";
@@ -206,7 +202,7 @@ public sealed class CronNotifyTests : IDisposable
             TaskStatus = "unknown",
             Machine = "workstation-A",
             SessionId = "sid-1",
-            SessionLink = notifier.BuildSessionLink("director-1", "sid-1"),
+            SessionLink = notifier.BuildSessionLink("sid-1"),
             FiredUtc = DateTime.UtcNow,
         };
 
@@ -239,7 +235,7 @@ public sealed class CronNotifyTests : IDisposable
     {
         var events = new DirectorEventLog();
         using var http = new HttpClient(new CapturingHandler());
-        var notifier = new GatewayCronNotifier(events, _ => null, () => "http://127.0.0.1:7879", http);
+        var notifier = new GatewayCronNotifier(events, () => "http://127.0.0.1:7879", http);
 
         var job = SeedJob(CronNotify.Always);
         job.Id = "cj_fail";
@@ -271,7 +267,7 @@ public sealed class CronNotifyTests : IDisposable
         var events = new DirectorEventLog();
         var capture = new CapturingHandler();
         using var http = new HttpClient(capture);
-        var notifier = new GatewayCronNotifier(events, _ => "https://host.ts.net", () => "http://127.0.0.1:7879", http);
+        var notifier = new GatewayCronNotifier(events, () => "http://127.0.0.1:7879", http);
 
         var job = SeedJob(CronNotify.Always, webhook: null);
         job.Id = "cj_nohook";

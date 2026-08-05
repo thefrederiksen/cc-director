@@ -196,22 +196,69 @@ public sealed class LauncherStreamClient : IAsyncDisposable
         }
     }
 
-    private async Task SayHelloAsync()
-    {
-        var conn = _connection;
-        if (conn is null || conn.State != HubConnectionState.Connected) return;
-        try
-        {
-            await conn.InvokeAsync("Hello", new LauncherStreamHello
+    /// <summary>How long between Hello attempts while the connection is up. Short, because until Hello
+    /// lands this launcher is invisible to every command, and long enough that a hub rejecting Hello
+    /// repeatedly is not hammered.</summary>
+    internal static readonly TimeSpan HelloRetryDelay = TimeSpan.FromSeconds(5);
+
+    private Task SayHelloAsync() =>
+        SendHelloUntilAcceptedAsync(
+            () => _connection!.InvokeAsync("Hello", new LauncherStreamHello
             {
                 MachineName = Environment.MachineName,
                 Version = _version,
-            });
-            FileLog.Write($"[LauncherStreamClient] Hello sent: machine={Environment.MachineName}");
-        }
-        catch (Exception ex)
+            }),
+            () => _connection?.State ?? HubConnectionState.Disconnected,
+            () => _disposed,
+            HelloRetryDelay,
+            CancellationToken.None);
+
+    /// <summary>
+    /// Send Hello, and KEEP SENDING IT for as long as the connection is up and it has not been accepted.
+    ///
+    /// WHY A RETRY HERE IS NOT A SECOND PATH. It is the same single path, tried again - nothing is dialed,
+    /// nothing falls back, and there is no other way for this launcher to become reachable. The mission's
+    /// no-fallback law forbids a SECOND mechanism behind a failing first one; this is the first mechanism
+    /// insisting.
+    ///
+    /// WHY IT HAD TO CHANGE. Hello was sent once and its failure was swallowed with a note that
+    /// auto-reconnect would retry - but retry only ever happened on Reconnected, and a hub or protocol
+    /// error can fail Hello while SignalR stays CONNECTED. Nothing then fires Reconnected, so nothing
+    /// retries: the launcher holds an open stream, is registered nowhere, and every command to it is
+    /// undeliverable until some later disconnect that may never come. Independent inspection raised this
+    /// as a hypothesis from the control flow; it was then reproduced against a real hub - see
+    /// LauncherStreamIntegrationTests.A_failed_Hello_that_leaves_the_connection_up_registers_nothing_and_delivers_nothing.
+    ///
+    /// The worst outcome is now a delay rather than a permanent silence, and the loop cannot spin: it
+    /// stops the moment the connection is no longer Connected, because the reconnect path owns that case
+    /// and will call this again.
+    /// </summary>
+    internal static async Task SendHelloUntilAcceptedAsync(
+        Func<Task> sendHello, Func<HubConnectionState> connectionState, Func<bool> disposed,
+        TimeSpan retryDelay, CancellationToken ct)
+    {
+        var attempt = 0;
+        while (!disposed() && !ct.IsCancellationRequested
+               && connectionState() == HubConnectionState.Connected)
         {
-            FileLog.Write($"[LauncherStreamClient] Hello failed (auto-reconnect will retry): {ex.Message}");
+            attempt++;
+            try
+            {
+                await sendHello().ConfigureAwait(false);
+                FileLog.Write($"[LauncherStreamClient] Hello sent: machine={Environment.MachineName}"
+                              + (attempt > 1 ? $" (accepted on attempt {attempt})" : ""));
+                return;
+            }
+            catch (Exception ex)
+            {
+                FileLog.Write($"[LauncherStreamClient] Hello attempt {attempt} FAILED: {ex.Message}. The "
+                              + "connection is still up, so nothing else will retry this - until Hello is "
+                              + $"accepted this launcher is registered nowhere and can receive no command. "
+                              + $"Retrying in {retryDelay.TotalSeconds:0.#}s.");
+            }
+
+            try { await Task.Delay(retryDelay, ct).ConfigureAwait(false); }
+            catch (OperationCanceledException) { return; }
         }
     }
 

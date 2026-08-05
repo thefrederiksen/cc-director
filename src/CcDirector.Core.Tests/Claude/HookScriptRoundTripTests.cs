@@ -155,7 +155,7 @@ public sealed class HookScriptRoundTripTests : IDisposable
     {
         var session = Adopt();
         var preambleFile = WritePreamble(session, new SignedInUser("star@example.com", "Starlord"));
-        var pointerFile = SessionHookFiles.PointerPathFor(session.Id, _pointerDir);
+        var pointerFile = SessionHookFiles.PointerPathFor(session.Id, session.PointerDropToken, _pointerDir);
         var (interpreter, arguments) = ClaudeHook();
 
         var rotatedId = Guid.NewGuid().ToString();
@@ -200,7 +200,7 @@ public sealed class HookScriptRoundTripTests : IDisposable
     {
         var session = Adopt();
         var preambleFile = WritePreamble(session);
-        var pointerFile = SessionHookFiles.PointerPathFor(session.Id, _pointerDir);
+        var pointerFile = SessionHookFiles.PointerPathFor(session.Id, session.PointerDropToken, _pointerDir);
         var (interpreter, arguments) = ClaudeHook();
 
         foreach (var source in new[] { "clear", "compact" })
@@ -235,7 +235,7 @@ public sealed class HookScriptRoundTripTests : IDisposable
     {
         var session = Adopt();
         var preambleFile = SessionHookFiles.PreamblePathFor(session.Id, _preambleDir);
-        var pointerFile = SessionHookFiles.PointerPathFor(session.Id, _pointerDir);
+        var pointerFile = SessionHookFiles.PointerPathFor(session.Id, session.PointerDropToken, _pointerDir);
         var (interpreter, arguments) = ClaudeHook();
 
         var store = new InjectedTextStore(Path.Combine(_dir, "injected-text-cache.json"));
@@ -272,7 +272,7 @@ public sealed class HookScriptRoundTripTests : IDisposable
         var (interpreter, arguments) = ClaudeHook();
 
         var (exitCode, stdout, _) = RunHook(interpreter, arguments, null, preambleFile,
-            SessionHookFiles.PointerPathFor(session.Id, _pointerDir));
+            SessionHookFiles.PointerPathFor(session.Id, session.PointerDropToken, _pointerDir));
 
         Assert.Equal(0, exitCode);
         Assert.True(string.IsNullOrEmpty(stdout), $"an empty preamble file produced output: {stdout}");
@@ -333,7 +333,7 @@ public sealed class HookScriptRoundTripTests : IDisposable
         using var sweepOnly = new SessionPointerWatcher(_sessions, pointerDir) { SuppressWatcherForTests = true };
         sweepOnly.Start();
 
-        var pointerFile = SessionHookFiles.PointerPathFor(session.Id, pointerDir);
+        var pointerFile = SessionHookFiles.PointerPathFor(session.Id, session.PointerDropToken, pointerDir);
         var (interpreter, arguments) = ClaudeHook();
         var rotatedId = Guid.NewGuid().ToString();
 
@@ -343,8 +343,14 @@ public sealed class HookScriptRoundTripTests : IDisposable
         Assert.Equal(0, exitCode);
 
         // Well inside the deadline at a two-second interval, and nothing but the timer can deliver it.
+        //
+        // BOTH conditions are waited for, not just the pointer. Apply moves the pointer and THEN deletes
+        // the drop, so waiting on the pointer alone and asserting on the file immediately afterwards
+        // races those two statements - measured at roughly one run in ten, on this change and on its
+        // parent alike. The wait is the fix; the assertions below still state what must be true.
         var deadline = DateTime.UtcNow.AddSeconds(15);
-        while (DateTime.UtcNow < deadline && session.ClaudeSessionId != rotatedId)
+        while (DateTime.UtcNow < deadline
+               && (session.ClaudeSessionId != rotatedId || File.Exists(pointerFile)))
             Thread.Sleep(50);
 
         Assert.Equal(rotatedId, session.ClaudeSessionId);
@@ -363,17 +369,21 @@ public sealed class HookScriptRoundTripTests : IDisposable
     [Fact]
     public void The_real_codex_hook_prints_the_same_file_byte_for_byte()
     {
-        if (!OperatingSystem.IsWindows())
-            return; // The Codex hook is a PowerShell script; there is no POSIX flavour to run.
-
+        // Runs on EVERY platform now. It used to return early off Windows with the note that the Codex
+        // hook is a PowerShell script and there is no POSIX flavour to run - which was true, and was the
+        // defect: the installer had no branch, so macOS and Linux got a command that cannot run there.
         var session = Adopt();
         var preambleFile = WritePreamble(session, new SignedInUser("star@example.com", "Starlord"));
         var codexDir = Path.Combine(_dir, "codex-hooks");
         Assert.True(CodexHookInstaller.EnsureInstalled(codexDir, Path.Combine(codexDir, "hooks.json")));
-        var script = Path.Combine(codexDir, "report-preamble.ps1");
 
-        var (exitCode, stdout, stderr) = RunHook(
-            "powershell", $"-NoProfile -ExecutionPolicy Bypass -File \"{script}\"", null, preambleFile);
+        var windows = OperatingSystem.IsWindows();
+        var script = Path.Combine(codexDir, windows ? "cc-director-preamble.ps1" : "cc-director-preamble.sh");
+        var (interpreterName, interpreterArgs) = windows
+            ? ("powershell", $"-NoProfile -ExecutionPolicy Bypass -File \"{script}\"")
+            : ("/bin/sh", $"\"{script}\"");
+
+        var (exitCode, stdout, stderr) = RunHook(interpreterName, interpreterArgs, null, preambleFile);
 
         Assert.Equal(0, exitCode);
         Assert.True(string.IsNullOrWhiteSpace(stderr), $"the Codex hook wrote to stderr: {stderr}");

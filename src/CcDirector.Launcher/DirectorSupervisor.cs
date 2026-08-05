@@ -173,11 +173,14 @@ public sealed class DirectorSupervisor
             return;
         }
 
-        if (lookup.Outcome == DirectorResolution.Ambiguous || lookup.Director is not { } director)
+        if (lookup.Outcome is DirectorResolution.Ambiguous or DirectorResolution.NotSupervised
+            || lookup.Director is not { } director)
         {
-            FileLog.Write("[DirectorSupervisor] StopAsync: REFUSING to stop anything - more than one live process "
-                          + $"claims {_locator.InstanceHome}, so stopping one of them would be a guess that could "
-                          + $"take somebody's live sessions with it. Claimants: {Describe(lookup)}");
+            FileLog.Write($"[DirectorSupervisor] StopAsync: REFUSING to stop anything ({lookup.Outcome}) - "
+                          + (lookup.Conflict ?? $"more than one live process claims {_locator.InstanceHome}, so "
+                             + "stopping one of them would be a guess that could take somebody's live sessions "
+                             + "with it.")
+                          + $" Claimants: {Describe(lookup)}");
             return;
         }
 
@@ -189,6 +192,22 @@ public sealed class DirectorSupervisor
         if (delivered && await WaitForExitAsync(director.Pid, GracefulShutdownTimeout, ct))
         {
             FileLog.Write($"[DirectorSupervisor] StopAsync: pid={director.Pid} shut down cleanly");
+            return;
+        }
+
+        // A KILL NEEDS THE IMAGE CERTIFIED, NOT MERELY A RESOLVED IDENTITY. Asking a process to stop is
+        // harmless if it is not ours - it is a named signal nothing else listens for. Killing one is not,
+        // and it is the irreversible half. The locator marks a claimant certified only when it was
+        // compared against the installed application's image; when there was nothing to compare against
+        // the answer is "not certified", never "probably fine". This is the last gate before the kill and
+        // it deliberately does not trust the resolution alone.
+        if (!director.IsInstalledImage)
+        {
+            FileLog.Write($"[DirectorSupervisor] StopAsync: pid={director.Pid} ({director.DirectorId}) did not shut "
+                          + $"down after {signal}, and it is NOT certified as the installed Director's image, so it "
+                          + "will NOT be force-killed. Ending a process this launcher cannot confirm is its own is "
+                          + "worse than leaving it running: the same registration could name something that merely "
+                          + "inherited the process id. Resolve the claim on this instance by hand.");
             return;
         }
 

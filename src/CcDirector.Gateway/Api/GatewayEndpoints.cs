@@ -1364,12 +1364,10 @@ internal static class GatewayEndpoints
                     // NeedsYouSince) is stamped in ONE post-pass AFTER this loop assembles the whole fleet -
                     // see StampFleetRolesAndFold below. It is deferred because SessionRole (which the fold
                     // now reads to suppress a live Worker's red) needs the full roster, not one session.
-                    // Issue #335: ViewUrl - use the Director-supplied value when present (it carries
-                    // the correct tailnet endpoint and sessionId); for OLD Directors (empty ViewUrl)
-                    // fall back to the Gateway-derived deep link, preserving the gw= parameter so
-                    // the session view can link back to the Gateway it came from.
-                    if (string.IsNullOrEmpty(s.ViewUrl))
-                        s.ViewUrl = $"{baseUrl}/sessions/{s.SessionId}/view?gw={Uri.EscapeDataString(gatewayBaseUrl)}";
+                    // THE LINK IS MINTED FROM THIS GATEWAY'S OWN ORIGIN, ALWAYS - never derived from a
+                    // Director's endpoint, and never taken from what a Director supplied. See
+                    // GatewaySessionLink for why that reversal is the fix and not merely a tidy-up.
+                    s.ViewUrl = GatewaySessionLink(gatewayBaseUrl, s.SessionId);
                     all.Add(s);
                     // The statistics subset: sessions from a serve that was CONFIRMED CURRENT. Narrower than
                     // MachineReachable on purpose - a wobbly machine may nag, but its months-old numbers must
@@ -1726,7 +1724,7 @@ internal static class GatewayEndpoints
             session.MachineName = director.MachineName;
             session.User = director.User;
             session.TailnetEndpoint = baseUrl;
-            session.ViewUrl = $"{baseUrl}/sessions/{session.SessionId}/view?gw={Uri.EscapeDataString(DeriveGatewayBaseUrl(ctx))}";
+            session.ViewUrl = GatewaySessionLink(DeriveGatewayBaseUrl(ctx), session.SessionId);
 
             // needsYouStampFor is deliberately NOT passed: the needs-you clock has entry/exit semantics and
             // is driven by the roster read. Letting a by-id read stamp it would drive that clock out of band
@@ -4595,11 +4593,47 @@ internal static class GatewayEndpoints
     }
 
     // The Gateway's own externally-reachable base URL, exactly as THIS caller reached
-    // it (scheme + host + optional port). Stamped onto session deep links so the
-    // Director-served session view can link back to the Gateway directory it came from.
+    // it (scheme + host + optional port). It is the root of every session link.
     internal static string DeriveGatewayBaseUrl(HttpContext ctx)
     {
         return $"{ctx.Request.Scheme}://{ctx.Request.Host.Value}";
+    }
+
+    /// <summary>
+    /// The link that opens one session, rooted on THIS GATEWAY'S OWN ORIGIN.
+    ///
+    /// WHY IT NO LONGER COMES FROM THE DIRECTOR - and this is a reversal, not a refactor. The link
+    /// used to be built on a Director's own base URL, taken from its registered tailnet or control
+    /// endpoint, because the Director served the session view itself. Phase 5 of the
+    /// remove-the-network-port mission deleted that listener and deliberately registers an EMPTY
+    /// control endpoint, so the derivation produced an empty base and emitted a RELATIVE
+    /// "/sessions/{id}/view?gw=..." - a path with no origin, pointing at a route that no longer
+    /// exists anywhere. Independent inspection found it; the aggregation tests hid it by assigning a
+    /// fake base URL to the Director before asserting.
+    ///
+    /// It also follows directly from the standing law that the Gateway owns every ruling and the
+    /// client is dumb: where a session can be opened is a verdict, and a verdict is the Gateway's to
+    /// make. Deriving it from a Director's self-reported address was the client-side guess wearing a
+    /// server-side hat, which is exactly why it kept working right up until the address went away.
+    ///
+    /// A DIRECTOR-SUPPLIED VALUE IS NOT PREFERRED - IT IS IGNORED. There is no branch that trusts one
+    /// when present. A Director old enough to still supply a link supplies one to its own port, which
+    /// is a dead door on a current fleet, and the whole point of this mission is that there is one
+    /// door. Preferring the Director's value "when it has one" would keep exactly the case that
+    /// breaks.
+    ///
+    /// The route is the Cockpit's canonical one. The Gateway serves /sessions/{id}, which redirects
+    /// into the session view - so the link works from a phone, a desktop or a notification without
+    /// any client needing to know how the route is spelled.
+    /// </summary>
+    internal static string GatewaySessionLink(string gatewayBaseUrl, string? sessionId)
+    {
+        if (string.IsNullOrEmpty(sessionId)) return "";
+        var root = (gatewayBaseUrl ?? "").TrimEnd('/');
+        // No origin means no link, rather than a relative path that renders as a working link and
+        // resolves against whatever page happens to be showing it. An empty string is an honest
+        // "there is nowhere to send you"; "/sessions/abc" is a lie a client will happily follow.
+        return root.Length == 0 ? "" : $"{root}/sessions/{sessionId}";
     }
 
 

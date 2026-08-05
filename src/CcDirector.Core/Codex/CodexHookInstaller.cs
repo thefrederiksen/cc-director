@@ -43,9 +43,57 @@ public static class CodexHookInstaller
         "} catch { }\r\n" +
         "exit 0\r\n";
 
+    // POSIX shell (macOS/Linux): the same two lines. Codex runs on those platforms and this installer
+    // had no branch at all - it wrote a "powershell" command everywhere, which is not a runnable command
+    // on macOS or Linux (PowerShell Core is "pwsh" there, and is usually absent). The Claude installer
+    // next door has always made this distinction; independent inspection found that this one did not, so
+    // every Codex session outside Windows silently got no preamble.
+    //
+    // -s, not -e: "there is something to print". An empty preamble file means inject nothing.
+    private const string ShellScriptContent =
+        "#!/bin/sh\n" +
+        "# Codex SessionStart hook, written by DevThrottle (CodexHookInstaller).\n" +
+        "# Prints the maintained fleet preamble file, which is already the finished hook output.\n" +
+        "# Best-effort: always exits 0. Deliberately does not read stdin - Codex 0.142+ can fail\n" +
+        "# interactive startup if a hook command consumes or probes the terminal stdin.\n" +
+        "if [ -n \"$CC_SESSION_PREAMBLE_FILE\" ] && [ -s \"$CC_SESSION_PREAMBLE_FILE\" ]; then\n" +
+        "    cat \"$CC_SESSION_PREAMBLE_FILE\" 2>/dev/null || true\n" +
+        "fi\n" +
+        "exit 0\n";
+
     /// <summary>The SessionStart sources Codex can switch context on - the moments we want the
     /// preamble (re-)injected. Same set Claude uses.</summary>
     private const string Matcher = "startup|resume|clear|compact";
+
+    /// <summary>
+    /// The marker that identifies an entry as OURS in a hooks file we share with the user.
+    ///
+    /// Idempotence used to compare the whole command string, and the script path inside it is scoped to
+    /// the NAMED INSTANCE while the hooks file is global - so every instance looked like a different
+    /// hook and appended another one. A machine with a default and a "work" instance ended up with two
+    /// SessionStart entries reading the same variable, and a Codex session got its preamble twice.
+    /// Renaming or removing an instance left its command behind for ever.
+    ///
+    /// Matching on this marker instead means there is exactly ONE of our entries in the file at any
+    /// time, whichever instance wrote it last, and the user's own hooks are still untouched.
+    ///
+    /// It is carried in the SCRIPT FILE NAME, so it is present in the command by construction and
+    /// cannot drift away from it.
+    /// </summary>
+    private const string OwnerMarker = "cc-director-preamble";
+
+    /// <summary>
+    /// What our script was called before the marker existed. Entries naming it are still OURS and are
+    /// cleaned up on the next install - otherwise every machine that already has one would keep it
+    /// beside the new entry and get the preamble twice, which is the exact defect being fixed.
+    /// Removable once no installed machine can still be carrying one.
+    /// </summary>
+    private const string LegacyScriptName = "report-preamble";
+
+    private static bool IsOurs(string? command) =>
+        command is not null
+        && (command.Contains(OwnerMarker, StringComparison.OrdinalIgnoreCase)
+            || command.Contains(LegacyScriptName, StringComparison.OrdinalIgnoreCase));
 
     /// <summary>The launch flag the Director appends so the hook runs without a per-user trust
     /// prompt. Exposed so SessionManager and tests share one source of truth.</summary>
@@ -57,18 +105,31 @@ public static class CodexHookInstaller
     /// <see cref="BypassTrustFlag"/> to the Codex command); false if anything failed, in which case
     /// the session still launches, just without the preamble hook.
     /// </summary>
-    public static bool EnsureInstalled() => EnsureInstalled(DefaultScriptDirectory(), DefaultCodexHooksPath());
+    public static bool EnsureInstalled() =>
+        EnsureInstalled(DefaultScriptDirectory(), DefaultCodexHooksPath(), OperatingSystem.IsWindows());
 
-    /// <summary>Testable overload that writes under explicit paths.</summary>
-    public static bool EnsureInstalled(string scriptDirectory, string hooksJsonPath)
+    /// <summary>Testable overload that writes under explicit paths, on this machine's platform.</summary>
+    public static bool EnsureInstalled(string scriptDirectory, string hooksJsonPath) =>
+        EnsureInstalled(scriptDirectory, hooksJsonPath, OperatingSystem.IsWindows());
+
+    /// <summary>
+    /// Testable overload that also pins the platform flavour, exactly as the Claude installer does.
+    /// Windows gets the PowerShell script; everything else gets the POSIX shell script. The flavour is
+    /// a parameter and not a platform check inside, so the macOS and Linux form can be proven from a
+    /// Windows test run - which is the only way this defect would have been caught before shipping.
+    /// </summary>
+    public static bool EnsureInstalled(string scriptDirectory, string hooksJsonPath, bool forWindows)
     {
         try
         {
             Directory.CreateDirectory(scriptDirectory);
-            var scriptPath = Path.Combine(scriptDirectory, "report-preamble.ps1");
-            File.WriteAllText(scriptPath, ScriptContent);
+            var scriptPath = Path.Combine(scriptDirectory,
+                forWindows ? OwnerMarker + ".ps1" : OwnerMarker + ".sh");
+            File.WriteAllText(scriptPath, forWindows ? ScriptContent : ShellScriptContent);
 
-            var command = $"powershell -NoProfile -ExecutionPolicy Bypass -File \"{scriptPath}\"";
+            var command = forWindows
+                ? $"powershell -NoProfile -ExecutionPolicy Bypass -File \"{scriptPath}\""
+                : $"/bin/sh \"{scriptPath}\"";
             MergeSessionStartHook(hooksJsonPath, command);
             return true;
         }
@@ -80,8 +141,8 @@ public static class CodexHookInstaller
     }
 
     /// <summary>
-    /// Add our SessionStart command hook to <paramref name="hooksJsonPath"/>, preserving any hooks
-    /// the user already has. Idempotent: a re-run with the same script command is a no-op. Writes
+    /// Put our SessionStart command hook into <paramref name="hooksJsonPath"/>, preserving every hook
+    /// the user has. Exactly ONE of ours exists afterwards, whatever was there before. Writes
     /// atomically (temp file then replace) so a crash mid-write cannot corrupt the user's hooks.
     /// </summary>
     private static void MergeSessionStartHook(string hooksJsonPath, string command)
@@ -100,18 +161,27 @@ public static class CodexHookInstaller
             hooks["SessionStart"] = sessionStart;
         }
 
-        // Idempotent: if any existing entry already runs our command, leave the file untouched.
-        foreach (var entry in sessionStart)
-        {
-            if (entry is JsonObject obj && obj["hooks"] is JsonArray inner)
-            {
-                foreach (var h in inner)
-                {
-                    if (h is JsonObject ho && ho["command"]?.GetValue<string>() == command)
-                        return;
-                }
-            }
-        }
+        // REMOVE EVERY ENTRY OF OURS FIRST, then add one. Rewriting rather than skipping is what makes
+        // this converge: a file that already carries a stale entry - a different instance's script path,
+        // or the Windows command on a machine that has since moved to the shell one - ends up with the
+        // CURRENT command and only that. Skipping when something of ours was present would leave the
+        // stale entry in place for ever, which is the shape that produced duplicates.
+        var ours = sessionStart
+            .OfType<JsonObject>()
+            .Where(entry => entry["hooks"] is JsonArray inner
+                            && inner.OfType<JsonObject>().Any(h => IsOurs(h["command"]?.GetValue<string>())))
+            .ToList();
+
+        var alreadyCorrect = ours.Count == 1
+            && ours[0]["hooks"] is JsonArray only
+            && only.OfType<JsonObject>().Count() == 1
+            && only.OfType<JsonObject>().Single()["command"]?.GetValue<string>() == command
+            && ours[0]["matcher"]?.GetValue<string>() == Matcher;
+        if (alreadyCorrect)
+            return;
+
+        foreach (var stale in ours)
+            sessionStart.Remove(stale);
 
         sessionStart.Add(new JsonObject
         {

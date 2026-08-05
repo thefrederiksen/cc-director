@@ -16,9 +16,10 @@ namespace CcDirector.Gateway.Running;
 /// <see cref="CronRunCompletedPayload"/> there for external consumers.
 ///
 /// The deep link to the resulting session is built the same way the Gateway's /sessions aggregation
-/// builds <c>ViewUrl</c>: <c>{directorEndpoint}/sessions/{sessionId}/view?gw={gatewayBaseUrl}</c>.
-/// The resolved Director endpoint is supplied by <see cref="_resolveDirectorEndpoint"/> so this
-/// class stays decoupled from the registry and is unit-testable.
+/// builds <c>ViewUrl</c> - on THIS GATEWAY'S OWN ADDRESS, <c>{gatewayBaseUrl}/sessions/{sessionId}</c>.
+/// It used to be rooted on the resolved Director's endpoint, which the remove-the-network-port
+/// mission deleted; that parameter is GONE rather than kept and ignored, because a constructor
+/// argument nothing reads is a trap for the next caller.
 ///
 /// Delivery is best-effort by design: both legs swallow their own failures (logged, never thrown)
 /// so a notification problem can never break a fire - the firing engine's outcome is already
@@ -32,16 +33,11 @@ public sealed class GatewayCronNotifier : ICronNotifier
     };
 
     private readonly DirectorEventLog _events;
-    private readonly Func<string, string?> _resolveDirectorEndpoint;
     private readonly Func<TenantId?> _resolveTenant;
     private readonly Func<string> _gatewayBaseUrl;
     private readonly HttpClient _webhookHttp;
 
     /// <param name="events">The per-Director event ring this notification rides (the existing channel).</param>
-    /// <param name="resolveDirectorEndpoint">
-    /// Resolves a directorId to its reachable base endpoint (tailnet/control), or null when unknown.
-    /// Used to build the session deep link; the in-fleet event is still recorded when it returns null.
-    /// </param>
     /// <param name="gatewayBaseUrl">The Gateway's own base URL, stamped on the deep link as the <c>gw</c> query.</param>
     /// <param name="webhookHttp">
     /// HttpClient for the optional outbound webhook POST. A dedicated short-timeout client is
@@ -50,7 +46,7 @@ public sealed class GatewayCronNotifier : ICronNotifier
     /// <param name="resolveTenant">
     /// MTR-01 (Codex round 1): the tenant of the current cron pass, so the run-complete event files into THAT
     /// tenant's event ring (the ring is now keyed by (tenant, id)). Production passes
-    /// <c>() =&gt; _tenantPass.Current</c> - the same seam <paramref name="resolveDirectorEndpoint"/> uses -
+    /// <c>() =&gt; _tenantPass.Current</c> - the same seam the deep link used to use -
     /// which is the request/tunnel/per-tenant-pass scope in effect at fire time. A null return is DENY: no
     /// tenant in scope means the best-effort ring event is skipped rather than filed under a guessed owner.
     /// Optional, defaulting to the single Local tenant - the self-host shape and the unit-test default, so
@@ -58,34 +54,45 @@ public sealed class GatewayCronNotifier : ICronNotifier
     /// </param>
     public GatewayCronNotifier(
         DirectorEventLog events,
-        Func<string, string?> resolveDirectorEndpoint,
         Func<string> gatewayBaseUrl,
         HttpClient webhookHttp,
         Func<TenantId?>? resolveTenant = null)
     {
         _events = events ?? throw new ArgumentNullException(nameof(events));
-        _resolveDirectorEndpoint = resolveDirectorEndpoint ?? throw new ArgumentNullException(nameof(resolveDirectorEndpoint));
         _resolveTenant = resolveTenant ?? (() => TenantId.Local);
         _gatewayBaseUrl = gatewayBaseUrl ?? throw new ArgumentNullException(nameof(gatewayBaseUrl));
         _webhookHttp = webhookHttp ?? throw new ArgumentNullException(nameof(webhookHttp));
     }
 
     /// <summary>
-    /// Build a session deep link the same way the /sessions aggregation does, or empty when there
-    /// is no session or no reachable Director endpoint to root it on.
+    /// Build a session deep link, rooted on THIS GATEWAY'S OWN ADDRESS, or empty when there is no
+    /// session to link to.
+    ///
+    /// IT NO LONGER DEPENDS ON THE DIRECTOR HAVING AN ADDRESS, and that is the fix. This used to root
+    /// the link on the resolved Director's tailnet or control endpoint and return empty when there
+    /// was none. Phase 5 of the remove-the-network-port mission deleted the Director's listener, so a
+    /// current registration carries no endpoint at all - which meant every cron run-complete
+    /// notification on a current fleet silently carried NO link. Not a broken link, which somebody
+    /// would have reported: no link, which reads as "this notification just does not have one".
+    ///
+    /// Issue #2161 still holds and is why the Gateway's address is a delegate resolved per
+    /// notification rather than captured: on an operating-system-assigned port the number does not
+    /// exist until the listener binds, which is after this notifier is constructed. A captured string
+    /// would freeze a dead port into every link.
     /// </summary>
-    public string BuildSessionLink(string? directorId, string? sessionId)
+    public string BuildSessionLink(string? sessionId)
     {
         if (string.IsNullOrEmpty(sessionId)) return "";
-        var endpoint = string.IsNullOrEmpty(directorId) ? null : _resolveDirectorEndpoint(directorId);
-        if (string.IsNullOrEmpty(endpoint)) return "";
-        var baseUrl = endpoint.TrimEnd('/');
-        // Issue #2161: the Gateway's own address is resolved per notification, never captured. It carries this
-        // Gateway's port, and on an operating-system-assigned port that number does not exist until the
-        // listener binds - after this notifier is built. A captured string would put a dead port in every link.
+
         var gatewayUrl = (_gatewayBaseUrl() ?? "").TrimEnd('/');
-        var gw = string.IsNullOrEmpty(gatewayUrl) ? "" : $"?gw={Uri.EscapeDataString(gatewayUrl)}";
-        return $"{baseUrl}/sessions/{sessionId}/view{gw}";
+        if (string.IsNullOrEmpty(gatewayUrl))
+        {
+            FileLog.Write($"[GatewayCronNotifier] no Gateway base address, so the run-complete "
+                          + $"notification for session {sessionId} carries no link.");
+            return "";
+        }
+
+        return $"{gatewayUrl}/sessions/{sessionId}";
     }
 
     public async Task NotifyRunCompletedAsync(CronJobDto job, string directorId, CronRunCompletedPayload payload, CancellationToken ct)

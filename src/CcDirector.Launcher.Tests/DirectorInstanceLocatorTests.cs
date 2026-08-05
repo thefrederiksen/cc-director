@@ -187,19 +187,69 @@ public sealed class DirectorInstanceLocatorTests : IDisposable
     }
 
     /// <summary>
-    /// A single claimant is resolved without the executable being consulted at all - the tie-break exists
-    /// only for a conflict. Pinning this stops the preference quietly becoming an identity check, which
-    /// is the one thing this class must never do.
+    /// A LONE CLAIMANT THAT IS NOT THE INSTALLED APPLICATION IS REFUSED - and this test replaces one that
+    /// asserted the OPPOSITE, by name, and held the defect in place.
+    ///
+    /// The old test was called "a single claimant is resolved even when it is not the installed Director",
+    /// and its stated reasoning was sound as far as it went: the image must never become the way a
+    /// Director is IDENTIFIED, because two named instances of one install share an image. But identity is
+    /// not the question the kill path asks. DirectorSupervisor.StopAsync will force-kill what the locator
+    /// returns, so resolving a lone unexamined claimant authorized ending a process that might be a
+    /// development build, or something that merely inherited a dead Director's process id inside the
+    /// start-time window. Independent inspection found the acceptance and the kill path, and found this
+    /// test standing over them.
+    ///
+    /// Identity still comes from the registration. What changed is that acting on it now also requires
+    /// the image to be the one this launcher supervises.
     /// </summary>
     [Fact]
-    public void ASingleClaimant_IsResolvedEvenWhenItIsNotTheInstalledDirector()
+    public void ASingleClaimantThatIsNotTheInstalledDirector_IsRefused()
     {
         WriteRegistration(InstanceDirectory("default"), "aaaa0001-0000-0000-0000-000000000014");
 
         var lookup = Locator(installedDirectorPath: NotThisProcessPath).Resolve();
 
+        Assert.Equal(DirectorResolution.NotSupervised, lookup.Outcome);
+        Assert.Null(lookup.Director);
+        Assert.NotNull(lookup.Conflict);
+        Assert.Contains("not the Director this launcher supervises", lookup.Conflict);
+
+        // NotSupervised is NOT NotRunning: something is holding the instance home, so nothing new may be
+        // started on top of it. Saying "not running" here would have the launcher start a second one.
+        Assert.Single(lookup.Candidates);
+    }
+
+    /// <summary>
+    /// The lone claimant that IS the installed application resolves, and is marked certified - which is
+    /// what the kill path requires before it will force-kill anything.
+    /// </summary>
+    [Fact]
+    public void ASingleClaimantRunningTheInstalledImage_ResolvesAndIsCertified()
+    {
+        WriteRegistration(InstanceDirectory("default"), "aaaa0001-0000-0000-0000-00000000001a");
+
+        var lookup = Locator().Resolve();
+
         Assert.Equal(DirectorResolution.Running, lookup.Outcome);
+        Assert.True(lookup.Director!.IsInstalledImage);
         Assert.Null(lookup.Conflict);
+    }
+
+    /// <summary>
+    /// NO INSTALLED PATH MEANS NOT CERTIFIED, NOT "PROBABLY FINE". The desktop application builds a
+    /// locator with nothing to compare against, because all it asks is whether something is running
+    /// there. It still resolves - but the claimant carries IsInstalledImage false, and that is what stops
+    /// the launcher's kill path treating an unanswerable question as a yes.
+    /// </summary>
+    [Fact]
+    public void WithNoInstalledPathToCompareAgainst_TheClaimantResolvesButIsNotCertified()
+    {
+        WriteRegistration(InstanceDirectory("default"), "aaaa0001-0000-0000-0000-00000000001b");
+
+        var lookup = new DirectorInstanceLocator(InstanceHome("default"), FlatDirectory).Resolve();
+
+        Assert.Equal(DirectorResolution.Running, lookup.Outcome);
+        Assert.False(lookup.Director!.IsInstalledImage);
     }
 
     /// <summary>

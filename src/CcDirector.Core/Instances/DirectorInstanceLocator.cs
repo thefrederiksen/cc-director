@@ -19,6 +19,18 @@ public enum DirectorResolution
     /// see the class comment on <see cref="DirectorInstanceLocator"/>.
     /// </summary>
     Ambiguous,
+
+    /// <summary>
+    /// A live process holds the supervised instance, but it is NOT running the image this launcher
+    /// supervises. Something is there, so nothing new may be started on top of it - and it must not be
+    /// stopped, force-killed or updated over, because it is not this launcher's process to end.
+    ///
+    /// This is a distinct answer from <see cref="Ambiguous"/> on purpose. Ambiguous means the launcher
+    /// cannot tell WHICH of several claimants is its Director; this means it can tell perfectly well,
+    /// and the answer is "none of them". A log line that said "ambiguous" about a single claimant would
+    /// send the next person looking for a second process that does not exist.
+    /// </summary>
+    NotSupervised,
 }
 
 /// <summary>
@@ -40,7 +52,19 @@ public enum DirectorResolution
 /// </param>
 public sealed record SupervisedDirector(
     string DirectorId, int Pid, string InstanceHome, string Version, DateTime ProcessStartedAtUtc,
-    string ExecutablePath);
+    string ExecutablePath)
+{
+    /// <summary>
+    /// Whether this process was CERTIFIED as running the installed application's image.
+    ///
+    /// It exists because false has two causes that must not be allowed to look alike: the image was
+    /// checked and did not match, or there was no installed path to check it against. Both mean the same
+    /// thing where it counts - nothing may force-kill this process - and lumping them into a bare
+    /// "resolved" is how a lone unidentified claimant came to authorize a kill in the first place. A
+    /// question nobody could answer must never read as a yes.
+    /// </summary>
+    public bool IsInstalledImage { get; init; }
+}
 
 /// <summary>The answer to "which Director am I supervising", with the evidence behind it.</summary>
 /// <param name="Outcome">What the search concluded.</param>
@@ -231,12 +255,60 @@ public sealed class DirectorInstanceLocator
         if (live.Count == 0)
             return new DirectorLookup(DirectorResolution.NotRunning, null, described);
 
-        // ONE claimant is resolved without the image ever being consulted. The tie-break exists only for
-        // a conflict, and keeping it there is what stops a preference quietly becoming an identity check.
         if (live.Count == 1)
-            return new DirectorLookup(DirectorResolution.Running, live[0], described);
+            return ResolveSingleClaimant(live[0], described);
 
         return BreakTheTie(live, described);
+    }
+
+    /// <summary>
+    /// One live claimant. It still has to be the process this launcher supervises.
+    ///
+    /// WHY A LONE CLAIMANT IS NOT AUTOMATICALLY THE ANSWER - and this reverses what this class used to
+    /// do. Being alone was treated as identification: a registration naming a live pid whose start time
+    /// fits the window was resolved without the image ever being consulted, and
+    /// <see cref="Launcher.DirectorSupervisor"/> will FORCE-KILL what this returns. So a registration
+    /// naming a process that is not a Director at all - a stale file whose pid was reused by something
+    /// with a compatible start time, or one written by a development build - authorized killing that
+    /// process. Independent inspection found it, and found a test standing over it holding it in place
+    /// by name.
+    ///
+    /// THE RULE THIS CLASS ENFORCES IS UNCHANGED, AND THIS IS THE PART TO READ BEFORE CONCLUDING
+    /// OTHERWISE. A Director is still never IDENTIFIED by its image path: WHICH Director this is comes
+    /// from the registration, as it always did, and the image cannot distinguish two named instances of
+    /// one install because they are one image. That is why the two-claimant case below is still refused.
+    /// What the image answers is a different question - may this launcher END this process - and the
+    /// answer has to be yes before anything is stopped or updated over. The tie-break has consulted the
+    /// image for exactly this reason since it was written; the lone claimant was the path that never did.
+    ///
+    /// WHEN THERE IS NOTHING TO COMPARE AGAINST. A locator built with no installed path (the desktop
+    /// application's own "is something running there" check does this) cannot judge the image, so it
+    /// resolves as before - but the claimant is marked as not certified, and
+    /// <see cref="Launcher.DirectorSupervisor"/> refuses to force-kill an uncertified process. An
+    /// unanswerable question must not read as a yes.
+    /// </summary>
+    private DirectorLookup ResolveSingleClaimant(SupervisedDirector claimant, List<string> described)
+    {
+        if (_installedDirectorPath.Length == 0)
+        {
+            // Nothing to compare against. Resolved, explicitly UNCERTIFIED - see the caller-side refusal.
+            return new DirectorLookup(DirectorResolution.Running, claimant with { IsInstalledImage = false },
+                described);
+        }
+
+        if (!IsInstalledDirector(claimant.ExecutablePath))
+        {
+            var reason = $"the only live process claiming {_instanceHome} is not the Director this launcher "
+                         + $"supervises: pid={claimant.Pid} runs "
+                         + (claimant.ExecutablePath.Length == 0 ? "an image it would not name" : claimant.ExecutablePath)
+                         + $", and the installed application is {_installedDirectorPath}. It is a development build, "
+                         + "or a registration whose process id was reused by something else. Nothing will be "
+                         + "stopped, restarted or updated over it - it is not this launcher's process to end.";
+            FileLog.Write($"[DirectorInstanceLocator] REFUSING to act: {reason}");
+            return new DirectorLookup(DirectorResolution.NotSupervised, null, described, reason);
+        }
+
+        return new DirectorLookup(DirectorResolution.Running, claimant with { IsInstalledImage = true }, described);
     }
 
     /// <summary>
@@ -303,7 +375,8 @@ public sealed class DirectorInstanceLocator
                       + "because the others are not the installed application. THIS MACHINE IS STILL IN A WRONG "
                       + "STATE: two processes should never share one instance home, and the single-instance guard "
                       + "does not prevent it because it is keyed by executable slot rather than by instance.");
-        return new DirectorLookup(DirectorResolution.Running, installed[0], described, conflict);
+        return new DirectorLookup(DirectorResolution.Running, installed[0] with { IsInstalledImage = true },
+            described, conflict);
     }
 
     /// <summary>True when this image is the installed Director (inside the bundle on macOS).</summary>

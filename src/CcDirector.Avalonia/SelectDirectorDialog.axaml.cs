@@ -82,7 +82,12 @@ public partial class SelectDirectorDialog : Window
                 ? Path.Combine(InstanceContext.SharedRoot, "config", "director", "instances")
                 : null;
             var lookup = new DirectorInstanceLocator(instanceHome, legacyFlat).Resolve();
-            return lookup.Outcome is DirectorResolution.Running or DirectorResolution.Ambiguous;
+            // Everything except NotRunning means SOMETHING live is holding that instance, which is
+            // exactly what this dialog's green dot claims. Listed as a negative rather than as a set of
+            // positives on purpose: a new outcome added later defaults to "running" here, which is the
+            // safe direction for a liveness indicator - the unsafe direction is showing an instance as
+            // free when a process is sitting in it and having the user start a second one.
+            return lookup.Outcome != DirectorResolution.NotRunning;
         }
         catch (Exception ex)
         {

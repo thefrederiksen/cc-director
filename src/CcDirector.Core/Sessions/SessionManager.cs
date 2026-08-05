@@ -726,11 +726,16 @@ public sealed class SessionManager : IDisposable
             // and transcript on /clear and compaction, so it is the only one with a pointer to report.
             // The directory is created HERE as well as by the watcher: the hook writes into it and
             // swallows every error, so a missing directory would cost transcript tracking silently.
+            //
+            // The path carries the session's own drop token, and handing it over HERE - in the
+            // process environment, visible only to this session - is what makes the path a
+            // capability. The watcher refuses any drop whose name does not carry the token, so a
+            // sibling process that merely knows this session's id cannot retarget its pointer.
             if (agent.Kind == AgentKind.ClaudeCode)
             {
                 try
                 {
-                    var pointerPath = SessionHookFiles.PointerPathFor(id);
+                    var pointerPath = SessionHookFiles.PointerPathFor(id, session.PointerDropToken);
                     Directory.CreateDirectory(Path.GetDirectoryName(pointerPath)!);
                     envVars[SessionHookFiles.PointerFileEnvVar] = pointerPath;
                 }
