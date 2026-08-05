@@ -498,6 +498,11 @@ public sealed class AndroidAudioRecorder : IAudioRecorder
             // Pause stops the roll timer, but a tick already in flight can
             // land after the pause takes hold - never rotate a paused capture.
             if (!IsRecording || _paused) return;
+            // Timer.Change cannot recall a callback already queued, so a stale
+            // tick can race a segment that error recovery restarted moments
+            // ago. Rotating a seconds-old segment serves nobody - skip; the
+            // re-armed timer owns the next rotation.
+            if (DateTime.UtcNow - _segmentStartedUtc < TimeSpan.FromSeconds(5)) return;
             try
             {
                 FinalizeSegment();
@@ -535,19 +540,12 @@ public sealed class AndroidAudioRecorder : IAudioRecorder
             try
             {
                 StartSegment();
-                // The error cost an unknown slice of the current segment. Leave
-                // a timestamped note so the gap is visible in the transcript
-                // timeline instead of passing as continuous audio.
-                _manifest?.Notes.Add(new NoteInfo
-                {
-                    TMs = (long)(DateTime.UtcNow - _startedUtc).TotalMilliseconds,
-                    Text = $"[capture] Recorder error ({what}); a short audio gap may exist here.",
-                });
-                SaveManifest();
+                // The replacement recorder starts out capturing, so an
+                // in-progress pause must be re-applied IMMEDIATELY - before
+                // any manifest work - or audio records while the user sees
+                // "Paused".
                 if (_paused)
                 {
-                    // Respect an in-progress pause: the replacement recorder
-                    // starts out capturing, so pause it again immediately.
                     try { _recorder?.Pause(); }
                     catch
                     {
@@ -566,6 +564,15 @@ public sealed class AndroidAudioRecorder : IAudioRecorder
                     // of the one the dying recorder was in.
                     _rollTimer?.Change(SegmentLength, SegmentLength);
                 }
+                // The error cost an unknown slice of the current segment. Leave
+                // a timestamped note so the gap is visible in the transcript
+                // timeline instead of passing as continuous audio.
+                _manifest?.Notes.Add(new NoteInfo
+                {
+                    TMs = (long)(DateTime.UtcNow - _startedUtc).TotalMilliseconds,
+                    Text = $"[capture] Recorder error ({what}); a short audio gap may exist here.",
+                });
+                SaveManifest();
             }
             catch (Exception ex)
             {
