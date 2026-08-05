@@ -350,7 +350,10 @@ export function Recorder() {
 
       {error !== null && (
         <div className="banner banner-error" role="alert">
-          {error}
+          {error}{" "}
+          <button type="button" className="rec-row-btn" onClick={() => recordingSession.clearError()}>
+            Dismiss
+          </button>
         </div>
       )}
 

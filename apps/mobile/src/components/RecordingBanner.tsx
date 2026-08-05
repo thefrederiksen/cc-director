@@ -36,7 +36,12 @@ export function RecordingBanner() {
   const [clock, setClock] = useState("00:00:00");
 
   const capturing = session.phase === "recording" || session.phase === "paused" || session.phase === "stopping";
-  const shown = capturing && location.pathname !== "/recorder";
+  // A capture that DIED (microphone suspended) must be announced everywhere too, not just on the
+  // Recorder page - otherwise the red bar silently vanishes and the user in another screen assumes
+  // it is still recording. The error state shows until dismissed on the Recorder page.
+  const lost = !capturing && session.error !== null;
+  const onRecorderPage = location.pathname === "/recorder" || location.pathname.startsWith("/recorder/");
+  const shown = (capturing || lost) && !onRecorderPage;
 
   useEffect(() => {
     const root = document.documentElement;
@@ -58,13 +63,23 @@ export function RecordingBanner() {
 
   // The live clock is the banner's proof of life - a frozen number would be a lying indicator.
   useEffect(() => {
-    if (!shown) return;
+    if (!shown || !capturing) return;
     setClock(formatClock(recordingSession.elapsedMs()));
     const t = setInterval(() => setClock(formatClock(recordingSession.elapsedMs())), 500);
     return () => clearInterval(t);
-  }, [shown]);
+  }, [shown, capturing]);
 
   if (!shown) return null;
+
+  // Three truthful states: live (pulsing red + clock), saving (still red, the final segment may be
+  // flushing), lost (amber, the capture stopped - tap for the details and the saved audio).
+  const label = lost
+    ? "Recording stopped - tap for details"
+    : session.phase === "paused"
+      ? `Recording paused ${clock}`
+      : session.phase === "stopping"
+        ? "Saving recording..."
+        : `Recording ${clock}`;
 
   return (
     <button
@@ -72,12 +87,13 @@ export function RecordingBanner() {
       className="recbanner"
       ref={barRef}
       onClick={() => void navigate("/recorder")}
-      aria-label={`Recording in progress, ${clock}. Open the recorder.`}
+      aria-label={`${label}. Open the recorder.`}
     >
-      <span className={`recbanner-dot${session.phase === "paused" ? " recbanner-dot-paused" : ""}`} aria-hidden="true" />
-      <span className="recbanner-text">
-        {session.phase === "paused" ? "Recording paused" : "Recording"} {clock}
-      </span>
+      <span
+        className={`recbanner-dot${session.phase === "paused" || lost ? " recbanner-dot-paused" : ""}`}
+        aria-hidden="true"
+      />
+      <span className="recbanner-text">{label}</span>
       <span className="recbanner-open">Open</span>
     </button>
   );
