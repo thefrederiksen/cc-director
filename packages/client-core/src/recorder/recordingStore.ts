@@ -83,9 +83,19 @@ export interface LocalRecording {
   notes: LocalNote[];
   /** Epoch milliseconds the recording was created (list ordering). */
   createdAt: number;
+  /** Epoch milliseconds of the last header write while capturing - the live capture's HEARTBEAT.
+   *  Recovery treats a recently-touched "recording" row as live (possibly in another tab of this
+   *  origin) rather than as an orphan to seize. Optional: rows from older builds lack it and are
+   *  recovered as before. */
+  updatedAt?: number;
   /** Set when this recording was recovered after an interrupted capture (the app closed while
    *  recording), so the library row can say so honestly. */
   recovered?: boolean;
+  /** Set when capture was stopped by the SYSTEM rather than the user (the microphone was suspended
+   *  by a screen lock, another app, or the browser pausing the page). Holds the plain-English
+   *  reason. The library row says so - a cut-off recording must never look complete
+   *  (recorder-unlimited-capture mission). */
+  interrupted?: string;
   /** The last upload failure, in plain English, so the saved-and-retryable row can say why. */
   lastError?: string;
   /** Determinate progress for the upload pass in flight, persisted on the record itself so the
@@ -231,13 +241,27 @@ export async function deleteRecording(recordingId: string): Promise<void> {
  * the audio is never stranded just because the app died - and the row says it was recovered. An
  * empty shell (no segments captured) is deleted - the server's completeness gate refuses a zero-segment
  * recording, so there is nothing it could ever become. Returns the recovered recordings.
+ *
+ * The capture that is LIVE right now must be excluded: the recording session survives navigation
+ * (it lives above the router), so a "recording" row is no longer proof of a dead capture - it may be
+ * the one currently running. Two guards, because IndexedDB is origin-wide while the session
+ * singleton is per tab:
+ *   - excludeRecordingId skips THIS tab's live capture;
+ *   - the updatedAt heartbeat skips a capture live in ANOTHER tab - its segment rotation touches
+ *     the header every minute, so a "recording" row with a fresh heartbeat is running somewhere,
+ *     and seizing it would start uploading a recording that is still being written.
+ * A genuinely dead capture stops heartbeating and is recovered once the heartbeat is stale.
  */
-export async function recoverInterrupted(): Promise<LocalRecording[]> {
+const RECOVERY_HEARTBEAT_STALE_MS = 3 * 60_000;
+
+export async function recoverInterrupted(excludeRecordingId?: string): Promise<LocalRecording[]> {
   if (!hasIndexedDb()) return [];
   const all = await listRecordings();
   const recovered: LocalRecording[] = [];
   for (const rec of all) {
     if (rec.state !== "recording") continue;
+    if (rec.recordingId === excludeRecordingId) continue;
+    if (rec.updatedAt !== undefined && Date.now() - rec.updatedAt < RECOVERY_HEARTBEAT_STALE_MS) continue;
     const chunks = await listChunks(rec.recordingId);
     if (chunks.length === 0) {
       await deleteRecording(rec.recordingId);

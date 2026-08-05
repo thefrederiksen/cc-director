@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 // contract with the server - CodecToExt maps these labels by substring, so a wrong label would make
 // the server store segments under the wrong extension and content type.
 
-import { codecLabelFor, MAX_RECORDING_MS, SEGMENT_MS } from "./segmentRecorder";
+import { codecLabelFor, SEGMENT_MS } from "./segmentRecorder";
 
 describe("codecLabelFor", () => {
   it("maps every MediaRecorder container to a label the server's CodecToExt resolves correctly", () => {
@@ -21,8 +21,7 @@ describe("codecLabelFor", () => {
 });
 
 describe("capture constants", () => {
-  it("rotates one-minute segments (the Android recorder's interval) and caps at thirty minutes", () => {
+  it("rotates one-minute segments (the Android recorder's interval)", () => {
     expect(SEGMENT_MS).toBe(60_000);
-    expect(MAX_RECORDING_MS).toBe(30 * 60_000);
   });
 });
