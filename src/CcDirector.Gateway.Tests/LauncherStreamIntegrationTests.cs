@@ -14,7 +14,8 @@ namespace CcDirector.Gateway.Tests;
 /// the connection is registered. It then has the Gateway push a command DOWN the stream and asserts the
 /// client's <c>Command</c> handler runs and returns a result over the same connection (SignalR client
 /// results). This proves the whole join + command-dispatch path over the wire: hub auth, identity binding,
-/// the connection registry, and <c>GatewayHost.SendLauncherCommandAsync</c>'s stream-vs-fallback decision.
+/// the connection registry, and <c>GatewayHost.SendLauncherCommandAsync</c>'s connected-or-undeliverable
+/// decision - the stream being the only path to a launcher since phase 6.
 /// </summary>
 [Collection("DirectorRoot")]
 public sealed class LauncherStreamIntegrationTests : IAsyncLifetime
@@ -58,7 +59,7 @@ public sealed class LauncherStreamIntegrationTests : IAsyncLifetime
         await using var conn = await ConnectLauncherAsync(Token);
         conn.On<LauncherCommand, LauncherCommandResult>("Command", _ => Task.FromResult(LauncherCommandResult.Ok()));
 
-        await conn.InvokeAsync("Hello", new LauncherStreamHello { MachineName = Machine, Port = 7878, Version = "test" });
+        await conn.InvokeAsync("Hello", new LauncherStreamHello { MachineName = Machine, Version = "test" });
 
         Assert.True(_gateway.LauncherConnections.IsStreamConnected(CcDirector.Core.Tenancy.TenantId.Local, Machine));
     }
@@ -73,7 +74,7 @@ public sealed class LauncherStreamIntegrationTests : IAsyncLifetime
             received = cmd;
             return Task.FromResult(LauncherCommandResult.Ok());
         });
-        await conn.InvokeAsync("Hello", new LauncherStreamHello { MachineName = Machine, Port = 7878, Version = "test" });
+        await conn.InvokeAsync("Hello", new LauncherStreamHello { MachineName = Machine, Version = "test" });
 
         var result = await _gateway.SendLauncherCommandAsync(CcDirector.Core.Tenancy.TenantId.Local, Machine, new LauncherCommand { Verb = "director/restart" });
 
@@ -89,7 +90,7 @@ public sealed class LauncherStreamIntegrationTests : IAsyncLifetime
         await using var conn = await ConnectLauncherAsync(Token);
         conn.On<LauncherCommand, LauncherCommandResult>("Command",
             _ => Task.FromResult(LauncherCommandResult.Fail(LauncherCommandStatus.BadRequest, "unknown verb: bogus")));
-        await conn.InvokeAsync("Hello", new LauncherStreamHello { MachineName = Machine, Port = 7878, Version = "test" });
+        await conn.InvokeAsync("Hello", new LauncherStreamHello { MachineName = Machine, Version = "test" });
 
         var result = await _gateway.SendLauncherCommandAsync(CcDirector.Core.Tenancy.TenantId.Local, Machine, new LauncherCommand { Verb = "bogus" });
 
@@ -100,10 +101,11 @@ public sealed class LauncherStreamIntegrationTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task SendLauncherCommandAsync_ForOfflineMachine_ReturnsNull_ForRestFallback()
+    public async Task SendLauncherCommandAsync_ForOfflineMachine_ReturnsNull_WhichTheCallerReportsAsUndeliverable()
     {
-        // No launcher has joined for this machine => no active stream connection => null, which the caller
-        // treats as "no stream" and falls back to the existing HTTP relay.
+        // No launcher has joined for this machine => no active stream connection => null. The stream is
+        // the ONLY path to a launcher (phase 6 deleted the HTTP relay along with the launcher's listener),
+        // so the caller turns this into a loud refusal - never a dial.
         var result = await _gateway.SendLauncherCommandAsync(CcDirector.Core.Tenancy.TenantId.Local, "no-such-machine", new LauncherCommand { Verb = "director/start" });
         Assert.Null(result);
     }
@@ -120,6 +122,46 @@ public sealed class LauncherStreamIntegrationTests : IAsyncLifetime
 
     // Gateway Cleanup mission (the cut): the streamMode-OFF negative test was removed. The tunnel is now
     // MANDATORY - the LauncherHub is always mapped, there is no HTTP-fallback mode to keep it unmapped for.
+
+    /// <summary>
+    /// SETTLING INSPECTION 3'S ONE UNPROVED HYPOTHESIS, BY INJECTION RATHER THAN BY ARGUMENT.
+    ///
+    /// The inspector read LauncherStreamClient.SuperviseAsync - Hello is sent once, then the client waits
+    /// for the connection to CLOSE - and noted that SayHelloAsync catches every invocation failure while
+    /// claiming auto-reconnect will retry, when retry only happens on Reconnected. A Hub or protocol error
+    /// that leaves SignalR CONNECTED would therefore strand the launcher: stream open, never registered,
+    /// no command deliverable, until some later disconnect. The inspector did not inject it, so it was
+    /// recorded as a hypothesis rather than a defect.
+    ///
+    /// This is the injection. Hello is invoked with an argument the hub cannot bind, which is a protocol
+    /// error and NOT one of the hub's own rejections - those call Context.Abort, which closes the
+    /// connection and would send a real launcher round its reconnect loop. The result: the invocation
+    /// fails, the connection stays Connected, and the machine is undeliverable.
+    ///
+    /// CONFIRMED: the hypothesis is real. This test therefore pins the SHAPE of the failure the client
+    /// must survive - see LauncherStreamClient, which now retries Hello while connected instead of
+    /// swallowing the failure and waiting for a disconnect that may never come.
+    /// </summary>
+    [Fact]
+    public async Task A_failed_Hello_that_leaves_the_connection_up_registers_nothing_and_delivers_nothing()
+    {
+        await using var conn = await ConnectLauncherAsync(Token);
+        conn.On<LauncherCommand, LauncherCommandResult>("Command", _ => Task.FromResult(LauncherCommandResult.Ok()));
+
+        // A protocol-level failure, not a hub rejection: the hub never runs, so it never aborts.
+        await Assert.ThrowsAnyAsync<Exception>(
+            () => conn.InvokeAsync("Hello", "this is not a LauncherStreamHello"));
+
+        // THE POINT: the connection is still up. Nothing here will ever fire Reconnected, so a client that
+        // only retries Hello on reconnect never retries at all.
+        Assert.Equal(HubConnectionState.Connected, conn.State);
+
+        // And the launcher is invisible to commands - registered nowhere, deliverable nothing. From the
+        // Gateway this is indistinguishable from a launcher that is not running.
+        Assert.False(_gateway.LauncherConnections.IsStreamConnected(CcDirector.Core.Tenancy.TenantId.Local, Machine));
+        Assert.Null(await _gateway.SendLauncherCommandAsync(
+            CcDirector.Core.Tenancy.TenantId.Local, Machine, new LauncherCommand { Verb = "director/start" }));
+    }
 
     private async Task<HubConnection> ConnectLauncherAsync(string token)
     {

@@ -82,7 +82,20 @@ public sealed class HostedTenantBoundary
         var identity = ctx?.Items.TryGetValue(Util.AuthMiddleware.AuthenticatedDeviceItemKey, out var value) == true
             ? value as DeviceCredentialIdentity
             : null;
-        return ResolveIdentity(identity);
+        if (identity is not null)
+            return ResolveIdentity(identity);
+
+        // Remove-the-network-port phase 1b: the caller may be a SESSION rather than a device. A session key
+        // carries its tenant on the registry row - written from the tenant its Director's tunnel bound to at
+        // Hello, which came from that Director's authenticated device key - so it is a verified binding of
+        // exactly the same provenance, one hop further along. Read from the identity the auth gate resolved,
+        // never from the request.
+        var session = Util.AuthMiddleware.CallingSession(ctx);
+        if (session is null)
+            return null;
+
+        var tenant = session.Tenant;
+        return !tenant.IsValid || tenant.IsLocal || tenant.IsSystem ? null : tenant;
     }
 
     /// <summary>

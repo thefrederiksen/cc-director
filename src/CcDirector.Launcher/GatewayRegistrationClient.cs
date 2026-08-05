@@ -13,9 +13,12 @@ namespace CcDirector.Launcher;
 /// launcher is live. Unregisters on <see cref="StopAsync"/>.
 ///
 /// Issue #331: mirrors the Director's GatewayClient registration pattern, but much simpler:
-/// no tailnet endpoint resolution, no two-way verify, no outbox. The launcher's registration
-/// payload is just the machine name and the loopback port; the Gateway stores the token for
-/// relay calls.
+/// no tailnet endpoint resolution, no two-way verify, no outbox. Phase 6 of the
+/// remove-the-network-port mission made the payload presence-and-identity only - machine name, pid,
+/// version - because the port, bearer token and network address it used to carry existed solely so
+/// the Gateway could dial the launcher's REST interface back, and that interface is gone. Command
+/// delivery is the persistent stream (<see cref="LauncherStreamClient"/>); this client is the listing
+/// and staleness metadata behind GET /launchers.
 ///
 /// Inert when no gateway URL is configured (GatewayConfig.IsEnabled == false).
 /// </summary>
@@ -28,8 +31,6 @@ public sealed class GatewayRegistrationClient : IAsyncDisposable
     public static TimeSpan MaxBackoff { get; } = TimeSpan.FromSeconds(60);
 
     private readonly GatewayConfig _config;
-    private readonly int _port;
-    private readonly string _token;
     private readonly string _version;
     private readonly HttpClient _http;
 
@@ -38,11 +39,9 @@ public sealed class GatewayRegistrationClient : IAsyncDisposable
     private bool _registered;
     private bool _disposed;
 
-    public GatewayRegistrationClient(GatewayConfig config, int port, string token, string version)
+    public GatewayRegistrationClient(GatewayConfig config, string version)
     {
         _config = config ?? throw new ArgumentNullException(nameof(config));
-        _port = port;
-        _token = token ?? throw new ArgumentNullException(nameof(token));
         _version = version;
         _http = new HttpClient(GatewayHttp.Handler())
         {
@@ -65,7 +64,7 @@ public sealed class GatewayRegistrationClient : IAsyncDisposable
             return;
         }
 
-        FileLog.Write($"[GatewayRegistrationClient] Start: gateway={_config.Url}, port={_port}");
+        FileLog.Write($"[GatewayRegistrationClient] Start: gateway={_config.Url}");
         _cts = new CancellationTokenSource();
         _ = Task.Run(() => RegisterLoop(_cts.Token));
     }
@@ -104,14 +103,6 @@ public sealed class GatewayRegistrationClient : IAsyncDisposable
         var req = new LauncherRegistrationRequest
         {
             MachineName = Environment.MachineName,
-            // NetworkAddress: supply the hostname so the Gateway can dial this launcher from
-            // a DIFFERENT machine over the tailnet.  The Gateway uses this when the relay
-            // target is not co-located with it (i.e. the launcher is on a remote machine).
-            // Environment.MachineName is the NetBIOS name; Tailscale appends the domain but
-            // DNS resolution normally works with just the hostname on the same tailnet.
-            NetworkAddress = Environment.MachineName,
-            Port = _port,
-            Token = _token,
             Pid = Environment.ProcessId,
             Version = _version,
             StartedAt = DateTime.UtcNow,

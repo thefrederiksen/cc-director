@@ -14,6 +14,10 @@
     <InternalsVisibleTo Include="CcDirector.Core.UnitTests" />
     <InternalsVisibleTo Include="CcDirector.Avalonia.Tests" />
     <InternalsVisibleTo Include="CcDirector.Gateway.Tests" />
+    <!-- DirectorInstanceLocator moved here from the Launcher (Remove-the-network-port, phase 5: the
+         instance picker resolves liveness from registrations now, not from a port probe). Its tests
+         stayed with the Launcher suite and still reach the internal ReadExecutablePath seam. -->
+    <InternalsVisibleTo Include="CcDirector.Launcher.Tests" />
     <!-- The unlocked half of the same suite (the pure tests, split out so they no longer queue
          behind the machine-wide Gateway test lock). Same tests, same access, one assembly over. -->
     <InternalsVisibleTo Include="CcDirector.Gateway.UnitTests" />

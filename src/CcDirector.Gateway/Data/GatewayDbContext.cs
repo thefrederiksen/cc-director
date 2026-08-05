@@ -197,6 +197,12 @@ public sealed class GatewayDbContext : DbContext
     /// idempotency record for the legacy-registry migration. GLOBAL, like <see cref="DeviceCredentials"/>.</summary>
     public DbSet<DeviceImportMarkerEntity> DeviceImportMarkers => Set<DeviceImportMarkerEntity>();
 
+    /// <summary>The per-session Gateway credentials (<c>session_keys</c>, Remove-the-network-port mission
+    /// phase 1b) - the record that lets an agent inside a session call the Gateway as itself. A GLOBAL table
+    /// for the same reason as <see cref="DeviceCredentials"/>: a presented key is resolved by its hash before
+    /// any tenant is known, and the tenant is read off the matched row.</summary>
+    public DbSet<SessionKeyEntity> SessionKeys => Set<SessionKeyEntity>();
+
     /// <summary>Serializer options for the skill metadata column. One shared instance: constructing
     /// fresh options per call defeats the serializer's internal caching.</summary>
     private static readonly System.Text.Json.JsonSerializerOptions MetadataJsonOptions = new();
@@ -713,6 +719,35 @@ public sealed class GatewayDbContext : DbContext
             b.HasIndex(e => e.DeviceKeyHash);
         });
 
+        modelBuilder.Entity<SessionKeyEntity>(b =>
+        {
+            b.ToTable("session_keys");
+            // TENANT PLUS SESSION is the primary key - ONE live credential per session WITHIN A TENANT,
+            // enforced at the DATABASE rather than only in code, so a re-registration can only ever rotate
+            // that tenant's own row. Two rows for one session in one tenant would mean a revocation that
+            // ends one credential and leaves the other accepted.
+            //
+            // THE TENANT IS PART OF THE KEY BECAUSE IT WAS NOT, AND THAT WAS A DEFECT. Keyed on SessionId
+            // alone, one session id was a GLOBAL name: a Director registering a session id already held by
+            // another tenant found and overwrote that row, taking the session's identity with it. Making
+            // the tenant part of the key means two tenants naming the same session id are two rows that
+            // cannot see each other, which is what tenant isolation means at the storage layer.
+            //
+            // The table is still deliberately NOT passed to ApplyTenantScope: a presented key is resolved
+            // by hash before any tenant is known, so the READ has to be able to cross tenants to find out
+            // which one it belongs to. The KeyHash index below stays globally unique for that reason - a
+            // hash identifies exactly one row in the whole table, whichever tenant owns it.
+            b.HasKey(e => new { e.TenantId, e.SessionId });
+            // The authentication read is by the stored hash, on every agent request. Indexed for that lookup,
+            // and UNIQUE: unlike device_credentials - which must tolerate a hand-edited legacy devices.json
+            // importing duplicates rather than bricking - nothing imports this table. Every row here is
+            // written by the Gateway itself from a freshly minted 256-bit key, so two rows sharing a hash is
+            // not a state to tolerate, it is a state to refuse.
+            b.HasIndex(e => e.KeyHash).IsUnique();
+            // The expiry sweep reads by the lapse instant.
+            b.HasIndex(e => e.ExpiresAtUtc);
+        });
+
         modelBuilder.Entity<DeviceImportMarkerEntity>(b =>
         {
             b.ToTable("device_import_markers");
@@ -830,6 +865,15 @@ public sealed class GatewayDbContext : DbContext
             modelBuilder.Entity<DeviceCredentialEntity>().Property(e => e.DeviceId).UseCollation("C");
             modelBuilder.Entity<DeviceCredentialEntity>().Property(e => e.DeviceKeyHash).UseCollation("C");
             modelBuilder.Entity<DeviceImportMarkerEntity>().Property(e => e.SourcePath).UseCollation("C");
+
+            // The session_keys natural-key columns (Remove-the-network-port phase 1b), for exactly the same
+            // reason as device_credentials above: SessionId is the primary key and KeyHash is the
+            // authentication lookup, and the key-hash equality in particular must match SQLite's byte-ordinal
+            // BINARY collation EXACTLY or a locale-collating Postgres could treat two different hashes as the
+            // same row - which on a UNIQUE index is a refused registration, and on a lookup is the wrong
+            // session authenticated.
+            modelBuilder.Entity<SessionKeyEntity>().Property(e => e.SessionId).UseCollation("C");
+            modelBuilder.Entity<SessionKeyEntity>().Property(e => e.KeyHash).UseCollation("C");
 
             // 3. The entitlements.subject column is Postgres `uuid`, not text. The CLR property stays a string
             //    (its callers pass and compare a string), so map it through a string<->Guid value converter and

@@ -6,9 +6,19 @@ using CcDirector.Setup.Engine;
 namespace CcDirector.Launcher;
 
 /// <summary>
-/// The launcher's non-visual core: the loopback web host, the Gateway registration
-/// client, and the persistent Gateway command stream, built around one LaunchService
-/// and one DirectorSupervisor.
+/// The launcher's non-visual core: the Gateway registration client and the persistent Gateway
+/// command stream, built around one LaunchService and one DirectorSupervisor.
+///
+/// Remove-the-network-port mission, phase 6: there is NO web host any more. The launcher listens on
+/// nothing. Everything the loopback REST interface served has a better home:
+///   - commands (start/stop/restart the Director, launch, apps, files) ride DOWN the persistent
+///     stream this core opens to the Gateway (<see cref="LauncherStreamClient"/>);
+///   - lifecycle (quit, restart the Director) is a named signal (<see cref="StartLifecycleSignals"/>),
+///     because it must work when no network does;
+///   - health and identity are the registration file this process writes
+///     (<see cref="LauncherDiscovery"/>), which is how the installer certifies an install and the
+///     Director's update fold sees a live launcher - liveness is the pid in the file being alive,
+///     never a socket answering.
 ///
 /// Extracted from LauncherTrayController so the launcher can run in two modes:
 ///   - Tray mode (normal): LauncherTrayController owns a core and adds the menu-bar
@@ -22,66 +32,69 @@ namespace CcDirector.Launcher;
 /// </summary>
 public sealed class LauncherCore : IAsyncDisposable
 {
-    private readonly int _port;
     private readonly string _version;
 
-    private LauncherHost? _host;
     private GatewayRegistrationClient? _gatewayClient;
     private LauncherStreamClient? _launcherStreamClient;
+    private CcDirector.Core.Lifecycle.ILifecycleSignalListener? _shutdownSignal;
+    private CcDirector.Core.Lifecycle.ILifecycleSignalListener? _restartDirectorSignal;
     private bool _stopped;
 
-    public LauncherCore(int port, string version)
+    public LauncherCore(string version)
     {
-        _port = port;
         _version = version ?? throw new ArgumentNullException(nameof(version));
     }
 
-    public int Port => _port;
     public string Version => _version;
 
     /// <summary>
-    /// Start the web host, register with the Gateway, and join the persistent command
-    /// stream. <paramref name="requestShutdownAsync"/> is invoked when a /shutdown
-    /// request arrives on the web host. <paramref name="userInterfaceState"/> is
-    /// "tray" (normal) or "degraded" (headless fallback) and is surfaced on /healthz.
+    /// Start the lifecycle signals, write the registration file, register with the Gateway, and join
+    /// the persistent command stream. <paramref name="requestShutdownAsync"/> is invoked when the
+    /// shutdown lifecycle signal is raised. <paramref name="userInterfaceState"/> is "tray" (normal)
+    /// or "degraded" (headless fallback) and is recorded in the registration file.
     /// </summary>
     public async Task StartAsync(Func<Task> requestShutdownAsync, string userInterfaceState = "tray")
     {
         ArgumentNullException.ThrowIfNull(requestShutdownAsync);
-        FileLog.Write($"[LauncherCore] StartAsync: port={_port}, version={_version}, userInterface={userInterfaceState}");
+        FileLog.Write($"[LauncherCore] StartAsync: version={_version}, userInterface={userInterfaceState}");
 
         var launchService = new LaunchService();
         var directorSupervisor = new DirectorSupervisor();
 
-        // One instance of each query service, shared by the loopback host and the Gateway command stream, for
-        // the same reason they share the supervisor and the launch service: two instances would be two places
-        // for behaviour to drift apart.
+        // The two things asked of the launcher that must work with no network at all: quit, and
+        // restart the Director (which is how a staged update gets installed). Started FIRST, before
+        // anything network-facing, because a launcher that failed to start the rest of itself is
+        // exactly the one somebody needs to quit.
+        StartLifecycleSignals(requestShutdownAsync, directorSupervisor);
+
+        // The registration this process writes about itself - the launcher's only local surface now,
+        // and what the installer's readiness wait and the Director's update fold read. Written before
+        // the Gateway is attempted: a launcher with no Gateway configured is still a healthy launcher.
+        _registrationState = (userInterfaceState, written: true);
+        LauncherDiscovery.Write(_version, userInterfaceState,
+            AutostartChecked, AutostartRegistered, AutostartFailure);
+
+        // One instance of each query service for the Gateway command stream.
         var appCatalog = new AppCatalog();
         var fileSearch = new FileSearchService();
 
-        _host = new LauncherHost(_port, launchService, directorSupervisor, requestShutdownAsync, _version,
-            userInterfaceState, appCatalog, fileSearch);
-        await _host.StartAsync();
-        FileLog.Write($"[LauncherCore] Host running on :{_port}");
-
         // Issue #331: register with the Gateway (no-op when gateway not configured).
-        // The token is read after host start because LauncherHost writes it on start.
         var gwConfig = GatewayConfig.Load();
-        var launcherToken = LauncherAuth.LoadOrCreateToken();
-        _gatewayClient = new GatewayRegistrationClient(gwConfig, _port, launcherToken, _version);
+        _gatewayClient = new GatewayRegistrationClient(gwConfig, _version);
         _gatewayClient.Start();
 
-        // launcher-persistent-join: when gateway.streamMode is on, also JOIN the Gateway over a
-        // persistent SignalR stream so the Gateway can push lifecycle commands DOWN the open
-        // connection instead of dialing this launcher's REST API. Runs alongside the registration
-        // client (which stays for metadata). Start() is a no-op unless a Gateway is configured AND
-        // stream mode is on.
-        _launcherStreamClient = new LauncherStreamClient(gwConfig, _port, _version, directorSupervisor, launchService,
+        // launcher-persistent-join: JOIN the Gateway over a persistent SignalR stream so the Gateway
+        // can push lifecycle commands DOWN the open connection. This is the ONLY way a command reaches
+        // this launcher, so it is gated on nothing but a Gateway being configured. Runs alongside the
+        // registration client (which carries presence metadata).
+        _launcherStreamClient = new LauncherStreamClient(gwConfig, _version, directorSupervisor, launchService,
             appCatalog, fileSearch);
         _launcherStreamClient.Start();
+
+        await Task.CompletedTask;
     }
 
-    /// <summary>Stop the stream, unregister from the Gateway, and stop the web host. Safe to call twice.</summary>
+    /// <summary>Stop the stream, unregister from the Gateway, and remove the registration file. Safe to call twice.</summary>
     public async Task StopAsync()
     {
         if (_stopped) return;
@@ -100,10 +113,64 @@ public sealed class LauncherCore : IAsyncDisposable
             _gatewayClient = null;
         }
 
-        if (_host is not null)
+        LauncherDiscovery.Delete();
+        _registrationState = null;
+
+        try
         {
-            await _host.StopAsync();
-            _host = null;
+            _shutdownSignal?.Dispose();
+            _restartDirectorSignal?.Dispose();
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[LauncherCore] stopping the lifecycle signals failed: {ex.Message}");
+        }
+        _shutdownSignal = null;
+        _restartDirectorSignal = null;
+    }
+
+    /// <summary>
+    /// Answer the two lifecycle requests aimed at this launcher, with no network involved.
+    ///
+    /// Both are keyed to the storage root this launcher serves, not to a port and not to the product
+    /// name, so a test rig running against its own root and the installed launcher never hear each
+    /// other's requests - which a port-based interface could not promise, because a port is a single
+    /// machine-wide number that whoever binds it first owns.
+    ///
+    /// The restart request is what installs a staged update on demand. It deliberately does the same
+    /// thing the launcher's own update pass would have done later, rather than a shortcut around it:
+    /// whatever replaces the executable has to outlive the process being replaced, so the launcher has
+    /// to be the one doing it.
+    /// </summary>
+    private void StartLifecycleSignals(Func<Task> requestShutdownAsync, DirectorSupervisor directorSupervisor)
+    {
+        try
+        {
+            _shutdownSignal = CcDirector.Core.Lifecycle.LifecycleSignal.Listen(
+                CcDirector.Core.Lifecycle.LifecycleSignalNames.LauncherShutdown(),
+                () =>
+                {
+                    FileLog.Write("[LauncherCore] quit requested by lifecycle signal");
+                    requestShutdownAsync().GetAwaiter().GetResult();
+                });
+
+            _restartDirectorSignal = CcDirector.Core.Lifecycle.LifecycleSignal.Listen(
+                CcDirector.Core.Lifecycle.LifecycleSignalNames.LauncherRestartDirector(),
+                () =>
+                {
+                    FileLog.Write("[LauncherCore] Director restart requested by lifecycle signal");
+                    directorSupervisor.RestartAsync().GetAwaiter().GetResult();
+                });
+
+            FileLog.Write("[LauncherCore] lifecycle signals listening for root key "
+                          + CcDirector.Core.Lifecycle.LifecycleSignalNames.RootKey());
+        }
+        catch (Exception ex)
+        {
+            // Loud, and NOT fatal - a launcher that refused to start because it could not be quit
+            // remotely would be a launcher nobody could remove.
+            FileLog.Write($"[LauncherCore] lifecycle signals FAILED to start: {ex.Message}. This launcher cannot "
+                          + "be quit or asked to restart the Director from outside itself.");
         }
     }
 
@@ -111,8 +178,8 @@ public sealed class LauncherCore : IAsyncDisposable
 
     /// <summary>
     /// Why this launcher is not registered to start at login, or null when it is (or was never
-    /// asked to be). READ BY /healthz AND /status: a launcher whose autostart registration failed
-    /// must not look identical to one that is properly managed.
+    /// asked to be). RECORDED IN THE REGISTRATION FILE: a launcher whose autostart registration
+    /// failed must not look identical to one that is properly managed.
     ///
     /// This exists because of a Mac that could not install anything. The registration failed, the
     /// failure was caught, one line went to a log, and the launcher carried on reporting perfect
@@ -124,8 +191,8 @@ public sealed class LauncherCore : IAsyncDisposable
 
     /// <summary>
     /// Has the autostart state been decided yet? Until it has, "no failure" is not the same as
-    /// "healthy" - headless mode starts its web host BEFORE registering, so /healthz answered
-    /// autostartOk=true during a window when nothing had been checked at all.
+    /// "healthy" - the registration file is written BEFORE autostart is registered on some paths, so
+    /// the file says null (undecided) rather than "ok" during that window.
     /// </summary>
     public static bool AutostartChecked { get; private set; }
 
@@ -137,10 +204,15 @@ public sealed class LauncherCore : IAsyncDisposable
     /// </summary>
     public static bool AutostartRegistered { get; private set; }
 
+    /// <summary>The running core's registration context, so an autostart change can rewrite the file
+    /// with the same user-interface state it was first written with.</summary>
+    private static (string UserInterfaceState, bool written)? _registrationState;
+
     /// <summary>
     /// Record the autostart state from somewhere other than startup - the tray's own enable/disable
-    /// toggle. Without this the API kept reporting a startup-era failure after the user had fixed it,
-    /// or healthy after a later toggle failed.
+    /// toggle - and REWRITE the registration file so the recorded state is the visible state. Without
+    /// this the file kept reporting a startup-era failure after the user had fixed it, or healthy
+    /// after a later toggle failed.
     /// </summary>
     public static void RecordAutostartState(string? failure, bool registered)
     {
@@ -150,6 +222,10 @@ public sealed class LauncherCore : IAsyncDisposable
         AutostartChecked = true;
         FileLog.Write($"[LauncherCore] autostart state recorded: registered={registered}, "
                       + $"failure={failure ?? "none"}");
+
+        if (_registrationState is { } reg)
+            LauncherDiscovery.Write(ReadVersion(), reg.UserInterfaceState,
+                AutostartChecked, AutostartRegistered, AutostartFailure);
     }
 
     /// <summary>
@@ -157,8 +233,7 @@ public sealed class LauncherCore : IAsyncDisposable
     /// Windows, the launchd launch agent on macOS), honoring --no-autostart.
     ///
     /// A failure does NOT take the launcher down - it is still useful without autostart - but it is
-    /// recorded in <see cref="AutostartFailure"/> and reported over the launcher's own API. Silence
-    /// was the defect.
+    /// recorded in <see cref="AutostartFailure"/> and in the registration file. Silence was the defect.
     /// </summary>
     public static void RegisterAutostartSafe()
     {
@@ -214,8 +289,8 @@ public sealed class LauncherCore : IAsyncDisposable
     /// Periodic machine-tier auto-update (managed mode only). Two separate jobs, in this order:
     ///
     ///   1. The LAUNCHER's own update: check for a newer Launcher and, if found, launch the detached
-    ///      self-update helper (it POSTs /shutdown -> swap -> relaunch -> health -> auto-rollback).
-    ///      Windows only, as it has always been.
+    ///      self-update helper (it raises the shutdown lifecycle signal -> swap -> relaunch -> health ->
+    ///      auto-rollback). Windows only, as it has always been.
     ///   2. The DIRECTOR's update, which the launcher now owns (issue #1033): if one is staged and the
     ///      Director has no sessions running, stop it, swap the build, start it, and confirm the new
     ///      version answers - rolling back if it does not. On BOTH platforms, because the reason the
@@ -254,7 +329,7 @@ public sealed class LauncherCore : IAsyncDisposable
                     if (version is not null)
                     {
                         FileLog.Write($"[LauncherCore] launched Launcher self-update to {version}; this process will be asked to exit");
-                        return; // the detached helper POSTs /shutdown, swaps, and relaunches us
+                        return; // the detached helper raises the shutdown signal, swaps, and relaunches us
                     }
                 }
                 // Published but incomplete is NOT a failure, and it must not be logged as one: the

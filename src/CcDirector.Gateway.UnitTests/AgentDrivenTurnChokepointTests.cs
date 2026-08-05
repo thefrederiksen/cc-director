@@ -1,4 +1,4 @@
-using CcDirector.Core.Sessions;
+﻿using CcDirector.Core.Sessions;
 using Xunit;
 
 namespace CcDirector.Gateway.Tests;
@@ -104,7 +104,7 @@ public sealed class AgentDrivenTurnChokepointTests
             {
                 Text = "a manager on another machine, prompting its worker",
                 AppendEnter = true,
-                AgentDriven = true, // what GatewayClient.SendPromptToFleetAsync sets on the relay
+                AgentDriven = true, // what the Gateway's fleet-message relay stamps on an agent-to-agent prompt
             };
 
             await ControlApi.SessionCommandExecutor.SendPromptAsync(session, request);

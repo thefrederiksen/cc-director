@@ -93,7 +93,7 @@ public class UpdateCheckOutcomeTests
             State: state,
             Live: null,
             RunningSessionCount: 0,
-            LauncherPort: null,
+            LauncherRunning: false,
             Now: DateTimeOffset.UtcNow));
 
         Assert.Equal("ReleaseNotReady", view.State);

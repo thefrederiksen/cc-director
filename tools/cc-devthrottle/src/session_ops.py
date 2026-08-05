@@ -69,7 +69,7 @@ _tools_dir = str(Path(__file__).resolve().parent.parent.parent)
 if _tools_dir not in sys.path:
     sys.path.insert(0, _tools_dir)
 
-from cc_shared import director  # noqa: E402
+from cc_shared import gateway  # noqa: E402
 
 for _stream in (sys.stdout, sys.stderr):
     try:
@@ -111,26 +111,26 @@ def _model_text(s: Dict[str, Any]) -> str:
         text = (display.get("text") or display.get("Text") or "").strip()
         if text:
             return text
-    raw = (director.field(s, "currentModel", "CurrentModel") or "").strip()
+    raw = (gateway.field(s, "currentModel", "CurrentModel") or "").strip()
     return raw if raw else "(unknown)"
 
 
 def _get_fleet() -> Tuple[List[Dict[str, Any]], Optional[bool], Optional[str], Optional[str]]:
     """The fleet roster and BOTH folded cautions, with this tool's error posture (issue #1051).
 
-    The fetch itself is shared (director.get_fleet) so the four tools that resolve a target against
+    The fetch itself is shared (gateway.get_fleet) so the four tools that resolve a target against
     this roster cannot drift; only the "print and exit" behaviour is local. The fourth value is the
     negative-answer caution and is printed ONLY where this tool's own answer came back empty.
     """
     try:
-        return director.get_fleet()
-    except director.DirectorError as err:
+        return gateway.get_fleet()
+    except gateway.GatewayError as err:
         console.print(f"[red]Error:[/red] {err}")
         raise typer.Exit(1)
 
 
 def _roster_caveat(complete: Optional[bool], reason: Optional[str]) -> str:
-    return director.roster_caveat(complete, reason)
+    return gateway.roster_caveat(complete, reason)
 
 
 def _resolve_target(target: str, *, command_name: str) -> Dict[str, Any]:
@@ -138,7 +138,7 @@ def _resolve_target(target: str, *, command_name: str) -> Dict[str, Any]:
     # Issue #821: the shared resolver now understands the three-digit session number (#820) as a
     # first-class target, preferring it over id-prefix / name matching, so message send / ask and
     # session rename all address a session by its number through this one call.
-    matches = director.resolve_target(sessions, target)
+    matches = gateway.resolve_target(sessions, target)
     if not matches:
         # Issue #1051: this is where a dropped Director does its real damage. "No session matches"
         # reads as "that session does not exist", and for a session on a machine the Gateway could
@@ -161,10 +161,10 @@ def _resolve_target(target: str, *, command_name: str) -> Dict[str, Any]:
     if len(matches) > 1:
         console.print(f"[yellow]'{target}' is ambiguous - {len(matches)} matches:[/yellow]")
         for s in matches:
-            sid = director.field(s, "sessionId", "SessionId")
-            name = director.field(s, "name", "Name") or "(unnamed)"
-            machine = director.field(s, "machineName", "MachineName") or "-"
-            console.print(f"  {director.short_id(sid)}  {name}  ({machine})")
+            sid = gateway.field(s, "sessionId", "SessionId")
+            name = gateway.field(s, "name", "Name") or "(unnamed)"
+            machine = gateway.field(s, "machineName", "MachineName") or "-"
+            console.print(f"  {gateway.short_id(sid)}  {name}  ({machine})")
         console.print(f"Re-run {command_name} with a longer id prefix.")
         raise typer.Exit(1)
     return matches[0]
@@ -190,7 +190,7 @@ def fleet_or_exit() -> Tuple[List[Dict[str, Any]], Optional[bool], Optional[str]
 def resolve_target_or_current(target: Optional[str]) -> str:
     """Return the requested session id, defaulting to this session."""
     if target is None or not target.strip():
-        sid = director.session_id()
+        sid = gateway.session_id()
         if not sid:
             console.print(
                 "[red]Error:[/red] no target was provided and CC_SESSION_ID is not set."
@@ -199,7 +199,7 @@ def resolve_target_or_current(target: Optional[str]) -> str:
         return sid
 
     chosen = _resolve_target(target, command_name="cc-devthrottle session rename")
-    return director.field(chosen, "sessionId", "SessionId")
+    return gateway.field(chosen, "sessionId", "SessionId")
 
 
 def list_sessions(json_output: bool) -> None:
@@ -257,21 +257,21 @@ def list_sessions(json_output: bool) -> None:
     table.add_column("MODEL")
     table.add_column("STATUS")
 
-    me = director.session_id()
+    me = gateway.session_id()
     for s in sessions:
-        sid = director.field(s, "sessionId", "SessionId")
-        number = director.field(s, "number", "Number")
+        sid = gateway.field(s, "sessionId", "SessionId")
+        number = gateway.field(s, "number", "Number")
         number_text = str(number) if number is not None else "-"
-        name = director.field(s, "name", "Name") or "(unnamed)"
-        machine = director.field(s, "machineName", "MachineName") or "-"
-        repo = director.field(s, "repoPath", "RepoPath")
-        status = director.field(s, "activityState", "ActivityState") or "-"
+        name = gateway.field(s, "name", "Name") or "(unnamed)"
+        machine = gateway.field(s, "machineName", "MachineName") or "-"
+        repo = gateway.field(s, "repoPath", "RepoPath")
+        status = gateway.field(s, "activityState", "ActivityState") or "-"
         # Issue #1019: a session the Director is still holding now appears here even after its process is
         # gone, which is what makes a dead row nameable and therefore reapable. A crash was never modelled
         # as its own activity state - it reads "Exited", byte-identical to a session that finished on
         # purpose - so say it, from the RAW crash fact the Director puts on the wire. We render that fact,
         # we do not rule on it: deciding what a state MEANS belongs to the Gateway fold, never to a client.
-        # Read the boolean DIRECTLY, not through director.field: field stringifies, and the string
+        # Read the boolean DIRECTLY, not through gateway.field: field stringifies, and the string
         # "False" is truthy, so every row would be reported as a crash. Absent is not true either - a
         # roster row carrying no crash fact is not a crash.
         if s.get("crashed", s.get("Crashed")) is True:
@@ -279,7 +279,7 @@ def list_sessions(json_output: bool) -> None:
         marker = " (you)" if me and sid.lower() == me.lower() else ""
         table.add_row(
             number_text,
-            director.short_id(sid) + marker,
+            gateway.short_id(sid) + marker,
             name,
             machine,
             _repo_name(repo),
@@ -296,7 +296,7 @@ def list_sessions(json_output: bool) -> None:
 
 def whoami() -> None:
     """Show this session's own fleet identity."""
-    sid = director.session_id()
+    sid = gateway.session_id()
     if not sid:
         console.print(
             "[red]Error:[/red] CC_SESSION_ID is not set. "
@@ -304,22 +304,22 @@ def whoami() -> None:
         )
         raise typer.Exit(1)
 
-    short = director.short_id(sid)
+    short = gateway.short_id(sid)
     # Completeness is deliberately ignored here: whoami looks up THIS session, which lives on the
     # Director being asked, and a Director always reports its own sessions (issue #1019). An
     # unreachable Director elsewhere cannot hide the caller from itself.
     sessions, _, _, _ = _get_fleet()
     me = next(
-        (s for s in sessions if director.field(s, "sessionId", "SessionId").lower() == sid.lower()),
+        (s for s in sessions if gateway.field(s, "sessionId", "SessionId").lower() == sid.lower()),
         None,
     )
     if me is None:
         console.print(f"You are session {short} (id {sid}).")
     else:
-        name = director.field(me, "name", "Name") or "(unnamed)"
-        machine = director.field(me, "machineName", "MachineName") or "this machine"
-        repo = director.field(me, "repoPath", "RepoPath")
-        number = director.field(me, "number", "Number")
+        name = gateway.field(me, "name", "Name") or "(unnamed)"
+        machine = gateway.field(me, "machineName", "MachineName") or "this machine"
+        repo = gateway.field(me, "repoPath", "RepoPath")
+        number = gateway.field(me, "number", "Number")
         number_text = f"number {number}, " if number is not None else ""
         console.print(f'You are session {number_text}{short} ("{name}") on {machine}, repo {_repo_name(repo)}.')
 
@@ -337,21 +337,19 @@ def rename_session(target: Optional[str], new_name: str) -> Dict[str, Any]:
 
     sid = resolve_target_or_current(target)
     try:
-        # Tunnel-only floor (#1490): rename goes through the Director's loopback POST /fleet/rename, which
-        # renames a local session directly or relays a remote one via the Gateway over the tunnel. The old
-        # PATCH /sessions/{sid} route was removed from the Director in the tunnel-only cut.
-        resp = director.post_json("fleet/rename", {"toSessionId": sid, "name": name})
-    except director.DirectorError as err:
+        # The Gateway renames a session anywhere in the account and answers with the updated row.
+        resp = gateway.patch_json(f"sessions/{sid}", {"name": name})
+    except gateway.GatewayError as err:
         console.print(f"[red]Error:[/red] {err}")
         raise typer.Exit(1)
 
     if not isinstance(resp, dict):
-        console.print("[red]Error:[/red] the Director did not return the renamed session.")
+        console.print("[red]Error:[/red] the Gateway did not return the renamed session.")
         raise typer.Exit(1)
 
-    actual = director.field(resp, "name", "Name") or name
-    actual_sid = director.field(resp, "sessionId", "SessionId") or sid
-    console.print(f'[green]Renamed[/green] {director.short_id(actual_sid)} to "{actual}".')
+    actual = gateway.field(resp, "name", "Name") or name
+    actual_sid = gateway.field(resp, "sessionId", "SessionId") or sid
+    console.print(f'[green]Renamed[/green] {gateway.short_id(actual_sid)} to "{actual}".')
     return resp
 
 
@@ -366,13 +364,13 @@ def prompt_session(target: str, text: str, no_submit: bool = False) -> Dict[str,
         raise typer.Exit(1)
     sid = resolve_target_or_current(target)
     try:
-        resp = director.post_json(
-            "fleet/prompt", {"toSessionId": sid, "text": text, "appendEnter": not no_submit}
+        resp = gateway.post_json(
+            f"sessions/{sid}/prompt", {"text": text, "appendEnter": not no_submit}
         )
-    except director.DirectorError as err:
+    except gateway.GatewayError as err:
         console.print(f"[red]Error:[/red] {err}")
         raise typer.Exit(1)
-    console.print(f"[green]Sent[/green] prompt to {director.short_id(sid)}.")
+    console.print(f"[green]Sent[/green] prompt to {gateway.short_id(sid)}.")
     return resp if isinstance(resp, dict) else {}
 
 
@@ -380,11 +378,11 @@ def interrupt_session(target: Optional[str]) -> Dict[str, Any]:
     """Stop what a session is currently doing. Restores the old POST /sessions/{sid}/interrupt."""
     sid = resolve_target_or_current(target)
     try:
-        resp = director.post_json("fleet/interrupt", {"toSessionId": sid})
-    except director.DirectorError as err:
+        resp = gateway.post_json(f"sessions/{sid}/interrupt")
+    except gateway.GatewayError as err:
         console.print(f"[red]Error:[/red] {err}")
         raise typer.Exit(1)
-    console.print(f"[green]Interrupted[/green] {director.short_id(sid)}.")
+    console.print(f"[green]Interrupted[/green] {gateway.short_id(sid)}.")
     return resp if isinstance(resp, dict) else {}
 
 
@@ -396,19 +394,19 @@ def hold_session(target: Optional[str], release: bool = False, minutes: Optional
     always takes itself off hold.
     """
     sid = resolve_target_or_current(target)
-    body: Dict[str, Any] = {"toSessionId": sid, "onHold": not release}
+    body: Dict[str, Any] = {"onHold": not release}
     if minutes is not None:
         body["snoozeMinutes"] = minutes
     try:
-        resp = director.post_json("fleet/hold", body)
-    except director.DirectorError as err:
+        resp = gateway.post_json(f"sessions/{sid}/hold", body)
+    except gateway.GatewayError as err:
         console.print(f"[red]Error:[/red] {err}")
         raise typer.Exit(1)
 
-    short = director.short_id(sid)
+    short = gateway.short_id(sid)
     if release:
         console.print(f"[green]Released[/green] {short} - no longer held.")
-    elif isinstance(resp, dict) and director.field(resp, "pending", "Pending"):
+    elif isinstance(resp, dict) and gateway.field(resp, "pending", "Pending"):
         console.print(f"[green]Hold queued[/green] {short} is still working; it parks when it finishes.")
     else:
         for_text = f" for {minutes} minutes" if minutes else ""
@@ -424,22 +422,22 @@ def compact_session(target: Optional[str], continue_prompt: Optional[str]) -> Di
     timeout here is generous - and the follow-up is sent at that moment, never on a guessed delay.
     """
     sid = resolve_target_or_current(target)
-    body: Dict[str, Any] = {"toSessionId": sid}
+    body: Dict[str, Any] = {}
     if continue_prompt:
         body["continuePrompt"] = continue_prompt
     try:
-        # Outermost bound of four: this waits longer than the Gateway waits for the Director, which
+        # Outermost bound of three: this waits longer than the Gateway waits for the Director, which
         # waits longer than the Director waits for the tool. The innermost one fires first and says
         # what actually failed.
-        resp = director.post_json("fleet/compact", body, timeout=300)
-    except director.DirectorError as err:
+        resp = gateway.post_json(f"sessions/{sid}/compact-context", body, timeout=300)
+    except gateway.GatewayError as err:
         console.print(f"[red]Error:[/red] {escape(str(err))}")
         raise typer.Exit(1)
 
-    short = director.short_id(sid)
+    short = gateway.short_id(sid)
     body = resp if isinstance(resp, dict) else {}
-    detail = director.field(body, "detail", "Detail")
-    # Read the flag as a BOOLEAN, not through director.field: that helper stringifies, and str(False) is
+    detail = gateway.field(body, "detail", "Detail")
+    # Read the flag as a BOOLEAN, not through gateway.field: that helper stringifies, and str(False) is
     # "False" - a truthy string. Routed through it, a compaction nobody watched would be announced as
     # "Compacted", which is the one thing this line must never say without evidence.
     observed = bool(body.get("compactionObserved", body.get("CompactionObserved", False)))
@@ -452,8 +450,8 @@ def read_session_buffer(target: Optional[str]) -> None:
     """Print what a session's terminal is showing. Restores the old GET /sessions/{sid}/buffer."""
     sid = resolve_target_or_current(target)
     try:
-        resp = director.get_json(f"fleet/buffer?sessionId={sid}")
-    except director.DirectorError as err:
+        resp = gateway.get_json(f"sessions/{sid}/buffer")
+    except gateway.GatewayError as err:
         # escape(): the error text comes from the server, so it is no more ours to trust than the buffer
         # itself - it can quote a path or a fragment of the session's own output. Interpolated raw, a
         # token like [/tmp/x] raises the very MarkupError this verb was crashing on, from the branch whose
@@ -465,11 +463,11 @@ def read_session_buffer(target: Optional[str]) -> None:
     # path it came back through; print whichever carries the text rather than guessing one.
     text = None
     if isinstance(resp, dict):
-        text = director.field(resp, "text", "Text") or director.field(resp, "buffer", "Buffer")
+        text = gateway.field(resp, "text", "Text") or gateway.field(resp, "buffer", "Buffer")
     elif isinstance(resp, str):
         text = resp
     if text is None:
-        console.print("[red]Error:[/red] the Director did not return the session's buffer.")
+        console.print("[red]Error:[/red] the Gateway did not return the session's buffer.")
         raise typer.Exit(1)
     # Plain print, not console.print, for the same reason as list_sessions above. This is raw terminal
     # text from another session, so it is arbitrary and nobody controls its shape: Rich reads a token
@@ -497,18 +495,18 @@ def set_session_role(target: Optional[str], role: Optional[str]) -> Dict[str, An
     sid = resolve_target_or_current(target)
     wanted = (role or "").strip()
     try:
-        resp = director.post_json("fleet/role", {"toSessionId": sid, "role": wanted})
-    except director.DirectorError as err:
+        resp = gateway.post_json(f"sessions/{sid}/role", {"role": wanted})
+    except gateway.GatewayError as err:
         console.print(f"[red]Error:[/red] {err}")
         raise typer.Exit(1)
 
     if not isinstance(resp, dict):
-        console.print("[red]Error:[/red] the Director did not return the session's role.")
+        console.print("[red]Error:[/red] the Gateway did not return the session's role.")
         raise typer.Exit(1)
 
-    actual_sid = director.field(resp, "sessionId", "SessionId") or sid
-    explicit = director.field(resp, "explicitRole", "ExplicitRole")
-    short = director.short_id(actual_sid)
+    actual_sid = gateway.field(resp, "sessionId", "SessionId") or sid
+    explicit = gateway.field(resp, "explicitRole", "ExplicitRole")
+    short = gateway.short_id(actual_sid)
     # Only the explicit role is reported: Worker/Manager derivation needs the fleet-wide spawn graph, which
     # lives in the Gateway, so the effective role is read from `session list`, not returned here.
     if explicit:
@@ -527,35 +525,55 @@ def mark_done(target: Optional[str], reason: Optional[str]) -> Dict[str, Any]:
     nothing left for the user, instead of lingering as a dead session in the fleet.
     """
     sid = resolve_target_or_current(target)
-    body: Dict[str, Any] = {"toSessionId": sid}
+    body: Dict[str, Any] = {}
     if reason and reason.strip():
         body["reason"] = reason.strip()
     try:
-        # Tunnel-only floor (#1490): self-reap goes through the Director's loopback POST /fleet/done, which
-        # flags a local session directly or relays a remote one via the Gateway. The old
-        # POST /sessions/{sid}/request-deletion route was removed from the Director in the tunnel-only cut.
-        resp = director.post_json("fleet/done", body)
-    except director.DirectorError as err:
+        resp = gateway.post_json(f"sessions/{sid}/request-deletion", body)
+    except gateway.GatewayError as err:
         console.print(f"[red]Error:[/red] {err}")
         raise typer.Exit(1)
 
     console.print(
-        f"[green]Marked[/green] {director.short_id(sid)} for deletion; "
+        f"[green]Marked[/green] {gateway.short_id(sid)} for deletion; "
         "the Director will reap it shortly."
     )
     return resp if isinstance(resp, dict) else {}
 
 
 def _report_delivery(resp: Any, who: str) -> None:
+    """Report a delivery from either of the Gateway's two answer shapes.
+
+    A message to ONE session answers with the prompt result - accepted plus an error - and a broadcast
+    answers with the fan-out: a per-recipient result row each, a refusal, or a note that there was
+    nobody to send to. Both are read here rather than at the two call sites so the sentence the user
+    reads cannot drift between "message send" and "message send all".
+
+    The counting is the part worth being careful about. A fan-out row with no error was delivered; a
+    row with one was not, and counting rows rather than successes would report a storm of failures as
+    a successful broadcast. A refusal is an error even though it arrives with a 200 - the Hub answers
+    scope refusals in the body, not the status code.
+    """
     accepted = False
     count = 0
     err: Optional[str] = None
     warning: Optional[str] = None
     if isinstance(resp, dict):
-        accepted = bool(resp.get("accepted", resp.get("Accepted", False)))
-        count = int(resp.get("deliveredCount", resp.get("DeliveredCount", 0)) or 0)
-        err = resp.get("error") or resp.get("Error")
         warning = resp.get("warning") or resp.get("Warning")
+        results = resp.get("results", resp.get("Results"))
+        if bool(resp.get("denied", resp.get("Denied", False))):
+            err = resp.get("deniedReason") or resp.get("DeniedReason") or "the broadcast was refused"
+        elif isinstance(results, list):
+            count = sum(1 for r in results if isinstance(r, dict) and not (r.get("error") or r.get("Error")))
+            failed = [r for r in results if isinstance(r, dict) and (r.get("error") or r.get("Error"))]
+            accepted = True
+            if failed and not warning:
+                warning = (f"{len(failed)} of {len(results)} recipients did not receive it: "
+                           + "; ".join(str(r.get("error") or r.get("Error")) for r in failed[:3]))
+        else:
+            accepted = bool(resp.get("accepted", resp.get("Accepted", False)))
+            count = 1 if accepted else 0
+            err = resp.get("error") or resp.get("Error")
     if accepted:
         console.print(f"[green]Delivered[/green] to {who} ({count} session(s)).")
         if warning:
@@ -577,10 +595,12 @@ def send_message(
     A plain 'all' reaches only the sender's team (its Mission, or - solo - the same repository on the
     same machine). --everyone asks to reach the whole fleet, which the Gateway Hub gates on a human
     grant plus a reason (issue #1229)."""
-    me = director.session_id()
+    me = gateway.session_id()
 
     if target.strip().lower() == "all":
-        body = {"text": message, "fromSessionId": me}
+        # No sender field: the Gateway takes it from the session key that authenticated the call, so
+        # the team it resolves and the message it frames are about the same session by construction.
+        body = {"text": message}
         if everyone:
             body["everyone"] = True
             if reason:
@@ -588,25 +608,23 @@ def send_message(
             if grant:
                 body["grantId"] = grant
         try:
-            resp = director.post_json("fleet/broadcast", body)
-        except director.DirectorError as err:
+            resp = gateway.post_json("fleet/broadcast", body)
+        except gateway.GatewayError as err:
             console.print(f"[red]Error:[/red] {err}")
             raise typer.Exit(1)
         _report_delivery(resp, "the whole fleet" if everyone else "your team")
         return
 
     chosen = _resolve_target(target, command_name="cc-devthrottle message send")
-    target_sid = director.field(chosen, "sessionId", "SessionId")
+    target_sid = gateway.field(chosen, "sessionId", "SessionId")
     try:
-        resp = director.post_json(
-            "fleet/send", {"toSessionId": target_sid, "text": message, "fromSessionId": me}
-        )
-    except director.DirectorError as err:
+        resp = gateway.post_json(f"sessions/{target_sid}/message", {"text": message})
+    except gateway.GatewayError as err:
         console.print(f"[red]Error:[/red] {err}")
         raise typer.Exit(1)
 
-    name = director.field(chosen, "name", "Name") or director.short_id(target_sid)
-    _report_delivery(resp, f'{name} ({director.short_id(target_sid)})')
+    name = gateway.field(chosen, "name", "Name") or gateway.short_id(target_sid)
+    _report_delivery(resp, f'{name} ({gateway.short_id(target_sid)})')
 
 
 def ask_session(target: str, question: str, timeout_ms: int) -> None:
@@ -618,29 +636,27 @@ def ask_session(target: str, question: str, timeout_ms: int) -> None:
         )
         raise typer.Exit(1)
 
-    me = director.session_id()
+    me = gateway.session_id()
     chosen = _resolve_target(target, command_name="cc-devthrottle message ask")
-    target_sid = director.field(chosen, "sessionId", "SessionId")
+    target_sid = gateway.field(chosen, "sessionId", "SessionId")
 
     http_timeout = max(30.0, timeout_ms / 1000.0 + 15.0)
     try:
-        resp = director.post_json(
-            "fleet/ask",
-            {
-                "toSessionId": target_sid,
-                "question": question,
-                "fromSessionId": me,
-                "timeoutMs": timeout_ms,
-            },
+        # An ask is a message that WAITS. waitForIdle also drops the reply hint from the frame: the
+        # asker is already holding the line and reads the answer from the target's own output, so a
+        # "reply with this command" line would make the recipient answer into a channel nobody reads.
+        resp = gateway.post_json(
+            f"sessions/{target_sid}/message",
+            {"text": question, "waitForIdle": True, "timeoutMs": timeout_ms},
             timeout=http_timeout,
         )
-    except director.DirectorError as err:
+    except gateway.GatewayError as err:
         console.print(f"[red]{err}[/red]")
         raise typer.Exit(1)
 
-    answer = (director.field(resp, "answer", "Answer") if isinstance(resp, dict) else "").strip()
-    name = director.field(chosen, "name", "Name") or director.short_id(target_sid)
-    console.print(f"[dim]-- answer from {name} ({director.short_id(target_sid)}) --[/dim]")
+    answer = (gateway.field(resp, "output", "Output") if isinstance(resp, dict) else "").strip()
+    name = gateway.field(chosen, "name", "Name") or gateway.short_id(target_sid)
+    console.print(f"[dim]-- answer from {name} ({gateway.short_id(target_sid)}) --[/dim]")
     console.print(answer if answer else "(the target produced no output)")
 
 
@@ -658,8 +674,8 @@ def _controller_mission(controller_session_id: str) -> Optional[Dict[str, Any]]:
     whole point of this issue existing.
     """
     try:
-        sessions, _, _, _ = director.get_fleet()
-    except director.DirectorError as err:
+        sessions, _, _, _ = gateway.get_fleet()
+    except gateway.GatewayError as err:
         console.print(
             "[yellow]Warning:[/yellow] could not read the fleet list to inherit the controlling "
             f"session's mission, so the new session starts attached to no mission: {err}"
@@ -668,9 +684,9 @@ def _controller_mission(controller_session_id: str) -> Optional[Dict[str, Any]]:
 
     wanted = controller_session_id.strip().lower()
     for s in sessions:
-        if director.field(s, "sessionId", "SessionId").lower() != wanted:
+        if gateway.field(s, "sessionId", "SessionId").lower() != wanted:
             continue
-        return s if director.field(s, "missionId", "MissionId") else None
+        return s if gateway.field(s, "missionId", "MissionId") else None
     return None
 
 
@@ -690,7 +706,7 @@ def spawn_session(
     mission: Optional[str] = None,
     workflow_run: Optional[str] = None,
     # NOT named `director`: this module's Director-client is imported under that name and a parameter
-    # would shadow it, breaking every director.post_json call in here.
+    # would shadow it, breaking every gateway.post_json call in here.
     director_target: Optional[str] = None,
 ) -> None:
     """Open a new session here, on another computer (--machine), or on one named Director (--director)."""
@@ -787,55 +803,72 @@ def spawn_session(
     elif not mission_opt_out and controller_session_id:
         inherited_from = _controller_mission(controller_session_id)
         if inherited_from:
-            body["missionId"] = director.field(inherited_from, "missionId", "MissionId")
+            body["missionId"] = gateway.field(inherited_from, "missionId", "MissionId")
     # Workflow seat at spawn (Workflows phase 5b): forward the run id; the Gateway validates it and
     # stamps the workflow id + pinned version, and the seated session's preamble tells the agent to
     # fetch its conduct at exactly that version. A mission spawn auto-seats without this flag.
     if workflow_run:
         body["workflowRunId"] = workflow_run
 
-    # "Start a session on another computer": both local and remote spawns now go through the Director's
-    # loopback POST /fleet/spawn (issue #1490). With no --machine (or a --machine naming THIS machine) the
-    # floor spawns LOCALLY (CreateLocalSessionAsync); a remote machine name is forwarded via the Gateway to a
-    # Director on that machine (first available, auto-launched if none is running). An off/unreachable machine
-    # fails loudly (DirectorError -> red error + exit 1) with NO local fallback. The old POST /sessions route
-    # was removed from the Director floor in the tunnel-only cut.
+    # "Start a session on some computer." Every spawn - including one on this very machine - goes to the
+    # Gateway's POST /machines/{machine}/sessions, which picks a Director on that machine (auto-launching
+    # one if none is running) and creates the session there. An off or unreachable machine fails loudly,
+    # with NO local path to fall back to: that is the whole point of the Remove-the-network-port mission,
+    # and a spawn that quietly landed somewhere else would be the second door in its worst form.
     #
-    # --director names ONE Director instead of "some Director on that computer", which is the only way
-    # to be specific on a machine running several named instances. It is sent alongside the machine and
-    # settled at the Director floor: naming the LOCAL Director spawns locally, and naming another one
-    # routes to exactly it. Passed through verbatim - resolving a Director name here would mean this
-    # tool holding a second copy of the matching rule the Gateway already applies.
+    # THE MACHINE MUST NOW BE NAMED, where the Director floor could leave it blank and mean "here". With
+    # the Director out of the path there is no "here" to infer, so an unqualified spawn resolves THIS
+    # session's own machine from the roster - the Gateway's own view of where this session runs, not a
+    # hostname read off the operating system, which is a different string on a different day.
+    #
+    # --director names ONE Director instead of "some Director on that computer", the only way to be
+    # specific on a machine running several named instances. Passed through verbatim - resolving a
+    # Director name here would mean this tool holding a second copy of a rule the Gateway already applies.
     target_machine = machine.strip() if machine else ""
     target_director = director_target.strip() if director_target else ""
 
+    if target_director:
+        # ONE named Director. The Gateway's machine route picks "some Director on that computer" and
+        # has no way to be told which, so naming one has to be addressed to it BY ID - which is what
+        # /directors/{id}/sessions is. Resolving the typed name against the Director list is the same
+        # class of lookup `session list` already does for a session id or name; what a name MATCHES is
+        # a client's job, what may be DONE with the result is the Gateway's.
+        path = f"directors/{_resolve_director_id(target_director, target_machine)}/sessions"
+    elif target_machine:
+        # "Some Director on that computer", launching one if none is running.
+        path = f"machines/{target_machine}/sessions"
+    else:
+        # HERE. This session's own Director, named from what the session was told at launch - no
+        # roster lookup, no hostname read off the operating system, and no round trip to work out
+        # something the session already knows.
+        path = f"directors/{_my_director()}/sessions"
+
     try:
-        resp = director.post_json(
-            "fleet/spawn", {"machine": target_machine, "director": target_director, **body})
-    except director.DirectorError as err:
+        resp = gateway.post_json(path, body)
+    except gateway.GatewayError as err:
         console.print(f"[red]Error:[/red] {err}")
         raise typer.Exit(1)
 
-    sid = director.field(resp, "sessionId", "SessionId")
+    sid = gateway.field(resp, "sessionId", "SessionId")
     if not sid:
-        console.print("[red]Error:[/red] the Director did not return a session id.")
+        console.print("[red]Error:[/red] the Gateway did not return a session id.")
         raise typer.Exit(1)
 
-    short = director.short_id(sid)
+    short = gateway.short_id(sid)
     # The Director names the session at birth (issue #800), so the response carries the final name.
-    label = director.field(resp, "name", "Name") or name or short
+    label = gateway.field(resp, "name", "Name") or name or short
     console.print(f"[green]Opened[/green] session {short} ({label}).")
     console.print(f"id: {sid}")
     if inherited_from is not None:
         # Never silent. An inherited mission the caller did not ask for is only safe if they can see
         # it happened, so name the mission AND the session it came from, and say how to undo it.
         mission_label = (
-            director.field(inherited_from, "missionName", "MissionName")
-            or director.short_id(director.field(inherited_from, "missionId", "MissionId"))
+            gateway.field(inherited_from, "missionName", "MissionName")
+            or gateway.short_id(gateway.field(inherited_from, "missionId", "MissionId"))
         )
         controller_label = (
-            director.field(inherited_from, "name", "Name")
-            or director.short_id(director.field(inherited_from, "sessionId", "SessionId"))
+            gateway.field(inherited_from, "name", "Name")
+            or gateway.short_id(gateway.field(inherited_from, "sessionId", "SessionId"))
         )
         console.print(
             f"Attached to mission [bold]{mission_label}[/bold], inherited from its controlling "
@@ -847,17 +880,72 @@ def spawn_session(
     )
 
 
+def _my_director() -> str:
+    """The Director THIS session belongs to, from what the session was told at launch.
+
+    This is how "here" is named once the loopback port is gone. Before the Remove-the-network-port
+    mission it needed no name at all: the command line called its own Director directly, so "here" was
+    wherever the call landed. Going through the Gateway makes it something that has to be said, and
+    the session is told it at launch - so it costs nothing to ask and cannot disagree with itself.
+    """
+    import os
+    director_id = (os.environ.get("CC_DIRECTOR_ID") or "").strip()
+    if not director_id:
+        raise gateway.GatewayError(
+            "CC_DIRECTOR_ID is not set, so this process cannot say where 'here' is. "
+            "Name the machine explicitly with --machine, or run this inside a DevThrottle session."
+        )
+    return director_id
+
+
+def _resolve_director_id(name: str, machine: str) -> str:
+    """Resolve a user-typed Director name to its id, optionally narrowed to one machine.
+
+    Matched the way every other target in this tool is: an exact id wins outright, then an exact
+    (case-insensitive) display name, then an id prefix. An ambiguous name is refused rather than
+    guessed - picking one of two Directors called the same thing is how a session lands on the wrong
+    computer and nobody notices until they go looking for it.
+    """
+    try:
+        rows = gateway.get_json("directors") or []
+    except gateway.GatewayError as err:
+        raise gateway.GatewayError(f"Cannot list this account's Directors to resolve '{name}': {err}") from err
+
+    wanted = name.strip().lower()
+    if machine:
+        rows = [d for d in rows
+                if gateway.field(d, "machineName", "MachineName").lower() == machine.strip().lower()]
+
+    exact = [d for d in rows if gateway.field(d, "directorId", "DirectorId").lower() == wanted]
+    if not exact:
+        exact = [d for d in rows if gateway.field(d, "displayName", "DisplayName").lower() == wanted]
+    if not exact:
+        exact = [d for d in rows if gateway.field(d, "directorId", "DirectorId").lower().startswith(wanted)]
+
+    if not exact:
+        where = f" on machine '{machine}'" if machine else ""
+        raise gateway.GatewayError(
+            f"No Director matches '{name}'{where}. Run cc-devthrottle machine directors to see them."
+        )
+    if len(exact) > 1:
+        raise gateway.GatewayError(
+            f"'{name}' matches {len(exact)} Directors. Name it more precisely, or add --machine."
+        )
+    return gateway.field(exact[0], "directorId", "DirectorId")
+
+
+
 def _spawn_selftest(repo: str, command_args: str, name: str) -> str:
-    resp = director.post_json(
-        "sessions",
+    resp = gateway.post_json(
+        f"directors/{_my_director()}/sessions",
         {"repoPath": repo, "agent": "RawCli", "command": "cmd", "commandArgs": command_args},
     )
-    sid = director.field(resp, "sessionId", "SessionId")
+    sid = gateway.field(resp, "sessionId", "SessionId")
     if not sid:
-        raise director.DirectorError("the Director did not return a session id when spawning.")
+        raise gateway.GatewayError("the Gateway did not return a session id when spawning.")
     try:
-        director.patch_json(f"sessions/{sid}", {"name": name})
-    except director.DirectorError:
+        gateway.patch_json(f"sessions/{sid}", {"name": name})
+    except gateway.GatewayError:
         pass
     return sid
 
@@ -867,8 +955,8 @@ def _fleet_ids() -> List[str]:
     # sessions it checks for are the ones it just spawned on THIS Director, which always reports its
     # own (issue #1019), so completeness cannot hide them - but reading a different route than the
     # rest of the tool is how a selftest ends up passing on a roster nobody else sees.
-    sessions, _, _, _ = director.get_fleet()
-    return [director.field(s, "sessionId", "SessionId") for s in sessions]
+    sessions, _, _, _ = gateway.get_fleet()
+    return [gateway.field(s, "sessionId", "SessionId") for s in sessions]
 
 
 def selftest(timeout_ms: int) -> None:
@@ -889,7 +977,7 @@ def selftest(timeout_ms: int) -> None:
         record(
             "spawn two sessions",
             True,
-            f"responder={director.short_id(responder)} recipient={director.short_id(recipient)}",
+            f"responder={gateway.short_id(responder)} recipient={gateway.short_id(recipient)}",
         )
         time.sleep(2)
 
@@ -897,46 +985,47 @@ def selftest(timeout_ms: int) -> None:
         listed = responder in ids and recipient in ids
         record("session list includes both", listed)
 
-        send = director.post_json(
-            "fleet/send",
-            {"toSessionId": recipient, "text": "fleet self-test message", "fromSessionId": responder},
+        # The self-test's messages are sent AS THIS SESSION, not as the throwaway it spawned: the
+        # Gateway takes the sender from the key that authenticated the call, and this process holds
+        # its own session's key, not the throwaways'. What is under test is that a message reaches a
+        # session and that an ask comes back with its answer, and both still are.
+        send = gateway.post_json(
+            f"sessions/{recipient}/message", {"text": "fleet self-test message"},
         )
         accepted = bool(isinstance(send, dict) and send.get("accepted", send.get("Accepted", False)))
-        record("message send delivers", accepted, str(director.field(send, "error", "Error") or ""))
+        record("message send delivers", accepted, str(gateway.field(send, "error", "Error") or ""))
 
-        ask = director.post_json(
-            "fleet/ask",
-            {
-                "toSessionId": responder,
-                "question": "selftest ping",
-                "fromSessionId": recipient,
-                "timeoutMs": timeout_ms,
-            },
+        ask = gateway.post_json(
+            f"sessions/{responder}/message",
+            {"text": "selftest ping", "waitForIdle": True, "timeoutMs": timeout_ms},
             timeout=timeout_ms / 1000.0 + 15.0,
         )
-        answer = director.field(ask, "answer", "Answer") if isinstance(ask, dict) else ""
+        answer = gateway.field(ask, "output", "Output") if isinstance(ask, dict) else ""
         got_marker = SELFTEST_MARKER in answer
         record(
             "message ask returns the answer",
             got_marker,
-            "marker found" if got_marker else f"status={director.field(ask, 'status', 'Status')}",
+            "marker found" if got_marker else f"status={gateway.field(ask, 'waitStatus', 'WaitStatus')}",
         )
 
-    except director.DirectorError as err:
+    except gateway.GatewayError as err:
         record("fleet messaging reachable", False, str(err))
     finally:
         for sid in (responder, recipient):
             if sid:
                 try:
-                    director.delete(f"sessions/{sid}")
-                except director.DirectorError:
+                    # request-deletion, not a hard DELETE: that is the verb an agent credential may
+                    # call, and it is what `session done` uses. The reaper removes the session within
+                    # about a minute, which is why the check below allows for a grace period.
+                    gateway.post_json(f"sessions/{sid}/request-deletion", {})
+                except gateway.GatewayError:
                     pass
         try:
             time.sleep(1)
             remaining = _fleet_ids()
             leaked = [s for s in (responder, recipient) if s and s in remaining]
             record("throwaway sessions cleaned up", not leaked, "" if not leaked else f"leaked {len(leaked)}")
-        except director.DirectorError as err:
+        except gateway.GatewayError as err:
             record("throwaway sessions cleaned up", False, str(err))
 
     passed = sum(1 for _, ok, _ in results if ok)

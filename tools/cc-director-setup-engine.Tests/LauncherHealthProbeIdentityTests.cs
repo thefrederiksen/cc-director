@@ -5,7 +5,7 @@ namespace CcDirector.Setup.Engine.Tests;
 
 /// <summary>
 /// The installer must certify its install against the launcher IT STARTED, not against whatever
-/// process happens to hold port 7900.
+/// launcher's registration happens to be on the machine.
 ///
 /// This is the guard for the failure that bricked a Mac. The installer started process 35158; the
 /// health answer came from process 34084, an orphan that had been running for seventy-three minutes
@@ -16,19 +16,42 @@ namespace CcDirector.Setup.Engine.Tests;
 /// The version comparison could not catch it: VersionUtil.TryParse strips build metadata, so the
 /// orphan's "1.8.4+71f90bad..." and the freshly placed "1.8.4" compare equal. On a same-version
 /// reinstall - the common case - the old guard was blind. The identity work behind issue #2042
-/// only ever caught a version CHANGE, which is the case that matters least.
+/// only ever caught a version CHANGE, which is the case that matters least. The transport has since
+/// changed - the registration FILE replaced the health route when the launcher's listener was
+/// deleted (remove-the-network-port mission, phase 6) - and every identity rule here survives that
+/// change, because a pre-existing launcher's registration file is exactly as valid-looking as its
+/// health answer was.
 /// </summary>
-public sealed class LauncherHealthProbeIdentityTests
+public sealed class LauncherHealthProbeIdentityTests : IDisposable
 {
+    private readonly string _dir = Path.Combine(Path.GetTempPath(), "launcher-identity-tests", Guid.NewGuid().ToString("N"));
+
+    public LauncherHealthProbeIdentityTests()
+    {
+        Directory.CreateDirectory(_dir);
+    }
+
+    public void Dispose()
+    {
+        try { Directory.Delete(_dir, recursive: true); } catch (IOException) { }
+    }
+
     private const string OrphanBody =
-        """{"ok":true,"version":"1.8.4+71f90bad0ea1e25cc006159f42c6474bd4263dee","pid":34084,"uptimeS":9461,"userInterface":"tray"}""";
+        """{"pid":34084,"version":"1.8.4+71f90bad0ea1e25cc006159f42c6474bd4263dee","startedAtUtc":"2026-07-29T05:00:00Z","userInterface":"tray"}""";
+
+    private LauncherHealth Reading(string body, bool alive = true)
+    {
+        var path = Path.Combine(_dir, "launcher.json");
+        File.WriteAllText(path, body);
+        return LauncherHealthProbe.ReadRegistration(path, processIsAlive: _ => alive)!;
+    }
 
     // The exact reproduction, as data: same version, different process. This must NOT certify.
     // Revert-proof: drop the pid term from Certifies and this goes red.
     [Fact]
     public void Certifies_SameVersionFromADifferentProcess_IsRefused()
     {
-        var health = LauncherHealthProbe.Parse(OrphanBody);
+        var health = Reading(OrphanBody);
 
         Assert.True(health.Ok);
         Assert.Equal(34084, health.Pid);
@@ -37,23 +60,22 @@ public sealed class LauncherHealthProbeIdentityTests
 
         Assert.False(
             LauncherHealthProbe.Certifies(health, expectedVersion: "1.8.4", expectedPid: 35158),
-            "An answer from a process the installer did not start must never certify the install.");
+            "A registration from a process the installer did not start must never certify the install.");
     }
 
     [Fact]
     public void Certifies_TheProcessTheInstallerStarted_IsAccepted()
     {
-        var health = LauncherHealthProbe.Parse(OrphanBody);
+        var health = Reading(OrphanBody);
         Assert.True(LauncherHealthProbe.Certifies(health, expectedVersion: "1.8.4", expectedPid: 34084));
     }
 
-    // A launcher too old to report a process id cannot be identified, so when the installer knows
-    // which process it started, silence is a refusal - not a pass. That answer can only have come
-    // from something other than the current binary we just placed.
+    // A registration carrying no process id cannot be identified, so when the installer knows
+    // which process it started, silence is a refusal - not a pass.
     [Fact]
-    public void Certifies_AnAnswerWithNoProcessId_IsRefusedWhenOneWasExpected()
+    public void Certifies_ARegistrationWithNoProcessId_IsRefusedWhenOneWasExpected()
     {
-        var health = LauncherHealthProbe.Parse("""{"ok":true,"version":"1.8.4"}""");
+        var health = Reading("""{"version":"1.8.4"}""");
 
         Assert.Equal(0, health.Pid);
         Assert.False(LauncherHealthProbe.Certifies(health, expectedVersion: "1.8.4", expectedPid: 35158));
@@ -64,15 +86,17 @@ public sealed class LauncherHealthProbeIdentityTests
     [Fact]
     public void Certifies_WithNoProcessExpectation_FallsBackToVersionOnly()
     {
-        var health = LauncherHealthProbe.Parse(OrphanBody);
+        var health = Reading(OrphanBody);
         Assert.True(LauncherHealthProbe.Certifies(health, expectedVersion: "1.8.4", expectedPid: 0));
         Assert.False(LauncherHealthProbe.Certifies(health, expectedVersion: "1.9.0", expectedPid: 0));
     }
 
+    // A registration whose process is DEAD is a crash leftover, not a launcher - even when it names
+    // exactly the process the installer expected.
     [Fact]
-    public void Certifies_ANotOkAnswer_IsRefusedEvenFromTheRightProcess()
+    public void Certifies_ADeadProcess_IsRefusedEvenWhenItIsTheRightOne()
     {
-        var health = LauncherHealthProbe.Parse("""{"ok":false,"version":"1.8.4","pid":35158}""");
+        var health = Reading("""{"pid":35158,"version":"1.8.4"}""", alive: false);
         Assert.False(LauncherHealthProbe.Certifies(health, expectedVersion: "1.8.4", expectedPid: 35158));
     }
 

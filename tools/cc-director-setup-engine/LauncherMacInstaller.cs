@@ -1,6 +1,6 @@
 using System.Diagnostics;
-using System.Net.Http;
 using System.Runtime.Versioning;
+using CcDirector.Core.Configuration;
 
 namespace CcDirector.Setup.Engine;
 
@@ -11,11 +11,9 @@ namespace CcDirector.Setup.Engine;
 /// and its launch agent would never be registered. This:
 ///   1. restarts the launcher under launchd ("launchctl kickstart -k") when its launch agent is
 ///      already registered (a reinstall or repair), so the newly placed binary takes over,
-///   2. otherwise starts the launcher directly with <c>--managed</c> - on startup the launcher
-///      writes and bootstraps its own launch agent property list, exactly as the Windows launcher
-///      registers its own Run key, so install-time registration and app self-registration can
-///      never disagree,
-///   3. waits for the launcher's loopback health endpoint,
+///   2. otherwise registers the launch agent here and lets launchd start it,
+///   3. waits for the launcher's registration file to name the process launchd reports
+///      (the launcher listens on nothing - remove-the-network-port mission, phase 6),
 ///   4. confirms the launch agent property list exists.
 ///
 /// Everything is per-user (the launch agent lives in the user's LaunchAgents folder and the
@@ -32,25 +30,25 @@ public sealed class LauncherMacInstaller
     public delegate int ProcessStarter(string executablePath, string arguments, string workingDirectory);
 
     private readonly InstallLayout _layout;
-    private readonly HttpClient _http;
     private readonly CommandRunner _runCommand;
     private readonly ProcessStarter _startProcess;
     private readonly string _launchAgentPlistPath;
+    private readonly string _registrationPath;
     private readonly TimeSpan _healthTimeout;
 
     public LauncherMacInstaller(
         InstallLayout layout,
-        HttpClient? http = null,
         CommandRunner? runCommand = null,
         ProcessStarter? startProcess = null,
         string? launchAgentPlistPath = null,
-        TimeSpan? healthTimeout = null)
+        TimeSpan? healthTimeout = null,
+        string? registrationPath = null)
     {
         _layout = layout ?? throw new ArgumentNullException(nameof(layout));
-        _http = http ?? new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
         _runCommand = runCommand ?? ProcessRunner.Run;
         _startProcess = startProcess ?? StartDetachedProcess;
         _launchAgentPlistPath = launchAgentPlistPath ?? DefaultLaunchAgentPlistPath();
+        _registrationPath = registrationPath ?? LauncherDiscovery.DefaultPath;
         _healthTimeout = healthTimeout ?? TimeSpan.FromSeconds(20);
     }
 
@@ -120,43 +118,37 @@ public sealed class LauncherMacInstaller
         // previously the kickstart branch had no process to expect and trusted the version alone.
         startedPid = TryGetLaunchdPid(steps);
 
-        // Identity-verified health: the answer must come from THE PROCESS WE JUST STARTED, not from
-        // whatever holds the port. This is the check that failed on Sorens-Mac-mini: the installer
-        // started process 35158, the answer came from orphan 34084 which had held the port for
-        // seventy-three minutes from a path just overwritten, and the version comparison could not
-        // tell them apart because build metadata is stripped before versions are compared.
-        //
-        // startedPid is 0 on the launchd-restart branch, where launchd owns the process and this code
-        // never learns its id - so that branch still relies on the version alone. An orphan outside
-        // launchd could still answer there. Reading the id back from launchd after the kickstart is
-        // the remaining gap; it is recorded in docs/MISSION-installer-both-platforms-2026-07-29.md.
+        // Identity-verified health: the registration must name THE PROCESS WE JUST STARTED, not
+        // whatever launcher was already on the machine. This is the check that failed on
+        // Sorens-Mac-mini: the installer started process 35158, the answer came from orphan 34084
+        // which had been running for seventy-three minutes from a path just overwritten, and the
+        // version comparison could not tell them apart because build metadata is stripped before
+        // versions are compared.
         var expectedVersion = new InstalledStateReader(_layout).Read(ComponentRegistry.Launcher).Version;
-        var healthUrl = $"http://127.0.0.1:{LauncherTrayInstaller.LauncherDefaultPort}/healthz";
 
-        // No process to expect means we cannot tell our launcher from a stranger on the port, and the
+        // No process to expect means we cannot tell our launcher from a pre-existing one, and the
         // version cannot tell them apart either (build metadata is stripped before comparison). Fail
-        // rather than certify: a same-version orphan holding the port is the exact case that bricked a
-        // machine, and "we could not check" must not read as "it is fine".
+        // rather than certify: a same-version orphan is the exact case that bricked a machine, and
+        // "we could not check" must not read as "it is fine".
         if (startedPid == 0)
             return Fail(steps, "launchd did not report which process is running the launcher, so this install "
-                               + "cannot verify that the launcher answering on port "
-                               + $"{LauncherTrayInstaller.LauncherDefaultPort} is the one just placed. "
+                               + "cannot verify that the registered launcher is the one just placed. "
                                + $"Check {_layout.LogsDir} and re-run.");
 
-        var health = await LauncherHealthProbe.WaitForHealthyAsync(_http, healthUrl, expectedVersion, _healthTimeout, ct, startedPid);
+        var health = await LauncherHealthProbe.WaitForHealthyAsync(_registrationPath, expectedVersion, _healthTimeout, ct, startedPid);
         if (health is null)
         {
-            steps.Add($"launcher health endpoint on port {LauncherTrayInstaller.LauncherDefaultPort}: no response");
-            return Fail(steps, $"Launcher started but did not answer on port {LauncherTrayInstaller.LauncherDefaultPort}. Check {_layout.LogsDir}.");
+            steps.Add("launcher registration: never appeared");
+            return Fail(steps, $"Launcher started but never wrote its registration. Check {_layout.LogsDir}.");
         }
         if (!LauncherHealthProbe.Certifies(health, expectedVersion, startedPid))
         {
-            steps.Add($"launcher health endpoint on port {LauncherTrayInstaller.LauncherDefaultPort}: answered by process id {health.Pid} (version {health.Version ?? "unknown"})");
+            steps.Add($"launcher registration: names process id {health.Pid} (version {health.Version ?? "unknown"})");
             return Fail(steps, startedPid > 0
-                ? $"A launcher is answering on port {LauncherTrayInstaller.LauncherDefaultPort}, but it is process {health.Pid} reporting version {health.Version ?? "unknown"} - not the process {startedPid} this install started. Refusing to certify: another launcher instance holds the port. Check {_layout.LogsDir}."
-                : $"A launcher is answering on port {LauncherTrayInstaller.LauncherDefaultPort}, but it reports version {health.Version ?? "unknown"}, not the freshly installed {expectedVersion} - refusing to certify this install. Another launcher instance likely holds the port; check {_layout.LogsDir}.");
+                ? $"A launcher registration exists, but it names process {health.Pid} reporting version {health.Version ?? "unknown"} - not the process {startedPid} this install started. Refusing to certify: another launcher instance is running. Check {_layout.LogsDir}."
+                : $"A launcher registration exists, but it reports version {health.Version ?? "unknown"}, not the freshly installed {expectedVersion} - refusing to certify this install. Another launcher instance is likely running; check {_layout.LogsDir}.");
         }
-        steps.Add($"launcher health endpoint on port {LauncherTrayInstaller.LauncherDefaultPort}: OK (version {health.Version ?? "unversioned"}, process id {health.Pid})");
+        steps.Add($"launcher registration: OK (version {health.Version ?? "unversioned"}, process id {health.Pid})");
 
         var registered = File.Exists(_launchAgentPlistPath);
         steps.Add($"launch agent property list: {(registered ? "registered" : "NOT registered")} at {_launchAgentPlistPath}");
@@ -165,7 +157,7 @@ public sealed class LauncherMacInstaller
 
         EngineLog.Write("[LauncherMacInstaller] InstallAsync success");
         return new LauncherInstallResult(true,
-            $"Launcher installed, running on port {LauncherTrayInstaller.LauncherDefaultPort}, and registered as a launch agent.", steps);
+            "Launcher installed, running, and registered as a launch agent.", steps);
     }
 
     /// <summary>
@@ -283,25 +275,6 @@ public sealed class LauncherMacInstaller
         using var process = Process.Start(psi)
             ?? throw new InvalidOperationException("Process.Start returned null");
         return process.Id;
-    }
-
-    private async Task<bool> WaitForHttpAsync(string url, TimeSpan timeout, CancellationToken ct)
-    {
-        var deadline = DateTime.UtcNow + timeout;
-        while (DateTime.UtcNow < deadline && !ct.IsCancellationRequested)
-        {
-            try
-            {
-                using var response = await _http.GetAsync(url, ct);
-                if (response.IsSuccessStatusCode) return true;
-            }
-            catch
-            {
-                // not up yet
-            }
-            try { await Task.Delay(1000, ct); } catch (OperationCanceledException) { return false; }
-        }
-        return false;
     }
 
     private static LauncherInstallResult Fail(List<string> steps, string message)

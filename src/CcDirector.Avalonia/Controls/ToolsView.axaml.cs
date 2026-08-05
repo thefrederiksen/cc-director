@@ -33,9 +33,7 @@ public partial class ToolsView : UserControl
     private IReadOnlyList<SkillToolLink> _allLinks = Array.Empty<SkillToolLink>();
     private bool _loaded;
 
-    // Supplied by the owning window with the fault verdict, so the banner re-checks against the same
-    // Director the verdict was reached about.
-    private string? _controlApiBaseUrl;
+    // Supplied by the owning window with the fault verdict.
     private string? _expectedBinDir;
     private FleetToolCheck? _fleetToolCheck;
     private Func<Task>? _onFleetToolRepaired;
@@ -86,19 +84,17 @@ public partial class ToolsView : UserControl
     /// </summary>
     /// <param name="check">The Director's latest reachability verdict, or null when it has none yet.
     /// Null hides the banner: no verdict is not a fault, and it is not a pass either.</param>
-    /// <param name="controlApiBaseUrl">The Director's own Control API address, so the banner can
-    /// re-check against the same endpoint after a repair.</param>
     /// <param name="onRepaired">Invoked after a successful repair so the owning window re-drives its
     /// own badge rather than being left showing a fault the user has just fixed.</param>
     /// <param name="refresh">Re-runs the Director's own check and returns its fresh verdict. Called
-    /// once when the page loads, so an open panel cannot sit on a verdict the machine has outgrown.</param>
+    /// once when the page loads, so an open panel cannot sit on a verdict the machine has outgrown,
+    /// and again after a repair - the window owns the probe because it owns the credential the
+    /// probe presents.</param>
     public void ShowFleetToolStatus(
         FleetToolCheck? check,
-        string? controlApiBaseUrl,
         Func<Task>? onRepaired = null,
         Func<Task<FleetToolCheck?>>? refresh = null)
     {
-        _controlApiBaseUrl = controlApiBaseUrl;
         _onFleetToolRepaired = onRepaired;
         _refreshFleetToolCheck = refresh;
         RenderFleetToolStatus(check);
@@ -119,7 +115,7 @@ public partial class ToolsView : UserControl
     {
         _fleetToolCheck = check;
 
-        if (check is not { Verdict: FleetToolVerdict.CannotReachDirector })
+        if (check is not { Verdict: FleetToolVerdict.CannotReachGateway })
         {
             PathFaultBanner.IsVisible = false;
             return;
@@ -144,8 +140,8 @@ public partial class ToolsView : UserControl
         {
             PathFaultExplanation.Text =
                 "The command line on your PATH belongs to another install, so agents in your sessions "
-                + "report \"cannot connect to DevThrottle\" even though this Director is healthy and "
-                + "connected. This Director's own copy is installed and works.";
+                + "report \"cannot connect to DevThrottle\" even though this Director's Gateway "
+                + "connection is healthy. This Director's own copy is installed and works.";
             PathFaultFixButton.Content = "Repoint PATH to this install";
             PathFaultFixButton.IsVisible = true;
         }
@@ -155,7 +151,7 @@ public partial class ToolsView : UserControl
             // repairs neither, so state what was seen and offer nothing rather than a button that
             // cannot work.
             PathFaultExplanation.Text =
-                $"The command line on your PATH could not authenticate against this Director: {check.Detail}";
+                $"The command line on your PATH could not reach the fleet through the Gateway: {check.Detail}";
             PathFaultFixButton.IsVisible = false;
         }
 
@@ -219,8 +215,10 @@ public partial class ToolsView : UserControl
             }
 
             // Re-ask the question rather than assuming the repair worked. A button that reports its own
-            // success without re-checking is how a fix that did nothing still looks like a fix.
-            if (string.IsNullOrWhiteSpace(_controlApiBaseUrl))
+            // success without re-checking is how a fix that did nothing still looks like a fix. The
+            // re-check goes through the owning window's delegate because the window owns the probe
+            // credential (a freshly registered Gateway session key).
+            if (_refreshFleetToolCheck is not { } recheckDelegate)
             {
                 PathFaultProgress.Text = "PATH updated. Re-open Settings to re-check.";
                 PathFaultFixButton.IsEnabled = true;
@@ -228,16 +226,17 @@ public partial class ToolsView : UserControl
             }
 
             PathFaultProgress.Text = "Checking...";
-            var recheck = await new FleetToolReachability().RunAsync(_controlApiBaseUrl, binDir);
+            var recheck = await recheckDelegate();
             RenderFleetToolStatus(recheck);
 
-            if (recheck.Verdict == FleetToolVerdict.Working)
+            if (recheck is { Verdict: FleetToolVerdict.Working })
             {
                 if (_onFleetToolRepaired is { } notify) await notify();
             }
             else
             {
-                PathFaultProgress.Text = $"PATH updated, but it still cannot reach this Director: {recheck.Detail}";
+                PathFaultProgress.Text =
+                    $"PATH updated, but it still cannot reach the fleet: {recheck?.Detail ?? "no verdict"}";
                 PathFaultFixButton.IsEnabled = true;
             }
         }

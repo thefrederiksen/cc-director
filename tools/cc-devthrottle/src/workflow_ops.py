@@ -27,15 +27,14 @@ import typer
 from rich import box
 from rich.console import Console
 from rich.table import Table
-from urllib.parse import quote as urllib_quote, urlparse
+from urllib.parse import quote as urllib_quote
 
 _tools_dir = str(Path(__file__).resolve().parent.parent.parent)
 if _tools_dir not in sys.path:
     sys.path.insert(0, _tools_dir)
 
-from cc_shared.config import CCDirectorConfig  # noqa: E402
+from cc_shared import gateway  # noqa: E402
 
-LOOPBACK_DEFAULT = "http://127.0.0.1:7878"
 TIMEOUT_SECONDS = 15
 WORKFLOW_JSON = "workflow.json"
 INSTRUCTIONS_MD = "instructions.md"
@@ -47,8 +46,17 @@ err_console = Console(stderr=True)
 gateway_override: Optional[str] = None
 
 
-class GatewayError(Exception):
-    """A handled, user-facing failure talking to the Gateway."""
+#: THE SAME CLASS THE SHARED TRANSPORT RAISES, not a look-alike beside it.
+#:
+#: This used to be its own `class GatewayError(Exception)`, while `gateway.gateway_base_url()` and
+#: `gateway.session_key()` - called directly from this module - raise `cc_shared.gateway.GatewayError`.
+#: Every `except GatewayError` here therefore missed the no-Gateway failure entirely, and the command
+#: died with a Rich traceback. The owner accepted "no Gateway means no agent tooling" on the promise of
+#: a CLEAR SENTENCE naming the remedy; a stack trace is not that sentence.
+#:
+#: Aliasing rather than catching both is deliberate: two names for one idea is what caused this, and a
+#: second except clause on every handler would leave the trap in place for the next handler written.
+GatewayError = gateway.GatewayError
 
 
 def set_gateway_override(value: Optional[str]) -> None:
@@ -57,19 +65,29 @@ def set_gateway_override(value: Optional[str]) -> None:
 
 
 def resolve_base_url() -> str:
-    config = CCDirectorConfig().load()
-    url = (config.gateway.url or "").strip()
-    return url.rstrip("/") if url else LOOPBACK_DEFAULT
+    """The Gateway this SESSION was told to call.
+
+    Remove-the-network-port mission, phase 2. This used to read gateway.url out of config.json and fall
+    back to a loopback address, which meant the command line kept its own opinion about where the
+    Gateway is - one that could be right on the machine and wrong for the session. The session is TOLD
+    the address at launch, beside the credential that goes with it, and one source for both is what
+    makes them impossible to mismatch.
+    """
+    return gateway.gateway_base_url()
 
 
 def _auth_token() -> str:
-    config = CCDirectorConfig().load()
-    return (config.gateway.token or "").strip()
+    """This session's own Gateway key.
+
+    IT USED TO BE THE ACCOUNT'S. This function read `gateway.token` from config.json - the shared
+    machine credential, which has authority over the whole account on every machine - and presented it
+    straight to the Gateway. So every agent that ran one of these commands held the run of the account,
+    which is precisely the hole Phase 1b was chartered to prevent, already open on this path. The
+    session key closes it: bound to one session, one tenant, and the fleet's agent routes only.
+    """
+    return gateway.session_key()
 
 
-def _is_loopback(url: str) -> bool:
-    host = (urlparse(url).hostname or "").lower()
-    return host in ("127.0.0.1", "localhost", "::1")
 
 
 def default_authored_by() -> str:
@@ -85,12 +103,6 @@ class WorkflowClient:
     def __init__(self, base_url: Optional[str] = None) -> None:
         self.base_url = (base_url or resolve_base_url()).rstrip("/")
         self._token = _auth_token()
-        if not self._token and not _is_loopback(self.base_url):
-            raise GatewayError(
-                f"Gateway URL {self.base_url} is remote but gateway.token is not set. "
-                "Set it with 'cc-devthrottle settings set gateway.token <token>' "
-                "(a loopback Gateway on this machine needs no token)."
-            )
 
     def _headers(self, extra: Optional[Dict[str, str]] = None) -> Dict[str, str]:
         headers = {"Accept": "application/json"}

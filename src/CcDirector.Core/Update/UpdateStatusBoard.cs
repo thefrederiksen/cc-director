@@ -94,7 +94,7 @@ public static class UpdateStatusBoard
             State: UpdaterState.Load(),
             Live: live,
             RunningSessionCount: SafeSessionCount(sessions),
-            LauncherPort: LauncherDiscovery.Read().Port,
+            LauncherRunning: LauncherDiscovery.IsRunning(LauncherDiscovery.Read()),
             Now: now ?? DateTimeOffset.UtcNow);
 
         return UpdateStatusFold.Fold(facts);

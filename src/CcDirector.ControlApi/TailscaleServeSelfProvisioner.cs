@@ -1,4 +1,4 @@
-using System.Text.Json;
+﻿using System.Text.Json;
 using CcDirector.Core.Network;
 using CcDirector.Core.Utilities;
 
@@ -19,7 +19,7 @@ namespace CcDirector.ControlApi;
 ///   - Every 5 minutes:   re-assert if missing - the serve table is known to lose
 ///                        entries with no cc-director process removing them (#179, #200).
 ///   - Graceful shutdown: remove the mapping. Crash recovery needs nothing special:
-///                        ports are stable per slot (PortAllocator), so the next startup
+///                        ports were stable per slot in the listener era, so the next startup
 ///                        re-asserts the same mapping; until then the leftover proxies to
 ///                        a dead loopback port, which the Gateway's circuit breaker
 ///                        already handles.

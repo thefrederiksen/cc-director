@@ -26,7 +26,7 @@ internal static class Program
         FileLog.Start();
 
         FileLog.Write($"[Program] Instance: slug={InstanceContext.Slug}, isDefault={InstanceContext.IsDefault}, " +
-                      $"explicit={InstanceContext.WasExplicitlySelected}, home={InstanceContext.InstanceHome}, port={InstanceContext.Port}");
+                      $"explicit={InstanceContext.WasExplicitlySelected}, home={InstanceContext.InstanceHome}");
 
         // Catch anything that escapes a background thread so a crash is at least
         // recorded to a findable file rather than vanishing silently (issue #242).
@@ -189,7 +189,7 @@ internal static class Program
                 inst = NamedInstanceRegistry.Get(InstanceContext.DefaultSlug);
             }
             if (inst is not null)
-                InstanceContext.Initialize(inst.Name, wasExplicit, inst.DisplayName, inst.Port);
+                InstanceContext.Initialize(inst.Name, wasExplicit, inst.DisplayName);
 
             // Isolate this instance's home and redirect all storage into it - default too.
             Directory.CreateDirectory(InstanceContext.InstanceHome);

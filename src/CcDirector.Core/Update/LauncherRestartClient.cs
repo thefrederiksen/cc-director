@@ -1,6 +1,4 @@
-using System.Net.Http.Headers;
-using CcDirector.Core.Configuration;
-using CcDirector.Core.Storage;
+using CcDirector.Core.Lifecycle;
 using CcDirector.Core.Utilities;
 
 namespace CcDirector.Core.Update;
@@ -28,70 +26,44 @@ public sealed record LauncherRestartResult(bool Ok, string Message);
 public static class LauncherRestartClient
 {
     /// <summary>
-    /// Where the launcher keeps the bearer token for its own REST interface. Defined here, once,
-    /// because both the launcher that writes it and the Director that reads it need the same answer.
-    /// </summary>
-    public static string TokenFile { get; } =
-        Path.Combine(CcStorage.ToolConfig("launcher"), "launcher-token.txt");
-
-    /// <summary>
     /// Ask the launcher to restart the Director. Never throws: this is behind a button, so every
     /// failure comes back as a sentence the caller can show.
+    ///
+    /// A NAMED SIGNAL, NOT A POST. This used to read the launcher's port and bearer token off disk and
+    /// post to its loopback interface, which made an update depend on three things that have nothing to
+    /// do with updating: a discovery file being current, a token file being readable, and a socket
+    /// accepting connections. The signal needs none of them and cannot reach a launcher other than the
+    /// one serving this machine's storage root.
+    ///
+    /// Returning true means the request was DELIVERED, not that the install succeeded. That is the same
+    /// promise the post made - the launcher answered as soon as it accepted, and the swap happened
+    /// afterwards - so nothing downstream is weaker. The install's own outcome is recorded by the
+    /// launcher in the updater state, which is where the status display reads it.
     /// </summary>
-    public static async Task<LauncherRestartResult> RequestRestartAsync(
-        HttpMessageHandler? handler = null, CancellationToken ct = default)
+    public static Task<LauncherRestartResult> RequestRestartAsync(CancellationToken ct = default)
     {
         FileLog.Write("[LauncherRestartClient] RequestRestartAsync");
         try
         {
-            var launcher = LauncherDiscovery.Read();
-            if (launcher.Port is not { } port)
+            var signal = LifecycleSignalNames.LauncherRestartDirector();
+            if (!LifecycleSignal.Raise(signal))
             {
-                var why = launcher.Error ?? (launcher.Installed
-                    ? "the launcher did not record a port"
-                    : "no launcher is running on this machine");
-                FileLog.Write($"[LauncherRestartClient] cannot reach a launcher: {why}");
-                return new LauncherRestartResult(false,
-                    $"Could not ask the launcher to restart the Director: {why}. Closing and reopening the "
-                    + "Director installs the update instead.");
+                FileLog.Write($"[LauncherRestartClient] nothing is listening for {signal}");
+                return Task.FromResult(new LauncherRestartResult(false,
+                    "Could not ask the launcher to restart the Director: no launcher is running on this machine. "
+                    + "Closing and reopening the Director installs the update instead."));
             }
 
-            if (!File.Exists(TokenFile))
-            {
-                FileLog.Write($"[LauncherRestartClient] no launcher token at {TokenFile}");
-                return new LauncherRestartResult(false,
-                    "Could not ask the launcher to restart the Director: its access token is missing. Closing and "
-                    + "reopening the Director installs the update instead.");
-            }
-
-            var token = (await File.ReadAllTextAsync(TokenFile, ct)).Trim();
-
-            using var http = handler is null ? new HttpClient() : new HttpClient(handler, disposeHandler: true);
-            // The launcher stops the Director, swaps the build, starts it and waits for the new version to
-            // answer. That is minutes on a cold machine, and a timeout here would report a failure for an
-            // install that was going perfectly well.
-            http.Timeout = TimeSpan.FromMinutes(5);
-            http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
-
-            var response = await http.PostAsync($"http://127.0.0.1:{port}/director/restart", content: null, ct);
-            if (!response.IsSuccessStatusCode)
-            {
-                var body = await response.Content.ReadAsStringAsync(ct);
-                FileLog.Write($"[LauncherRestartClient] launcher answered {(int)response.StatusCode}: {body}");
-                return new LauncherRestartResult(false,
-                    $"The launcher refused the restart ({(int)response.StatusCode}). Closing and reopening the "
-                    + "Director installs the update instead.");
-            }
-
-            FileLog.Write("[LauncherRestartClient] the launcher accepted the restart request");
-            return new LauncherRestartResult(true, "Installing the update now - the Director will restart.");
+            FileLog.Write("[LauncherRestartClient] the launcher was asked to restart the Director");
+            return Task.FromResult(new LauncherRestartResult(true,
+                "Installing the update now - the Director will restart."));
         }
         catch (Exception ex)
         {
             FileLog.Write($"[LauncherRestartClient] RequestRestartAsync FAILED: {ex.Message}");
-            return new LauncherRestartResult(false,
+            return Task.FromResult(new LauncherRestartResult(false,
                 $"Could not ask the launcher to restart the Director: {ex.Message}. Closing and reopening the "
-                + "Director installs the update instead.");
+                + "Director installs the update instead."));
         }
     }
 }

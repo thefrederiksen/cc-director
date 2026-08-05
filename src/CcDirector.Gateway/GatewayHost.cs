@@ -268,6 +268,15 @@ public sealed class GatewayHost : IAsyncDisposable
     public Pairing.DeviceRegistry Devices { get; }
 
     /// <summary>
+    /// Remove-the-network-port mission, phase 1b: the registry of per-SESSION Gateway credentials. A Director
+    /// registers one key per session over its tunnel and revokes it when the session is reaped; the auth gate
+    /// verifies presented session keys against it, and the session-key guard limits what they may call. This
+    /// is what lets an agent's command line reach the Gateway without being handed its Director's
+    /// account-wide key.
+    /// </summary>
+    public Pairing.SessionKeyRegistry SessionKeys { get; }
+
+    /// <summary>
     /// Issue #288: which Director last owned each session, so the per-session WS proxy can answer
     /// 503 (owner offline) instead of 404 (unknown session). Populated by the /sessions aggregator
     /// and the WS proxy; read by the WS proxy.
@@ -616,6 +625,16 @@ public sealed class GatewayHost : IAsyncDisposable
     // Dictation tombstone retention (issue #1111). Distinct from the voice-turn sweep above in BOTH numbers
     // and in what it is allowed to touch: this one deletes only DELIVERED/ABANDONED records, never a PENDING
     // one, and it exists solely to bound tombstones whose client acknowledgment will never arrive.
+    /// <summary>
+    /// Remove-the-network-port phase 1b: the lapsed-session-key sweep. It changes NO authentication answer -
+    /// the expiry is enforced on every resolution, so a lapsed key is already refused - it retires the rows
+    /// so the table does not accumulate records that read as live, and an operator listing it sees the truth.
+    /// Hourly is ample against a 12-hour lifetime. Not per-tenant: session_keys is a global table and the
+    /// sweep is one statement across it.
+    /// </summary>
+    private System.Threading.Timer? _sessionKeySweepTimer;
+    private static readonly TimeSpan SessionKeySweepInterval = TimeSpan.FromHours(1);
+
     private System.Threading.Timer? _dictationTombstoneSweepTimer;
     private static readonly TimeSpan DictationTombstoneSweepInterval = TimeSpan.FromHours(6);
     // WHY THIRTY DAYS, and why so much longer than the four hours next door. These two roots hold opposite
@@ -1100,6 +1119,11 @@ public sealed class GatewayHost : IAsyncDisposable
         // MTR-14B: the shared EF database is now the device registry authority. The legacy JSON path is
         // supplied only to the one-time importer; no runtime authentication or mutation reads or writes it.
         Devices = new Pairing.DeviceRegistry(_gatewayDb, devicesPath, GatewayHostedMode.IsHosted);
+        // Remove-the-network-port phase 1b: the per-session credential registry. A Director registers one key
+        // per session over the tunnel it already holds, and an agent inside that session authenticates as the
+        // session rather than with its Director's account-wide key. Same database and the same stored-hash
+        // shape as the device registry above, because it is the same kind of credential one hop further in.
+        SessionKeys = new Pairing.SessionKeyRegistry(_gatewayDb, GatewayHostedMode.IsHosted);
         // The account-to-tenant resolver (Hosted Multi-Tenancy increment 1): owns the tenants mapping table
         // and mints/looks up a tenant from a verified account subject. Built over the EF database; wired into
         // the hosted enrollment boundary (which validates the account token and stamps the resolved tenant on
@@ -1467,22 +1491,19 @@ public sealed class GatewayHost : IAsyncDisposable
         // this Gateway's loopback base. The webhook client is short-timeout, best-effort.
         var cronNotifier = new Running.GatewayCronNotifier(
             DirectorEvents,
-            directorId =>
-            {
-                // MTR-01: the registry has no bare-id accessor. A cron notification's deep link resolves the
-                // Director in the tenant of the CURRENT unit of work (the per-tenant cron pass), the same way
-                // SendCommandAsync resolves the down-channel connection - never a hard-coded Local. No tenant in
-                // scope yields no deep link, which is deny-by-default for a best-effort convenience link.
-                if (_tenantPass.Current is not { } t) return null;
-                var d = Registry.Get(t, directorId);
-                return d is null ? null : (d.TailnetEndpoint ?? d.ControlEndpoint);
-            },
             // Issue #2161: a delegate, not a string. This runs in the constructor, long before the listener
             // binds, so a formatted address here would freeze the pre-bind port into every deep link.
+            //
+            // This is now the ONLY root of a cron deep link. It used to be the Director's own registered
+            // endpoint, resolved per notification out of the registry - and the remove-the-network-port
+            // mission deleted that endpoint, so a current Director registers an empty one and every
+            // run-complete notification carried NO link at all. Not a broken link somebody would report;
+            // no link, which reads as a notification that simply does not have one.
             () => $"http://127.0.0.1:{Port}",
             new HttpClient { Timeout = TimeSpan.FromSeconds(10) },
-            // MTR-01 (Codex round 1): file the run-complete event into the current cron pass's OWN tenant ring,
-            // the same per-tenant seam the deep-link resolver above reads. On self-host this is always Local.
+            // MTR-01 (Codex round 1): file the run-complete event into the current cron pass's OWN tenant ring.
+            // A null return is DENY - no tenant in scope means the best-effort ring event is skipped rather
+            // than filed under a guessed owner. On self-host this is always Local.
             resolveTenant: () => _tenantPass.Current);
         var cronClock = new Running.SystemClock();
         _cronEngine = new Running.CronEngine(
@@ -2387,6 +2408,9 @@ public sealed class GatewayHost : IAsyncDisposable
         // there is a statistics store and, when there is not, why not.
         builder.Services.AddSingleton(StatsStore);
         builder.Services.AddSingleton(Registry);
+        // Remove-the-network-port phase 1b: the DirectorHub (constructed per-invocation by SignalR) registers
+        // and revokes session keys through the SAME registry the auth gate verifies against.
+        builder.Services.AddSingleton(SessionKeys);
         // launcher-persistent-join: the LauncherHub (constructed per-invocation by SignalR) and
         // SendLauncherCommandAsync share this one connection registry.
         builder.Services.AddSingleton(LauncherConnections);
@@ -2459,7 +2483,7 @@ public sealed class GatewayHost : IAsyncDisposable
             // own unique key. The shared token still authenticates the host's own browser/cookie
             // surface, but it is no longer the path a NEW device uses to get in (that is account
             // sign-in - see SignedInEnrollmentEndpoint).
-            var requireToken = new AuthMiddleware.RequireToken { Token = Token, Devices = Devices, Leases = _accessLeases, Boundary = _tenantBoundary };
+            var requireToken = new AuthMiddleware.RequireToken { Token = Token, Devices = Devices, Leases = _accessLeases, Boundary = _tenantBoundary, Sessions = SessionKeys };
             _app.Use(async (ctx, next) => await AuthMiddleware.Run(ctx, requireToken, next));
         }
 
@@ -2539,12 +2563,13 @@ public sealed class GatewayHost : IAsyncDisposable
         // would not be caution, it would be a gate standing in front of a hole that is already filled - while
         // costing every subscriber the ability to reach their own machines.
         //
-        // AND THE COST WAS TOTAL, NOT PARTIAL, WHICH IS WHY THIS MATTERS MORE THAN IT LOOKS. On hosted the
-        // stream is the ONLY arm that can reach a launcher. The REST fallback dials the launcher's registered
-        // address, and LauncherHost binds Kestrel to loopback ONLY - so from a hosted Gateway that arm cannot
-        // connect to any remote machine, ever. With the hub unmapped, a hosted subscriber's launcher could
-        // register and heartbeat and appear in the machine list, and then never receive a single command:
-        // observed in the field as a launcher retrying the hub thousands of times a day while looking healthy.
+        // AND THE COST WAS TOTAL, NOT PARTIAL, WHICH IS WHY THIS MATTERS MORE THAN IT LOOKS. The stream is
+        // the ONLY arm that can reach a launcher - everywhere, since phase 6 of the remove-the-network-port
+        // mission deleted the launcher's listener and the REST fallback that dialed it (and even before that,
+        // the launcher's Kestrel bound loopback only, so a hosted Gateway could never dial a remote machine).
+        // With the hub unmapped, a subscriber's launcher could register and heartbeat and appear in the
+        // machine list, and then never receive a single command: observed in the field as a launcher retrying
+        // the hub thousands of times a day while looking healthy.
         //
         // THE REGISTRY PURGE THE DENY REQUIRED IS DISCHARGED BY CONSTRUCTION. It asked for the launcher and
         // launcher-connection registries to be purged of rows written under the bare-name scheme. Both are
@@ -2599,6 +2624,11 @@ public sealed class GatewayHost : IAsyncDisposable
             // same translator (and verdict cache) the narration path uses, so an unchanged screen is
             // answered from the cached per-turn verdict without a second model call.
             wingmanTranslator: _voiceService?.Translator,
+            // Remove-the-network-port mission, phase 2: the fleet-message steward for POST
+            // /sessions/{sid}/message. Its own instance, on its own options, because it keeps per-sender
+            // counters and windows: sharing one with a Director in the same process would let two paths spend
+            // each other's budget, and on hosted there is no Director in the process to share with anyway.
+            messageSteward: new Core.Fleet.MessageSteward(new Core.Configuration.MessageStewardOptions()),
             requestShutdown: () =>
             {
                 var handler = OnShutdownRequested;
@@ -3166,8 +3196,9 @@ public sealed class GatewayHost : IAsyncDisposable
         // Issue #331: launcher registration + cross-machine Director lifecycle relay.
         // Launchers POST /launchers/register on startup; relay callers POST
         // /machines/{machine}/director/restart|start|stop to reach that machine's Director.
-        // launcher-persistent-join: pass the stream-send hook only when stream mode is on. The relay tries
-        // this first and falls back to the REST relay when it returns null (stream off, or launcher offline).
+        // launcher-persistent-join: the stream-send hook is the ONLY delivery path (phase 6 of the
+        // remove-the-network-port mission deleted the REST fallback along with the launcher's listener) -
+        // a null from it is reported to the caller as the launcher being offline, never dialed around.
         MachineEndpoints.Map(_app, Launchers, _machineSessionSpawner,
             // Tenant boundary - REQUIRED (finding CR-7): every launcher-registry read/write and relay is
             // scoped to the calling tenant, and on hosted an unbound request is denied, never Local.
@@ -3462,6 +3493,21 @@ public sealed class GatewayHost : IAsyncDisposable
         FileLog.Write($"[GatewayHost] dictation tombstone sweep started: every " +
             $"{dictationTombstoneSchedule.TotalHours:0.###}h, retiring unacknowledged terminal records older " +
             $"than {DictationTombstoneMaxAge.TotalDays:0.###} days (PENDING is never swept)");
+
+        // Remove-the-network-port phase 1b: retire lapsed session keys. This is HOUSEKEEPING, and saying so
+        // matters - a lapsed key is ALREADY refused, because the expiry is checked on every resolution, so
+        // nothing about who can call the Gateway depends on this timer running. What it prevents is a table
+        // that fills with rows an operator would read as live credentials. A retention policy with no caller
+        // is not a policy, which is the only reason this is wired rather than left as a method to call later.
+        _sessionKeySweepTimer = new System.Threading.Timer(
+            _ =>
+            {
+                try { SessionKeys.SweepExpired(); }
+                catch (Exception ex) { FileLog.Write($"[GatewayHost] session key sweep error: {ex.Message}"); }
+            },
+            null, SessionKeySweepInterval, SessionKeySweepInterval);
+        FileLog.Write($"[GatewayHost] session key sweep started: every {SessionKeySweepInterval.TotalHours:0.###}h, " +
+            "retiring keys past their expiry (a lapsed key is already refused at resolution - this is housekeeping)");
 
         // Issue #640: start the Gateway-owned background token refresh. Start() returns immediately (the
         // first sweep runs after a short delay), so this never blocks startup. When the cached access
@@ -4020,8 +4066,9 @@ public sealed class GatewayHost : IAsyncDisposable
     /// launcher-persistent-join: push a lifecycle command DOWN a machine's launcher stream and await its
     /// result over the SAME connection (SignalR client results), modeled exactly on <see cref="SendCommandAsync"/>.
     /// Returns null when that machine's launcher has no active stream connection (or the hub is unavailable),
-    /// which the caller treats as "no stream" and falls back to the HTTP relay. Any non-null result - success
-    /// OR a typed failure - means the stream handled the command and its outcome is authoritative.
+    /// which the caller reports as the launcher being unreachable - the stream is the only path to a launcher,
+    /// so there is nothing to fall back to. Any non-null result - success OR a typed failure - means the
+    /// stream handled the command and its outcome is authoritative.
     /// </summary>
     public async Task<LauncherCommandResult?> SendLauncherCommandAsync(Core.Tenancy.TenantId tenant, string machineName, LauncherCommand command, CancellationToken ct = default)
     {
@@ -4064,6 +4111,8 @@ public sealed class GatewayHost : IAsyncDisposable
         _voiceTurnUploadSweepTimer = null;
         try { _dictationTombstoneSweepTimer?.Dispose(); } catch (Exception ex) { FileLog.Write($"[GatewayHost] dictation tombstone sweep timer dispose error: {ex.Message}"); }
         _dictationTombstoneSweepTimer = null;
+        try { _sessionKeySweepTimer?.Dispose(); } catch (Exception ex) { FileLog.Write($"[GatewayHost] session key sweep timer dispose error: {ex.Message}"); }
+        _sessionKeySweepTimer = null;
 
 
         // Issue #640: stop the background token refresh timer.

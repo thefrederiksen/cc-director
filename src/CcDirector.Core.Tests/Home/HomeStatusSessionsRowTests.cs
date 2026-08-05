@@ -28,7 +28,7 @@ public class HomeStatusSessionsRowTests
             sessionReachability: reachability);
 
     private static FleetToolCheck Fault(string resolved, string expected) =>
-        new(FleetToolVerdict.CannotReachDirector, resolved, expected, "Error: missing or invalid token");
+        new(FleetToolVerdict.CannotReachGateway, resolved, expected, "Error: missing or invalid token");
 
     private static HomeCheck? SessionsRow(HomeStatus status)
     {
@@ -102,9 +102,24 @@ public class HomeStatusSessionsRowTests
     {
         var binDir = @"C:\Users\x\AppData\Local\cc-director\instances\default\bin";
         var status = BuildWith(new FleetToolCheck(
-            FleetToolVerdict.Working, binDir + @"\cc-devthrottle.CMD", binDir, "reached this Director"));
+            FleetToolVerdict.Working, binDir + @"\cc-devthrottle.CMD", binDir, "reached the fleet through the Gateway"));
 
         Assert.Equal(HomeCheckLevel.Ok, SessionsRow(status)!.Level);
+        Assert.True(status.AllReady);
+    }
+
+    [Fact]
+    public void NoGateway_AddsNoRow_NeverARepairableToolFault()
+    {
+        // "No Gateway means no agent tooling" is the Remove-the-network-port mission's accepted
+        // trade, and a local-only machine chose that configuration. The page must not carry a
+        // standing fault for it, and it must never route to a tool repair - the install has
+        // nothing wrong with it. Matching the page's long-standing standalone behavior: no row.
+        var status = BuildWith(new FleetToolCheck(
+            FleetToolVerdict.NoGateway, null, @"C:\x\bin",
+            "No Gateway connection right now, so the fleet tools have nothing to reach."));
+
+        Assert.Null(SessionsRow(status));
         Assert.True(status.AllReady);
     }
 

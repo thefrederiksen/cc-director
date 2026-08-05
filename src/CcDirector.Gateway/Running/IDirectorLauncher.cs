@@ -39,9 +39,10 @@ public sealed class RelayDirectorLauncher : IDirectorLauncher
     private readonly LauncherRegistry _launchers;
     private readonly LauncherCommandRouter.SendLauncherCommandAsync? _sendLauncherCommand;
 
-    /// <param name="launchers">The tenant-keyed launcher registry - the REST fallback arm's source of address,
-    /// port and bearer token, resolved as (tenant, machine).</param>
-    /// <param name="sendLauncherCommand">The persistent-stream send hook, or null when stream mode is off.</param>
+    /// <param name="launchers">The tenant-keyed launcher registry, consulted only to tell "never registered"
+    /// from "registered but not stream-connected" when delivery fails - never to dial anything.</param>
+    /// <param name="sendLauncherCommand">The persistent-stream send hook - the only way a command reaches a
+    /// launcher.</param>
     internal RelayDirectorLauncher(
         LauncherRegistry launchers,
         LauncherCommandRouter.SendLauncherCommandAsync? sendLauncherCommand)

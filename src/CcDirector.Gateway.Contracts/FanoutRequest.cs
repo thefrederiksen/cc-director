@@ -67,6 +67,13 @@ public sealed class FanoutResponse
 
     /// <summary>The plain-English reason the Hub refused the fan-out, when <see cref="Denied"/> is true.</summary>
     public string? DeniedReason { get; set; }
+
+    /// <summary>
+    /// A note about an ACCEPTED fan-out that reached nobody - "No other sessions on your team." Distinct
+    /// from <see cref="DeniedReason"/> on purpose: nothing was refused, there was simply nobody to send to,
+    /// and reporting that as a denial would tell an agent alone on its team that it had been blocked.
+    /// </summary>
+    public string? Warning { get; set; }
 }
 
 /// <summary>

@@ -30,7 +30,10 @@ public static class UpdateApplyRule
 /// <param name="State">The persisted record both processes write.</param>
 /// <param name="Live">A check happening at this instant, or null when nothing is in flight.</param>
 /// <param name="RunningSessionCount">How many sessions this Director holds. Gates the install action.</param>
-/// <param name="LauncherPort">The local launcher's port, or null when no launcher is reachable.</param>
+/// <param name="LauncherRunning">Whether a launcher process is running on this machine right now, read
+/// from the registration file the launcher writes and the liveness of the pid in it - there is no
+/// launcher port to probe (remove-the-network-port mission, phase 6). Gates offering "install it now",
+/// because the launcher is what carries a restart out.</param>
 /// <param name="Now">The clock, passed in so the relative times in the output are testable.</param>
 public sealed record UpdateStatusFacts(
     string CurrentVersion,
@@ -38,7 +41,7 @@ public sealed record UpdateStatusFacts(
     UpdaterState State,
     UpdateProgress? Live,
     int RunningSessionCount,
-    int? LauncherPort,
+    bool LauncherRunning,
     DateTimeOffset Now);
 
 /// <summary>
@@ -176,7 +179,7 @@ public static class UpdateStatusFold
         {
             var staged = state.StagedVersion;
             var decision = DecisionAbout(state, staged);
-            var launcherAvailable = facts.LauncherPort is not null;
+            var launcherAvailable = facts.LauncherRunning;
             var canInstall = UpdateApplyRule.ShouldApply(hasStagedUpdate: true, facts.RunningSessionCount)
                              && launcherAvailable;
 

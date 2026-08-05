@@ -44,7 +44,7 @@ public sealed class GatewayPromptSinkTests
 
     private static GatewayPromptSink SinkFor(string gatewayUrl)
     {
-        var client = new GatewayClient(new GatewayConfig { Url = gatewayUrl }, Guid.NewGuid().ToString(), 7879, "1.0.0");
+        var client = new GatewayClient(new GatewayConfig { Url = gatewayUrl }, Guid.NewGuid().ToString(), "1.0.0");
         return new GatewayPromptSink(() => client);
     }
 

@@ -35,7 +35,7 @@ public partial class App : Application
 
             try
             {
-                _controller = new LauncherTrayController(desktop, LauncherAppOptions.Port);
+                _controller = new LauncherTrayController(desktop);
                 _controller.Start();
             }
             catch (Exception ex)

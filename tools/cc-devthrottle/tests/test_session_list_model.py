@@ -35,7 +35,7 @@ def serve_fleet(monkeypatch):
 
     def serve(sessions):
         monkeypatch.delenv("CC_SESSION_ID", raising=False)
-        monkeypatch.setattr(session_ops.director, "get_json", lambda path: sessions)
+        monkeypatch.setattr(session_ops.gateway, "get_json", lambda path: sessions)
         monkeypatch.setattr(session_ops, "console", Console(width=200))
 
     return serve

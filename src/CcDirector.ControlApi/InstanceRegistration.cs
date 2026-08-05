@@ -23,7 +23,6 @@ public sealed class InstanceRegistration : IDisposable
     public static TimeSpan HeartbeatInterval { get; } = TimeSpan.FromSeconds(15);
 
     public string DirectorId { get; }
-    public int Port { get; }
     public string FilePath { get; }
     public DirectorDto Dto { get; }
 
@@ -35,11 +34,10 @@ public sealed class InstanceRegistration : IDisposable
     /// Override the shared instances directory. Tests pass an isolated temp directory so test
     /// Directors never appear in a real Gateway's discovery (and vice versa). Production omits it.
     /// </param>
-    public InstanceRegistration(string directorId, int port, string version, string? instancesDirectory = null,
+    public InstanceRegistration(string directorId, string version, string? instancesDirectory = null,
         string? displayName = null)
     {
         DirectorId = directorId;
-        Port = port;
         _instancesDirectory = instancesDirectory ?? InstancesDirectory;
         FilePath = Path.Combine(_instancesDirectory, $"{directorId}.json");
 
@@ -48,7 +46,11 @@ public sealed class InstanceRegistration : IDisposable
             DirectorId = directorId,
             Pid = Environment.ProcessId,
             StartedAt = DateTime.UtcNow,
-            ControlEndpoint = $"http://127.0.0.1:{port}",
+            // Remove-the-network-port mission, phase 5: there is no control endpoint. The Director
+            // listens on nothing; a reader that wants to ACT on this Director uses the process id
+            // and the named lifecycle signals, and everything else goes through the Gateway. Empty
+            // (not absent) so old readers of this file deserialize cleanly.
+            ControlEndpoint = "",
             MachineName = Environment.MachineName,
             User = Environment.UserName,
             // devthrottle_internal#1176: the instance's editable display name, so file-discovered
@@ -65,7 +67,7 @@ public sealed class InstanceRegistration : IDisposable
     /// re-appears within ~15 seconds, so the Gateway re-discovers this Director.</summary>
     public void Register()
     {
-        FileLog.Write($"[InstanceRegistration] Register: id={DirectorId}, port={Port}, file={FilePath}");
+        FileLog.Write($"[InstanceRegistration] Register: id={DirectorId}, file={FilePath}");
         try
         {
             WriteOnce();

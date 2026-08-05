@@ -24,9 +24,10 @@ public sealed class MachineRelaySlotGuardTests : IAsyncLifetime
     private readonly string _instancesDir =
         Path.Combine(Path.GetTempPath(), "cc-slotguard-test-" + Guid.NewGuid().ToString("N"));
 
-    // A launcher with a dead port so the guard test never dials out.
+    // A registered launcher with NO stream connection: a request that passes the guard ends in the
+    // not-connected 502 refusal, which is the proof the guard was what decided (phase 6 deleted the
+    // REST dial-out, so there is no port to be dead).
     private const string Machine = "GUARD-TEST";
-    private const int DeadPort = 1; // never reachable
 
     public async Task InitializeAsync()
     {
@@ -38,12 +39,10 @@ public sealed class MachineRelaySlotGuardTests : IAsyncLifetime
         _http = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{_gateway.Port}/") };
         _http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", "test-token");
 
-        // Register a launcher (dead port - only guard tests that PASS the guard will 502).
+        // Register a launcher (no stream joined - only guard tests that PASS the guard will 502).
         await _http.PostAsJsonAsync("launchers/register", new LauncherRegistrationRequest
         {
             MachineName = Machine,
-            Port = DeadPort,
-            Token = "relay-token",
             Pid = 1,
             Version = "1.0.0",
             StartedAt = DateTime.UtcNow,
@@ -82,7 +81,7 @@ public sealed class MachineRelaySlotGuardTests : IAsyncLifetime
     [InlineData(@"local_builds\cc-director99.exe")]   // high slot
     public async Task SlotGuard_AgentPaths_AllowWithout_ConfirmFlag(string exePath)
     {
-        // Guard passes -> relay fires -> 502 because the launcher port is dead.
+        // Guard passes -> dispatch is attempted -> 502 because no stream is connected.
         var resp = await PostRelay("director/restart", exePath, confirmProtected: null);
         Assert.Equal(HttpStatusCode.BadGateway, resp.StatusCode);
     }
@@ -93,7 +92,7 @@ public sealed class MachineRelaySlotGuardTests : IAsyncLifetime
     [InlineData(@"local_builds\cc-director4.exe")]
     public async Task SlotGuard_ConfirmProtectedTrue_BypassesGuard(string exePath)
     {
-        // confirmProtected=true bypasses the guard -> relay fires -> 502 (dead port).
+        // confirmProtected=true bypasses the guard -> dispatch is attempted -> 502 (not connected).
         var resp = await PostRelay("director/restart", exePath, confirmProtected: true);
         Assert.Equal(HttpStatusCode.BadGateway, resp.StatusCode);
     }
@@ -101,7 +100,7 @@ public sealed class MachineRelaySlotGuardTests : IAsyncLifetime
     [Fact]
     public async Task SlotGuard_NoExePath_GuardNotApplied()
     {
-        // No exePath -> guard does not run -> relay fires -> 502 (dead port).
+        // No exePath -> guard does not run -> dispatch is attempted -> 502 (not connected).
         var resp = await _http.PostAsync($"machines/{Machine}/director/restart", null);
         Assert.Equal(HttpStatusCode.BadGateway, resp.StatusCode);
     }
@@ -120,7 +119,7 @@ public sealed class MachineRelaySlotGuardTests : IAsyncLifetime
     [Fact]
     public async Task SlotGuard_DoesNotApplyTo_Start()
     {
-        // start never kills, so guard is not applied -> 502 (dead port).
+        // start never kills, so guard is not applied -> 502 (not connected).
         var resp = await PostRelay("director/start", @"cc-director.exe", confirmProtected: null);
         Assert.Equal(HttpStatusCode.BadGateway, resp.StatusCode);
     }

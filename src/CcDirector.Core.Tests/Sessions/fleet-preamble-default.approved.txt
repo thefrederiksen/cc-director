@@ -17,8 +17,9 @@ You can talk to other sessions across the fleet. This command is already on your
   cc-devthrottle session spawn <repo>  open a new session on this Director
   cc-devthrottle schedule list       list Gateway schedules
   cc-devthrottle setup status        show local setup status
-Address a session by a short prefix of its id or by its name. You reach the fleet through your
-own Director (CC_DIRECTOR_API); no Gateway address or token is needed.
+Address a session by a short prefix of its id or by its name. You reach the fleet through the
+Gateway with this session's own key; both are already in your environment (CC_GATEWAY_URL and
+CC_GATEWAY_SESSION_KEY), so the commands above just work - there is nothing to configure.
 Every message you send interrupts the receiving agent. 'message send all' reaches only your own
 team, which is what you want. Do NOT try to reach the WHOLE fleet ('--everyone') - it freezes
 every session on every machine and repo; the Gateway Hub refuses it without a human grant (issue #1229).

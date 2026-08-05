@@ -21,66 +21,23 @@ public partial class HelpDialog : Window
     // the visible values can never drift apart.
     private string _copyText = "";
 
-    // Shown for the "Control endpoint" row until the tailnet front door resolves (the
-    // resolution shells the tailscale CLI off the UI thread - see OnOpened).
-    private const string ResolvingPlaceholder = "(resolving...)";
-
     public HelpDialog()
     {
         FileLog.Write("[HelpDialog] Constructor: initializing");
         InitializeComponent();
-        RenderRows(InitialControlEndpoint());
-        Opened += OnOpened;
+        RenderRows();
     }
 
     /// <summary>
-    /// The Control endpoint value shown before async resolution: a placeholder when the
-    /// Control API host has a port (resolved in <see cref="OnOpened"/>), else the same
-    /// plain "not started" / "no port" text the final render would show.
+    /// Fill the "ABOUT THIS INSTANCE" panel with the data that identifies this Director
+    /// (id, pid, machine, instance file) and stash the same data as plain text for the
+    /// "Copy info" button. There is no control endpoint row: the Director listens on
+    /// nothing, and the way to reach it is the Gateway shown below.
     /// </summary>
-    private static string InitialControlEndpoint()
-    {
-        var host = (global::Avalonia.Application.Current as App)?.ControlApiHost;
-        if (host is null) return "(control API not started)";
-        return host.Port > 0 ? ResolvingPlaceholder : "(no port)";
-    }
-
-    /// <summary>
-    /// Once the dialog is on screen, resolve the tailnet-reachable Control API endpoint off
-    /// the UI thread (it shells the tailscale CLI, up to ~5s) and re-render the rows so the
-    /// "Control endpoint" value advertises the Tailscale Serve front door when available.
-    /// </summary>
-    private async void OnOpened(object? sender, EventArgs e)
-    {
-        Opened -= OnOpened; // resolve once per dialog
-        FileLog.Write("[HelpDialog] OnOpened: resolving advertised Control API endpoint");
-        try
-        {
-            var host = (global::Avalonia.Application.Current as App)?.ControlApiHost;
-            if (host is null || host.Port <= 0)
-                return; // initial render already shows the correct non-resolvable value
-
-            var endpoint = await Task.Run(() =>
-                TailscaleIdentity.ResolveAdvertisedControlApiEndpoint(host.Port));
-            RenderRows(endpoint);
-            FileLog.Write($"[HelpDialog] OnOpened: control endpoint resolved to {endpoint}");
-        }
-        catch (Exception ex)
-        {
-            FileLog.Write($"[HelpDialog] OnOpened FAILED: {ex}");
-        }
-    }
-
-    /// <summary>
-    /// Fill the "ABOUT THIS INSTANCE" panel with the data the Gateway uses to locate
-    /// this Director (id, control endpoint, pid, machine, instance file) and stash the
-    /// same data as plain text for the "Copy info" button. Idempotent - clears and
-    /// rebuilds the panel so it can be called again once the endpoint resolves.
-    /// </summary>
-    private void RenderRows(string controlEndpoint)
+    private void RenderRows()
     {
         AboutPanel.Children.Clear();
-        var rows = BuildInfoRows(controlEndpoint);
+        var rows = BuildInfoRows();
 
         var sb = new StringBuilder();
         sb.AppendLine("Director - instance information");
@@ -92,7 +49,7 @@ public partial class HelpDialog : Window
         _copyText = sb.ToString().TrimEnd();
     }
 
-    private static List<(string Label, string Value)> BuildInfoRows(string controlEndpoint)
+    private static List<(string Label, string Value)> BuildInfoRows()
     {
         var app = global::Avalonia.Application.Current as App;
         var host = app?.ControlApiHost;
@@ -100,15 +57,14 @@ public partial class HelpDialog : Window
         var version = AppVersion.Display;
         var processPath = Environment.ProcessPath ?? "(unknown)";
 
-        // DirectorId / instance file only exist once the Control API host has started. It
+        // DirectorId / instance file only exist once the Director host has started. It
         // always has by the time this dialog is reachable, but if it somehow has not, say
-        // so plainly rather than print a misleading value. The control endpoint is resolved
-        // by the caller (RenderRows) so it can advertise the tailnet front door.
+        // so plainly rather than print a misleading value.
         string directorId, instanceFile;
         if (host is null)
         {
-            directorId = "(control API not started)";
-            instanceFile = "(control API not started)";
+            directorId = "(director host not started)";
+            instanceFile = "(director host not started)";
         }
         else
         {
@@ -123,7 +79,6 @@ public partial class HelpDialog : Window
             ("Process ID (PID)", Environment.ProcessId.ToString()),
             ("Process name", Path.GetFileName(processPath)),
             ("Location", processPath),
-            ("Control endpoint", controlEndpoint),
             ("Machine", Environment.MachineName),
             ("User", Environment.UserName),
             ("Instance file", instanceFile),

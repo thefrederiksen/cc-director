@@ -87,7 +87,7 @@ internal sealed class CatalogReadExecutor : ISessionCommandArea
 
     /// <summary>
     /// The <c>facts</c> verb (director-level, no session): this machine's cc-tool inventory (names, categories,
-    /// versions, built-state) plus the launcher presence/port fact. Mirrors the Director's <c>GET /facts</c>
+    /// versions, built-state) plus the launcher presence fact. Mirrors the Director's <c>GET /facts</c>
     /// lambda exactly - always a 200 - and returns a serialized <see cref="DirectorFactsDto"/>. The Director
     /// version is the one dependency the tunnel command surface did not carry before; it now rides in
     /// <see cref="SessionCommandServices.DirectorVersion"/>, and the producing Director stamps its own version
@@ -114,7 +114,8 @@ internal sealed class CatalogReadExecutor : ISessionCommandArea
             Launcher = new LauncherFactDto
             {
                 Installed = launcher.Installed,
-                Port = launcher.Port,
+                Running = LauncherDiscovery.IsRunning(launcher),
+                Version = launcher.Version,
                 Error = launcher.Error,
             },
         }));

@@ -62,6 +62,13 @@ public sealed class TenantGateArchitectureTests
         nameof(AccountTrialEntity),       // free-trial ledger, keyed by account subject and read pre-tenant (#2117)
         nameof(DeviceCredentialEntity),   // per-device key records; a presented key is resolved by hash pre-tenant
         nameof(DeviceImportMarkerEntity), // one-time devices.json import idempotency markers (global, like above)
+        // Per-SESSION Gateway credentials (Remove-the-network-port phase 1b). Global for exactly the same
+        // reason as device_credentials directly above: a presented session key is resolved by its HASH before
+        // any tenant is known, and the tenant is READ OFF the matched row. Scoping the table by tenant would
+        // make the resolution circular - it would need the answer in order to ask the question. The row's
+        // TenantId is a plain data column (whose account this session belongs to), and it is what the auth
+        // gate then enters as the caller's scope for the rest of the request.
+        nameof(SessionKeyEntity),
     };
 
     // ----------------------------------------------------------------------------------------------------

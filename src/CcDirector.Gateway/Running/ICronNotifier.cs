@@ -13,11 +13,16 @@ namespace CcDirector.Gateway.Running;
 public interface ICronNotifier
 {
     /// <summary>
-    /// Build a deep link to the resulting session's view, or empty when there is no session or no
-    /// reachable Director endpoint to root it on. The firing engine calls this to stamp the link on
-    /// the payload it hands back to <see cref="NotifyRunCompletedAsync"/>.
+    /// Build a deep link to the session, rooted on the GATEWAY'S own address, or empty when there is
+    /// no session. The firing engine calls this to stamp the link on the payload it hands back to
+    /// <see cref="NotifyRunCompletedAsync"/>.
+    ///
+    /// It takes no Director: the link used to be rooted on the resolved Director's endpoint, and the
+    /// remove-the-network-port mission deleted that endpoint, so every notification on a current
+    /// fleet silently carried no link at all. Dropping the parameter rather than ignoring it is what
+    /// stops the next implementation quietly reintroducing the dependency.
     /// </summary>
-    string BuildSessionLink(string? directorId, string? sessionId);
+    string BuildSessionLink(string? sessionId);
 
     /// <summary>
     /// Deliver one run-complete notification for <paramref name="job"/> using

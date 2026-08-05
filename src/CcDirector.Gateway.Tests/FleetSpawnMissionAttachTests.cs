@@ -1,160 +1,132 @@
-using System.Net;
-using System.Net.Http.Headers;
-using System.Net.Http.Json;
+using System.Text.Json;
 using CcDirector.ControlApi;
 using CcDirector.Core.Configuration;
 using CcDirector.Core.Sessions;
-using CcDirector.Core.Storage;
 using CcDirector.Gateway.Contracts;
-using Microsoft.AspNetCore.Builder;
-using Microsoft.AspNetCore.Hosting;
-using Microsoft.AspNetCore.Http;
-using Microsoft.Extensions.Logging;
 using Xunit;
 
 namespace CcDirector.Gateway.Tests;
 
 /// <summary>
-/// Issue #1548, at the endpoint. Reproduces the reported failure exactly: `cc-devthrottle session spawn
-/// &lt;repo&gt; --mission &lt;id&gt;` sends POST /fleet/spawn carrying a mission ID and NOTHING ELSE - the CLI
-/// has no way to send the name - and the spawn was rejected with "unknown mission '&lt;id&gt;'. Create it
-/// first with POST /missions." for a mission that already existed at the Gateway.
+/// Issue #1548's surviving seam. The original defect: `cc-devthrottle session spawn --mission <id>`
+/// carried a mission ID and NOTHING ELSE, and the Director's spawn floor resolved it against the WRONG
+/// store (its own local missions.json) instead of the Gateway's, rejecting a mission that existed.
 ///
-/// The local spawn leg never asked the Gateway, so the request reached the Director floor with the name
-/// blank and fell through to the floor's TEMPORARY local-store bridge, which looked in the Director's own
-/// missions.json - the wrong store. The remote leg never had the bug: it leaves through the Gateway, which
-/// stamps the name on the way out.
+/// Remove-the-network-port mission, phase 5: the Director's /fleet/spawn route - and the
+/// Gateway-lookup leg these tests originally drove over loopback HTTP - is gone with the listener.
+/// The ONE spawn path is now the <c>create</c> verb the Gateway dispatches down the tunnel, and the
+/// GATEWAY resolves the mission name before dispatching (MachineEndpoints stamps
+/// <c>req.MissionName</c> from its own store - the source of truth - before the create leaves).
+/// What the DIRECTOR must get right is therefore the create-time contract, asserted here at the
+/// real verb core:
 ///
-/// This drives the REAL Director Control API against a REAL Gateway stub over a REAL loopback HTTP
-/// connection, so the whole path - endpoint, GatewayClient, wire, floor - runs. Before the fix the first
-/// fact below returns 400 "unknown mission"; after it, the session is born carrying the mission NAME.
+///   * MissionId + MissionName both present (the Gateway path): stamp DIRECTLY, no local lookup -
+///     the local store knowing nothing about the mission must not matter.
+///   * MissionId alone (an old caller): the TEMPORARY local-store bridge resolves it, and an id the
+///     local store does not know is REFUSED loudly rather than silently dropped.
+///   * No mission: no attach, no lookup.
 /// </summary>
 [Collection("DirectorRoot")]
-public sealed class FleetSpawnMissionAttachTests : IAsyncLifetime
+public sealed class FleetSpawnMissionAttachTests : IDisposable
 {
     private static readonly Guid KnownMissionId = Guid.NewGuid();
     private const string KnownMissionName = "Stable Release";
 
     private readonly string _root;
     private readonly string? _prevRoot;
-    private WebApplication _gatewayStub = null!;
-    private ControlApiHost _host = null!;
-    private SessionManager _sm = null!;
-    private HttpClient _client = null!;
-    private string _repoDir = null!;
+    private readonly SessionManager _sm;
+    private readonly string _repoDir;
 
     public FleetSpawnMissionAttachTests()
     {
         _prevRoot = Environment.GetEnvironmentVariable("CC_DIRECTOR_ROOT");
         _root = Path.Combine(Path.GetTempPath(), "ccd-spawnmission-root-" + Guid.NewGuid().ToString("N"));
         Environment.SetEnvironmentVariable("CC_DIRECTOR_ROOT", _root);
-    }
-
-    public async Task InitializeAsync()
-    {
-        // A Gateway stub that knows exactly ONE mission - the source of truth the Director must consult.
-        var builder = WebApplication.CreateBuilder();
-        builder.Logging.ClearProviders();
-        builder.WebHost.ConfigureKestrel(o => o.Listen(IPAddress.Loopback, 0));
-        _gatewayStub = builder.Build();
-        _gatewayStub.MapGet("/missions/{mid}", (string mid) =>
-            Guid.TryParse(mid, out var id) && id == KnownMissionId
-                ? Results.Json(new MissionDto { MissionId = KnownMissionId, MissionName = KnownMissionName })
-                : Results.NotFound(new { error = "mission not found" }));
-        await _gatewayStub.StartAsync();
-        var gatewayUrl = _gatewayStub.Urls.First();
-
-        // Point this Director at the stub. GatewayConfig.Load reads config.json under CC_DIRECTOR_ROOT, so
-        // this is the same wiring a real install uses - no test-only seam.
-        Directory.CreateDirectory(Path.GetDirectoryName(CcStorage.ConfigJson())!);
-        await File.WriteAllTextAsync(CcStorage.ConfigJson(),
-            "{\"gateway\":{\"url\":\"" + gatewayUrl + "\"}}");
 
         _repoDir = Path.Combine(Path.GetTempPath(), "ccd-spawnmission-repo-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(_repoDir);
 
         _sm = new SessionManager(new AgentOptions());
-        _host = new ControlApiHost(_sm, "1.0.0-test", () => Task.CompletedTask, useEphemeralPort: true);
-        var port = await _host.StartAsync();
-        _client = DirectorTestClient.Admin(port);
     }
 
-    public async Task DisposeAsync()
+    public void Dispose()
     {
-        _client.Dispose();
-        await _host.StopAsync();
         _sm.Dispose();
-        await _gatewayStub.StopAsync();
-        try
-        {
-            var f = Path.Combine(InstanceRegistration.InstancesDirectory, $"{_host.DirectorId}.json");
-            if (File.Exists(f)) File.Delete(f);
-        }
-        catch { /* test cleanup, ignore */ }
         Environment.SetEnvironmentVariable("CC_DIRECTOR_ROOT", _prevRoot);
         try { if (Directory.Exists(_root)) Directory.Delete(_root, true); } catch { /* best effort */ }
         try { if (Directory.Exists(_repoDir)) Directory.Delete(_repoDir, true); } catch { /* best effort */ }
     }
 
-    /// <summary>A spawn body shaped exactly like the CLI's: a mission ID, never a name.</summary>
-    private NewSessionRequest CliSpawnBody(Guid missionId) => new()
+    private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
+
+    /// <summary>A spawn body shaped like the create the Gateway dispatches, launching a harmless shell.</summary>
+    private NewSessionRequest SpawnBody() => new()
     {
         RepoPath = _repoDir,
         Agent = "RawCli",
         Command = "cmd",
         CommandArgs = "/k",
-        MissionId = missionId,
     };
 
-    [Fact]
-    public async Task Local_spawn_withMissionIdOnly_resolvesTheNameFromTheGateway_andAttaches()
+    private DirectorCommandResult Spawn(NewSessionRequest body, MissionStore? localStore = null)
+        => SessionCommandExecutor.Create(_sm, "dir-spawn-mission", new DirectorCommand
+        {
+            CommandId = "cmd-spawn-mission",
+            Verb = "create",
+            SessionId = "",
+            PayloadJson = JsonSerializer.Serialize(body, Json),
+        }, localStore is null ? null : new SessionCommandServices { MissionStore = localStore });
+
+    private async Task<SessionDto> SpawnOkAndCleanUpAsync(NewSessionRequest body, MissionStore? localStore = null)
     {
-        // The exact #1548 reproduction. This returned 400 "unknown mission" before the fix.
-        var resp = await _client.PostAsJsonAsync("fleet/spawn", CliSpawnBody(KnownMissionId));
+        var result = Spawn(body, localStore);
+        Assert.Equal(DirectorCommandStatus.Ok, result.Status);
+        var dto = JsonSerializer.Deserialize<SessionDto>(result.BodyJson ?? "{}", Json)!;
+        if (dto.SessionId is not null && Guid.TryParse(dto.SessionId, out var id))
+        {
+            try { await _sm.KillSessionAsync(id); } catch { /* the shell may already be gone */ }
+        }
+        return dto;
+    }
 
-        Assert.Equal(HttpStatusCode.Created, resp.StatusCode);
-        var dto = await resp.Content.ReadFromJsonAsync<SessionDto>();
-        Assert.NotNull(dto);
-        Assert.Equal(KnownMissionId, dto!.MissionId);
+    [Fact]
+    public async Task Gateway_resolved_mission_attaches_directly_without_any_local_lookup()
+    {
+        // The Gateway path: id AND name arrive together because the Gateway already resolved the mission
+        // against ITS store. The Director's own store knows nothing about this mission, and that must not
+        // matter - re-resolving locally is the wrong-store defect #1548 was about.
+        var body = SpawnBody();
+        body.MissionId = KnownMissionId;
+        body.MissionName = KnownMissionName;
 
-        // The point of the whole issue: the session is born carrying the mission NAME, resolved from the
-        // Gateway's store, so it is genuinely bound into the pod rather than rejected against the wrong one.
+        var dto = await SpawnOkAndCleanUpAsync(body);
+
+        Assert.Equal(KnownMissionId, dto.MissionId);
         Assert.Equal(KnownMissionName, dto.MissionName);
-
-        if (dto.SessionId is not null)
-            await _client.DeleteAsync($"sessions/{dto.SessionId}");
     }
 
     [Fact]
-    public async Task Local_spawn_withMissionUnknownToTheGateway_saysSo_inPlainEnglish()
+    public void Old_caller_with_id_only_and_a_local_store_miss_is_refused_loudly()
     {
-        // A mission the Gateway genuinely does not have still fails - but now it fails against the RIGHT
-        // store, and the message points at the command that lists them instead of telling the human to
-        // create something that may already exist.
-        var resp = await _client.PostAsJsonAsync("fleet/spawn", CliSpawnBody(Guid.NewGuid()));
+        // The transitional bridge: an id-only create resolves against the LOCAL store, and an unknown id
+        // must be refused rather than silently dropping the attach - an unattached session in a pod that
+        // expected it is the quiet version of the same defect.
+        var body = SpawnBody();
+        body.MissionId = Guid.NewGuid();
 
-        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
-        var body = await resp.Content.ReadAsStringAsync();
-        Assert.Contains("The Gateway has no mission with that id", body);
-        Assert.Contains("cc-devthrottle mission list", body);
+        var result = Spawn(body, new MissionStore(
+            Path.Combine(_root, "missions-empty.json"), adoptUnattributedAs: Core.Tenancy.TenantId.Local));
+
+        Assert.Equal(DirectorCommandStatus.BadRequest, result.Status);
+        Assert.Contains("unknown mission", result.Error);
     }
 
     [Fact]
-    public async Task Local_spawn_withNoMission_isUnaffected()
+    public async Task No_mission_on_the_create_attaches_nothing()
     {
-        // The no-mission path must not have acquired a Gateway round-trip.
-        var body = CliSpawnBody(KnownMissionId);
-        body.MissionId = null;
+        var dto = await SpawnOkAndCleanUpAsync(SpawnBody());
 
-        var resp = await _client.PostAsJsonAsync("fleet/spawn", body);
-
-        Assert.Equal(HttpStatusCode.Created, resp.StatusCode);
-        var dto = await resp.Content.ReadFromJsonAsync<SessionDto>();
-        Assert.NotNull(dto);
-        Assert.Null(dto!.MissionId);
+        Assert.Null(dto.MissionId);
         Assert.Null(dto.MissionName);
-
-        if (dto.SessionId is not null)
-            await _client.DeleteAsync($"sessions/{dto.SessionId}");
     }
 }

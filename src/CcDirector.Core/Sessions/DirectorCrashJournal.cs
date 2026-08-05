@@ -157,6 +157,41 @@ public sealed class DirectorCrashJournal
     }
 
     /// <summary>
+    /// The LIVE roster of a running Director, read from outside that Director - the session count the
+    /// launcher needs before it decides whether installing an update would interrupt somebody's work.
+    ///
+    /// This is the same file <see cref="Update"/> writes, read rather than asked for. It is a fair
+    /// substitute for asking the Director over a socket precisely because of how it is maintained: it
+    /// is rewritten atomically on EVERY change to the session set, so it is never more than one event
+    /// stale, and <see cref="MarkClean"/> deletes it on an orderly stop, so a file that exists beside a
+    /// live process describes that process. It carries every session's identity as well as the count,
+    /// which the health route never did.
+    ///
+    /// Returns null when there is no readable journal. Callers must treat that as "unknown", never as
+    /// "no sessions": the file is absent both when a Director holds nothing and when it has not opened
+    /// its journal yet, and only one of those is safe to restart.
+    /// </summary>
+    /// <param name="directorId">The Director whose roster is wanted.</param>
+    /// <param name="directory">The crash-journal directory of THAT Director's instance home. A caller
+    /// outside the Director must pass this: journals live under the instance's own storage, and the
+    /// default resolves against the CALLER's home, which is a different place.</param>
+    public static DirectorCrashJournalData? ReadLiveRoster(string directorId, string? directory = null)
+    {
+        if (string.IsNullOrWhiteSpace(directorId)) return null;
+        var path = Path.Combine(directory ?? DefaultDirectory, $"{directorId}.json");
+        try
+        {
+            if (!File.Exists(path)) return null;
+            return JsonSerializer.Deserialize<DirectorCrashJournalData>(File.ReadAllText(path), JsonOptions);
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[DirectorCrashJournal] ReadLiveRoster: cannot read {path}: {ex.Message}");
+            return null;
+        }
+    }
+
+    /// <summary>
     /// Mark a clean shutdown by deleting the journal. A missing journal means "this Director
     /// stopped gracefully; nothing to recover" - so only an abnormal death leaves a file.
     /// </summary>

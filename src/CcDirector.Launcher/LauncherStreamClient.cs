@@ -9,31 +9,35 @@ namespace CcDirector.Launcher;
 
 /// <summary>
 /// launcher-persistent-join: the launcher's outbound client for the Gateway's LauncherHub. It dials the
-/// Gateway (never the other way), authenticates with the same token the HTTP registration uses, and keeps a
+/// Gateway (never the other way), authenticates with the configured Gateway credential, and keeps a
 /// persistent stream open so the Gateway can PUSH a lifecycle command DOWN it - start/stop/restart the
-/// installed Director, or a generic launch - instead of dialing this launcher's loopback REST API.
+/// installed Director, or a generic launch.
+///
+/// THIS CONNECTION IS THE ONLY WAY A COMMAND REACHES THIS LAUNCHER (remove-the-network-port mission,
+/// phase 6). The launcher listens on nothing - there is no loopback REST interface for the Gateway to
+/// relay to and no stream-mode switch to leave this off. If a Gateway is configured, this client runs;
+/// a launcher without it is a launcher no machine route can drive, and the Gateway says so loudly
+/// rather than reaching for a second path.
 ///
 /// It is the launcher twin of the Director's <c>GatewayStreamClient</c>, but simpler: a launcher pushes no
 /// session state, so on connect/reconnect it sends only <see cref="LauncherStreamHello"/>, then waits for
 /// commands on the down-channel and executes them through the SAME <see cref="DirectorSupervisor"/> /
-/// <see cref="LaunchService"/> actions the REST endpoints use.
+/// <see cref="LaunchService"/> actions.
 ///
-/// It runs ALONGSIDE the existing <see cref="GatewayRegistrationClient"/> (which stays for registration and
-/// heartbeat metadata). It is inert unless the config has a Gateway URL and <see cref="GatewayConfig.StreamMode"/>
-/// is on, so a launcher with stream mode off behaves exactly as today and the Gateway relays over REST.
+/// It runs ALONGSIDE the existing <see cref="GatewayRegistrationClient"/> (which stays for presence and
+/// heartbeat metadata). It is inert only when no Gateway is configured at all.
 /// </summary>
 public sealed class LauncherStreamClient : IAsyncDisposable
 {
     private readonly GatewayConfig _config;
-    private readonly int _port;
     private readonly string _version;
     private readonly DirectorSupervisor _supervisor;
     private readonly LaunchService _launchService;
     private readonly AppCatalog _appCatalog;
     private readonly FileSearchService _fileSearch;
 
-    /// <summary>Query answers are serialised here before they ride back up the stream, using the same
-    /// web-style naming the loopback routes serialise with so both surfaces produce identical text.</summary>
+    /// <summary>Query answers are serialised here before they ride back up the stream, using web-style
+    /// naming so the documents agents read keep the shape they have always had.</summary>
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
     private HubConnection? _connection;
@@ -43,11 +47,10 @@ public sealed class LauncherStreamClient : IAsyncDisposable
     /// <summary>Reconnect backoff between long-outage restart attempts once auto-reconnect has given up.</summary>
     private static readonly TimeSpan RestartDelay = TimeSpan.FromSeconds(5);
 
-    public LauncherStreamClient(GatewayConfig config, int port, string version, DirectorSupervisor supervisor,
+    public LauncherStreamClient(GatewayConfig config, string version, DirectorSupervisor supervisor,
         LaunchService launchService, AppCatalog? appCatalog = null, FileSearchService? fileSearch = null)
     {
         _config = config ?? throw new ArgumentNullException(nameof(config));
-        _port = port;
         _version = version ?? "";
         _supervisor = supervisor ?? throw new ArgumentNullException(nameof(supervisor));
         _launchService = launchService ?? throw new ArgumentNullException(nameof(launchService));
@@ -55,8 +58,10 @@ public sealed class LauncherStreamClient : IAsyncDisposable
         _fileSearch = fileSearch ?? new FileSearchService();
     }
 
-    /// <summary>True when stream mode is enabled for a configured Gateway. When false, <see cref="Start"/> is a no-op.</summary>
-    public bool IsEnabled => _config.IsEnabled && _config.StreamMode;
+    /// <summary>True when a Gateway is configured. When false, <see cref="Start"/> is a no-op. Deliberately
+    /// NOT gated on <see cref="GatewayConfig.StreamMode"/>: the stream is the only command path to a
+    /// launcher, so an off switch here would be an off switch for cross-machine lifecycle itself.</summary>
+    public bool IsEnabled => _config.IsEnabled;
 
     /// <summary>Start dialing the Gateway. Idempotent; inert when <see cref="IsEnabled"/> is false.</summary>
     public void Start()
@@ -97,8 +102,8 @@ public sealed class LauncherStreamClient : IAsyncDisposable
 
         // The production down-channel. The Gateway invokes "Command" with a LauncherCommand and awaits the
         // LauncherCommandResult over the same connection (SignalR client results). This handler is a
-        // boundary, so it catches: a dispatch fault becomes an Error result the Gateway can fall back on,
-        // never a faulted hub invocation.
+        // boundary, so it catches: a dispatch fault becomes a typed Error result the Gateway reports to
+        // its caller, never a faulted hub invocation.
         _connection.On<LauncherCommand, LauncherCommandResult>("Command", cmd => DispatchAsync(cmd));
 
         while (!_disposed)
@@ -113,8 +118,8 @@ public sealed class LauncherStreamClient : IAsyncDisposable
         }
     }
 
-    // Execute one command through the same supervisor/launch actions the loopback REST endpoints use, so
-    // the stream path and the REST relay path cannot drift. A boundary: any fault becomes an Error result.
+    // Execute one command through the shared supervisor/launch actions. A boundary: any fault becomes an
+    // Error result.
     private async Task<LauncherCommandResult> DispatchAsync(LauncherCommand cmd)
     {
         try
@@ -139,8 +144,8 @@ public sealed class LauncherStreamClient : IAsyncDisposable
 
                 case "launch":
                 {
-                    // The same resolution rule the loopback route uses, so a launch asked for over the stream
-                    // and the identical launch asked for over the relay cannot pick different programs.
+                    // The catalogue resolution rule is enforced HERE, in the launcher process, so no relay
+                    // arm or future caller can bypass what "start Chrome" is allowed to mean on this machine.
                     var (path, error) = _appCatalog.ResolveLaunchPath(cmd.Path, cmd.App);
                     if (error is not null)
                         return LauncherCommandResult.Fail(LauncherCommandStatus.BadRequest, error);
@@ -191,23 +196,69 @@ public sealed class LauncherStreamClient : IAsyncDisposable
         }
     }
 
-    private async Task SayHelloAsync()
-    {
-        var conn = _connection;
-        if (conn is null || conn.State != HubConnectionState.Connected) return;
-        try
-        {
-            await conn.InvokeAsync("Hello", new LauncherStreamHello
+    /// <summary>How long between Hello attempts while the connection is up. Short, because until Hello
+    /// lands this launcher is invisible to every command, and long enough that a hub rejecting Hello
+    /// repeatedly is not hammered.</summary>
+    internal static readonly TimeSpan HelloRetryDelay = TimeSpan.FromSeconds(5);
+
+    private Task SayHelloAsync() =>
+        SendHelloUntilAcceptedAsync(
+            () => _connection!.InvokeAsync("Hello", new LauncherStreamHello
             {
                 MachineName = Environment.MachineName,
-                Port = _port,
                 Version = _version,
-            });
-            FileLog.Write($"[LauncherStreamClient] Hello sent: machine={Environment.MachineName}, port={_port}");
-        }
-        catch (Exception ex)
+            }),
+            () => _connection?.State ?? HubConnectionState.Disconnected,
+            () => _disposed,
+            HelloRetryDelay,
+            CancellationToken.None);
+
+    /// <summary>
+    /// Send Hello, and KEEP SENDING IT for as long as the connection is up and it has not been accepted.
+    ///
+    /// WHY A RETRY HERE IS NOT A SECOND PATH. It is the same single path, tried again - nothing is dialed,
+    /// nothing falls back, and there is no other way for this launcher to become reachable. The mission's
+    /// no-fallback law forbids a SECOND mechanism behind a failing first one; this is the first mechanism
+    /// insisting.
+    ///
+    /// WHY IT HAD TO CHANGE. Hello was sent once and its failure was swallowed with a note that
+    /// auto-reconnect would retry - but retry only ever happened on Reconnected, and a hub or protocol
+    /// error can fail Hello while SignalR stays CONNECTED. Nothing then fires Reconnected, so nothing
+    /// retries: the launcher holds an open stream, is registered nowhere, and every command to it is
+    /// undeliverable until some later disconnect that may never come. Independent inspection raised this
+    /// as a hypothesis from the control flow; it was then reproduced against a real hub - see
+    /// LauncherStreamIntegrationTests.A_failed_Hello_that_leaves_the_connection_up_registers_nothing_and_delivers_nothing.
+    ///
+    /// The worst outcome is now a delay rather than a permanent silence, and the loop cannot spin: it
+    /// stops the moment the connection is no longer Connected, because the reconnect path owns that case
+    /// and will call this again.
+    /// </summary>
+    internal static async Task SendHelloUntilAcceptedAsync(
+        Func<Task> sendHello, Func<HubConnectionState> connectionState, Func<bool> disposed,
+        TimeSpan retryDelay, CancellationToken ct)
+    {
+        var attempt = 0;
+        while (!disposed() && !ct.IsCancellationRequested
+               && connectionState() == HubConnectionState.Connected)
         {
-            FileLog.Write($"[LauncherStreamClient] Hello failed (auto-reconnect will retry): {ex.Message}");
+            attempt++;
+            try
+            {
+                await sendHello().ConfigureAwait(false);
+                FileLog.Write($"[LauncherStreamClient] Hello sent: machine={Environment.MachineName}"
+                              + (attempt > 1 ? $" (accepted on attempt {attempt})" : ""));
+                return;
+            }
+            catch (Exception ex)
+            {
+                FileLog.Write($"[LauncherStreamClient] Hello attempt {attempt} FAILED: {ex.Message}. The "
+                              + "connection is still up, so nothing else will retry this - until Hello is "
+                              + $"accepted this launcher is registered nowhere and can receive no command. "
+                              + $"Retrying in {retryDelay.TotalSeconds:0.#}s.");
+            }
+
+            try { await Task.Delay(retryDelay, ct).ConfigureAwait(false); }
+            catch (OperationCanceledException) { return; }
         }
     }
 

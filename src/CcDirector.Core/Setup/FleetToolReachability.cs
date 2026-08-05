@@ -10,17 +10,30 @@ public enum FleetToolVerdict
     /// <summary>Not judged yet. Must be rendered as "checking", never as a pass.</summary>
     Unchecked,
 
-    /// <summary>PATH resolves cc-devthrottle and it authenticated against this Director.</summary>
+    /// <summary>PATH resolves cc-devthrottle and it reached the fleet through the Gateway.</summary>
     Working,
 
     /// <summary>Nothing named cc-devthrottle is on PATH at all.</summary>
     NotFound,
 
     /// <summary>
-    /// PATH resolves a cc-devthrottle, and it CANNOT drive this Director. This is the fault: agents in
-    /// sessions report "cannot connect to DevThrottle" while the Director is healthy and connected.
+    /// PATH resolves a cc-devthrottle, and it CANNOT reach the fleet even when handed a working
+    /// Gateway address and a freshly registered session key. This is the fault: agents in sessions
+    /// report "cannot connect to DevThrottle" while this Director's own connection is healthy -
+    /// usually because PATH resolves a stale install's copy.
     /// </summary>
-    CannotReachDirector,
+    CannotReachGateway,
+
+    /// <summary>
+    /// There is no Gateway for the tools to reach right now - none configured, or the tunnel is
+    /// down - so the probe was not run at all.
+    ///
+    /// NOT A FAULT of the toolbelt, and separating it from <see cref="CannotReachGateway"/> is the
+    /// whole point: "no Gateway means no agent tooling" is the mission's accepted trade, and
+    /// painting the Tools fault banner for it would offer install and PATH repairs on a machine
+    /// whose install has nothing wrong with it.
+    /// </summary>
+    NoGateway,
 }
 
 /// <summary>
@@ -43,14 +56,14 @@ public sealed record FleetToolCheck(
 {
     /// <summary>
     /// True only when repointing PATH is a repair that can actually work: PATH resolves someone
-    /// else's copy, and OURS is present and proven to drive this Director.
+    /// else's copy, and OURS is present and proven to reach the fleet.
     ///
     /// This is the precondition the button was missing. "PATH points at another install" was treated
     /// as sufficient, which it is not - it is only half of it. The other half is that we have
     /// something worth pointing at.
     /// </summary>
     public bool CanRepairByRepointingPath
-        => Verdict == FleetToolVerdict.CannotReachDirector
+        => Verdict == FleetToolVerdict.CannotReachGateway
            && OwnVerdict == FleetToolVerdict.Working
            && IsDifferentInstall;
 
@@ -59,7 +72,7 @@ public sealed record FleetToolCheck(
     /// fault and reordering it would repair nothing. The remedy is to install our tools first.
     /// </summary>
     public bool OwnToolsAreMissingOrBroken
-        => OwnVerdict is FleetToolVerdict.NotFound or FleetToolVerdict.CannotReachDirector;
+        => OwnVerdict is FleetToolVerdict.NotFound or FleetToolVerdict.CannotReachGateway;
 
     /// <summary>
     /// True when the resolved tool belongs to a different install than this Director's. Explanation
@@ -92,14 +105,20 @@ public sealed record FleetToolCheck(
 /// <summary>
 /// Answers ONE question, from inside the Director, about the machine the Director is running on:
 ///
-///     Can a session I spawn actually drive me?
+///     Can a session I spawn actually reach the fleet?
 ///
 /// It exists because the two halves of the product can disagree without either being wrong. The
-/// Director is a C# application; cc-devthrottle is a separate Python command line that reaches it over
-/// HTTP. When PATH resolves a cc-devthrottle belonging to an older install, every agent in every
-/// session reports "cannot connect to DevThrottle" while the Director's own chip correctly says
+/// Director is a C# application; cc-devthrottle is a separate Python command line that reaches the
+/// fleet through the Gateway, presenting the session key stamped into its environment. When PATH
+/// resolves a cc-devthrottle belonging to an older install, every agent in every session reports
+/// "cannot connect to DevThrottle" while the Director's own connection light correctly says
 /// Connected. The outage is imaginary; the cost is that the agent blames the network and the owner
 /// spends the morning there.
+///
+/// Since the Remove-the-network-port mission the Director has no listener, so the probe aims the
+/// tool at exactly what a real session gets: the Gateway's address and a freshly minted, freshly
+/// registered session key (see ControlApiHost.MintFleetToolProbeCredentialAsync). What passes here
+/// is what an agent's command line actually does.
 ///
 /// TWO DESIGN RULES, both learned the expensive way:
 ///
@@ -119,10 +138,8 @@ public sealed class FleetToolReachability
     /// <summary>The command agents are told is on their PATH.</summary>
     public const string ToolName = "cc-devthrottle";
 
-    // Any verb that requires a credential. `session list` is the cheapest one every shipped build has
-    // had; its OUTPUT is irrelevant here, only whether it was allowed to run. A public route such as
-    // /healthz would be answered without a credential and would pass on the broken machine - it would
-    // not be a check.
+    // Any verb that requires the Gateway and the session key. `session list` is the cheapest one
+    // every shipped build has had; its OUTPUT is irrelevant here, only whether it succeeded.
     private static readonly string[] ProbeArgs = ["session", "list"];
 
     private readonly TimeSpan _timeout;
@@ -142,53 +159,57 @@ public sealed class FleetToolReachability
     }
 
     /// <summary>
-    /// Resolve cc-devthrottle the way a spawned session would, then make it prove it can authenticate
-    /// against <paramref name="controlApiBaseUrl"/>.
+    /// Resolve cc-devthrottle the way a spawned session would, then make it prove it can reach the
+    /// fleet with the same environment a session gets.
     /// </summary>
-    /// <param name="controlApiBaseUrl">This Director's own Control API address - the literal value it
-    /// stamps into every session as CC_DIRECTOR_API, so the check and a real session ask the same
-    /// question of the same endpoint.</param>
+    /// <param name="gatewayUrl">The Gateway base URL - the literal value the Director stamps into
+    /// every session as CC_GATEWAY_URL, so the check and a real session ask the same question of
+    /// the same door.</param>
+    /// <param name="sessionKey">A minted, REGISTERED session key (CC_GATEWAY_SESSION_KEY). The
+    /// caller owns its lifetime and revokes it after this run.</param>
     /// <param name="expectedBinDir">This Director's own tool bin directory. Explanation only.</param>
     public async Task<FleetToolCheck> RunAsync(
-        string controlApiBaseUrl, string? expectedBinDir, CancellationToken ct = default)
+        string gatewayUrl, string sessionKey, string? expectedBinDir, CancellationToken ct = default)
     {
-        if (string.IsNullOrWhiteSpace(controlApiBaseUrl))
-            throw new ArgumentException("A Control API base address is required.", nameof(controlApiBaseUrl));
+        if (string.IsNullOrWhiteSpace(gatewayUrl))
+            throw new ArgumentException("A Gateway base address is required.", nameof(gatewayUrl));
+        if (string.IsNullOrWhiteSpace(sessionKey))
+            throw new ArgumentException("A registered session key is required.", nameof(sessionKey));
 
-        FileLog.Write($"[FleetToolReachability] RunAsync: probing {ToolName} against {controlApiBaseUrl}");
+        FileLog.Write($"[FleetToolReachability] RunAsync: probing {ToolName} against the Gateway at {gatewayUrl}");
 
         var resolved = _resolve(ToolName);
         if (resolved is null)
         {
             FileLog.Write($"[FleetToolReachability] {ToolName} is not on PATH");
             var (missingOwnVerdict, missingOwnDetail) =
-                await ProbeOwnCopyAsync(expectedBinDir, controlApiBaseUrl, ct);
+                await ProbeOwnCopyAsync(expectedBinDir, gatewayUrl, sessionKey, ct);
             return new FleetToolCheck(
                 FleetToolVerdict.NotFound, null, expectedBinDir,
                 $"Nothing named {ToolName} is on this machine's PATH.",
                 missingOwnVerdict, missingOwnDetail);
         }
 
-        var (exitCode, output) = await RunProbeAsync(resolved, controlApiBaseUrl, ct);
+        var (exitCode, output) = await RunProbeAsync(resolved, gatewayUrl, sessionKey, ct);
 
         if (exitCode == 0)
         {
-            FileLog.Write($"[FleetToolReachability] {ToolName} at {resolved} reached this Director");
+            FileLog.Write($"[FleetToolReachability] {ToolName} at {resolved} reached the fleet");
             return new FleetToolCheck(
-                FleetToolVerdict.Working, resolved, expectedBinDir, "reached this Director");
+                FleetToolVerdict.Working, resolved, expectedBinDir, "reached the fleet through the Gateway");
         }
 
         // Log the reason HERE, where it is known. A red badge whose cause is not in the log is a
         // second investigation for whoever finds it.
         var detail = FirstMeaningfulLine(output) ?? $"exit {exitCode}";
         FileLog.Write(
-            $"[FleetToolReachability] {ToolName} at {resolved} FAILED to reach {controlApiBaseUrl}: {detail}");
+            $"[FleetToolReachability] {ToolName} at {resolved} FAILED to reach the Gateway at {gatewayUrl}: {detail}");
 
         // PATH gave us something that does not work. That alone does not say whether OUR copy would,
         // and the two faults have different repairs - so ask the second question before reporting.
-        var (ownVerdict, ownDetail) = await ProbeOwnCopyAsync(expectedBinDir, controlApiBaseUrl, ct);
+        var (ownVerdict, ownDetail) = await ProbeOwnCopyAsync(expectedBinDir, gatewayUrl, sessionKey, ct);
         return new FleetToolCheck(
-            FleetToolVerdict.CannotReachDirector, resolved, expectedBinDir, detail, ownVerdict, ownDetail);
+            FleetToolVerdict.CannotReachGateway, resolved, expectedBinDir, detail, ownVerdict, ownDetail);
     }
 
     /// <summary>
@@ -202,7 +223,7 @@ public sealed class FleetToolReachability
     /// the repair impossible.
     /// </summary>
     private async Task<(FleetToolVerdict Verdict, string Detail)> ProbeOwnCopyAsync(
-        string? expectedBinDir, string controlApiBaseUrl, CancellationToken ct)
+        string? expectedBinDir, string gatewayUrl, string sessionKey, CancellationToken ct)
     {
         // A development build has no install directory of its own. No directory is not a fault, and it
         // is not a pass either - it is a question that cannot be asked here.
@@ -217,21 +238,21 @@ public sealed class FleetToolReachability
             return (FleetToolVerdict.NotFound, $"There is no {ToolName} in {expectedBinDir}.");
         }
 
-        var (exitCode, output) = await RunProbeAsync(own, controlApiBaseUrl, ct);
+        var (exitCode, output) = await RunProbeAsync(own, gatewayUrl, sessionKey, ct);
         if (exitCode == 0)
         {
-            FileLog.Write($"[FleetToolReachability] this Director's own {ToolName} at {own} reached it");
-            return (FleetToolVerdict.Working, "reached this Director");
+            FileLog.Write($"[FleetToolReachability] this Director's own {ToolName} at {own} reached the fleet");
+            return (FleetToolVerdict.Working, "reached the fleet through the Gateway");
         }
 
         var detail = FirstMeaningfulLine(output) ?? $"exit {exitCode}";
         FileLog.Write(
-            $"[FleetToolReachability] this Director's own {ToolName} at {own} FAILED to reach it: {detail}");
-        return (FleetToolVerdict.CannotReachDirector, detail);
+            $"[FleetToolReachability] this Director's own {ToolName} at {own} FAILED to reach the Gateway: {detail}");
+        return (FleetToolVerdict.CannotReachGateway, detail);
     }
 
     private async Task<(int ExitCode, string Output)> RunProbeAsync(
-        string toolPath, string controlApiBaseUrl, CancellationToken ct)
+        string toolPath, string gatewayUrl, string sessionKey, CancellationToken ct)
     {
         var psi = new ProcessStartInfo
         {
@@ -244,9 +265,10 @@ public sealed class FleetToolReachability
         };
         foreach (var arg in ProbeArgs) psi.ArgumentList.Add(arg);
 
-        // The address this Director answers on. Without it the tool has no endpoint to aim at and
-        // would fail for a reason that says nothing about the fault we are looking for.
-        psi.Environment["CC_DIRECTOR_API"] = controlApiBaseUrl;
+        // Exactly the pair a spawned session receives. Without them the tool has no door to aim at
+        // and would fail for a reason that says nothing about the fault we are looking for.
+        psi.Environment["CC_GATEWAY_URL"] = gatewayUrl;
+        psi.Environment["CC_GATEWAY_SESSION_KEY"] = sessionKey;
 
         var captured = new StringBuilder();
         using var process = new Process { StartInfo = psi, EnableRaisingEvents = true };

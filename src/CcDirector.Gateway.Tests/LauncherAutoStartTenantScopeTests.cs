@@ -39,54 +39,42 @@ public sealed class LauncherAutoStartTenantScopeTests
     private static readonly TenantId Bob = new("tenant-bob");
     private const string Machine = "SHARED-NAME-PC";
 
-    /// <summary>A stub cc-launcher REST API that records every dial, so "reached" and "not reached" are both
-    /// directly observable rather than inferred from a return value.</summary>
-    private sealed class StubLauncherProcess : IAsyncDisposable
+    /// <summary>A stub for the launcher STREAM - the only path a command can reach a launcher by (phase 6
+    /// deleted the REST relay along with the launcher's listener). It records every command it carries and
+    /// resolves (tenant, machine) the way the production connection registry does, so "reached" and "not
+    /// reached" are both directly observable rather than inferred from a return value.</summary>
+    private sealed class StubLauncherStream
     {
-        public required WebApplication App { get; init; }
-        public required int Port { get; init; }
-        public required List<string> Hits { get; init; }
+        private readonly TenantId _connectedTenant;
+        private readonly string _connectedMachine;
+        private readonly List<string> _hits = new();
 
-        public static async Task<StubLauncherProcess> StartAsync()
+        public StubLauncherStream(TenantId connectedTenant, string connectedMachine)
         {
-            var hits = new List<string>();
-            var builder = WebApplication.CreateBuilder();
-            builder.Logging.ClearProviders();
-            var app = builder.Build();
-            app.Urls.Add("http://127.0.0.1:0");
-            foreach (var verb in new[] { "start", "stop", "restart" })
-            {
-                var captured = verb;
-                app.MapPost($"/director/{captured}", () =>
-                {
-                    lock (hits) hits.Add($"director/{captured}");
-                    return Results.Json(new { ok = true, verb = captured });
-                });
-            }
-            await app.StartAsync();
-            return new StubLauncherProcess
-            {
-                App = app,
-                Port = new Uri(app.Urls.First()).Port,
-                Hits = hits,
-            };
+            _connectedTenant = connectedTenant;
+            _connectedMachine = connectedMachine;
+        }
+
+        public Task<LauncherCommandResult?> SendAsync(TenantId tenant, string machine, LauncherCommand command, CancellationToken ct)
+        {
+            // The production hook resolves the connection as (tenant, machine): another tenant naming the
+            // same bare machine name finds NO connection, because the connection registry is composite-keyed.
+            if (!tenant.Equals(_connectedTenant) || !string.Equals(machine, _connectedMachine, StringComparison.OrdinalIgnoreCase))
+                return Task.FromResult<LauncherCommandResult?>(null);
+            lock (_hits) _hits.Add(command.Verb);
+            return Task.FromResult<LauncherCommandResult?>(LauncherCommandResult.Ok());
         }
 
         public string[] Snapshot()
         {
-            lock (Hits) return Hits.ToArray();
+            lock (_hits) return _hits.ToArray();
         }
-
-        public async ValueTask DisposeAsync() => await App.DisposeAsync();
     }
 
-    private static void Register(LauncherRegistry registry, TenantId tenant, string machine, int port) =>
+    private static void Register(LauncherRegistry registry, TenantId tenant, string machine) =>
         registry.Upsert(tenant, new LauncherRegistrationRequest
         {
             MachineName = machine,
-            Port = port,
-            NetworkAddress = "",      // empty -> dial 127.0.0.1:<port>
-            Token = "launcher-token",
             Pid = 99,
             Version = "1.0.0",
         });
@@ -94,57 +82,56 @@ public sealed class LauncherAutoStartTenantScopeTests
     [Fact]
     public async Task The_auto_launcher_starts_a_director_for_the_tenant_that_owns_the_machine()
     {
-        // The capability, at the layer that used to break it: the launch actually reaches the launcher process.
-        await using var launcherProcess = await StubLauncherProcess.StartAsync();
+        // The capability, at the layer that used to break it: the launch actually reaches the launcher's
+        // stream connection.
+        var stream = new StubLauncherStream(Alice, Machine);
         var registry = new LauncherRegistry();
-        Register(registry, Alice, Machine, launcherProcess.Port);
+        Register(registry, Alice, Machine);
 
-        var launcher = new RelayDirectorLauncher(registry, sendLauncherCommand: null);
+        var launcher = new RelayDirectorLauncher(registry, stream.SendAsync);
         var started = await launcher.StartAsync(Alice, Machine, CancellationToken.None);
 
         Assert.True(started);
-        Assert.Equal(new[] { "director/start" }, launcherProcess.Snapshot());
+        Assert.Equal(new[] { "director/start" }, stream.Snapshot());
     }
 
     [Fact]
     public async Task The_auto_launcher_cannot_start_a_director_on_another_tenants_machine()
     {
-        // Alice owns the machine. Bob names it and reaches nothing - and, crucially, Alice's launcher process
-        // is never dialed. A machine name is unique only WITHIN a tenant, so the same bare name in another
-        // partition is a different machine, not a permission question.
-        await using var launcherProcess = await StubLauncherProcess.StartAsync();
+        // Alice owns the machine. Bob names it and reaches nothing - and, crucially, Alice's launcher
+        // never receives anything. A machine name is unique only WITHIN a tenant, so the same bare name in
+        // another partition is a different machine, not a permission question.
+        var stream = new StubLauncherStream(Alice, Machine);
         var registry = new LauncherRegistry();
-        Register(registry, Alice, Machine, launcherProcess.Port);
+        Register(registry, Alice, Machine);
 
-        var launcher = new RelayDirectorLauncher(registry, sendLauncherCommand: null);
+        var launcher = new RelayDirectorLauncher(registry, stream.SendAsync);
         var started = await launcher.StartAsync(Bob, Machine, CancellationToken.None);
 
         Assert.False(started);
-        Assert.Empty(launcherProcess.Snapshot());
+        Assert.Empty(stream.Snapshot());
     }
 
     [Fact]
-    public async Task The_stream_arm_is_scoped_to_the_calling_tenant_too()
+    public async Task The_stream_hook_is_scoped_to_the_calling_tenant()
     {
-        // The OTHER dispatch arm. When the launcher is joined over its persistent stream the command goes down
-        // that connection instead of the REST relay, and the tenant has to reach the connection lookup intact
-        // or the two arms disagree about who owns the machine.
+        // The stream hook itself, exercised directly: the tenant has to reach the connection lookup intact,
+        // or two callers would disagree about who owns the machine.
         var seen = new List<(TenantId Tenant, string Machine, string Verb)>();
         LauncherCommandRouter.SendLauncherCommandAsync send = (tenant, machine, command, _) =>
         {
             seen.Add((tenant, machine, command.Verb));
             // Mimic the production hook: it resolves (tenant, machine) and returns null when THIS tenant has
-            // no joined launcher for that machine, which sends the caller to the REST relay.
+            // no joined launcher for that machine - which the relay reports as undeliverable, never dials.
             return Task.FromResult<LauncherCommandResult?>(
                 tenant.Equals(Alice) ? LauncherCommandResult.Ok() : null);
         };
 
-        var registry = new LauncherRegistry();          // deliberately empty: no REST fallback is possible
+        var registry = new LauncherRegistry();          // deliberately empty: an unregistered machine refuses
         var launcher = new RelayDirectorLauncher(registry, send);
 
         Assert.True(await launcher.StartAsync(Alice, Machine, CancellationToken.None));
-        // Bob's stream lookup misses, and the REST fallback finds nothing in HIS partition either - so the
-        // fallback arm, the one the old deny called out as ungated, refuses as well.
+        // Bob's stream lookup misses, and his partition holds no registration either - refused.
         Assert.False(await launcher.StartAsync(Bob, Machine, CancellationToken.None));
 
         Assert.Equal(

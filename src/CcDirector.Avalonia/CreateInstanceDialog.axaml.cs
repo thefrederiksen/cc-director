@@ -29,8 +29,8 @@ public partial class CreateInstanceDialog : Window
     {
         var name = DisplayNameInput.Text ?? "";
         SlugPreview.Text = string.IsNullOrWhiteSpace(name)
-            ? "slug: (from the name) · port: auto-assigned"
-            : $"slug: {NamedInstanceRegistry.PreviewSlug(name)} · port: auto-assigned";
+            ? "slug: (from the name)"
+            : $"slug: {NamedInstanceRegistry.PreviewSlug(name)}";
     }
 
     private void Input_KeyDown(object? sender, KeyEventArgs e)

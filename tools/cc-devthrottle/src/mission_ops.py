@@ -8,7 +8,7 @@ Wave 4b). These commands create and list Mission records via the Gateway Control
 (POST /missions, GET /missions), mirroring the schedule command style.
 
 ATTACH AND DETACH (issue #2387) go a different way, and deliberately: through this machine's own
-Director, at POST /fleet/mission. A session lives on a Director, so attaching one is a session write
+Gateway, at POST /sessions/{sid}/mission. A session lives on a Director, so attaching one is a session write
 and follows the same route every other session verb takes - local target attached directly, remote
 target relayed by the Gateway to the owning Director over the tunnel. Going straight to the Gateway
 from here would work only for sessions on other machines, which is the wrong half.
@@ -20,7 +20,6 @@ import json
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional
-from urllib.parse import urlparse
 
 import requests
 import typer
@@ -33,34 +32,49 @@ _tools_dir = str(Path(__file__).resolve().parent.parent.parent)
 if _tools_dir not in sys.path:
     sys.path.insert(0, _tools_dir)
 
-from cc_shared.config import CCDirectorConfig  # noqa: E402
+from cc_shared import gateway  # noqa: E402
 
 console = Console()
 err_console = Console(stderr=True)
 
-LOOPBACK_DEFAULT = "http://127.0.0.1:7878"
 TIMEOUT_SECONDS = 10
 
 
-class GatewayError(Exception):
-    """A handled, user-facing failure talking to the Gateway."""
+#: THE SAME CLASS THE SHARED TRANSPORT RAISES, not a look-alike beside it.
+#:
+#: This used to be its own `class GatewayError(Exception)`, while `gateway.gateway_base_url()` and
+#: `gateway.session_key()` - called directly from this module - raise `cc_shared.gateway.GatewayError`.
+#: Every `except GatewayError` here therefore missed the no-Gateway failure entirely, and the command
+#: died with a Rich traceback. The owner accepted "no Gateway means no agent tooling" on the promise of
+#: a CLEAR SENTENCE naming the remedy; a stack trace is not that sentence.
+#:
+#: Aliasing rather than catching both is deliberate: two names for one idea is what caused this, and a
+#: second except clause on every handler would leave the trap in place for the next handler written.
+GatewayError = gateway.GatewayError
 
 
 def resolve_base_url() -> str:
-    config = CCDirectorConfig().load()
-    url = (config.gateway.url or "").strip()
-    return url.rstrip("/") if url else LOOPBACK_DEFAULT
+    """The Gateway this SESSION was told to call.
+
+    Remove-the-network-port mission, phase 2. This used to read gateway.url out of config.json and fall
+    back to a loopback address, which meant the command line kept its own opinion about where the
+    Gateway is - one that could be right on the machine and wrong for the session. The session is TOLD
+    the address at launch, beside the credential that goes with it, and one source for both is what
+    makes them impossible to mismatch.
+    """
+    return gateway.gateway_base_url()
 
 
 def _auth_token() -> str:
-    config = CCDirectorConfig().load()
-    return (config.gateway.token or "").strip()
+    """This session's own Gateway key.
 
-
-def _is_loopback(url: str) -> bool:
-    """True when the URL targets this machine (a loopback Gateway needs no token)."""
-    host = (urlparse(url).hostname or "").lower()
-    return host in ("127.0.0.1", "localhost", "::1")
+    IT USED TO BE THE ACCOUNT'S. This function read `gateway.token` from config.json - the shared
+    machine credential, which has authority over the whole account on every machine - and presented it
+    straight to the Gateway. So every agent that ran one of these commands held the run of the account,
+    which is precisely the hole Phase 1b was chartered to prevent, already open on this path. The
+    session key closes it: bound to one session, one tenant, and the fleet's agent routes only.
+    """
+    return gateway.session_key()
 
 
 class MissionClient:
@@ -69,14 +83,10 @@ class MissionClient:
     def __init__(self, base_url: Optional[str] = None) -> None:
         self.base_url = (base_url or resolve_base_url()).rstrip("/")
         self._token = _auth_token()
-        # Make the auth requirement explicit instead of silently issuing an unauthenticated request to a
-        # remote Gateway: a loopback Gateway on this machine needs no token, but a remote one does.
-        if not self._token and not _is_loopback(self.base_url):
-            raise GatewayError(
-                f"Gateway URL {self.base_url} is remote but gateway.token is not set. "
-                "Set it with 'cc-devthrottle settings set gateway.token <token>' "
-                "(a loopback Gateway on this machine needs no token)."
-            )
+        # A session key is REQUIRED, and _auth_token raises with the remedy when there is none.
+        # The old exemption - "a loopback Gateway on this machine needs no token" - is deliberately
+        # gone: the credential identifies WHICH SESSION is calling, and that is as necessary on this
+        # machine as on any other. It was the address, never the caller, that made loopback special.
 
     def _headers(self) -> Dict[str, str]:
         headers = {"Accept": "application/json"}
@@ -295,13 +305,25 @@ def _controlled_subtree(sessions: List[Dict[str, Any]], root_id: str) -> List[Di
 
 
 def _apply_mission(session_id: str, mission_id: Optional[str]) -> Dict[str, Any]:
-    """Attach (or detach, on a null mission id) one session through this Director's POST /fleet/mission."""
-    from cc_shared import director  # local import: keeps this module importable without a Director
+    """Attach (or detach, on a null mission id) one session through the Gateway.
 
-    body: Dict[str, Any] = {"toSessionId": session_id}
+    The answer is FLATTENED - the workflow seat's id and version arrive on the returned session row,
+    and the display helpers below read them beside seatMoved and seatNote. This re-keys fields for
+    display only; every judgement in the answer (whether the seat moved, and the sentence explaining
+    it) is made at the Gateway and passed through untouched.
+    """
+    body: Dict[str, Any] = {}
     if mission_id:
         body["missionId"] = mission_id
-    return director.post_json("fleet/mission", body)
+    resp = gateway.post_json(f"sessions/{session_id}/mission", body)
+    if not isinstance(resp, dict):
+        return {}
+    session = resp.get("session", resp.get("Session"))
+    if isinstance(session, dict):
+        for key in ("workflowId", "WorkflowId", "workflowVersion", "WorkflowVersion"):
+            if key in session and key not in resp:
+                resp[key] = session[key]
+    return resp
 
 
 def _previous_mission(
@@ -361,17 +383,13 @@ def _print_seat_note(resp: Dict[str, Any]) -> None:
 
 
 def _session_label(session: Dict[str, Any]) -> str:
-    from cc_shared import director
-
     sid = _field(session, "sessionId", "SessionId") or ""
     name = _field(session, "name", "Name") or "(unnamed)"
-    return f"{name} ({director.short_id(sid)})"
+    return f"{name} ({gateway.short_id(sid)})"
 
 
 def attach_session(target: str, mission_query: str, with_children: bool) -> None:
     """Attach an EXISTING session (and optionally everything it controls) to a Mission."""
-    from cc_shared import director
-
     from . import session_ops
 
     mission = _resolve_mission(mission_query)
@@ -405,7 +423,7 @@ def attach_session(target: str, mission_query: str, with_children: bool) -> None
         sid = _field(s, "sessionId", "SessionId")
         try:
             resp = _apply_mission(sid, mission_id)
-        except director.DirectorError as err:
+        except gateway.GatewayError as err:
             # Keep going. A partial attach is honest and repeatable; abandoning the rest of the tree
             # because one session's Director is unreachable would leave the pod split with no record
             # of where it stopped.
@@ -444,8 +462,6 @@ def attach_session(target: str, mission_query: str, with_children: bool) -> None
 
 def detach_session(target: str) -> None:
     """Detach a session from whatever Mission it is attached to."""
-    from cc_shared import director
-
     from . import session_ops
 
     chosen = session_ops.resolve_session(target, command_name="cc-devthrottle mission detach")
@@ -453,7 +469,7 @@ def detach_session(target: str) -> None:
 
     try:
         resp = _apply_mission(session_id, None)
-    except director.DirectorError as err:
+    except gateway.GatewayError as err:
         console.print(f"[red]Error:[/red] {err}")
         raise typer.Exit(1)
 

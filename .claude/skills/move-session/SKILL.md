@@ -51,27 +51,30 @@ session with nothing to do. Closing it would have emptied the same slot at no co
 - **Every move costs a fresh context window.** Check usage before moving a fleet, and remember that
   step 0 makes some of them free.
 
-## The control surface is the GATEWAY, not the Director
+## The control surface is the GATEWAY. A Director has no address at all.
 
-The tunnel-only cut removed the per-session control routes from the Director's loopback floor. On
-any Director port these now 404 and must not be used: `POST /handover`, `GET/PATCH /sessions`,
-`/sessions/{id}/hold`, `/prompt`, `/context`.
+**A Director listens on nothing.** There is no port, no `/healthz`, no loopback address and no
+`CC_DIRECTOR_API` - the remove-the-network-port mission deleted the listener, and it is not coming
+back. Any older instruction that still points at a Director address is describing a product that no
+longer exists, and nothing will answer it.
 
-Use the **`cc-devthrottle` command line** wherever it covers the step - it is token-free and
-address-free, reaching the fleet through your own Director. Drop to Gateway REST
-(`http://127.0.0.1:7878`, `Authorization: Bearer <token>` from
-`%LOCALAPPDATA%\cc-director\config\director\gateway-token.txt`) only for the composer nudge and the
-fallback auto-handover.
+Everything in this document goes through the **`cc-devthrottle` command line**, which is token-free
+and address-free and reaches the whole fleet through your own Director's outbound connection to the
+Gateway. That is the only door, and it is the same door whether the target Director is on this
+machine or another one - which is precisely why the move steps below do not care where the target is.
 
-The Director loopback still serves `/healthz`, and it is the only route that answers without a
-credential - which is how you find a target Director's port. Its unauthenticated answer is liveness
-ONLY (`{"status":"ok"}`); to see what that Director is RUNNING, present the machine secret from
-`%LOCALAPPDATA%\cc-director\config\director\gateway-token.txt` (or `gateway.token` from
-`config.json` when the machine is attached to a Gateway):
+**Naming a target Director.** Use its name or its identifier, exactly as
+`cc-devthrottle director list` prints it. The identifier is what names ONE Director; a port never
+could, because every named instance of one install shares an executable, and `--machine` names a
+computer rather than an instance on it.
 
 ```bash
-curl -s -H "Authorization: Bearer <machine-secret>" http://127.0.0.1:<targetPort>/healthz
+cc-devthrottle director list           # every Director on the account, with the id --director takes
+cc-devthrottle session list --json     # every session the Gateway can see, with its directorId
 ```
+
+If the Gateway is unreachable, agent tooling does not work and that is the accepted design - there
+is no second path to fall back to. Fix the Gateway connection; do not look for a local one.
 
 ---
 
@@ -159,12 +162,13 @@ nothing better is available, not by preference.
 
 ## Step 3 - Start the target on the SAME agent and the SAME model
 
-Sessions are created on whichever Director owns you. To land on a different one, override the API
-base with that Director's Control API port (found by probing `/healthz` on each candidate port -
-that route answers without a credential, which is exactly what makes it usable for discovery):
+Sessions are created on whichever Director owns you. To land on a different one, NAME it with
+`--director`, taking the identifier or name from `cc-devthrottle director list`. It names ONE
+Director, which `--machine` cannot do when a computer runs several named instances:
 
 ```bash
-CC_DIRECTOR_API=http://127.0.0.1:<targetPort> cc-devthrottle session spawn "<repoPath>" \
+cc-devthrottle session spawn "<repoPath>" \
+  --director "<target Director id or name>" \
   --standalone \
   --agent <sourceAgent> \
   --name "<the source's ORIGINAL name>" \
@@ -192,7 +196,7 @@ records and was still empty on a freshly moved target after a completed turn, so
 against it either fails or gets skipped as unavailable. The header is authoritative and immediate:
 
 ```bash
-CC_DIRECTOR_API=http://127.0.0.1:<targetPort> cc-devthrottle session buffer <targetId> \
+cc-devthrottle session buffer <targetId> \
   | grep -o "Opus[^·]*\|Sonnet[^·]*\|Haiku[^·]*" | head -1
 # -> Opus 5 (1M context)     compare against the source's model
 ```
@@ -243,7 +247,7 @@ be addressed.*
 back at 1.3 MB and had to be spilled to a file. You want the last few turns:
 
 ```bash
-CC_DIRECTOR_API=http://127.0.0.1:<targetPort> cc-devthrottle session buffer <targetId> \
+cc-devthrottle session buffer <targetId> \
   | tr -s ' ' | tail -30
 ```
 
@@ -361,9 +365,10 @@ lands in a strange data home.
 - **Scratchpad files do not survive.** Screenshots and working notes in the source's temporary
   directory are gone. Name how to regenerate them, or move them somewhere durable first.
 - **`session hold` queues mid-turn.** "still working; it parks when it finishes" is success.
-- **Do not start a Director from your own process.** Use the launcher's `POST /launch` (port 7900,
-  token from `config\launcher\launcher.json`) - it gives clean parentage. A Director started inside
-  an agent's console hosts sessions that die within seconds.
+- **Do not start a Director from your own process.** Ask the Gateway to have the machine's launcher
+  start it (`POST /machines/{machine}/director/start` - the launcher has no port or token of its own
+  any more; the command rides the connection the launcher holds open to the Gateway) - it gives clean
+  parentage. A Director started inside an agent's console hosts sessions that die within seconds.
 - **The `[MOVED]` marker must never lie.** If you marked the source and the move actually failed,
   rename it back and say so plainly.
 - **A parked source is a failed move.** If you find yourself leaving the source alive "to be safe",
@@ -422,6 +427,6 @@ per-paragraph test; heading seven (what was not verified) after a real document 
 coverage while the wider suite had never run; a no-secrets instruction after one came back carrying
 a password; same-agent and same-model spawn with a READ-BACK check, and the warning that the
 reported model id is not the `--model` flag vocabulary; creating the target on a chosen Director
-with `CC_DIRECTOR_API`; and the launcher launch route.
+with `--director`; and the launcher launch route.
 Kept from 3.1: the Gateway-is-the-control-surface preamble, the naming convention, and never
 touching the source until the target has demonstrably picked up.

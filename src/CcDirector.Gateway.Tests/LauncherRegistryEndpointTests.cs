@@ -1,7 +1,6 @@
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
-using System.Net.Sockets;
 using CcDirector.Gateway;
 using CcDirector.Gateway.Contracts;
 using Xunit;
@@ -19,7 +18,11 @@ namespace CcDirector.Gateway.Tests;
 ///   POST /machines/{machine}/director/restart|start|stop
 ///   POST /machines/{machine}/launch
 ///
-/// Issue #331.
+/// Issue #331. Phase 6 of the remove-the-network-port mission: registration is presence-and-identity
+/// only (machine, pid, version - no port, no token, no network address), and a relay to a machine
+/// whose launcher is registered but not STREAM-CONNECTED is a loud 502 refusal, never a dial - in
+/// these tests no launcher ever joins the stream, so every guarded route that passes its guard ends
+/// in exactly that refusal, which is itself the proof the guard was what answered.
 /// </summary>
 public sealed class LauncherRegistryEndpointTests : IAsyncLifetime
 {
@@ -53,7 +56,7 @@ public sealed class LauncherRegistryEndpointTests : IAsyncLifetime
     [Fact]
     public async Task Register_Launcher_Returns201AndAppearsInList()
     {
-        var req = BuildRegistrationRequest("MACHINE-A", port: 7900);
+        var req = BuildRegistrationRequest("MACHINE-A", pid: 4211);
 
         var resp = await _http.PostAsJsonAsync("launchers/register", req);
 
@@ -62,17 +65,17 @@ public sealed class LauncherRegistryEndpointTests : IAsyncLifetime
         var list = await _http.GetFromJsonAsync<List<LauncherDto>>("launchers");
         Assert.NotNull(list);
         var entry = Assert.Single(list!, l => l.MachineName.Equals("MACHINE-A", StringComparison.OrdinalIgnoreCase));
-        Assert.Equal(7900, entry.Port);
+        Assert.Equal(4211, entry.Pid);
         Assert.Equal("1.0.0", entry.Version);
     }
 
     [Fact]
     public async Task Register_Launcher_IsIdempotent()
     {
-        var req = BuildRegistrationRequest("MACHINE-B", port: 7901, version: "1.0.0");
+        var req = BuildRegistrationRequest("MACHINE-B", version: "1.0.0");
         await _http.PostAsJsonAsync("launchers/register", req);
 
-        var req2 = BuildRegistrationRequest("MACHINE-B", port: 7901, version: "1.0.1");
+        var req2 = BuildRegistrationRequest("MACHINE-B", version: "1.0.1");
         var resp = await _http.PostAsJsonAsync("launchers/register", req2);
         Assert.Equal(HttpStatusCode.Created, resp.StatusCode);
 
@@ -85,25 +88,24 @@ public sealed class LauncherRegistryEndpointTests : IAsyncLifetime
     [Fact]
     public async Task Register_Launcher_RejectsMissingMachineName()
     {
-        var req = new LauncherRegistrationRequest { MachineName = "", Port = 7900, Token = "tok" };
+        var req = new LauncherRegistrationRequest { MachineName = "" };
         var resp = await _http.PostAsJsonAsync("launchers/register", req);
         Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
     }
 
+    // The listing must never serve a dial-back surface: no port, no token, no network address. This is
+    // the route-level twin of the registry's own shape pin - a stored address for a listener that no
+    // longer exists is exactly what a future second door would be built on.
     [Fact]
-    public async Task Register_Launcher_RejectsZeroPort()
+    public async Task Register_Launcher_ListingCarriesNoDialBackSurface()
     {
-        var req = new LauncherRegistrationRequest { MachineName = "MACHINE-C", Port = 0, Token = "tok" };
-        var resp = await _http.PostAsJsonAsync("launchers/register", req);
-        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
-    }
+        await _http.PostAsJsonAsync("launchers/register", BuildRegistrationRequest("SHAPE-MACHINE"));
 
-    [Fact]
-    public async Task Register_Launcher_RejectsMissingToken()
-    {
-        var req = new LauncherRegistrationRequest { MachineName = "MACHINE-D", Port = 7900, Token = "" };
-        var resp = await _http.PostAsJsonAsync("launchers/register", req);
-        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+        var json = await _http.GetStringAsync("launchers");
+
+        Assert.DoesNotContain("port", json, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("token", json, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("networkAddress", json, StringComparison.OrdinalIgnoreCase);
     }
 
     // -------------------------------------------------------------------------
@@ -154,7 +156,7 @@ public sealed class LauncherRegistryEndpointTests : IAsyncLifetime
     [Fact]
     public async Task Relay_SlotGuard_RefusesMainBuildWithoutConfirm()
     {
-        var req = BuildRegistrationRequest("GUARD-MACHINE", port: 7999);
+        var req = BuildRegistrationRequest("GUARD-MACHINE");
         await _http.PostAsJsonAsync("launchers/register", req);
 
         var body = new { exePath = @"C:\Program Files\cc-director\cc-director.exe" };
@@ -169,7 +171,7 @@ public sealed class LauncherRegistryEndpointTests : IAsyncLifetime
     [Fact]
     public async Task Relay_SlotGuard_RefusesSlot1WithoutConfirm()
     {
-        var req = BuildRegistrationRequest("GUARD-MACHINE2", port: 7998);
+        var req = BuildRegistrationRequest("GUARD-MACHINE2");
         await _http.PostAsJsonAsync("launchers/register", req);
 
         var body = new { exePath = @"C:\cc-director\local_builds\cc-director1.exe" };
@@ -183,15 +185,15 @@ public sealed class LauncherRegistryEndpointTests : IAsyncLifetime
     [Fact]
     public async Task Relay_SlotGuard_AllowsSlot5WithoutConfirm()
     {
-        // Slot 5 (agent slot) is NOT protected. The launcher is not actually listening,
-        // so we expect a 502 upstream-unreachable (not 403 from the guard).
-        var req = BuildRegistrationRequest("GUARD-MACHINE3", port: 1); // dead port
+        // Slot 5 (agent slot) is NOT protected. No launcher stream is joined in these tests, so the
+        // guard passing shows up as the not-connected 502 - not as a 403 from the guard.
+        var req = BuildRegistrationRequest("GUARD-MACHINE3");
         await _http.PostAsJsonAsync("launchers/register", req);
 
         var body = new { exePath = @"C:\cc-director\local_builds\cc-director5.exe" };
         var resp = await _http.PostAsJsonAsync("machines/GUARD-MACHINE3/director/restart", body);
 
-        // 502 = guard passed, but launcher is not reachable on port 1.
+        // 502 = guard passed, but the launcher holds no stream connection.
         Assert.Equal(HttpStatusCode.BadGateway, resp.StatusCode);
         var json = await resp.Content.ReadAsStringAsync();
         Assert.DoesNotContain("slot_guard", json);
@@ -200,8 +202,8 @@ public sealed class LauncherRegistryEndpointTests : IAsyncLifetime
     [Fact]
     public async Task Relay_SlotGuard_AllowsMainBuildWithConfirmProtected()
     {
-        // With confirmProtected=true the guard is bypassed. Expect 502 (not 403).
-        var req = BuildRegistrationRequest("GUARD-MACHINE4", port: 1); // dead port
+        // With confirmProtected=true the guard is bypassed. Expect the not-connected 502 (not 403).
+        var req = BuildRegistrationRequest("GUARD-MACHINE4");
         await _http.PostAsJsonAsync("launchers/register", req);
 
         var body = new { exePath = @"C:\Program Files\cc-director\cc-director.exe", confirmProtected = true };
@@ -237,12 +239,13 @@ public sealed class LauncherRegistryEndpointTests : IAsyncLifetime
     // -------------------------------------------------------------------------
 
     [Fact]
-    public async Task Relay_Launch_WithoutConfirmProtected_IsRefused403_BeforeAnyRelay()
+    public async Task Relay_Launch_WithoutConfirmProtected_IsRefused403_BeforeAnyDelivery()
     {
-        // A REGISTERED machine on a dead port: if the relay were attempted the answer would be 502
-        // "unreachable". The 403 with the launch_guard error proves the refusal happened BEFORE any
-        // dial - the reported CR-5 symptom was that this request relayed on key possession alone.
-        var req = BuildRegistrationRequest("LAUNCH-GUARD-MACHINE", port: 1);
+        // A REGISTERED machine with no stream: if delivery were attempted the answer would be the
+        // not-connected 502. The 403 with the launch_guard error proves the refusal happened BEFORE
+        // any delivery - the reported CR-5 symptom was that this request relayed on key possession
+        // alone.
+        var req = BuildRegistrationRequest("LAUNCH-GUARD-MACHINE");
         await _http.PostAsJsonAsync("launchers/register", req);
 
         var resp = await _http.PostAsJsonAsync("machines/LAUNCH-GUARD-MACHINE/launch",
@@ -255,12 +258,12 @@ public sealed class LauncherRegistryEndpointTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Relay_Launch_WithConfirmProtected_PassesTheGateAndReachesTheRelay()
+    public async Task Relay_Launch_WithConfirmProtected_PassesTheGateAndReachesTheDispatch()
     {
-        // The allowed-path control: with the confirmation present the gate opens and the relay is
-        // attempted - the dead port turns that attempt into 502, which is exactly the proof that the
-        // request got PAST the 403 gate.
-        var req = BuildRegistrationRequest("LAUNCH-CONFIRM-MACHINE", port: 1);
+        // The allowed-path control: with the confirmation present the gate opens and delivery is
+        // attempted - no stream is joined, so that attempt is the not-connected 502, which is exactly
+        // the proof that the request got PAST the 403 gate.
+        var req = BuildRegistrationRequest("LAUNCH-CONFIRM-MACHINE");
         await _http.PostAsJsonAsync("launchers/register", req);
 
         var resp = await _http.PostAsJsonAsync("machines/LAUNCH-CONFIRM-MACHINE/launch",
@@ -270,79 +273,39 @@ public sealed class LauncherRegistryEndpointTests : IAsyncLifetime
     }
 
     // -------------------------------------------------------------------------
-    // AC5: launcher unreachable -> 502 (not a hang)
+    // AC5: launcher registered but not stream-connected -> loud 502, never a dial
     // -------------------------------------------------------------------------
 
     [Fact]
-    public async Task Relay_LauncherUnreachable_Returns502()
+    public async Task Relay_RegisteredButNotConnected_Returns502ThatSaysSo()
     {
-        // Register with a dead port (1 is never bound by the launcher in tests).
-        var req = BuildRegistrationRequest("UNREACHABLE-MACHINE", port: 1);
+        var req = BuildRegistrationRequest("OFFLINE-MACHINE");
         await _http.PostAsJsonAsync("launchers/register", req);
 
-        var resp = await _http.PostAsync("machines/UNREACHABLE-MACHINE/director/restart", null);
+        var resp = await _http.PostAsync("machines/OFFLINE-MACHINE/director/restart", null);
 
         Assert.Equal(HttpStatusCode.BadGateway, resp.StatusCode);
         var json = await resp.Content.ReadAsStringAsync();
-        Assert.Contains("unreachable", json);
+        // The message must say what is actually wrong - the stream connection - and must not name an
+        // address or port, because there is nothing to dial.
+        Assert.Contains("not connected", json);
+        Assert.DoesNotContain("127.0.0.1", json);
     }
 
     // -------------------------------------------------------------------------
-    // AC2: GET /launchers lists machine + port + last-seen
-    // AC2: NetworkAddress stored and returned in listing
+    // AC2: GET /launchers lists the registered machines
     // -------------------------------------------------------------------------
 
     [Fact]
     public async Task GetLaunchers_ReturnsAllRegistered()
     {
-        await _http.PostAsJsonAsync("launchers/register", BuildRegistrationRequest("LIST-A", port: 7910));
-        await _http.PostAsJsonAsync("launchers/register", BuildRegistrationRequest("LIST-B", port: 7911));
+        await _http.PostAsJsonAsync("launchers/register", BuildRegistrationRequest("LIST-A"));
+        await _http.PostAsJsonAsync("launchers/register", BuildRegistrationRequest("LIST-B"));
 
         var list = await _http.GetFromJsonAsync<List<LauncherDto>>("launchers");
         Assert.NotNull(list);
         Assert.Contains(list!, l => l.MachineName.Equals("LIST-A", StringComparison.OrdinalIgnoreCase));
         Assert.Contains(list!, l => l.MachineName.Equals("LIST-B", StringComparison.OrdinalIgnoreCase));
-    }
-
-    [Fact]
-    public async Task Register_WithNetworkAddress_StoredAndReturnedInList()
-    {
-        // AC2: the registration must carry a network address and the list must expose it
-        // so the Gateway relay can dial a remote launcher over the tailnet.
-        var req = BuildRegistrationRequest("REMOTE-MACHINE", port: 7912);
-        req.NetworkAddress = "example-pc.ts.net";
-
-        await _http.PostAsJsonAsync("launchers/register", req);
-
-        var list = await _http.GetFromJsonAsync<List<LauncherDto>>("launchers");
-        var entry = Assert.Single(list!, l => l.MachineName.Equals("REMOTE-MACHINE", StringComparison.OrdinalIgnoreCase));
-        Assert.Equal("example-pc.ts.net", entry.NetworkAddress);
-    }
-
-    [Fact]
-    public async Task Relay_RemoteLauncher_UsesNetworkAddress_NotLoopback()
-    {
-        // AC2: when a launcher registers with a networkAddress the relay must dial
-        // <networkAddress>:<port> rather than 127.0.0.1:<port>.
-        // We prove this by registering with a realistic tailnet hostname on a port that
-        // is NOT bound locally - if the relay used 127.0.0.1 it would get a connection
-        // refused immediately (very fast); if it dials the tailnet hostname it gets a
-        // different error (DNS / network unreachable / timeout).  In a unit-test environment
-        // neither host is reachable so we just verify that the relay returns 502 (not 403
-        // from the slot guard and not a different status).  The key assertion is that the
-        // error message in the 502 body contains the tailnet hostname, proving the relay
-        // built the URL with the network address rather than 127.0.0.1.
-        var req = BuildRegistrationRequest("TAILNET-MACHINE", port: 7913);
-        req.NetworkAddress = "example-pc.ts.net";
-        await _http.PostAsJsonAsync("launchers/register", req);
-
-        var resp = await _http.PostAsync("machines/TAILNET-MACHINE/director/restart", null);
-
-        Assert.Equal(HttpStatusCode.BadGateway, resp.StatusCode);
-        var json = await resp.Content.ReadAsStringAsync();
-        // The error body must name the tailnet hostname (not 127.0.0.1) so we can confirm
-        // the relay used the stored network address.
-        Assert.Contains("example-pc.ts.net", json);
     }
 
     // -------------------------------------------------------------------------
@@ -365,13 +328,11 @@ public sealed class LauncherRegistryEndpointTests : IAsyncLifetime
     // -------------------------------------------------------------------------
 
     private static LauncherRegistrationRequest BuildRegistrationRequest(
-        string machine, int port = 7900, string version = "1.0.0") =>
+        string machine, int pid = 12345, string version = "1.0.0") =>
         new()
         {
             MachineName = machine,
-            Port = port,
-            Token = "launcher-token-" + machine,
-            Pid = 12345,
+            Pid = pid,
             Version = version,
             StartedAt = DateTime.UtcNow,
         };

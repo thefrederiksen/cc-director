@@ -1,4 +1,4 @@
-using System.Text.Json.Nodes;
+﻿using System.Text.Json.Nodes;
 using CcDirector.Core.Configuration;
 using CcDirector.Core.Utilities;
 using CcDirector.Gateway.Contracts;
@@ -16,7 +16,7 @@ namespace CcDirector.ControlApi;
 /// not even tell it had failed (it only checks <c>res.ok</c>). These two verbs give the surface the proper
 /// tunnel legs the cut always intended it to have, instead of leaving the caller pointing at nothing.
 ///
-/// Each core reproduces the Director's own <see cref="SettingsEndpoint"/> lambda verbatim - the SAME
+/// Each core reproduces the lambda of the Director's old SettingsEndpoint route verbatim (that route died with the Director's listener in the Remove-the-network-port mission; these tunnel verbs are the one remaining remote surface) - the SAME
 /// <see cref="CcDirectorConfigService"/> calls, guards, and return shapes - so the loopback floor route and
 /// this tunnel verb share one behaviour and cannot drift. The config surface itself stays on the loopback
 /// floor for LOCAL callers exactly as before; this only restores the REMOTE read/write path.

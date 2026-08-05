@@ -41,7 +41,7 @@ public sealed class GatewayClientTests : IAsyncLifetime
     public void Disabled_config_makes_client_inert()
     {
         // No gateway.url => no Start work, no errors, no entries.
-        var client = new GatewayClient(new GatewayConfig(), Guid.NewGuid().ToString(), 7879, "1.0.0");
+        var client = new GatewayClient(new GatewayConfig(), Guid.NewGuid().ToString(), "1.0.0");
         client.Start();
         Assert.False(client.IsEnabled);
         Assert.False(client.IsRegistered);

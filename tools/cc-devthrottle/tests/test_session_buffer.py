@@ -34,7 +34,7 @@ def buffer_text(monkeypatch):
 
     def serve(text: str) -> str:
         monkeypatch.setenv("CC_SESSION_ID", SESSION_ID)
-        monkeypatch.setattr(session_ops.director, "get_json", lambda path: {"text": text})
+        monkeypatch.setattr(session_ops.gateway, "get_json", lambda path: {"text": text})
         return text
 
     return serve
@@ -84,9 +84,9 @@ def test_the_error_branch_does_not_crash_on_the_servers_error_text(buffer_text, 
     monkeypatch.setenv("CC_SESSION_ID", SESSION_ID)
 
     def boom(path):
-        raise session_ops.director.DirectorError("no session at [/tmp/x] on that Director")
+        raise session_ops.gateway.GatewayError("no session at [/tmp/x] on that Director")
 
-    monkeypatch.setattr(session_ops.director, "get_json", boom)
+    monkeypatch.setattr(session_ops.gateway, "get_json", boom)
 
     with pytest.raises(typer.Exit):
         session_ops.read_session_buffer(None)
@@ -120,7 +120,7 @@ def test_the_buffer_shape_from_the_other_path_is_still_read(buffer_text, monkeyp
     # The verb accepts the text under "text" or "buffer" depending on the path it came back through.
     # Keep that working - this fix is about HOW the text is printed, not which shape carries it.
     monkeypatch.setenv("CC_SESSION_ID", SESSION_ID)
-    monkeypatch.setattr(session_ops.director, "get_json", lambda path: {"buffer": "from the other shape"})
+    monkeypatch.setattr(session_ops.gateway, "get_json", lambda path: {"buffer": "from the other shape"})
 
     session_ops.read_session_buffer(None)
 

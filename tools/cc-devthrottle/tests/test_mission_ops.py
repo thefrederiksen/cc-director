@@ -16,6 +16,7 @@ thing that gets quietly reversed by a later edit if nothing holds it:
 No HTTP happens: the Director post and the Gateway mission list are both stubbed.
 """
 
+import re
 import sys
 from pathlib import Path
 
@@ -68,11 +69,14 @@ def wired(monkeypatch):
     calls = []
 
     def fake_post_json(path, body, timeout=30):
-        assert path == "fleet/mission"
-        calls.append(body)
+        # Remove-the-network-port mission, phase 2: the TARGET is in the path now, not in the body.
+        # Recorded as toSessionId so the assertions below still read as "which sessions were moved".
+        m = re.fullmatch(r"sessions/([^/]+)/mission", path)
+        assert m, f"unexpected path {path}"
+        calls.append({"toSessionId": m.group(1), **body})
         return {
             "applied": True,
-            "sessionId": body["toSessionId"],
+            "sessionId": m.group(1),
             "missionId": body.get("missionId"),
             "missionName": "Release 1.9.4" if body.get("missionId") else None,
             "previousMissionId": OTHER_MISSION_ID,
@@ -81,9 +85,9 @@ def wired(monkeypatch):
 
     monkeypatch.setattr(mission_ops.MissionClient, "list_all", lambda self: list(MISSIONS))
     monkeypatch.setattr(mission_ops.MissionClient, "__init__", lambda self, base_url=None: None)
-    monkeypatch.setattr(session_ops.director, "get_fleet", lambda: (list(ROSTER), True, None, None))
-    monkeypatch.setattr(session_ops.director, "post_json", fake_post_json)
-    # mission_ops imports the director helper lazily, and it is the SAME module object, so patching
+    monkeypatch.setattr(session_ops.gateway, "get_fleet", lambda: (list(ROSTER), True, None, None))
+    monkeypatch.setattr(session_ops.gateway, "post_json", fake_post_json)
+    # mission_ops imports the gateway helper lazily, and it is the SAME module object, so patching
     # it once here covers both call sites.
     return calls
 
@@ -168,10 +172,10 @@ def test_detach_reports_the_mission_the_session_left(wired, capsys, plain):
 def test_detaching_a_session_that_had_no_mission_says_nothing_changed(monkeypatch, capsys, plain):
     # Claiming a detach that did not happen is the small lie that makes the next person distrust
     # the whole command. Say what is true.
-    monkeypatch.setattr(session_ops.director, "get_fleet", lambda: (list(ROSTER), True, None, None))
+    monkeypatch.setattr(session_ops.gateway, "get_fleet", lambda: (list(ROSTER), True, None, None))
     monkeypatch.setattr(
-        session_ops.director, "post_json",
-        lambda path, body, timeout=30: {"applied": True, "sessionId": body["toSessionId"]},
+        session_ops.gateway, "post_json",
+        lambda path, body, timeout=30: {"applied": True, "sessionId": path.split("/")[1]},
     )
 
     mission_ops.detach_session("sess-manager")
@@ -200,14 +204,14 @@ def test_a_remote_attach_still_reports_the_mission_it_left(monkeypatch, capsys, 
     monkeypatch.setattr(mission_ops.MissionClient, "list_all", lambda self: list(MISSIONS))
     monkeypatch.setattr(mission_ops.MissionClient, "__init__", lambda self, base_url=None: None)
     monkeypatch.setattr(
-        session_ops.director, "get_fleet",
+        session_ops.gateway, "get_fleet",
         lambda: ([dict(MANAGER, missionId=OTHER_MISSION_ID, missionName="Voice cleanup")],
                  True, None, None),
     )
     monkeypatch.setattr(
-        session_ops.director, "post_json",
+        session_ops.gateway, "post_json",
         # The relay response: applied, but carrying no previous attachment.
-        lambda path, body, timeout=30: {"applied": True, "sessionId": body["toSessionId"],
+        lambda path, body, timeout=30: {"applied": True, "sessionId": path.split("/")[1],
                                         "missionId": body.get("missionId")},
     )
 
@@ -229,9 +233,9 @@ def test_a_remote_attach_still_reports_the_mission_it_left(monkeypatch, capsys, 
 def _wire(monkeypatch, response):
     monkeypatch.setattr(mission_ops.MissionClient, "list_all", lambda self: list(MISSIONS))
     monkeypatch.setattr(mission_ops.MissionClient, "__init__", lambda self, base_url=None: None)
-    monkeypatch.setattr(session_ops.director, "get_fleet", lambda: (list(ROSTER), True, None, None))
+    monkeypatch.setattr(session_ops.gateway, "get_fleet", lambda: (list(ROSTER), True, None, None))
     monkeypatch.setattr(
-        session_ops.director, "post_json", lambda path, body, timeout=30: dict(response)
+        session_ops.gateway, "post_json", lambda path, body, timeout=30: dict(response)
     )
 
 

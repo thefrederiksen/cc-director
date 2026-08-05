@@ -3,15 +3,23 @@ using CcDirector.Core.Account;
 namespace CcDirector.Core.Sessions;
 
 /// <summary>
-/// Builds the one-screen "fleet awareness" preamble that a session receives at launch so the
-/// agent knows its own identity and how to reach the rest of the fleet WITHOUT first having to
-/// discover and read a skill. This removes the discovery delay: every session already carries
-/// CC_SESSION_ID and CC_DIRECTOR_API in its environment, but an agent never reads environment
-/// variables unless something surfaces them - this is that something.
+/// Builds the one-screen "fleet awareness" preamble that a session receives so the agent knows its
+/// own identity and how to reach the rest of the fleet WITHOUT first having to discover and read a
+/// skill. This removes the discovery delay: every session already carries its identity in its
+/// environment, but an agent never reads environment variables unless something surfaces them -
+/// this is that something.
 ///
-/// Surfaced into Claude sessions through the SessionStart hook's additionalContext (zero turn
-/// cost; see <see cref="Claude.ClaudeHookInstaller"/>) and reusable by other agent integrations
-/// through the GET /sessions/{sid}/fleet-preamble Control API endpoint.
+/// HOW IT REACHES AN AGENT. Claude and Codex read it from a FILE the Director maintains per session
+/// and print it as their SessionStart hook's additionalContext, at zero turn cost - see
+/// <see cref="SessionPreambleFile"/>, <see cref="SessionPreambleMaintainer"/> and
+/// <see cref="Claude.ClaudeHookInstaller"/>. Pi takes its own file at launch
+/// (<see cref="Pi.PiPreambleWriter"/>).
+///
+/// There is no longer a Control API endpoint for this. The remove-the-network-port mission's phase 3
+/// deleted GET /sessions/{sid}/fleet-preamble and its hook-output sibling, so a new agent integration
+/// reads the maintained file rather than calling the Director. Said here explicitly because this
+/// summary named that endpoint as the reusable route for years, and a reader who trusted it would go
+/// looking for a door that is not there.
 ///
 /// THE TEXT ITSELF LIVES IN <see cref="FleetPreambleTemplate"/> and is filled in by
 /// <see cref="FleetPreambleRenderer"/>. It used to be assembled here with C# string interpolation,

@@ -1,4 +1,4 @@
-using System.Net;
+﻿using System.Net;
 using System.Text.Json;
 using CcDirector.Core.Storage;
 using CcDirector.Core.Utilities;
@@ -210,7 +210,7 @@ public sealed class GatewayConfig
             // the Gateway host's own Director/launcher have no configured token and, once host-wide auth
             // is enforced, get 401 on every Gateway call. When the configured Gateway is THIS machine's
             // own Gateway, present the local shared machine token from gateway-token.txt - the exact file
-            // GatewayAuth writes on the Gateway host, and the same file DirectorAuth already reads for the
+            // GatewayAuth writes on the Gateway host, and the same file the Director-side callers read for the
             // inbound Control API. It is scoped to a LOCAL Gateway URL so a remote Workstation never sends
             // this machine's token to a different Gateway. This is a credential RESOLUTION, not a fallback
             // that hides an error: it is the correct token for the local Gateway, sourced from the one
@@ -274,7 +274,7 @@ public sealed class GatewayConfig
     /// <summary>
     /// Read the local shared machine token that <c>GatewayAuth</c> generates on the Gateway host
     /// (<c>%LOCALAPPDATA%\cc-director\config\director\gateway-token.txt</c> - the same file
-    /// <c>GatewayAuth.TokenFile</c> / <c>DirectorAuth.TokenFile</c> / <see cref="GatewayCredentialStore.CredentialFile"/>
+    /// <c>GatewayAuth.TokenFile</c> / <see cref="GatewayCredentialStore.CredentialFile"/>
     /// name). The path is computed fresh (not a cached static) so it honors the current config root.
     /// Null when the file is absent or empty.
     /// </summary>

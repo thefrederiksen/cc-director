@@ -67,6 +67,22 @@ public sealed class GatewayStreamClient : IAsyncDisposable
     /// </summary>
     private readonly Func<string?>? _displayName;
 
+    /// <summary>
+    /// Remove-the-network-port phase 1b: the registrations for every live session that holds a Gateway
+    /// session key, re-sent on every reseed so a key survives a tunnel drop, a Gateway restart, and a
+    /// Director reconnect. Null in tests and older callers - session keys are then simply never registered,
+    /// which is the same state as a Director that has not been given the feature.
+    /// </summary>
+    private readonly Func<List<SessionKeyRegistration>>? _sessionKeys;
+
+    /// <summary>Sessions whose keys were reaped here but not yet refused by the Gateway. Replayed on
+    /// every reseed, so a revocation that could not be delivered is not simply lost.</summary>
+    private readonly Func<List<string>>? _pendingRevocations;
+
+    /// <summary>Called with a session id once the GATEWAY has accepted its revocation. Only an accepted
+    /// invoke settles the debt - a logged-and-dropped failure must leave it owed.</summary>
+    private readonly Action<string>? _onRevocationConfirmed;
+
     private HubConnection? _connection;
     private long _sequence;
     private int _started;
@@ -99,8 +115,14 @@ public sealed class GatewayStreamClient : IAsyncDisposable
         SessionManager? sessionManager = null,
         GatewayConnectionMonitor? monitor = null,
         Func<List<RepoStatusDto>>? repoSnapshot = null,
-        Func<string?>? displayName = null)
+        Func<string?>? displayName = null,
+        Func<List<SessionKeyRegistration>>? sessionKeys = null,
+        Func<List<string>>? pendingRevocations = null,
+        Action<string>? onRevocationConfirmed = null)
     {
+        _sessionKeys = sessionKeys;
+        _pendingRevocations = pendingRevocations;
+        _onRevocationConfirmed = onRevocationConfirmed;
         _displayName = displayName;
         _repoSnapshot = repoSnapshot;
         _config = config ?? throw new ArgumentNullException(nameof(config));
@@ -506,6 +528,68 @@ public sealed class GatewayStreamClient : IAsyncDisposable
             FileLog.Write($"[GatewayStreamClient] reseed failed (auto-reconnect will retry): {ex.Message}");
         }
 
+        // Remove-the-network-port phase 1b: re-register every live session's Gateway key, in its OWN
+        // try/catch for the same reason as the repository leg below.
+        //
+        // THIS IS THE RECOVERY PATH, not an optimisation. The tunnel is how a key reaches the Gateway, and
+        // the tunnel drops - a Gateway restart wipes nothing (the registry is durable) but a Director that
+        // reconnects after one may have minted keys nobody received. Re-sending them on every reseed makes
+        // the new connection authoritative for credentials exactly as the snapshot above makes it
+        // authoritative for the roster, so a lost registration heals within one reseed instead of leaving an
+        // agent permanently unable to call the Gateway.
+        //
+        // It also EXTENDS the expiry (RegistrationFor recomputes it), which is what lets a key be short-lived
+        // without a long-running session ever losing it.
+        if (_sessionKeys is not null && conn.State == HubConnectionState.Connected)
+        {
+            try
+            {
+                var registrations = _sessionKeys();
+                var registered = 0;
+                foreach (var registration in registrations)
+                {
+                    await conn.InvokeAsync("RegisterSessionKey", registration);
+                    registered++;
+                }
+                if (registrations.Count > 0)
+                    FileLog.Write($"[GatewayStreamClient] re-registered {registered}/{registrations.Count} session key(s)");
+            }
+            catch (Exception ex)
+            {
+                FileLog.Write($"[GatewayStreamClient] session key re-registration incomplete (older Gateway?): {ex.Message}");
+            }
+        }
+
+        // Replay every revocation still owed. This is the other half of the recovery path above, and the
+        // half that was missing: registrations healed on reseed while revocations did not, so the one
+        // direction that matters for SECURITY was the one with no retry. Each is confirmed individually,
+        // so a partial failure leaves exactly the undelivered ones owed for the next reseed.
+        if (_pendingRevocations is not null && conn.State == HubConnectionState.Connected)
+        {
+            try
+            {
+                var owed = _pendingRevocations();
+                foreach (var sessionId in owed)
+                {
+                    try
+                    {
+                        await conn.InvokeAsync("RevokeSessionKey", sessionId);
+                        _onRevocationConfirmed?.Invoke(sessionId);
+                    }
+                    catch (Exception ex)
+                    {
+                        FileLog.Write($"[GatewayStreamClient] replayed revocation for {sessionId} failed: {ex.Message} - still owed");
+                    }
+                }
+                if (owed.Count > 0)
+                    FileLog.Write($"[GatewayStreamClient] replayed {owed.Count} owed session key revocation(s)");
+            }
+            catch (Exception ex)
+            {
+                FileLog.Write($"[GatewayStreamClient] revocation replay incomplete: {ex.Message}");
+            }
+        }
+
         // The repository snapshot rides the same reseed cadence, in its OWN try/catch: an old Gateway
         // without the PushRepoSnapshot hub method throws a HubException here, and that must never take
         // the session reseed down with it (best-effort, no capability negotiation - see phase C notes).
@@ -547,6 +631,80 @@ public sealed class GatewayStreamClient : IAsyncDisposable
         if (conn is null || conn.State != HubConnectionState.Connected) return;
         var seq = Interlocked.Increment(ref _sequence);
         _ = SendAsync(() => conn.InvokeAsync("PushDelta", seq, session), "PushDelta");
+    }
+
+    /// <summary>
+    /// Register ONE session's Gateway key (Remove-the-network-port mission, phase 1b), sent the instant the
+    /// key is minted - before the agent process is launched, let alone booted - so it is accepted by the
+    /// time the agent's first command reaches the Gateway.
+    ///
+    /// It is awaited, and its failure is REPORTED rather than swallowed: an unregistered key is a session
+    /// whose command line answers 401 on every call, and that must be one findable line in the log rather
+    /// than an agent reporting that DevThrottle is broken. The next reseed re-registers it, which is what
+    /// makes this survivable rather than fatal.
+    /// </summary>
+    public async Task<bool> RegisterSessionKeyAsync(SessionKeyRegistration registration)
+    {
+        if (registration is null || string.IsNullOrEmpty(registration.SessionId)) return false;
+        var conn = _connection;
+        if (conn is null || conn.State != HubConnectionState.Connected)
+        {
+            FileLog.Write($"[GatewayStreamClient] session key NOT registered (tunnel not connected): session={registration.SessionId} - the next reseed will register it");
+            return false;
+        }
+
+        try
+        {
+            await conn.InvokeAsync("RegisterSessionKey", registration);
+            FileLog.Write($"[GatewayStreamClient] registered session key: session={registration.SessionId}, expires={registration.ExpiresAtUtc:O}");
+            return true;
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[GatewayStreamClient] session key registration FAILED: session={registration.SessionId}, {ex.Message} - the next reseed will retry");
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// End one session's Gateway key (Remove-the-network-port mission, phase 1b) - sent when the session is
+    /// reaped. Fire-and-forget: a revocation that does not land is backstopped by the key's expiry, and by
+    /// the fact that a reaped session is no longer re-registered, so the key lapses rather than living on.
+    /// </summary>
+    public void RevokeSessionKey(string sessionId)
+    {
+        if (string.IsNullOrEmpty(sessionId)) return;
+        var conn = _connection;
+        if (conn is null || conn.State != HubConnectionState.Connected)
+        {
+            // NOT "it lapses at its expiry" - that was the old reasoning and it was wrong. The debt is
+            // already recorded by SessionGatewayKeys.Forget and the next reseed replays it, so a tunnel
+            // that is down at this instant delays the revocation rather than discarding it.
+            FileLog.Write($"[GatewayStreamClient] session key revocation DEFERRED (tunnel not connected): session={sessionId} - owed, and replayed on the next reseed");
+            return;
+        }
+        _ = RevokeAndConfirmAsync(conn, sessionId);
+    }
+
+    /// <summary>
+    /// Send one revocation and settle its debt ONLY if the Gateway accepted it.
+    ///
+    /// The old code passed this through the shared fire-and-forget SendAsync, which caught the failure,
+    /// logged it and dropped it. That is right for a roster push - the next snapshot re-states the truth -
+    /// and wrong for a revocation, because nothing re-stated it: the hash had already been forgotten, so
+    /// the reseed had nothing to replay and the key stayed valid on the Gateway until it expired.
+    /// </summary>
+    private async Task RevokeAndConfirmAsync(HubConnection conn, string sessionId)
+    {
+        try
+        {
+            await conn.InvokeAsync("RevokeSessionKey", sessionId);
+            _onRevocationConfirmed?.Invoke(sessionId);
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[GatewayStreamClient] RevokeSessionKey({sessionId}) failed: {ex.Message} - still owed, and replayed on the next reseed");
+        }
     }
 
     /// <summary>Push a session removal. Fire-and-forget; a drop is reconciled by the next snapshot.</summary>

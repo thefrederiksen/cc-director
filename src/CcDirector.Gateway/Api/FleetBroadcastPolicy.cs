@@ -35,7 +35,7 @@ public sealed record BroadcastDecision(
 /// Pure, I/O-free decision for whether a fan-out may proceed on SCOPE grounds (issue #1229). Kept
 /// separate from delivery and from the stateful rate-limit / grant store (<see cref="BroadcastGovernor"/>)
 /// so the who-may-reach-whom rule is unit-testable in isolation, mirroring
-/// <see cref="CcDirector.ControlApi.FleetMessaging"/>.
+/// <see cref="CcDirector.Gateway.Contracts.FleetMessaging"/>.
 /// </summary>
 public static class FleetBroadcastPolicy
 {

@@ -12,7 +12,7 @@ _tools_dir = str(Path(__file__).resolve().parent.parent.parent)
 if _tools_dir not in sys.path:
     sys.path.insert(0, _tools_dir)
 
-from cc_shared import director  # noqa: E402
+from cc_shared import gateway  # noqa: E402
 
 from . import __version__  # noqa: E402
 
@@ -61,19 +61,19 @@ def _run(
 ) -> None:
     """Show the last N conversation messages of TARGET (works for Claude, Codex, and Pi sessions)."""
     try:
-        sessions, complete, roster_reason, stale_caution = director.get_fleet()
-    except director.DirectorError as err:
+        sessions, complete, roster_reason, stale_caution = gateway.get_fleet()
+    except gateway.GatewayError as err:
         console.print(f"[red]Error:[/red] {err}")
         raise typer.Exit(1)
 
-    matches = director.resolve_target(sessions, target)
+    matches = gateway.resolve_target(sessions, target)
     if not matches:
-        console.print(director.no_match_message(target))
+        console.print(gateway.no_match_message(target))
         # Issue #1051, reworded for #1159 step A: an unreachable Director's sessions are now LISTED rather
         # than dropped, but they are the last thing that machine reported, so "no session matches" can still
         # mean "the list we searched was not current". Do not imply otherwise - "it does not exist" and "I
         # could not see that machine" call for opposite next steps.
-        caveat = director.roster_caveat(complete, roster_reason)
+        caveat = gateway.roster_caveat(complete, roster_reason)
         if caveat:
             console.print(f"[yellow]The fleet list searched may be incomplete.[/yellow] {caveat}")
         # THE negative answer this caution exists for. A machine that is connected but has not reported
@@ -88,12 +88,12 @@ def _run(
         raise typer.Exit(1)
 
     chosen = matches[0]
-    sid = director.field(chosen, "sessionId", "SessionId")
-    name = director.field(chosen, "name", "Name") or director.short_id(sid)
+    sid = gateway.field(chosen, "sessionId", "SessionId")
+    name = gateway.field(chosen, "name", "Name") or gateway.short_id(sid)
 
     try:
-        resp = director.get_json(f"sessions/{sid}/history")
-    except director.DirectorError as err:
+        resp = gateway.get_json(f"sessions/{sid}/history")
+    except gateway.GatewayError as err:
         console.print(f"[red]{err}[/red]")
         raise typer.Exit(1)
 
@@ -108,7 +108,7 @@ def _run(
 
     all_msgs = resp.get("messages") or []
     messages = all_msgs[-last:] if last and last > 0 else all_msgs
-    console.print(f"[dim]-- last {len(messages)} of {len(all_msgs)} messages from {name} ({director.short_id(sid)}, {agent}) --[/dim]")
+    console.print(f"[dim]-- last {len(messages)} of {len(all_msgs)} messages from {name} ({gateway.short_id(sid)}, {agent}) --[/dim]")
     if not messages:
         console.print("(no history yet)")
         return

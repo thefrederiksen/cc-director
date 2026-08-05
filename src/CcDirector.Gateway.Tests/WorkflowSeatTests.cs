@@ -1,49 +1,41 @@
-using System.Net;
-using System.Net.Http.Headers;
-using System.Net.Http.Json;
 using System.Text.Json;
 using CcDirector.ControlApi;
 using CcDirector.Core.Configuration;
 using CcDirector.Core.Sessions;
-using CcDirector.Core.Storage;
 using CcDirector.Gateway.Contracts;
-using Microsoft.AspNetCore.Builder;
-using Microsoft.AspNetCore.Hosting;
-using Microsoft.AspNetCore.Http;
-using Microsoft.Extensions.Logging;
 using Xunit;
 
 namespace CcDirector.Gateway.Tests;
 
 /// <summary>
-/// Workflows mission, phase 5b: seated sessions, proven over the REAL local-spawn path (the
-/// FleetSpawnMissionAttachTests harness - a real Director Control API against a Gateway stub over
-/// loopback HTTP). The claims: a mission-scoped spawn AUTO-SEATS the new session on the mission's
-/// workflow run (run id + workflow id + PINNED version stamped on the session, straight from the
-/// Gateway, never resolved by the Director); the seated session's fleet preamble carries the seat
-/// paragraph telling the agent to fetch its conduct at exactly the pinned version and to STOP if the
-/// fetch fails; the new session is recorded as a run PARTICIPANT on the Gateway (the persisted
-/// run-to-session membership #1771 reads); an unknown explicit run id is refused in plain English;
-/// and an unseated spawn is byte-identical to before.
+/// Workflows mission, phase 5b: seated sessions, at the Director's surviving seam.
+///
+/// Remove-the-network-port mission, phase 5: the /fleet/spawn route these tests originally drove -
+/// including its own copy of the Gateway run-resolution - is gone with the Director's listener. On
+/// the live path the GATEWAY resolves the seat (MachineEndpoints validates an explicit run id,
+/// auto-seats a mission spawn onto the mission's run, and records the participant - covered by
+/// <c>MachineSpawnWorkflowScopeTests</c>), and the CREATE it dispatches down the tunnel arrives with
+/// run id + workflow id + PINNED version already resolved. What the DIRECTOR owes that create, and
+/// what these tests pin at the real verb core:
+///
+///   * the seat is STAMPED on the session (run id + workflow id + pinned version, straight from the
+///     request, never re-resolved locally);
+///   * the seated session's maintained preamble file carries the seat paragraph - the pinned fetch
+///     command and the fail-closed STOP rule - which is what the SessionStart hook prints;
+///   * a seat whose workflow id is not a catalog slug is REFUSED, not guessed at;
+///   * an unseated spawn is unaffected and carries no seat paragraph.
 /// </summary>
 [Collection("DirectorRoot")]
 public sealed class WorkflowSeatTests : IAsyncLifetime
 {
-    private static readonly Guid KnownMissionId = Guid.NewGuid();
     private static readonly Guid KnownRunId = Guid.NewGuid();
-    private const string KnownMissionName = "Seat Proof";
     private const int PinnedVersion = 3;
 
     private readonly string _root;
     private readonly string? _prevRoot;
-    private WebApplication _gatewayStub = null!;
     private ControlApiHost _host = null!;
     private SessionManager _sm = null!;
-    private HttpClient _client = null!;
     private string _repoDir = null!;
-
-    /// <summary>Participant PATCH bodies the stub captured, keyed by run id.</summary>
-    private readonly List<(Guid RunId, string Body)> _participantPatches = new();
 
     public WorkflowSeatTests()
     {
@@ -52,77 +44,50 @@ public sealed class WorkflowSeatTests : IAsyncLifetime
         Environment.SetEnvironmentVariable("CC_DIRECTOR_ROOT", _root);
     }
 
-    private static WorkflowRunDto KnownRun() => new()
-    {
-        Id = KnownRunId,
-        WorkflowId = "mission",
-        WorkflowVersion = PinnedVersion,
-        ContentHash = "hash-3",
-        Name = KnownMissionName,
-        MissionId = KnownMissionId,
-    };
-
     public async Task InitializeAsync()
     {
-        var builder = WebApplication.CreateBuilder();
-        builder.Logging.ClearProviders();
-        builder.WebHost.ConfigureKestrel(o => o.Listen(IPAddress.Loopback, 0));
-        _gatewayStub = builder.Build();
-        _gatewayStub.MapGet("/missions/{mid}", (string mid) =>
-            Guid.TryParse(mid, out var id) && id == KnownMissionId
-                ? Results.Json(new MissionDto { MissionId = KnownMissionId, MissionName = KnownMissionName })
-                : Results.NotFound(new { error = "mission not found" }));
-        _gatewayStub.MapGet("/gateway/workflow-runs", (Guid? missionId) =>
-            Results.Json(new
-            {
-                runs = missionId == KnownMissionId
-                    ? new[] { KnownRun() }
-                    : Array.Empty<WorkflowRunDto>(),
-            }));
-        _gatewayStub.MapGet("/gateway/workflow-runs/{id:guid}", (Guid id) =>
-            id == KnownRunId
-                ? Results.Json(KnownRun())
-                : Results.NotFound(new { error = $"no workflow run '{id}'" }));
-        _gatewayStub.MapPatch("/gateway/workflow-runs/{id:guid}", async (Guid id, HttpContext ctx) =>
-        {
-            using var reader = new StreamReader(ctx.Request.Body);
-            _participantPatches.Add((id, await reader.ReadToEndAsync()));
-            return Results.Json(KnownRun());
-        });
-        await _gatewayStub.StartAsync();
-        var gatewayUrl = _gatewayStub.Urls.First();
-
-        Directory.CreateDirectory(Path.GetDirectoryName(CcStorage.ConfigJson())!);
-        await File.WriteAllTextAsync(CcStorage.ConfigJson(),
-            "{\"gateway\":{\"url\":\"" + gatewayUrl + "\"}}");
-
         _repoDir = Path.Combine(Path.GetTempPath(), "ccd-seat-repo-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(_repoDir);
 
         _sm = new SessionManager(new AgentOptions());
-        _host = new ControlApiHost(_sm, "1.0.0-test", () => Task.CompletedTask, useEphemeralPort: true);
-        var port = await _host.StartAsync();
-        _client = DirectorTestClient.Admin(port);
+        // The host is here for its session-state services: the preamble MAINTAINER is what writes the
+        // hook file these tests read, exactly as it does in production. It binds nothing.
+        _host = new ControlApiHost(_sm, "1.0.0-test", () => Task.CompletedTask,
+            directorId: Guid.NewGuid().ToString(),
+            instancesDirectory: Path.Combine(_root, "instances-isolated"));
+        await _host.StartAsync();
     }
 
     public async Task DisposeAsync()
     {
-        _client.Dispose();
         await _host.StopAsync();
         _sm.Dispose();
-        await _gatewayStub.StopAsync();
-        try
-        {
-            var f = Path.Combine(InstanceRegistration.InstancesDirectory, $"{_host.DirectorId}.json");
-            if (File.Exists(f)) File.Delete(f);
-        }
-        catch { /* test cleanup, ignore */ }
         Environment.SetEnvironmentVariable("CC_DIRECTOR_ROOT", _prevRoot);
         try { if (Directory.Exists(_root)) Directory.Delete(_root, true); } catch { /* best effort */ }
         try { if (Directory.Exists(_repoDir)) Directory.Delete(_repoDir, true); } catch { /* best effort */ }
     }
 
-    private NewSessionRequest CliSpawnBody() => new()
+    private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
+
+    /// <summary>
+    /// The preamble text the session's SessionStart hook would inject, read out of the file the Director
+    /// maintains for it (remove-the-network-port mission, phase 3). The file holds the finished
+    /// hookSpecificOutput envelope, so the text is its additionalContext field; an empty file means the
+    /// hook injects nothing.
+    /// </summary>
+    private static string ReadMaintainedPreamble(string sessionId)
+    {
+        var path = SessionHookFiles.PreamblePathFor(Guid.Parse(sessionId));
+        Assert.True(File.Exists(path), $"the Director did not maintain a preamble file at {path}");
+        var body = File.ReadAllText(path);
+        if (body.Length == 0)
+            return "";
+        using var doc = JsonDocument.Parse(body);
+        return doc.RootElement.GetProperty("hookSpecificOutput").GetProperty("additionalContext").GetString() ?? "";
+    }
+
+    /// <summary>A spawn body shaped like the create the Gateway dispatches, launching a harmless shell.</summary>
+    private NewSessionRequest SpawnBody() => new()
     {
         RepoPath = _repoDir,
         Agent = "RawCli",
@@ -131,75 +96,87 @@ public sealed class WorkflowSeatTests : IAsyncLifetime
         Role = "Architect",
     };
 
-    [Fact]
-    public async Task Mission_spawn_autoSeats_stampsThePin_recordsTheParticipant_andBriefsTheAgent()
+    private DirectorCommandResult Spawn(NewSessionRequest body)
+        => SessionCommandExecutor.Create(_sm, "dir-seat-test", new DirectorCommand
+        {
+            CommandId = "cmd-seat",
+            Verb = "create",
+            SessionId = "",
+            PayloadJson = JsonSerializer.Serialize(body, Json),
+        });
+
+    private async Task CleanUpAsync(SessionDto dto)
     {
-        var body = CliSpawnBody();
-        body.MissionId = KnownMissionId;
-
-        var resp = await _client.PostAsJsonAsync("fleet/spawn", body);
-
-        Assert.Equal(HttpStatusCode.Created, resp.StatusCode);
-        var dto = await resp.Content.ReadFromJsonAsync<SessionDto>();
-        Assert.NotNull(dto);
-
-        // The seat: run id + workflow id + PINNED version, stamped from the Gateway's answer.
-        Assert.Equal(KnownRunId, dto!.WorkflowRunId);
-        Assert.Equal("mission", dto.WorkflowId);
-        Assert.Equal(PinnedVersion, dto.WorkflowVersion);
-
-        // The participant: the Gateway received the membership record with the canonical session id.
-        var patch = Assert.Single(_participantPatches);
-        Assert.Equal(KnownRunId, patch.RunId);
-        Assert.Contains(dto.SessionId!, patch.Body);
-        Assert.Contains("RawCli", patch.Body);
-        Assert.Contains("Architect", patch.Body);
-        Assert.Contains(Environment.MachineName, patch.Body,
-            StringComparison.OrdinalIgnoreCase);
-
-        // The briefing: the seated session's preamble tells the agent its seat, the PINNED fetch
-        // command, and the fail-closed rule - regardless of agent kind, because it rides the same
-        // preamble every agent family receives.
-        var preamble = await _client.GetStringAsync($"sessions/{dto.SessionId}/fleet-preamble");
-        Assert.Contains("[Workflow seat]", preamble);
-        Assert.Contains("seated as Architect on the 'mission' workflow", preamble);
-        Assert.Contains($"cc-devthrottle workflow instructions mission --version {PinnedVersion}", preamble);
-        Assert.Contains("STOP and report", preamble);
-
-        await _client.DeleteAsync($"sessions/{dto.SessionId}");
+        if (dto.SessionId is not null && Guid.TryParse(dto.SessionId, out var id))
+        {
+            try { await _sm.KillSessionAsync(id); } catch { /* the shell may already be gone */ }
+        }
     }
 
     [Fact]
-    public async Task An_unknown_explicit_run_id_is_refused_inPlainEnglish()
+    public async Task A_gateway_resolved_seat_isStamped_andBriefsTheAgent()
     {
-        var body = CliSpawnBody();
-        body.WorkflowRunId = Guid.NewGuid();
+        // What arrives down the tunnel after the Gateway resolved the seat: run id, catalog slug, and
+        // the PINNED version, together.
+        var body = SpawnBody();
+        body.WorkflowRunId = KnownRunId;
+        body.WorkflowId = "mission";
+        body.WorkflowVersion = PinnedVersion;
 
-        var resp = await _client.PostAsJsonAsync("fleet/spawn", body);
+        var result = Spawn(body);
+        Assert.Equal(DirectorCommandStatus.Ok, result.Status);
+        var dto = JsonSerializer.Deserialize<SessionDto>(result.BodyJson ?? "{}", Json)!;
+        try
+        {
+            // The seat: run id + workflow id + PINNED version, stamped from the request.
+            Assert.Equal(KnownRunId, dto.WorkflowRunId);
+            Assert.Equal("mission", dto.WorkflowId);
+            Assert.Equal(PinnedVersion, dto.WorkflowVersion);
 
-        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
-        var text = await resp.Content.ReadAsStringAsync();
-        Assert.Contains("unknown workflow run", text);
-        Assert.Contains("cc-devthrottle workflow runs", text);
-        Assert.Empty(_participantPatches);
+            // The briefing: the seated session's preamble tells the agent its seat, the PINNED fetch
+            // command, and the fail-closed rule - regardless of agent kind, because it rides the same
+            // preamble every agent family receives. Read from the FILE the Director maintains, which
+            // is what the SessionStart hook prints.
+            var preamble = ReadMaintainedPreamble(dto.SessionId!);
+            Assert.Contains("[Workflow seat]", preamble);
+            Assert.Contains("seated as Architect on the 'mission' workflow", preamble);
+            Assert.Contains($"cc-devthrottle workflow instructions mission --version {PinnedVersion}", preamble);
+            Assert.Contains("STOP and report", preamble);
+        }
+        finally { await CleanUpAsync(dto); }
+    }
+
+    [Fact]
+    public void A_seat_whose_workflow_id_is_not_a_catalog_slug_isRefused()
+    {
+        // A forged or corrupted seat must never be stamped: the agent would fetch conduct that does
+        // not exist and a governance record would name a workflow nobody published.
+        var body = SpawnBody();
+        body.WorkflowRunId = KnownRunId;
+        body.WorkflowId = "Not A Slug!!";
+        body.WorkflowVersion = PinnedVersion;
+
+        var result = Spawn(body);
+
+        Assert.Equal(DirectorCommandStatus.BadRequest, result.Status);
+        Assert.Contains("invalid workflow seat", result.Error);
     }
 
     [Fact]
     public async Task An_unseated_spawn_isUnaffected_andCarriesNoSeatParagraph()
     {
-        var resp = await _client.PostAsJsonAsync("fleet/spawn", CliSpawnBody());
+        var result = Spawn(SpawnBody());
+        Assert.Equal(DirectorCommandStatus.Ok, result.Status);
+        var dto = JsonSerializer.Deserialize<SessionDto>(result.BodyJson ?? "{}", Json)!;
+        try
+        {
+            Assert.Null(dto.WorkflowRunId);
+            Assert.Null(dto.WorkflowId);
+            Assert.Null(dto.WorkflowVersion);
 
-        Assert.Equal(HttpStatusCode.Created, resp.StatusCode);
-        var dto = await resp.Content.ReadFromJsonAsync<SessionDto>();
-        Assert.NotNull(dto);
-        Assert.Null(dto!.WorkflowRunId);
-        Assert.Null(dto.WorkflowId);
-        Assert.Null(dto.WorkflowVersion);
-        Assert.Empty(_participantPatches);
-
-        var preamble = await _client.GetStringAsync($"sessions/{dto.SessionId}/fleet-preamble");
-        Assert.DoesNotContain("[Workflow seat]", preamble);
-
-        await _client.DeleteAsync($"sessions/{dto.SessionId}");
+            var preamble = ReadMaintainedPreamble(dto.SessionId!);
+            Assert.DoesNotContain("[Workflow seat]", preamble);
+        }
+        finally { await CleanUpAsync(dto); }
     }
 }

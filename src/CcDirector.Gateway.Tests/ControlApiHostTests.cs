@@ -1,6 +1,3 @@
-using System.Net;
-using System.Net.Http.Headers;
-using System.Net.Http.Json;
 using System.Text.Json;
 using CcDirector.ControlApi;
 using CcDirector.Core.Configuration;
@@ -11,9 +8,15 @@ using Xunit;
 namespace CcDirector.Gateway.Tests;
 
 /// <summary>
-/// End-to-end smoke tests for the Director's internal Control API.
-/// Uses a real SessionManager (with no sessions) so we exercise the
-/// HTTP plumbing, JSON serialization, and routing.
+/// The Director host's lifecycle, without a listener.
+///
+/// Remove-the-network-port mission, phase 5: the HTTP smoke tests that used to live here - healthz,
+/// the prompt-delivery-failures read, and "shutdown is no longer a route" - are gone WITH THE WHOLE
+/// LISTENER. There are no routes left to smoke-test: nothing binds, so "route X answers/404s" is not
+/// a question that can be asked of this host any more. What remains to prove about StartAsync is the
+/// registration file it writes (which phase 4's lifecycle machinery reads) and the identity handoff.
+/// The prompt-delivery-failures fleet view died with its route by the mission plan's ruling: the log
+/// file is the durable record, and each session's row still carries its own counts.
 /// </summary>
 [Collection("DirectorRoot")]
 public sealed class ControlApiHostTests : IAsyncLifetime
@@ -22,13 +25,11 @@ public sealed class ControlApiHostTests : IAsyncLifetime
     private readonly string? _prevRoot;
     private ControlApiHost _host = null!;
     private SessionManager _sm = null!;
-    private HttpClient _client = null!;
-    private bool _shutdownRequested;
+    private string _instancesDir = null!;
 
     public ControlApiHostTests()
     {
-        // Isolate the machine-global director root so the host resolves its accepted token from a
-        // fresh empty config (no fleet token) and writes its registration file into a temp root -
+        // Isolate the machine-global director root so the host writes its state into a temp root -
         // independent of whatever gateway the test machine happens to have configured.
         _prevRoot = Environment.GetEnvironmentVariable("CC_DIRECTOR_ROOT");
         _root = Path.Combine(Path.GetTempPath(), "ccd-hosttests-root-" + Guid.NewGuid().ToString("N"));
@@ -38,162 +39,86 @@ public sealed class ControlApiHostTests : IAsyncLifetime
     public async Task InitializeAsync()
     {
         _sm = new SessionManager(new AgentOptions());
-        _host = new ControlApiHost(_sm, "1.0.0-test", () =>
-        {
-            _shutdownRequested = true;
-            return Task.CompletedTask;
-        }, useEphemeralPort: true);
-        var port = await _host.StartAsync();
-        _client = DirectorTestClient.Admin(port);
+        _instancesDir = Path.Combine(_root, "instances-isolated");
+        _host = new ControlApiHost(_sm, "1.0.0-test", () => Task.CompletedTask,
+            directorId: Guid.NewGuid().ToString(),
+            instancesDirectory: _instancesDir);
+        await _host.StartAsync();
     }
 
     public async Task DisposeAsync()
     {
-        _client.Dispose();
         await _host.StopAsync();
         _sm.Dispose();
-
-        // Best-effort cleanup of the registration file
-        try
-        {
-            var f = Path.Combine(InstanceRegistration.InstancesDirectory, $"{_host.DirectorId}.json");
-            if (File.Exists(f)) File.Delete(f);
-        }
-        catch { /* test cleanup, ignore */ }
         Environment.SetEnvironmentVariable("CC_DIRECTOR_ROOT", _prevRoot);
         try { if (Directory.Exists(_root)) Directory.Delete(_root, recursive: true); } catch { /* best effort */ }
     }
 
     [Fact]
-    public async Task Healthz_returns_ok()
+    public void Registration_file_exists_after_start_and_advertises_no_endpoint()
     {
-        var dto = await _client.GetFromJsonAsync<HealthDto>("healthz");
-        Assert.NotNull(dto);
-        Assert.Equal("ok", dto!.Status);
-        Assert.Equal(0, dto.Sessions);
-        Assert.Equal(1, dto.Directors);
-        Assert.Equal("1.0.0-test", dto.Version);
-    }
-
-    // Gateway Cleanup mission (the cut): the Director loopback Control API no longer serves ANY session
-    // routes - GET /sessions (list), GET /sessions/{sid}, POST /sessions/{sid}/prompt, GET .../buffer and
-    // POST .../interrupt are all deleted. The roster is read from the Gateway push store now, and every
-    // per-session verb is dispatched over the tunnel into the shared verb core (SessionCommandExecutor).
-    // The following seven tests, which drove those deleted loopback routes, were removed because the routes
-    // are gone and their behaviour is proven against the verb core elsewhere (byte-identical logic):
-    //   * Sessions_empty_when_none_running        -> roster now = push store (TunnelRosterPushReadProofTests).
-    //   * Sessions_get_by_id_returns_400_for_bad_format  -> SessionReadExecutorTests
-    //         .DispatchAsync_Snapshot_InvalidSessionId_ReturnsBadRequest (the GET /sessions/{sid} bad-guid guard).
-    //   * Sessions_get_by_id_returns_404_for_unknown_guid -> SessionReadExecutorTests
-    //         .DispatchAsync_Snapshot_MissingSession_ReturnsNotFound.
-    //   * Sessions_prompt_returns_400_for_empty_text  -> SessionCommandExecutorTests
-    //         .DispatchAsync_Prompt_EmptyText_ReturnsBadRequest.
-    //   * Sessions_prompt_returns_404_for_unknown_guid -> SessionCommandExecutorTests
-    //         .DispatchAsync_Prompt_MissingSession_ReturnsNotFound.
-    //   * Sessions_buffer_returns_404_for_unknown_guid -> SessionReadExecutorTests
-    //         .DispatchAsync_Buffer_MissingSession_ReturnsNotFound.
-    //   * Sessions_interrupt_returns_404_for_unknown_guid -> SessionCommandExecutorTests
-    //         .DispatchAsync_Interrupt_MissingSession_ReturnsNotFound.
-    // (The four "404 for unknown guid" tests still passed by accident - a deleted route returns 404 for
-    // route-not-found, not session-not-found - so they green-lit machinery that no longer exists.)
-
-    [Fact]
-    public async Task PromptDeliveryFailures_answers_how_often_this_is_happening_without_a_log_file()
-    {
-        // Issue internal#811. The whole point of the issue is that "Command FAILED: the composer never
-        // echoed the typed text" existed ONLY in a log file, so nobody found out for two days. This route
-        // is the fleet-wide answer a person or an agent can just ask the Director for.
-        CcDirector.Core.Input.PromptDeliveryFailures.ResetForTests();
-        var session = Guid.NewGuid();
-        CcDirector.Core.Input.PromptDeliveryFailures.RecordComposerEchoMiss(session, "ClaudeDriver", 1, 739);
-        CcDirector.Core.Input.PromptDeliveryFailures.RecordFailedDelivery(
-            session, "Delivery", "the composer never echoed the typed text after 2 attempts", 739);
-
-        using var doc = JsonDocument.Parse(await _client.GetStringAsync("prompt-delivery-failures"));
-        var root = doc.RootElement;
-
-        Assert.Equal(1, root.GetProperty("failedDeliveries").GetInt32());
-        Assert.Equal(1, root.GetProperty("composerEchoMisses").GetInt32());
-        var newest = root.GetProperty("recent").EnumerateArray().First();
-        Assert.Equal("failed-delivery", newest.GetProperty("kind").GetString());
-        Assert.Equal(session.ToString(), newest.GetProperty("sessionId").GetString());
-        Assert.Contains("never echoed", newest.GetProperty("reason").GetString());
-        // The prompt TEXT is never served - only how long it was.
-        Assert.Equal(739, newest.GetProperty("textLength").GetInt32());
-        Assert.False(newest.TryGetProperty("text", out _));
-
-        CcDirector.Core.Input.PromptDeliveryFailures.ResetForTests();
-    }
-
-    [Fact]
-    public async Task Shutdown_triggers_callback()
-    {
-        Assert.False(_shutdownRequested);
-        var resp = await _client.PostAsync("shutdown", null);
-        Assert.True(resp.IsSuccessStatusCode);
-
-        // Callback runs on a Task.Delay(100) so wait a beat
-        var deadline = DateTime.UtcNow.AddSeconds(2);
-        while (!_shutdownRequested && DateTime.UtcNow < deadline)
-            await Task.Delay(50);
-
-        Assert.True(_shutdownRequested);
-    }
-
-    [Fact]
-    public void Registration_file_exists_after_start()
-    {
-        var f = Path.Combine(InstanceRegistration.InstancesDirectory, $"{_host.DirectorId}.json");
+        var f = Path.Combine(_instancesDir, $"{_host.DirectorId}.json");
         Assert.True(File.Exists(f), $"Registration file should exist at {f}");
 
-        var json = File.ReadAllText(f);
-        Assert.Contains(_host.DirectorId, json);
-        Assert.Contains($"127.0.0.1:{_host.Port}", json);
+        using var doc = JsonDocument.Parse(File.ReadAllText(f));
+        var root = doc.RootElement;
+        Assert.Equal(_host.DirectorId, root.GetProperty("DirectorId").GetString());
+
+        // Phase 4's lifecycle machinery certifies the registration's author by these two fields;
+        // they are what makes the file usable without a socket.
+        Assert.Equal(Environment.ProcessId, root.GetProperty("Pid").GetInt32());
+        Assert.True(root.TryGetProperty("StartedAt", out _));
+
+        // And the point of phase 5: the registration names NO control endpoint. Empty, not absent,
+        // so old readers deserialize cleanly - but never an address, because nothing answers one.
+        Assert.Equal("", root.GetProperty("ControlEndpoint").GetString());
     }
 
     [Fact]
-    public void IsListening_isTrue_and_noStartupError_after_successful_start()
+    public async Task Registration_file_is_deleted_on_stop()
     {
-        // The host started successfully in InitializeAsync, so the UI's Control-API indicator
-        // stays hidden (StartupError null) and remote access is reported up.
-        Assert.True(_host.IsListening);
-        Assert.Null(_host.StartupError);
+        // A second, independent host so the claim does not ride on fixture teardown ordering.
+        using var sm = new SessionManager(new AgentOptions());
+        var host = new ControlApiHost(sm, "1.0.0-test", () => Task.CompletedTask,
+            directorId: Guid.NewGuid().ToString(),
+            instancesDirectory: _instancesDir);
+        await host.StartAsync();
+        var f = Path.Combine(_instancesDir, $"{host.DirectorId}.json");
+        Assert.True(File.Exists(f));
+
+        await host.StopAsync();
+
+        Assert.False(File.Exists(f), "a stopped Director must not leave a registration behind");
     }
 
-    // Gateway Cleanup mission (the cut): POST /sessions (create) is deleted from the Director loopback -
-    // session creation is a tunnel verb now. The two issue #800/#807 create tests that drove that route
-    // (name-at-birth applied, and a weak explicit name rejected with 400) were removed because the exact
-    // create core - including the name-at-birth validation - is proven against the verb core elsewhere:
-    //   * name-at-birth applied  -> SessionCommandExecutorTests.DispatchAsync_Create_MakesSessionWithRightAgentNameAndWingman
-    //         and .DispatchAsync_Create_ExplicitName_IsNotAutoNamed (the create verb returns the meaningful
-    //         name on the SessionDto).
-    //   * weak explicit name rejected (issue #800) -> SessionCommandExecutorTests
-    //         .DispatchAsync_Create_WeakExplicitName_ReturnsBadRequest (bare repo folder name -> BadRequest).
-    // The "subsequent GET shows the same name with no PATCH" half is gone with the deleted GET /sessions/{sid}
-    // loopback route; the create verb returning the name is the surviving, byte-identical guarantee.
+    [Fact]
+    public void Host_start_publishes_director_identity_to_session_manager()
+    {
+        Assert.Equal(_host.DirectorId, _sm.DirectorId);
+    }
 }
 
 /// <summary>
 /// Regression for the "session never turns red when the Control API can't bind" bug
 /// (2026-06-15). The per-session state services (SessionStatusWingman + TerminalStateDetector)
-/// used to start mid-StartAsync, AFTER PortAllocator.Allocate. When every port in [7879..7898]
-/// was busy, Allocate threw and aborted StartAsync before those services ran, so the desktop
-/// badge (Session.StatusColor) froze on its last colour and a silent session could never flip
-/// to the red "needs you" state. StartSessionStateServices() now runs up front, independent of
-/// the bind. These tests start ONLY those services (never call StartAsync, so no port is ever
-/// bound) and prove the badge pipeline is live.
+/// used to start mid-StartAsync, AFTER the port allocation, and a bind failure aborted StartAsync
+/// before those services ran - so the desktop badge (Session.StatusColor) froze on its last colour
+/// and a silent session could never flip to the red "needs you" state. The port is gone
+/// (Remove-the-network-port mission, phase 5), but the ordering property it taught - state services
+/// first, before anything in StartAsync that can fail - is kept, and these tests still prove the
+/// badge pipeline runs with nothing else of the host started.
 /// </summary>
 [Collection("DirectorRoot")]
 public sealed class SessionStateServicesDecouplingTests
 {
     [Fact]
-    public async Task StateServices_DriveBadgeColour_WithoutAnyControlApiBind()
+    public async Task StateServices_DriveBadgeColour_WithoutStartAsync()
     {
         var sm = new SessionManager(new AgentOptions());
-        var host = new ControlApiHost(sm, "1.0.0-test", () => Task.CompletedTask, useEphemeralPort: true);
+        var host = new ControlApiHost(sm, "1.0.0-test", () => Task.CompletedTask,
+            directorId: Guid.NewGuid().ToString());
 
-        // Start the state services directly. We never call StartAsync, so Kestrel never binds a
-        // port -- exactly the state a Director is in after "all ports in [7879..7898] busy".
+        // Start the state services directly; StartAsync never runs.
         host.StartSessionStateServices();
         try
         {
@@ -209,7 +134,7 @@ public sealed class SessionStateServicesDecouplingTests
 
             // Drive the activity state the way TerminalStateDetector would (byte -> Working;
             // QuietThreshold of silence -> WaitingForInput). The wingman is the sole writer of
-            // StatusColor; if it is running, the badge follows -- with no Control API bound.
+            // StatusColor; if it is running, the badge follows.
             session.ApplyTerminalActivityState(ActivityState.Working);
             Assert.Equal("blue", session.StatusColor);
 
@@ -225,37 +150,11 @@ public sealed class SessionStateServicesDecouplingTests
     }
 
     [Fact]
-    public void ReportStartupFailure_SetsErrorAndRaisesEvent()
-    {
-        var sm = new SessionManager(new AgentOptions());
-        var host = new ControlApiHost(sm, "1.0.0-test", () => Task.CompletedTask, useEphemeralPort: true);
-        try
-        {
-            // Before any failure: healthy defaults so the UI indicator stays hidden.
-            Assert.False(host.IsListening);
-            Assert.Null(host.StartupError);
-
-            var raised = 0;
-            host.StartupStatusChanged += () => raised++;
-
-            // Simulate the App boundary catching a bind failure (e.g. all ports busy).
-            host.ReportStartupFailure("All ports in range 7879..7898 are busy.");
-
-            Assert.False(host.IsListening);
-            Assert.Equal("All ports in range 7879..7898 are busy.", host.StartupError);
-            Assert.Equal(1, raised);
-        }
-        finally
-        {
-            sm.Dispose();
-        }
-    }
-
-    [Fact]
     public async Task StartSessionStateServices_IsIdempotent()
     {
         var sm = new SessionManager(new AgentOptions());
-        var host = new ControlApiHost(sm, "1.0.0-test", () => Task.CompletedTask, useEphemeralPort: true);
+        var host = new ControlApiHost(sm, "1.0.0-test", () => Task.CompletedTask,
+            directorId: Guid.NewGuid().ToString());
         try
         {
             // Calling twice must not throw or double-wire (StartAsync also calls it once).
@@ -280,97 +179,19 @@ public sealed class SessionStateServicesDecouplingTests
     }
 }
 
-// Gateway Cleanup mission (the cut): the DirectorSessionIdentityFieldsTests class (issue #335) was removed.
-// It asserted the Director's OWN /sessions and /sessions/{sid} loopback endpoints stamped the four identity
-// fields (machineName, user, tailnetEndpoint, viewUrl). Those loopback routes are deleted, AND - verified in
-// production - the Director no longer stamps identity at all: its push snapshot is built by
-// ControlApiHost.SnapshotFullSessions -> ControlEndpoints.Map(session, directorId), the plain overload whose
-// machineName/user/tailnetEndpoint default to "" (and viewUrl derives from an empty tailnet, so it is ""
-// too). The resolveTailnetEndpoint resolver is now an unused leftover parameter on ControlEndpoints.Map(app,
-// ...). By design the identity fields are stamped by the GATEWAY aggregation pass for pushed rows, exactly as
-// ControlEndpoints.Map documents ("the Gateway aggregator stamps machine/user/tailnet/view-url during
-// aggregation, for pushed and pulled alike"). The #335 regression is therefore covered at the Gateway
-// aggregation seam, not the Director: SessionsAggregationTests
-//   * Aggregator_back_compat_enriches_old_director_empty_identity_fields (a Director sending EMPTY identity -
-//     which is now EVERY Director - gets all four fields enriched by the Gateway), and
-//   * Aggregator_preserves_director_supplied_identity_fields_and_does_not_overwrite_them (mixed-version
-//     back-compat).
-// There is no reachable Director-side seam that stamps identity, so re-pointing these three tests to a
-// Director snapshot seam would assert the OPPOSITE of the shipped behaviour (the fields are empty on the
-// Director side by design). See the worker report: flagged for Manager review, not deleted silently.
+// Remove-the-network-port mission, phase 5, tests removed WITH THEIR SUBJECT rather than adapted:
+//
+//   * ControlApiHostEphemeralFallbackTests (issue #697): the ephemeral-port fallback existed so a
+//     Director whose fixed range [7879..7898] was exhausted did not lose its Control API. There is
+//     no Control API, no fixed range, no port allocator and no fallback - the whole failure mode
+//     ("all ports busy") cannot occur on a host that binds nothing.
+//   * ReportStartupFailure_SetsErrorAndRaisesEvent: the startup-failure surface existed to tell the
+//     desktop a BIND failed. Nothing binds; the member is gone with the indicator that rendered it.
+//   * Healthz / prompt-delivery-failures / "shutdown is no longer a route": see the class comment
+//     at the top of this file.
 
 /// <summary>
-/// Issue #697: when the fixed Control-API range [7879..7898] is genuinely exhausted, the production
-/// loopback host falls back to an ephemeral loopback port instead of disabling the Control API. It
-/// stays listening (no startup error, so the desktop "Control API down / free a port" notice never
-/// fires) and answers normally. Isolation: CC_DIRECTOR_ROOT points config/registration at a temp
-/// root; the PortAllocationOverride seam forces "exhausted" WITHOUT touching real OS ports; and
-/// SuppressServeProvisioning keeps the test from mutating the host machine's real Tailscale serve table.
-/// </summary>
-[Collection("DirectorRoot")]
-public sealed class ControlApiHostEphemeralFallbackTests : IDisposable
-{
-    private readonly string _root;
-    private readonly string? _prevRoot;
-
-    public ControlApiHostEphemeralFallbackTests()
-    {
-        _prevRoot = Environment.GetEnvironmentVariable("CC_DIRECTOR_ROOT");
-        _root = Path.Combine(Path.GetTempPath(), "ccd-697-test-" + Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(_root);
-        Environment.SetEnvironmentVariable("CC_DIRECTOR_ROOT", _root);
-    }
-
-    public void Dispose()
-    {
-        Environment.SetEnvironmentVariable("CC_DIRECTOR_ROOT", _prevRoot);
-        try { if (Directory.Exists(_root)) Directory.Delete(_root, recursive: true); } catch { /* best effort */ }
-    }
-
-    [Fact]
-    public async Task StartAsync_FixedRangeExhausted_FallsBackToEphemeralPortAndStaysListening()
-    {
-        var sm = new SessionManager(new AgentOptions());
-        var host = new ControlApiHost(
-            sm, "1.0.0-test", () => Task.CompletedTask,
-            useEphemeralPort: false,                          // production loopback path (not the test ephemeral seam)
-            directorId: Guid.NewGuid().ToString(),            // isolate the registration file
-            instancesDirectory: Path.Combine(_root, "instances"))
-        {
-            PortAllocationOverride = _ => null,               // simulate a genuinely exhausted fixed range
-            SuppressServeProvisioning = true,                 // do not mutate the real Tailscale serve table
-        };
-
-        try
-        {
-            var port = await host.StartAsync();
-
-            // Bound a port OUTSIDE the fixed range, and Port reflects the OS-assigned value.
-            Assert.True(port < PortAllocator.PortRangeStart || port > PortAllocator.PortRangeEnd,
-                $"fallback must bind a port outside [{PortAllocator.PortRangeStart}..{PortAllocator.PortRangeEnd}], got {port}");
-            Assert.Equal(port, host.Port);
-
-            // A successful fallback is NOT a failure: no startup error -> the "Control API down" notice never fires.
-            Assert.True(host.IsListening);
-            Assert.Null(host.StartupError);
-
-            // The Control API actually answers on the ephemeral port. Gateway Cleanup mission (the cut):
-            // GET /sessions is gone from the loopback floor, so the liveness probe uses a floor route that
-            // survives - GET /healthz - which is all this test needs to prove the fallback host is listening.
-            using var client = DirectorTestClient.Admin(port);
-            var resp = await client.GetAsync("healthz");
-            Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
-        }
-        finally
-        {
-            await host.StopAsync();
-            sm.Dispose();
-        }
-    }
-}
-
-/// <summary>
-/// Issue #846: the session-number backfill is now wired into production. These tests prove the two
+/// Issue #846: the session-number backfill is wired into production. These tests prove the two
 /// wirings that were missing (BackfillNumbers had no caller before): (1) a single backfill pass runs
 /// at Director startup (ControlApiHost.StartAsync), numbering any tracked session that lacks a number;
 /// and (2) the "backfill-numbers" verb triggers the same backfill on a RUNNING Director (no restart),
@@ -412,7 +233,9 @@ public sealed class SessionNumberBackfillTests : IDisposable
         var session = sm.CreatePipeModeSession(Path.GetTempPath());
         session.Number = null;
 
-        var host = new ControlApiHost(sm, "1.0.0-test", () => Task.CompletedTask, useEphemeralPort: true);
+        var host = new ControlApiHost(sm, "1.0.0-test", () => Task.CompletedTask,
+            directorId: Guid.NewGuid().ToString(),
+            instancesDirectory: Path.Combine(_root, "instances-isolated"));
         try
         {
             // Act: starting the Director runs the one-time startup backfill.
@@ -426,12 +249,6 @@ public sealed class SessionNumberBackfillTests : IDisposable
         {
             await host.StopAsync();
             sm.Dispose();
-            try
-            {
-                var f = Path.Combine(InstanceRegistration.InstancesDirectory, $"{host.DirectorId}.json");
-                if (File.Exists(f)) File.Delete(f);
-            }
-            catch { /* test cleanup */ }
         }
     }
 

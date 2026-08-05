@@ -27,7 +27,7 @@ public sealed class RecordingCronNotifier : ICronNotifier
     /// <summary>A fixed link to return from <see cref="BuildSessionLink"/> when a session id is present.</summary>
     public string LinkTemplate { get; set; } = "https://host.ts.net/sessions/{sid}/view";
 
-    public string BuildSessionLink(string? directorId, string? sessionId) =>
+    public string BuildSessionLink(string? sessionId) =>
         string.IsNullOrEmpty(sessionId) ? "" : LinkTemplate.Replace("{sid}", sessionId);
 
     public Task NotifyRunCompletedAsync(CronJobDto job, string directorId, CronRunCompletedPayload payload, CancellationToken ct)
@@ -40,7 +40,7 @@ public sealed class RecordingCronNotifier : ICronNotifier
 /// <summary>A do-nothing <see cref="ICronNotifier"/> for cron tests that do not assert notification behavior.</summary>
 public sealed class NullCronNotifier : ICronNotifier
 {
-    public string BuildSessionLink(string? directorId, string? sessionId) => "";
+    public string BuildSessionLink(string? sessionId) => "";
     public Task NotifyRunCompletedAsync(CronJobDto job, string directorId, CronRunCompletedPayload payload, CancellationToken ct) =>
         Task.CompletedTask;
 }

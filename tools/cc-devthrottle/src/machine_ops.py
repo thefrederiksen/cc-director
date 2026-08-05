@@ -1,8 +1,9 @@
 """Machines: find what is installed on another computer, find a file on it, and start something there.
 
-Backed by the Director's /fleet/machines relays, which forward to the Gateway's machine routes and on to
-that machine's cc-launcher. Every call is scoped to the calling account by the Gateway, so a machine name
-only ever reaches a machine this account registered.
+Backed by the Gateway's /launchers and /machines routes, which reach that machine's cc-launcher. Every
+call is scoped to the calling account by the Gateway, so a machine name only ever reaches a machine this
+account registered - and since the Remove-the-network-port mission's phase 2 the credential presented is
+this SESSION's own key, so it is scoped to one session inside that account as well.
 
 Read the search commands as questions and `launch` as an instruction: `machine apps` and `machine files`
 change nothing, while `machine launch` starts a program on a computer you may not be sitting at.
@@ -25,7 +26,7 @@ _tools_dir = str(Path(__file__).resolve().parent.parent.parent)
 if _tools_dir not in sys.path:
     sys.path.insert(0, _tools_dir)
 
-from cc_shared import director  # noqa: E402
+from cc_shared import gateway  # noqa: E402
 
 console = Console()
 
@@ -37,8 +38,8 @@ def _fail(message: str) -> None:
 
 def _call(path: str) -> Any:
     try:
-        payload = director.get_json(path)
-    except director.DirectorError as err:
+        payload = gateway.get_json(path)
+    except gateway.GatewayError as err:
         _fail(str(err))
     if isinstance(payload, dict) and payload.get("error"):
         _fail(str(payload["error"]))
@@ -61,7 +62,7 @@ def _size(size: Any) -> str:
 
 def list_machines(json_output: bool) -> None:
     """Every machine this account can search and start things on."""
-    rows: List[Dict[str, Any]] = _call("fleet/machines") or []
+    rows: List[Dict[str, Any]] = _call("launchers") or []
     if json_output:
         print(json.dumps(rows, indent=2))
         return
@@ -78,11 +79,11 @@ def list_machines(json_output: bool) -> None:
         table.add_column(column)
     for row in rows:
         table.add_row(
-            str(director.field(row, "machineName", "MachineName") or "-"),
-            str(director.field(row, "port", "Port") or "-"),
-            str(director.field(row, "networkAddress", "NetworkAddress") or "(same machine)"),
-            str(director.field(row, "version", "Version") or "-"),
-            str(director.field(row, "lastSeenUtc", "LastSeenUtc") or "-"),
+            str(gateway.field(row, "machineName", "MachineName") or "-"),
+            str(gateway.field(row, "port", "Port") or "-"),
+            str(gateway.field(row, "networkAddress", "NetworkAddress") or "(same machine)"),
+            str(gateway.field(row, "version", "Version") or "-"),
+            str(gateway.field(row, "lastSeenUtc", "LastSeenUtc") or "-"),
         )
     console.print(table)
     console.print(f"{len(rows)} machines")
@@ -95,7 +96,7 @@ def list_directors(json_output: bool) -> None:
     column is what a person reads; the DIRECTOR ID is what `session spawn --director` should carry,
     because it survives a rename and cannot collide with a second Director called the same thing.
     """
-    rows: List[Dict[str, Any]] = _call("fleet/directors") or []
+    rows: List[Dict[str, Any]] = _call("directors") or []
     if json_output:
         print(json.dumps(rows, indent=2))
         return
@@ -116,15 +117,15 @@ def list_directors(json_output: bool) -> None:
     table.add_column("DIRECTOR ID", overflow="fold", no_wrap=False)
     table.add_column("VERSION")
     for row in rows:
-        machine_name = str(director.field(row, "machineName", "MachineName") or "-")
+        machine_name = str(gateway.field(row, "machineName", "MachineName") or "-")
         # An unnamed instance falls back to its machine name, exactly as the Director's own toolbar
         # does - the alternative is a blank cell in the column you pick a Director from.
-        name = str(director.field(row, "displayName", "DisplayName") or "").strip() or machine_name
+        name = str(gateway.field(row, "displayName", "DisplayName") or "").strip() or machine_name
         table.add_row(
             name,
             machine_name,
-            str(director.field(row, "directorId", "DirectorId") or "-"),
-            str(director.field(row, "version", "Version") or "-"),
+            str(gateway.field(row, "directorId", "DirectorId") or "-"),
+            str(gateway.field(row, "version", "Version") or "-"),
         )
     console.print(table)
     console.print(f"{len(rows)} Directors")
@@ -132,7 +133,7 @@ def list_directors(json_output: bool) -> None:
 
 def list_apps(machine: str, query: Optional[str], limit: int, json_output: bool) -> None:
     """What is installed on one machine."""
-    path = f"fleet/machines/{machine}/apps?q={query or ''}&limit={limit}"
+    path = f"machines/{machine}/apps?q={query or ''}&limit={limit}"
     payload: Dict[str, Any] = _call(path) or {}
     apps: List[Dict[str, Any]] = payload.get("apps") or payload.get("Apps") or []
 
@@ -149,9 +150,9 @@ def list_apps(machine: str, query: Optional[str], limit: int, json_output: bool)
         table.add_column(column)
     for app in apps:
         table.add_row(
-            str(director.field(app, "name", "Name") or "-"),
-            str(director.field(app, "source", "Source") or "-"),
-            str(director.field(app, "path", "Path") or "-"),
+            str(gateway.field(app, "name", "Name") or "-"),
+            str(gateway.field(app, "source", "Source") or "-"),
+            str(gateway.field(app, "path", "Path") or "-"),
         )
     console.print(table)
 
@@ -171,7 +172,7 @@ def list_apps(machine: str, query: Optional[str], limit: int, json_output: bool)
 def search_files(machine: str, query: str, limit: int, timeout_seconds: int, json_output: bool) -> None:
     """Find files by name on one machine."""
     path = (
-        f"fleet/machines/{machine}/files?q={query}"
+        f"machines/{machine}/files?q={query}"
         f"&limit={limit}&timeoutMilliseconds={timeout_seconds * 1000}"
     )
     payload: Dict[str, Any] = _call(path) or {}
@@ -188,12 +189,12 @@ def search_files(machine: str, query: str, limit: int, timeout_seconds: int, jso
         for column in ("FILE", "SIZE", "MODIFIED", "PATH"):
             table.add_column(column)
         for hit in files:
-            modified = str(director.field(hit, "modifiedUtc", "ModifiedUtc") or "-")
+            modified = str(gateway.field(hit, "modifiedUtc", "ModifiedUtc") or "-")
             table.add_row(
-                str(director.field(hit, "name", "Name") or "-"),
+                str(gateway.field(hit, "name", "Name") or "-"),
                 _size(hit.get("sizeBytes", hit.get("SizeBytes"))),
                 modified[:19].replace("T", " "),
-                str(director.field(hit, "path", "Path") or "-"),
+                str(gateway.field(hit, "path", "Path") or "-"),
             )
         console.print(table)
 
@@ -235,8 +236,8 @@ def launch(machine: str, app: Optional[str], path: Optional[str], args: Optional
     body = {"app": app, "path": path, "args": args, "cwd": cwd, "headless": headless,
             "confirmProtected": True}
     try:
-        payload = director.post_json(f"fleet/machines/{machine}/launch", body, timeout=60)
-    except director.DirectorError as err:
+        payload = gateway.post_json(f"machines/{machine}/launch", body, timeout=60)
+    except gateway.GatewayError as err:
         _fail(str(err))
 
     if json_output:

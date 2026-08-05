@@ -263,7 +263,7 @@ public sealed class CronEngine
             TaskStatus = record.TaskStatus,
             Machine = record.Machine,
             SessionId = record.SessionId,
-            SessionLink = _notifier.BuildSessionLink(directorId, record.SessionId),
+            SessionLink = _notifier.BuildSessionLink(record.SessionId),
             Reason = started ? null : (error ?? "the scheduled run did not start"),
             FiredUtc = record.FiredUtc,
         };

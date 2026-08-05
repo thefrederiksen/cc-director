@@ -63,9 +63,12 @@ become-architect UX are owned by this lane.
 `DELETE {CC_DIRECTOR_API}/sessions/{sid}`  ->  `{ "killed": true, "removed": true }`.
 Best-effort kill then always removes the row (no orphan). `404` if the id is unknown.
 
-To stop a whole TEST Director you launched: `POST {its}/shutdown` (graceful - it kills its own
-sessions and deletes its crash journal, avoiding a phantom "interrupted" fleet entry). Never
-force-kill unless it will not exit.
+To stop a whole TEST Director you launched: raise its shutdown SIGNAL, named for that Director's own
+identifier (`Local\cc-director-shutdown-<directorId>`, read from its instance registration). Graceful -
+it kills its own sessions and deletes its crash journal, avoiding a phantom "interrupted" fleet entry.
+Never force-kill unless it will not exit. There is no `POST /shutdown`: the remove-the-network-port
+mission took lifecycle off the socket, because stopping a Director has to work when nothing is
+listening. See CLAUDE.md rule 0b for the exact call.
 
 ## THE TRAP (why agents fumble today)
 

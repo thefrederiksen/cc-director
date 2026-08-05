@@ -8,15 +8,20 @@ using Xunit;
 namespace CcDirector.Core.Tests.Setup;
 
 /// <summary>
-/// The check answers "can a session I spawn actually drive me?", so these tests drive it with a stand-in
-/// tool whose exit code they control. That is the whole discriminator: the Director reads the exit code
-/// and never asks the tool to judge itself.
+/// The check answers "can a session I spawn actually reach the fleet?", so these tests drive it with
+/// a stand-in tool whose exit code they control. That is the whole discriminator: the Director reads
+/// the exit code and never asks the tool to judge itself.
+///
+/// Since the Remove-the-network-port mission the probe supplies the Gateway pair a real session gets
+/// (CC_GATEWAY_URL + CC_GATEWAY_SESSION_KEY) rather than a Director address. The old "the tool said
+/// there is no Gateway" classification is gone WITH ITS CAUSE: the probe always supplies both
+/// variables now, so that answer cannot occur here - the no-Gateway verdict is reached upstream,
+/// where the caller finds it has no credential to mint, before any tool is run.
 ///
 /// A note on what the fixture can and cannot distinguish: a stand-in that exits 0 proves the PASS path
 /// and nothing about authentication, because the fake never authenticates. What authentication failure
-/// looks like from here is exactly what a non-zero exit looks like - which is why the real machine proof
-/// (a stale tool returning "missing or invalid token", exit 1, against a live Director) is recorded in
-/// docs/setup-health-check.md rather than simulated here.
+/// looks like from here is exactly what a non-zero exit looks like - which is why the real machine
+/// proof is a live run recorded in the phase's QA evidence rather than simulated here.
 /// </summary>
 public class FleetToolReachabilityTests : IDisposable
 {
@@ -61,10 +66,13 @@ public class FleetToolReachabilityTests : IDisposable
     private static readonly string OurBinDir =
         Path.Combine("C:", "cc-director", "instances", "default", "bin");
 
+    private const string GatewayUrl = "http://127.0.0.1:7878";
+    private const string SessionKey = "a-registered-probe-key";
+
     [Fact]
     public async Task RunAsync_ToolNotOnPath_ReportsNotFound()
     {
-        var check = await WithResolved(null).RunAsync("http://127.0.0.1:7879", expectedBinDir: null);
+        var check = await WithResolved(null).RunAsync(GatewayUrl, SessionKey, expectedBinDir: null);
 
         Assert.Equal(FleetToolVerdict.NotFound, check.Verdict);
         Assert.Null(check.ResolvedPath);
@@ -72,25 +80,25 @@ public class FleetToolReachabilityTests : IDisposable
     }
 
     [Fact]
-    public async Task RunAsync_ToolReachesDirector_ReportsWorking()
+    public async Task RunAsync_ToolReachesTheFleet_ReportsWorking()
     {
         var stub = StubTool(exitCode: 0, "ok");
 
-        var check = await WithResolved(stub).RunAsync("http://127.0.0.1:7879", expectedBinDir: null);
+        var check = await WithResolved(stub).RunAsync(GatewayUrl, SessionKey, expectedBinDir: null);
 
         Assert.Equal(FleetToolVerdict.Working, check.Verdict);
         Assert.Equal(stub, check.ResolvedPath);
     }
 
     [Fact]
-    public async Task RunAsync_ToolCannotAuthenticate_ReportsCannotReachDirectorWithTheToolsOwnReason()
+    public async Task RunAsync_ToolFails_ReportsCannotReachGatewayWithTheToolsOwnReason()
     {
-        // What the stale 1.7.1 build does on a machine whose Director moved to an instance home.
+        // What a stale build does when handed a credential scheme it predates.
         var stub = StubTool(exitCode: 1, "Error: missing or invalid token");
 
-        var check = await WithResolved(stub).RunAsync("http://127.0.0.1:7879", expectedBinDir: null);
+        var check = await WithResolved(stub).RunAsync(GatewayUrl, SessionKey, expectedBinDir: null);
 
-        Assert.Equal(FleetToolVerdict.CannotReachDirector, check.Verdict);
+        Assert.Equal(FleetToolVerdict.CannotReachGateway, check.Verdict);
         // The tool's own sentence survives to the panel. Reporting a bare exit code here is what made
         // the original failure undiagnosable from the outside.
         Assert.Contains("missing or invalid token", check.Detail, StringComparison.OrdinalIgnoreCase);
@@ -102,18 +110,29 @@ public class FleetToolReachabilityTests : IDisposable
         // A tool too old to accept the arguments, or missing from disk between resolution and launch.
         // Absence of a clean answer must never read as a good one.
         var check = await WithResolved(Path.Combine(Path.GetTempPath(), "definitely-not-here-x9.cmd"))
-            .RunAsync("http://127.0.0.1:7879", expectedBinDir: null);
+            .RunAsync(GatewayUrl, SessionKey, expectedBinDir: null);
 
-        Assert.Equal(FleetToolVerdict.CannotReachDirector, check.Verdict);
+        Assert.Equal(FleetToolVerdict.CannotReachGateway, check.Verdict);
     }
 
     [Fact]
-    public async Task RunAsync_NoControlApiAddress_Throws()
+    public async Task RunAsync_NoGatewayAddress_Throws()
     {
         var reachability = WithResolved("/some/tool");
 
         await Assert.ThrowsAsync<ArgumentException>(
-            () => reachability.RunAsync("", expectedBinDir: null));
+            () => reachability.RunAsync("", SessionKey, expectedBinDir: null));
+    }
+
+    [Fact]
+    public async Task RunAsync_NoSessionKey_Throws()
+    {
+        // The probe must never run credential-less: the failure it produced would say nothing about
+        // the fault this check exists to find, and the caller decides the no-Gateway case upstream.
+        var reachability = WithResolved("/some/tool");
+
+        await Assert.ThrowsAsync<ArgumentException>(
+            () => reachability.RunAsync(GatewayUrl, "", expectedBinDir: null));
     }
 
     [Fact]
@@ -122,9 +141,9 @@ public class FleetToolReachabilityTests : IDisposable
         var stale = StubTool(exitCode: 1, "Error: missing or invalid token");
         var ours = StubTool(exitCode: 0, "ok");
 
-        var check = await WithPathAndOwn(onPath: stale, ours: ours).RunAsync("http://127.0.0.1:7879", OurBinDir);
+        var check = await WithPathAndOwn(onPath: stale, ours: ours).RunAsync(GatewayUrl, SessionKey, OurBinDir);
 
-        Assert.Equal(FleetToolVerdict.CannotReachDirector, check.Verdict);
+        Assert.Equal(FleetToolVerdict.CannotReachGateway, check.Verdict);
         Assert.Equal(FleetToolVerdict.Working, check.OwnVerdict);
         Assert.True(check.CanRepairByRepointingPath);
         Assert.False(check.OwnToolsAreMissingOrBroken);
@@ -142,9 +161,9 @@ public class FleetToolReachabilityTests : IDisposable
         // Repointing must not be offered here. There is nothing to point at.
         var stale = StubTool(exitCode: 1, "Error: missing or invalid token");
 
-        var check = await WithPathAndOwn(onPath: stale, ours: null).RunAsync("http://127.0.0.1:7879", OurBinDir);
+        var check = await WithPathAndOwn(onPath: stale, ours: null).RunAsync(GatewayUrl, SessionKey, OurBinDir);
 
-        Assert.Equal(FleetToolVerdict.CannotReachDirector, check.Verdict);
+        Assert.Equal(FleetToolVerdict.CannotReachGateway, check.Verdict);
         Assert.Equal(FleetToolVerdict.NotFound, check.OwnVerdict);
         Assert.False(check.CanRepairByRepointingPath);
         Assert.True(check.OwnToolsAreMissingOrBroken);
@@ -160,9 +179,9 @@ public class FleetToolReachabilityTests : IDisposable
         var oursBroken = StubTool(exitCode: 1, "ModuleNotFoundError: no module named cc_shared");
 
         var check = await WithPathAndOwn(onPath: stale, ours: oursBroken)
-            .RunAsync("http://127.0.0.1:7879", OurBinDir);
+            .RunAsync(GatewayUrl, SessionKey, OurBinDir);
 
-        Assert.Equal(FleetToolVerdict.CannotReachDirector, check.OwnVerdict);
+        Assert.Equal(FleetToolVerdict.CannotReachGateway, check.OwnVerdict);
         Assert.False(check.CanRepairByRepointingPath);
         Assert.True(check.OwnToolsAreMissingOrBroken);
         Assert.Contains("ModuleNotFoundError", check.OwnDetail, StringComparison.Ordinal);
@@ -175,7 +194,7 @@ public class FleetToolReachabilityTests : IDisposable
         // Unchecked, never as a pass.
         var working = StubTool(exitCode: 0, "ok");
 
-        var check = await WithPathAndOwn(onPath: working, ours: null).RunAsync("http://127.0.0.1:7879", OurBinDir);
+        var check = await WithPathAndOwn(onPath: working, ours: null).RunAsync(GatewayUrl, SessionKey, OurBinDir);
 
         Assert.Equal(FleetToolVerdict.Working, check.Verdict);
         Assert.Equal(FleetToolVerdict.Unchecked, check.OwnVerdict);
@@ -191,7 +210,7 @@ public class FleetToolReachabilityTests : IDisposable
         var stale = StubTool(exitCode: 1, "Error: missing or invalid token");
 
         var check = await WithPathAndOwn(onPath: stale, ours: null)
-            .RunAsync("http://127.0.0.1:7879", expectedBinDir: null);
+            .RunAsync(GatewayUrl, SessionKey, expectedBinDir: null);
 
         Assert.Equal(FleetToolVerdict.Unchecked, check.OwnVerdict);
         Assert.False(check.OwnToolsAreMissingOrBroken);
@@ -204,7 +223,7 @@ public class FleetToolReachabilityTests : IDisposable
         // Same install, still refused. Repointing PATH at the directory it already resolves repairs
         // nothing, so the fault must not be offered a fix that cannot touch it.
         var check = new FleetToolCheck(
-            FleetToolVerdict.CannotReachDirector,
+            FleetToolVerdict.CannotReachGateway,
             ResolvedPath: Path.Combine(OurBinDir, "cc-devthrottle.cmd"),
             ExpectedBinDir: OurBinDir,
             Detail: "missing or invalid token",
@@ -217,7 +236,7 @@ public class FleetToolReachabilityTests : IDisposable
     public void IsDifferentInstall_ResolvedOutsideOurBinDir_IsTrue()
     {
         var check = new FleetToolCheck(
-            FleetToolVerdict.CannotReachDirector,
+            FleetToolVerdict.CannotReachGateway,
             ResolvedPath: Path.Combine("C:", "cc-director", "bin", "cc-devthrottle.cmd"),
             ExpectedBinDir: Path.Combine("C:", "cc-director", "instances", "default", "bin"),
             Detail: "missing or invalid token");
@@ -233,7 +252,7 @@ public class FleetToolReachabilityTests : IDisposable
             FleetToolVerdict.Working,
             ResolvedPath: Path.Combine(binDir, "cc-devthrottle.cmd"),
             ExpectedBinDir: binDir,
-            Detail: "reached this Director");
+            Detail: "reached the fleet through the Gateway");
 
         Assert.False(check.IsDifferentInstall);
     }
@@ -248,7 +267,7 @@ public class FleetToolReachabilityTests : IDisposable
             FleetToolVerdict.Working,
             ResolvedPath: Path.Combine("C:", "anywhere", "cc-devthrottle.cmd"),
             ExpectedBinDir: null,
-            Detail: "reached this Director");
+            Detail: "reached the fleet through the Gateway");
 
         Assert.False(check.IsDifferentInstall);
     }

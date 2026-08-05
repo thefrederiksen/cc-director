@@ -24,7 +24,7 @@ import typer
 sys.path.insert(0, str(Path(__file__).parent.parent))
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from cc_shared import director  # noqa: E402
+from cc_shared import gateway  # noqa: E402
 from src import session_ops  # noqa: E402
 
 SESSION_ID = "11111111-2222-3333-4444-555555555555"
@@ -50,11 +50,11 @@ def _row():
 # ===== the caveat itself: three states, and absent is not complete =====
 
 def test_a_complete_roster_says_nothing_extra():
-    assert director.roster_caveat(True, None) == ""
+    assert gateway.roster_caveat(True, None) == ""
 
 
 def test_an_incomplete_roster_reports_the_directors_own_reason():
-    assert director.roster_caveat(False, OFFLINE_REASON) == OFFLINE_REASON
+    assert gateway.roster_caveat(False, OFFLINE_REASON) == OFFLINE_REASON
 
 
 def test_an_incomplete_roster_with_no_reason_still_warns():
@@ -69,18 +69,18 @@ def test_an_incomplete_roster_with_no_reason_still_warns():
     the cannot-vouch thing. Both wordings can be edited again without this going red for no reason,
     and going silent or collapsing the two states still reddens it.
     """
-    caveat = director.roster_caveat(False, None)
+    caveat = gateway.roster_caveat(False, None)
 
     assert caveat != ""
     assert "could not be reached" in caveat
-    assert caveat != director.roster_caveat(None, None)
+    assert caveat != gateway.roster_caveat(None, None)
 
 
 def test_an_unknown_verdict_is_not_treated_as_complete():
     # THE POINT OF THE WHOLE ISSUE, applied to ourselves. A Director that has not restarted since this
     # was added serves the bare array and cannot vouch either way. Reading that silence as "complete"
     # would rebuild the exact defect being fixed: absent reading identical to empty.
-    caveat = director.roster_caveat(None, None)
+    caveat = gateway.roster_caveat(None, None)
     assert caveat != ""
     assert "cannot confirm" in caveat
 
@@ -181,13 +181,13 @@ def test_json_output_on_a_complete_roster_writes_nothing_to_stderr(fleet, capsys
 # ===== the transport: an older Director cannot be mistaken for a vouching one =====
 
 def test_get_fleet_reads_the_envelope(monkeypatch):
-    monkeypatch.setattr(director, "get_json", lambda path: {
+    monkeypatch.setattr(gateway, "get_json", lambda path: {
         "sessions": [_row()],
         "rosterComplete": False,
         "rosterIncompleteReason": OFFLINE_REASON,
     })
 
-    sessions, complete, reason, _ = director.get_fleet()
+    sessions, complete, reason, _ = gateway.get_fleet()
 
     assert len(sessions) == 1
     assert complete is False
@@ -201,8 +201,8 @@ def test_get_fleet_asks_for_the_envelope(monkeypatch):
         seen["path"] = path
         return {"sessions": [], "rosterComplete": True}
 
-    monkeypatch.setattr(director, "get_json", get_json)
-    director.get_fleet()
+    monkeypatch.setattr(gateway, "get_json", get_json)
+    gateway.get_fleet()
 
     assert "envelope=true" in seen["path"]
 
@@ -210,9 +210,9 @@ def test_get_fleet_asks_for_the_envelope(monkeypatch):
 def test_get_fleet_tolerates_an_older_director_serving_a_bare_array(monkeypatch):
     # A running Director is long-lived and the command line is invoked fresh, so a newer tool WILL meet
     # an older Director. It must still work - and must report "cannot vouch", never "complete".
-    monkeypatch.setattr(director, "get_json", lambda path: [_row()])
+    monkeypatch.setattr(gateway, "get_json", lambda path: [_row()])
 
-    sessions, complete, reason, stale = director.get_fleet()
+    sessions, complete, reason, stale = gateway.get_fleet()
 
     assert len(sessions) == 1
     assert complete is None
@@ -222,8 +222,8 @@ def test_get_fleet_tolerates_an_older_director_serving_a_bare_array(monkeypatch)
 
 def test_get_fleet_ignores_a_non_boolean_completeness_value(monkeypatch):
     # A malformed field must degrade to "cannot vouch", not to a truthy string reading as complete.
-    monkeypatch.setattr(director, "get_json", lambda path: {"sessions": [], "rosterComplete": "yes"})
+    monkeypatch.setattr(gateway, "get_json", lambda path: {"sessions": [], "rosterComplete": "yes"})
 
-    _, complete, _, _ = director.get_fleet()
+    _, complete, _, _ = gateway.get_fleet()
 
     assert complete is None

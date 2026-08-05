@@ -181,6 +181,16 @@ Launch line we build:
 - Studio mode prepends `-p --output-format stream-json --verbose`. [VERIFIED from our code - ClaudeAgent.BuildLaunchSpec]
 - Keystroke conventions: Cancel = single Esc byte (0x1B); Interrupt = Ctrl+C (0x03); ShowHistory = double-Esc with a 350ms gap (opens the Rewind picker); ClearContext = submit "/clear"; submit is echo-verified to dodge a TUI input race that can drop Enter or prepend a stray "/". [VERIFIED from our code - ClaudeDriver]
 
+> **STALE BELOW, as of the remove-the-network-port mission's phase 3 (3 August 2026).** The hook no longer
+> calls the Director over HTTP for either job, and the three routes described below are DELETED. It now
+> writes the raw hook event to the file named by `CC_SESSION_POINTER_FILE`, which the Director watches, and
+> prints the file named by `CC_SESSION_PREAMBLE_FILE`, which the Director MAINTAINS (it re-renders it
+> whenever the injected text, workflow index or skill index refreshes, so a clear hours after launch gets
+> the user's current text). The `[VERIFIED from our code]` tags below were true when written and are not
+> now - which is the hazard this note exists to head off, since a reader trusts them. Everything about the
+> SessionStart matchers, `--settings` merging, and the additionalContext contract is unchanged. See
+> `SessionPreambleFile`, `SessionPreambleMaintainer`, `SessionPointerWatcher` and `PHASE-3-REPORT.md`.
+
 Fleet-preamble injection (ALREADY WIRED and proven live - mechanism Family A, the reference implementation):
 - ClaudeHookInstaller (src/CcDirector.Core/Claude/ClaudeHookInstaller.cs) writes two STATIC files under %LOCALAPPDATA%\cc-director\claude-hooks: a PowerShell script report-session.ps1 and a hooks-settings.json that registers a SessionStart hook for matchers startup, resume, clear, compact. We pass that settings file via `--settings`, which MERGES with the user's own hooks (relied upon; see Claude Code issue #11392). [VERIFIED from our code]
 - The hook command is `powershell -NoProfile -ExecutionPolicy Bypass -File "<script>"` with timeout 10. The script reads the hook event JSON from stdin and the per-session CC_SESSION_ID and CC_DIRECTOR_API from the environment the Director already injects (so nothing per-session is baked into the files). [VERIFIED from our code]

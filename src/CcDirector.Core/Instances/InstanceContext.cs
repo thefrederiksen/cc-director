@@ -39,9 +39,6 @@ public static class InstanceContext
     /// <summary>The instance's editable display name (label), when resolved from the registry.</summary>
     public static string? DisplayName { get; private set; }
 
-    /// <summary>The instance's assigned Control API port, when resolved from the registry (null = default, use the allocator).</summary>
-    public static int? Port { get; private set; }
-
     /// <summary>True when a <c>--instance</c> flag was explicitly passed on the command line.</summary>
     public static bool WasExplicitlySelected { get; private set; }
 
@@ -62,7 +59,7 @@ public static class InstanceContext
     /// from the environment as it stands right now (i.e. before the caller applies the
     /// per-instance override), so the shared root is never polluted by our own redirect.
     /// </summary>
-    public static void Initialize(string? slug, bool wasExplicit, string? displayName = null, int? port = null)
+    public static void Initialize(string? slug, bool wasExplicit, string? displayName = null)
     {
         // Capture the shared machine root from CcStorage - the single owner of storage-root
         // resolution (it honors CC_DIRECTOR_ROOT). Called BEFORE the caller applies the
@@ -71,7 +68,6 @@ public static class InstanceContext
         Slug = Normalize(slug);
         WasExplicitlySelected = wasExplicit;
         DisplayName = displayName;
-        Port = port;
     }
 
     /// <summary>Normalize a raw slug: blank -&gt; default, else trimmed lower-case.</summary>

@@ -6,7 +6,9 @@ namespace CcDirector.Gateway.Tests;
 
 /// <summary>
 /// Unit tests for <see cref="LauncherRegistry"/>: upsert, heartbeat, sweep, listing.
-/// Issue #331.
+/// Issue #331. Phase 6 of the remove-the-network-port mission made the registry
+/// presence-and-identity only: no port, no token, no network address - there is no launcher REST
+/// interface left to dial, so there is nothing for the registry to hold a dial-back for.
 /// </summary>
 public sealed class LauncherRegistryTests
 {
@@ -18,21 +20,21 @@ public sealed class LauncherRegistryTests
     public void Upsert_AddsEntry_CanBeRetrieved()
     {
         var reg = new LauncherRegistry();
-        var req = MakeReq("MACHINE-A", 7900);
+        var req = MakeReq("MACHINE-A", pid: 4211);
 
         reg.Upsert(CcDirector.Core.Tenancy.TenantId.Local, req);
 
         var dto = reg.Get(CcDirector.Core.Tenancy.TenantId.Local, "MACHINE-A");
         Assert.NotNull(dto);
         Assert.Equal("MACHINE-A", dto.MachineName);
-        Assert.Equal(7900, dto.Port);
+        Assert.Equal(4211, dto.Pid);
     }
 
     [Fact]
     public void Upsert_IsCaseInsensitive()
     {
         var reg = new LauncherRegistry();
-        reg.Upsert(CcDirector.Core.Tenancy.TenantId.Local, MakeReq("machine-b", 7901));
+        reg.Upsert(CcDirector.Core.Tenancy.TenantId.Local, MakeReq("machine-b"));
 
         Assert.NotNull(reg.Get(CcDirector.Core.Tenancy.TenantId.Local, "MACHINE-B"));
         Assert.NotNull(reg.Get(CcDirector.Core.Tenancy.TenantId.Local, "Machine-B"));
@@ -42,48 +44,12 @@ public sealed class LauncherRegistryTests
     public void Upsert_UpdatesExistingEntry()
     {
         var reg = new LauncherRegistry();
-        reg.Upsert(CcDirector.Core.Tenancy.TenantId.Local, MakeReq("MACHINE-C", 7902, version: "1.0.0"));
-        reg.Upsert(CcDirector.Core.Tenancy.TenantId.Local, MakeReq("MACHINE-C", 7902, version: "1.0.1"));
+        reg.Upsert(CcDirector.Core.Tenancy.TenantId.Local, MakeReq("MACHINE-C", version: "1.0.0"));
+        reg.Upsert(CcDirector.Core.Tenancy.TenantId.Local, MakeReq("MACHINE-C", version: "1.0.1"));
 
         var dto = reg.Get(CcDirector.Core.Tenancy.TenantId.Local, "MACHINE-C");
         Assert.NotNull(dto);
         Assert.Equal("1.0.1", dto!.Version);
-    }
-
-    [Fact]
-    public void Upsert_ReturnsDto_TokenNotInDto()
-    {
-        var reg = new LauncherRegistry();
-        var req = MakeReq("MACHINE-D", 7903);
-        req.Token = "SECRET-TOKEN";
-
-        var dto = reg.Upsert(CcDirector.Core.Tenancy.TenantId.Local, req);
-
-        // Token MUST NOT be in the public DTO.
-        var json = System.Text.Json.JsonSerializer.Serialize(dto);
-        Assert.DoesNotContain("SECRET-TOKEN", json);
-    }
-
-    // -------------------------------------------------------------------------
-    // Token retrieval (for relay calls)
-    // -------------------------------------------------------------------------
-
-    [Fact]
-    public void GetToken_ReturnsStoredToken()
-    {
-        var reg = new LauncherRegistry();
-        var req = MakeReq("MACHINE-E", 7904);
-        req.Token = "my-relay-token";
-        reg.Upsert(CcDirector.Core.Tenancy.TenantId.Local, req);
-
-        Assert.Equal("my-relay-token", reg.GetToken(CcDirector.Core.Tenancy.TenantId.Local, "MACHINE-E"));
-    }
-
-    [Fact]
-    public void GetToken_UnknownMachine_ReturnsNull()
-    {
-        var reg = new LauncherRegistry();
-        Assert.Null(reg.GetToken(CcDirector.Core.Tenancy.TenantId.Local, "NOBODY"));
     }
 
     // -------------------------------------------------------------------------
@@ -94,7 +60,7 @@ public sealed class LauncherRegistryTests
     public void Heartbeat_KnownMachine_ReturnsTrue()
     {
         var reg = new LauncherRegistry();
-        reg.Upsert(CcDirector.Core.Tenancy.TenantId.Local, MakeReq("MACHINE-F", 7905));
+        reg.Upsert(CcDirector.Core.Tenancy.TenantId.Local, MakeReq("MACHINE-F"));
 
         Assert.True(reg.Heartbeat(CcDirector.Core.Tenancy.TenantId.Local, "MACHINE-F"));
     }
@@ -114,7 +80,7 @@ public sealed class LauncherRegistryTests
     public void Remove_ExistingEntry_IsGone()
     {
         var reg = new LauncherRegistry();
-        reg.Upsert(CcDirector.Core.Tenancy.TenantId.Local, MakeReq("MACHINE-G", 7906));
+        reg.Upsert(CcDirector.Core.Tenancy.TenantId.Local, MakeReq("MACHINE-G"));
 
         reg.Remove(CcDirector.Core.Tenancy.TenantId.Local, "MACHINE-G");
 
@@ -137,8 +103,8 @@ public sealed class LauncherRegistryTests
     public void ListLaunchers_ReturnsAllEntries()
     {
         var reg = new LauncherRegistry();
-        reg.Upsert(CcDirector.Core.Tenancy.TenantId.Local, MakeReq("MACHINE-H", 7907));
-        reg.Upsert(CcDirector.Core.Tenancy.TenantId.Local, MakeReq("MACHINE-I", 7908));
+        reg.Upsert(CcDirector.Core.Tenancy.TenantId.Local, MakeReq("MACHINE-H"));
+        reg.Upsert(CcDirector.Core.Tenancy.TenantId.Local, MakeReq("MACHINE-I"));
 
         var list = reg.ListLaunchers(CcDirector.Core.Tenancy.TenantId.Local);
         Assert.Equal(2, list.Count);
@@ -154,46 +120,24 @@ public sealed class LauncherRegistryTests
     }
 
     // -------------------------------------------------------------------------
-    // NetworkAddress (AC2 - cross-machine relay address)
+    // The dial-back surface is GONE - pinned so it cannot quietly return.
     // -------------------------------------------------------------------------
 
+    // A registry row must carry nothing a future caller could dial: no port, no token, no address.
+    // This is the phase 6 shape assertion at the DTO level - the wire twin of the listener guard.
     [Fact]
-    public void Upsert_WithNetworkAddress_StoredInDto()
+    public void LauncherDto_CarriesNoDialBackSurface()
     {
         var reg = new LauncherRegistry();
-        var req = MakeReq("MACHINE-NA", 7920, networkAddress: "example-pc.ts.net");
+        reg.Upsert(CcDirector.Core.Tenancy.TenantId.Local, MakeReq("MACHINE-J", pid: 77, version: "2.0.0"));
 
-        reg.Upsert(CcDirector.Core.Tenancy.TenantId.Local, req);
+        var json = System.Text.Json.JsonSerializer.Serialize(
+            reg.Get(CcDirector.Core.Tenancy.TenantId.Local, "MACHINE-J"),
+            new System.Text.Json.JsonSerializerOptions(System.Text.Json.JsonSerializerDefaults.Web));
 
-        var dto = reg.Get(CcDirector.Core.Tenancy.TenantId.Local, "MACHINE-NA");
-        Assert.NotNull(dto);
-        Assert.Equal("example-pc.ts.net", dto!.NetworkAddress);
-    }
-
-    [Fact]
-    public void GetNetworkAddress_ReturnsStoredAddress()
-    {
-        var reg = new LauncherRegistry();
-        reg.Upsert(CcDirector.Core.Tenancy.TenantId.Local, MakeReq("MACHINE-NB", 7921, networkAddress: "example-host.tailnet.ts.net"));
-
-        Assert.Equal("example-host.tailnet.ts.net", reg.GetNetworkAddress(CcDirector.Core.Tenancy.TenantId.Local, "MACHINE-NB"));
-    }
-
-    [Fact]
-    public void GetNetworkAddress_EmptyWhenNotSet()
-    {
-        var reg = new LauncherRegistry();
-        reg.Upsert(CcDirector.Core.Tenancy.TenantId.Local, MakeReq("MACHINE-NC", 7922)); // no networkAddress
-
-        // Empty string = co-located, loopback applies.
-        Assert.Equal("", reg.GetNetworkAddress(CcDirector.Core.Tenancy.TenantId.Local, "MACHINE-NC"));
-    }
-
-    [Fact]
-    public void GetNetworkAddress_NullForUnknownMachine()
-    {
-        var reg = new LauncherRegistry();
-        Assert.Null(reg.GetNetworkAddress(CcDirector.Core.Tenancy.TenantId.Local, "NOBODY-NA"));
+        Assert.DoesNotContain("port", json, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("token", json, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("networkAddress", json, StringComparison.OrdinalIgnoreCase);
     }
 
     // -------------------------------------------------------------------------
@@ -201,14 +145,11 @@ public sealed class LauncherRegistryTests
     // -------------------------------------------------------------------------
 
     private static LauncherRegistrationRequest MakeReq(
-        string machine, int port, string version = "1.0.0", string networkAddress = "") =>
+        string machine, int pid = 9999, string version = "1.0.0") =>
         new()
         {
             MachineName = machine,
-            Port = port,
-            NetworkAddress = networkAddress,
-            Token = "tok-" + machine,
-            Pid = 9999,
+            Pid = pid,
             Version = version,
             StartedAt = DateTime.UtcNow,
         };

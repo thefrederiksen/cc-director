@@ -157,6 +157,16 @@ public sealed class Session : IDisposable
     /// </summary>
     public string? LaunchExecutable { get; internal set; }
 
+    /// <summary>
+    /// The unguessable half of this session's pointer-drop file name, minted once per session and
+    /// never persisted. The Director stamps the full drop path (id dot token) into the session's
+    /// environment, and <see cref="SessionPointerWatcher"/> refuses any drop whose name does not
+    /// carry this exact value - so writing a drop for a session requires having been HANDED that
+    /// session's path, not merely being able to spell its id. This is the session-bound limit the
+    /// deleted claude-hook route's credential gave, rebuilt for the drop box.
+    /// </summary>
+    public string PointerDropToken { get; } = SessionHookFiles.NewDropToken();
+
     /// <summary>If this session was created as part of a group (issue #225), the shared
     /// group identity its members travel by; null for a solo session. Members of the same
     /// group sort adjacently and drag as one unit. Stamped at creation, immutable.</summary>
@@ -381,6 +391,26 @@ public sealed class Session : IDisposable
     {
         ExplicitRole = string.IsNullOrWhiteSpace(role) ? null : role.Trim();
         FileLog.Write($"[Session] {Id} explicit role set to {ExplicitRole ?? "(none)"}");
+        RaisePreambleInputsChanged(nameof(ExplicitRole));
+    }
+
+    /// <summary>
+    /// Remove-the-network-port mission, phase 3: fires when something this session's fleet preamble
+    /// RENDERS FROM has changed - its explicit role or its workflow seat. The Director maintains a
+    /// hook-output file per session and rewrites it here, so the next SessionStart hook fire (a resume,
+    /// a clear, a compact) delivers the current text rather than a launch-time snapshot.
+    ///
+    /// Only the per-session inputs are announced here. The three SHARED stores the preamble also reads -
+    /// the user's injected text, the workflow index, the skill index - are Gateway-owned and refreshed
+    /// on the Director's interval poll, which rewrites every live session's file at the end of each
+    /// refresh. See <see cref="SessionPreambleMaintainer"/>.
+    /// </summary>
+    public event Action? OnPreambleInputsChanged;
+
+    private void RaisePreambleInputsChanged(string what)
+    {
+        try { OnPreambleInputsChanged?.Invoke(); }
+        catch (Exception ex) { FileLog.Write($"[Session] {Id} OnPreambleInputsChanged ({what}) handler threw: {ex.Message}"); }
     }
 
     /// <summary>
@@ -437,6 +467,7 @@ public sealed class Session : IDisposable
         WorkflowVersion = workflowRunId is null ? null : workflowVersion;
         FileLog.Write($"[Session] {Id} seated on workflow run {WorkflowRunId?.ToString() ?? "(none)"} " +
                       $"({WorkflowId ?? "(none)"} v{WorkflowVersion?.ToString() ?? "-"})");
+        RaisePreambleInputsChanged(nameof(WorkflowRunId));
     }
 
     public Guid Id { get; }

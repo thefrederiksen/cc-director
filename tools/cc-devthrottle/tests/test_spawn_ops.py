@@ -24,15 +24,24 @@ runner = CliRunner()
 
 @pytest.fixture
 def captured(monkeypatch):
-    """Capture the body posted to the Director, without any real HTTP."""
+    """Capture the body posted to the Gateway, without any real HTTP.
+
+    Remove-the-network-port mission, phase 2: the spawn goes to the Gateway now, and the path carries
+    WHERE - /directors/{id}/sessions for this session's own Director, /machines/{name}/sessions for
+    another computer. CC_DIRECTOR_ID is set here because that is how a session names "here" once the
+    loopback port that used to mean it is gone. The captured body also records the path, so the tests
+    below can assert the destination as well as the payload.
+    """
     body = {}
 
     def fake_post_json(path, b):
         body.clear()
         body.update(b)
+        body["_path"] = path
         return {"sessionId": "11111111-2222-3333-4444-555555555555", "name": "test"}
 
-    monkeypatch.setattr(session_ops.director, "post_json", fake_post_json)
+    monkeypatch.setenv("CC_DIRECTOR_ID", "my-director")
+    monkeypatch.setattr(session_ops.gateway, "post_json", fake_post_json)
     return body
 
 
@@ -55,7 +64,7 @@ def _spawn(
     # EMPTY roster - so these cases keep asserting what they were written to assert and no test
     # reaches the network to find out.
     monkeypatch.setattr(
-        session_ops.director, "get_fleet", lambda: (list(roster or []), True, None, None)
+        session_ops.gateway, "get_fleet", lambda: (list(roster or []), True, None, None)
     )
     session_ops.spawn_session(
         repo="C:/repo",
@@ -167,38 +176,78 @@ def test_an_explicit_controller_does_not_change_who_made_the_call(monkeypatch, c
 # ---- --director: naming ONE Director instead of a computer -------------------------------------
 #
 # A machine runs several named Director instances, so --machine lands on whichever the Gateway
-# resolves first. --director names one. The CLI's whole job here is to pass the name through
-# untouched: it holds no copy of the matching rule, so these assert the wire body, which is the
-# only thing it actually decides.
+# resolves first. --director names one.
+#
+# Remove-the-network-port mission, phase 2: WHERE a spawn lands is now carried by the PATH, not by a
+# field in the body, so that is what these assert. The Director floor used to take a machine and a
+# Director name and settle it locally; with the floor out of the path, "one named Director" has to be
+# addressed by id at /directors/{id}/sessions - the Gateway's machine route picks a Director for
+# itself and gives the caller no way to say which. That makes the name-to-id lookup this tool's job,
+# and an ambiguous name is refused rather than guessed: silently picking one of two Directors called
+# the same thing is how a session lands on the wrong computer and nobody notices.
+
+DIRECTORS = [
+    {"directorId": "dir-north-1", "displayName": "North build", "machineName": "SOREN_NORTH"},
+    {"directorId": "dir-south-1", "displayName": "South build", "machineName": "SOREN_SOUTH"},
+    {"directorId": "dir-north-2", "displayName": "Twin", "machineName": "SOREN_NORTH"},
+    {"directorId": "dir-south-2", "displayName": "Twin", "machineName": "SOREN_SOUTH"},
+]
 
 
-def test_director_is_sent_on_the_wire(monkeypatch, captured):
+@pytest.fixture
+def directors(monkeypatch):
+    monkeypatch.setattr(session_ops.gateway, "get_json", lambda path: DIRECTORS)
+
+
+def test_a_named_director_is_addressed_by_its_own_id(monkeypatch, captured, directors):
     monkeypatch.delenv("CC_SESSION_ID", raising=False)
     session_ops.spawn_session(
         repo="C:/repo", agent="ClaudeCode", prompt=None, name="n", purpose=None,
         command=None, command_args=None, director_target="North build",
     )
-    assert captured.get("director") == "North build"
-    # No --machine needed: a named Director identifies its own machine, and the floor resolves it.
-    assert captured.get("machine") == ""
+    # No --machine needed: a named Director identifies its own machine.
+    assert captured["_path"] == "directors/dir-north-1/sessions"
 
 
-def test_director_and_machine_can_be_sent_together(monkeypatch, captured):
+def test_a_machine_narrows_an_ambiguous_director_name(monkeypatch, captured, directors):
+    """Two Directors share the name "Twin"; --machine says which one is meant."""
+    monkeypatch.delenv("CC_SESSION_ID", raising=False)
+    session_ops.spawn_session(
+        repo="C:/repo", agent="ClaudeCode", prompt=None, name="n", purpose=None,
+        command=None, command_args=None, machine="SOREN_SOUTH", director_target="Twin",
+    )
+    assert captured["_path"] == "directors/dir-south-2/sessions"
+
+
+def test_an_ambiguous_director_name_is_refused_not_guessed(monkeypatch, captured, directors):
+    monkeypatch.delenv("CC_SESSION_ID", raising=False)
+    with pytest.raises(session_ops.gateway.GatewayError) as ex:
+        session_ops.spawn_session(
+            repo="C:/repo", agent="ClaudeCode", prompt=None, name="n", purpose=None,
+            command=None, command_args=None, director_target="Twin",
+        )
+    assert "matches 2 Directors" in str(ex.value)
+    assert "_path" not in captured  # nothing was started anywhere
+
+
+def test_a_machine_alone_goes_to_the_machine_route(monkeypatch, captured):
+    """No named Director: the Gateway picks one on that computer, launching one if none is running."""
     monkeypatch.delenv("CC_SESSION_ID", raising=False)
     session_ops.spawn_session(
         repo="C:/repo", agent="ClaudeCode", prompt=None, name="n", purpose=None,
         command=None, command_args=None, machine="SOREN_NORTH",
-        director_target="6f0a2b41-1c33-4f9e-9a10-2b7d5e8c1234",
     )
-    assert captured.get("machine") == "SOREN_NORTH"
-    assert captured.get("director") == "6f0a2b41-1c33-4f9e-9a10-2b7d5e8c1234"
+    assert captured["_path"] == "machines/SOREN_NORTH/sessions"
 
 
-def test_an_ordinary_spawn_names_no_director(monkeypatch, captured):
-    # The other direction: an untargeted spawn must not arrive carrying a name, or the Gateway would
-    # pin to it and stop launching a Director on demand.
+def test_an_ordinary_spawn_lands_on_this_sessions_own_director(monkeypatch, captured):
+    """"Here", named from what the session was told at launch rather than looked up.
+
+    This is the case the loopback port used to answer for free, and it is the common one. It costs no
+    round trip and cannot resolve to a neighbour: the id is the session's own.
+    """
     _spawn(monkeypatch, cc_session=None)
-    assert captured.get("director") == ""
+    assert captured["_path"] == "directors/my-director/sessions"
 
 
 def test_the_director_flag_reaches_spawn_session(monkeypatch, tmp_path):
@@ -316,10 +365,10 @@ def test_an_unreadable_roster_is_reported_and_the_spawn_still_opens(
     # grouping could not be looked up would be the worse failure - but the human is told why it is
     # unattached, so the missing mission is never a mystery.
     def boom():
-        raise session_ops.director.DirectorError("Director not reachable")
+        raise session_ops.gateway.GatewayError("Director not reachable")
 
     monkeypatch.setenv("CC_SESSION_ID", "sess-A")
-    monkeypatch.setattr(session_ops.director, "get_fleet", boom)
+    monkeypatch.setattr(session_ops.gateway, "get_fleet", boom)
     session_ops.spawn_session(
         repo="C:/repo",
         agent="ClaudeCode",

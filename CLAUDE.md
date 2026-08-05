@@ -96,7 +96,7 @@ Register-ScheduledTask -TaskName "cc-director-launch" -Action $action -Trigger $
 Start-ScheduledTask -TaskName "cc-director-launch"
 ```
 
-The Director boots with parent = `svchost.exe`, port-allocates a fresh Control API port (check the log at `%LOCALAPPDATA%\cc-director\logs\director\director-YYYY-MM-DD-<PID>.log` for the line `[ControlApiHost] Kestrel listening on http://0.0.0.0:<port>`), and you can drive it via REST normally.
+The Director boots with parent = `svchost.exe` and binds NOTHING - the remove-the-network-port mission deleted its Control API, so there is no port to find and no REST to drive. Readiness is the instance registration the running process writes (`<root>\instances\<slug>\config\director\instances\<directorId>.json`, whose `Pid` is your process); its log is at `%LOCALAPPDATA%\cc-director\logs\director\director-YYYY-MM-DD-<PID>.log`. Drive a test Director through the Gateway it is connected to, and stop it with the named signal described below.
 
 #### Slot convention to avoid colliding with the user's running Directors
 
@@ -104,14 +104,16 @@ The `scripts\local-build` directory holds development slots `cc-director1.exe` t
 
 #### Cleaning up your own test Director
 
-**Shut a test Director down cleanly, do NOT force-kill it.** Send `POST http://127.0.0.1:<port>/shutdown` to its Control API — that makes the Director kill its own sessions and delete its crash journal, so it does not leave a phantom "interrupted" entry in the fleet (issue #960). A force-kill (`Stop-Process -Force`) gives the process no chance to clean up and DOES leave that phantom journal, so it is the last resort only — use it only if the graceful shutdown does not exit in time (the Director is genuinely stuck). The `scripts\agent-session-isolation.ps1 teardown` verb already does this.
+**Shut a test Director down cleanly, do NOT force-kill it.** Signal it — that makes the Director kill its own sessions and delete its crash journal, so it does not leave a phantom "interrupted" entry in the fleet (issue #960). A force-kill (`Stop-Process -Force`) gives the process no chance to clean up and DOES leave that phantom journal, so it is the last resort only — use it only if the signalled shutdown does not exit in time (the Director is genuinely stuck). The `scripts\agent-session-isolation.ps1 teardown` verb already does this.
 
-The Control API requires a credential — a bare POST is refused with 401, which looks like "it did not answer" and quietly funnels you toward the force-kill this rule exists to avoid. Attach a Bearer token resolved from that Director's OWN storage root, the way the Director resolves it: the `gateway.token` value in `<root>\config\config.json` when it is attached to a Gateway, else the contents of `<root>\config\director\gateway-token.txt` (on a clean install those live under `<root>\instances\<slug>\`). `scripts\agent-session-isolation.ps1` (`Get-ShutdownToken`) is the working reference:
+**There is no `POST /shutdown` any more, and there is no credential to resolve.** Stopping a Director is a named signal, because it has to work when no socket is accepting connections. The signal is named for THAT Director's own identifier, which is the only string that names one process — this machine runs several Directors, so a request that could reach any of them would eventually reach the wrong one. Read the identifier out of the instance registration of the process you launched (`<root>\instances\<slug>\config\director\instances\<directorId>.json`, the file whose `Pid` is your Director), then:
 
 ```powershell
-Invoke-WebRequest "http://127.0.0.1:<port>/shutdown" -Method POST -UseBasicParsing `
-  -Headers @{ Authorization = "Bearer $tok" }
+$evt = [System.Threading.EventWaitHandle]::OpenExisting("Local\cc-director-shutdown-$directorId")
+$evt.Set(); $evt.Dispose()
 ```
+
+`OpenExisting` throwing means nothing is listening — that Director cannot be asked to stop, and only then is a force-kill the answer. `scripts\agent-session-isolation.ps1` (`Get-DirectorIdForPid`, `Stop-DirectorCleanly`) is the working reference.
 
 When you must force-kill as a last resort: only kill a process whose path matches the slot YOU launched (e.g. `cc-director5.exe`). Confirm via `Get-Process | Select-Object Id, ProcessName, Path` first. Never use a blanket `Stop-Process -Name cc-director*` — that would kill the main build and the user's working sessions.
 
@@ -253,17 +255,22 @@ walking away from it. Merge without waiting; come back for the answer.
 release workflow runs ZERO tests - it builds and publishes artifacts - and a pushed tag cannot be
 un-pushed. So a defect that the default gate never looked at ships, and "fix it forward" is not
 available to a release that is already out. **The release gate runs on merged `main` at the exact
-commit about to be tagged, and it is three commands, not one:**
+commit about to be tagged, and it is ONE command:**
 
     .\scripts\test-local.ps1 -Parked -Configuration Release
-    dotnet test tools/cc-director-setup.Tests/ -c Release
-    dotnet test tools/cc-director-setup-engine.Tests/ -c Release
 
 `-Parked` adds the two skipped suites. `-Configuration Release` matches what users download,
 because the script defaults to Debug while the continuous integration job it replaced ran Release.
-The two installer projects are **not in `cc-director.sln`**, so `test-local.ps1` never runs them -
-it runs nine projects, all under `src\` - and the release publishes `cc-director-setup.exe`, so
-omitting them ships the installer with nothing behind it.
+
+**Corrected 2026-08-04, on evidence, by the remove-the-network-port mission.** This section used to
+say the gate was THREE commands, because the two installer projects were not in `cc-director.sln`
+and the script "runs nine projects, all under `src\`". That is no longer true of the script: it
+names `tools\cc-director-setup.Tests` and `tools\cc-director-setup-engine.Tests` in its own project
+list, its default run reports both (25 and 454 tests), and a `-Parked` run produces ELEVEN result
+files. Verified twice - a Manager's eleven result files, and the Architect reading the project list
+in `scripts\test-local.ps1` - rather than taken from either report. The two extra `dotnet test`
+commands were re-running suites the gate had already run. **If you are about to release, run the one
+command; the installer IS covered.**
 
 An earlier run does not count: the version bump and anything merged since is untested by it, and a
 run against a pull-request head is not a run against the squashed commit that gets tagged. This is

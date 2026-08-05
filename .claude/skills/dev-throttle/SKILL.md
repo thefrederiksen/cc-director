@@ -57,51 +57,24 @@ A handful of tools are registered but not yet built (`cc-twitter`, `cc-facebook`
 
 The way to list, message, create, rename, and close sessions from inside a session is the
 `cc-devthrottle` command. It already knows how to reach the fleet: every session is launched with
-`CC_DIRECTOR_API` (its own Director's loopback address) and `CC_SESSION_ID` (its own id) in the
-environment, and `cc-devthrottle` reads them automatically. You never need a Gateway URL or token.
+`CC_GATEWAY_URL` (the Gateway's address), `CC_GATEWAY_SESSION_KEY` (this session's own credential
+for it), `CC_DIRECTOR_ID` (which Director the session belongs to) and `CC_SESSION_ID` (its own id)
+in the environment, and `cc-devthrottle` reads them automatically. There is nothing to configure.
 
-Do NOT try to drive sessions by curling the Director's HTTP port. The Director exposes only a small
-LOOPBACK-ONLY floor (see below) - the old "Control API" that let a caller list/prompt/create/delete
-sessions over HTTP was removed when the fleet moved onto the tunnel. Session control now travels the
-tunnel to the owning Director; the agent-facing surface for it is `cc-devthrottle`.
+Do NOT try to drive anything by dialling the Director. THE DIRECTOR HAS NO HTTP SURFACE AT ALL -
+the remove-the-network-port mission deleted its listener, so there is no port, no loopback floor,
+and no route that could answer. Everything an agent does goes through the Gateway: the command line
+presents the session key, the Gateway rules on it, and commands travel the Director's own outbound
+tunnel to the machine that owns the session. Stopping a Director is a named signal
+(`Local\cc-director-shutdown-<directorId>`), because it has to work when nothing is listening on a
+socket - which is the state an update needs it in. See CLAUDE.md rule 0b.
+
+The session key is least-privilege: it is bound to this session, limited to the agent surface, and
+revoked when the session ends. It cannot enrol devices or touch account identity. No Gateway
+connection means no agent tooling - that is the designed trade, and the tools say so in plain words
+when it happens.
 
 For the full fleet-messaging and session-spawning command reference, see the **fleet-comms** skill.
-
-### The Director's loopback floor
-
-The Director's own HTTP surface is bound to `127.0.0.1` only (never the LAN or Tailscale) and is now
-a minimal floor - not a general control API. It exists for local health checks, the launcher, and the
-agent-lifecycle hooks, not for driving sessions:
-
-| Method | Endpoint | Purpose |
-|---|---|---|
-| GET | `/healthz` | Liveness. The only route that answers WITHOUT a credential, and its unauthenticated answer is `{"status":"ok"}` and nothing else. Present a credential and it also carries the version, director id, and session/director counts |
-| GET | `/fleet/sessions` | Roster the local Director sees (what `cc-devthrottle session list` reads) |
-| POST | `/fleet/send`, `/fleet/ask` | Fleet messaging relay (used by `cc-devthrottle message`) |
-| POST | `/fleet/spawn` | Spawn on another machine, relayed via the Gateway |
-| POST | `/reconnect` | Bounce this Director's outbound tunnel |
-| POST | `/shutdown` | Ask this Director to stop |
-| GET/PUT | `/settings` (+ agents/tools/workspaces) | Local config surface (desktop app + cc-settings-api) |
-| GET/POST | `/sessions/{sid}/fleet-preamble`, `/claude-hook` | Agent-lifecycle IPC (the SessionStart hook calls these) |
-
-"Is the app running?" is the one raw call worth knowing:
-
-```
-curl http://127.0.0.1:7879/healthz
-```
-
-**Every other route requires a credential.** The Director's loopback floor is authenticated: loopback
-proves the caller is on this machine, which does not distinguish the desktop from the command line
-from an agent's child process from a browser that followed a rebound name to 127.0.0.1. A call with
-no credential is answered 401, and one with a `Host` header that is not this Director's own loopback
-address is answered 403 before it reaches a handler.
-
-You do not normally have to think about this: `cc-devthrottle` derives its own credential from the
-machine secret, and an agent inside a session is given one at launch as `CC_DIRECTOR_TOKEN`, bound to
-that session. That injected credential reads its OWN session and the roster and nothing else - it
-cannot spawn, shut down, prompt another session, read another session's terminal, or change settings.
-Use `cc-devthrottle` for anything beyond that; it is what everything else an agent needs goes
-through.
 
 ## Creating a session correctly (always name it)
 
@@ -122,6 +95,12 @@ prompts, or on the wrong model.
    "Do you want to proceed?" prompt or run on the wrong model/window.
 3. **Use `--prompt`** for the session's first task (dispatched once the agent is ready). For a long
    instruction, write it to a file and make `--prompt` a short "read and follow <path>" pointer.
+4. **Know what will close it before you open it.** A session is a commitment as much as a resource:
+   whoever spawns it owns driving it to completion. Decide at spawn time where its output has to end
+   up - merged into YOUR worktree if it shares yours, or on `origin/main` if it has its own - and put
+   that in the brief. A session whose exit conditions were never stated does not acquire them later;
+   it just stays open. See **Closing a session** below, which applies to the sessions you started as
+   much as to yourself.
 
 ```
 # Create a properly-named, autonomous-ready session
@@ -135,7 +114,29 @@ The Director names the session at birth and returns the final id and name. See t
 skill for the full flag set (`--agent`, `--role`, `--mission`, `--machine`, `--controlled-by`, and the
 display-name convention).
 
-## Closing a session (including closing yourself)
+### Opening a session on ONE particular Director
+
+`--machine` names a computer, and one computer runs several named Director instances - so it lands on
+whichever the Gateway lists first. When you were told to use a specific Director, name it:
+
+```
+cc-devthrottle director list          # names, machines, and the Director id to use
+cc-devthrottle session spawn D:\Repos\myrepo \
+  --director 6f0a2b41-1c33-4f9e-9a10-2b7d5e8c1234 \
+  --name "myrepo - fix auth bug #123"
+```
+
+`--director` takes the Director id or its display name and needs no `--machine` - a Director
+identifies the computer it runs on. Prefer the id: it survives a rename and cannot collide with a
+second Director sharing a name. A person handing you a Director will usually paste its toolbar Copy
+output, which is three lines - `Director:`, `Director ID:`, `Machine:`. Take the id from there and
+use it verbatim.
+
+An unregistered name fails loudly, and a name matching two Directors fails listing both. Neither
+falls back to another Director - if you get one of those errors, run `director list` and pick, rather
+than dropping the flag and spawning wherever.
+
+## Closing a session - yours and the ones you started
 
 A session can close itself. When an agent has finished its work and nothing is waiting on the
 user, it should reap its own session rather than leaving an idle entry in Mission Control.
@@ -155,6 +156,27 @@ To reap a DIFFERENT session, pass its id or name: `cc-devthrottle session done <
 Do not self-close while something still needs the user (a pending decision, an approval, an
 unanswered question). Reap only when the queue is truly empty.
 
+**Closing the sessions YOU spawned is your job, not theirs.** A child session that has finished its
+work and gone idle is not done - it is unfinished work sitting where nobody is looking. As its parent
+you drive it to all four conditions:
+
+1. **reviewed** by a session OTHER than the one that wrote it;
+2. **output safe** - merged into your worktree if it shares yours, otherwise on `origin/main`,
+   because a worktree of its own will be deleted and anything left in it dies with it;
+3. **worktree removed**, if it had its own;
+4. **session reaped**, with `cc-devthrottle session done <target>`.
+
+**The failure this prevents.** A definition of "done" that means only "the pull request merged"
+leaves a branch, a worktree and a live session behind EVERY time. Those accumulate faster than
+anything removes them, and the cost stays invisible until somebody counts. One coordinator running
+this fleet finished many tasks that way and left 27 worktrees, 7 open pull requests and branches four
+days old - not through any single bad decision, but because nothing in the definition of done
+required cleanup.
+
+**Note that `session done` reaches a session that is not answering.** It flags the target through the
+Director and does not depend on fleet messaging, which can fail. If a session you started has stopped
+responding, you can still close it.
+
 ## Who the user is
 
 Every session is started for one signed-in DevThrottle user. The session-start preamble names that
@@ -167,8 +189,11 @@ use the identity the preamble gave you. If no user is named (nobody signed in), 
 
 - "What cc-* tools do I have for X?" - look in the tool list above; run the tool with `--help` for syntax.
 - "How do I list / message / create / close sessions?" - use `cc-devthrottle` (details in the fleet-comms skill).
-- "Is the app running?" - `curl http://127.0.0.1:7879/healthz`. For the VERSION, present a
-  credential: the unauthenticated answer is liveness only.
+- "Is the app running?" - the Director binds no port, so there is nothing to curl. Read the
+  instance registration the running process writes
+  (`%LOCALAPPDATA%\cc-director\instances\<slug>\config\director\instances\<directorId>.json`,
+  whose `Pid` names the process) or ask the fleet: `cc-devthrottle session list` shows every
+  connected Director's sessions.
 
 ## What this skill does NOT do
 
@@ -176,9 +201,15 @@ use the identity the preamble gave you. If no user is named (nobody signed in), 
 - It does not replace the **fleet-comms** skill, which is the full reference for `cc-devthrottle`.
 
 
-**Skill Version:** 5.2 (tunnel-only fleet)
-**Last Updated:** 2026-07-14
+**Skill Version:** 6.0 (no Director listener)
+**Last Updated:** 2026-08-03
+**Changes in 6.0:** The remove-the-network-port mission deleted the Director's listener entirely.
+There is no loopback floor, no `/healthz`, no `/fleet/*` relay, no `/reconnect`, no local settings
+routes, and no `CC_DIRECTOR_API` or `CC_DIRECTOR_TOKEN` in any session's environment. Agents reach
+the fleet through the Gateway with the session's own key (`CC_GATEWAY_URL` +
+`CC_GATEWAY_SESSION_KEY`, stamped at launch); `CC_DIRECTOR_ID` names which Director a session
+belongs to. The 5.2 route-probing diagnostic is obsolete - there are no routes to probe.
 **Changes in 5.0:** Rewritten for the tunnel-only fleet (release v1.1.0, the Gateway Cleanup cut). The Director no longer exposes a general HTTP Control API - it binds a small loopback-only floor, and the Gateway is the single front door the fleet connects out to over the tunnel. Removed the deleted session-driving REST endpoints (list/details/buffer/prompt/interrupt/turns/handover/chat/voice/create/request-deletion/delete) and the curl-the-Director examples. Session create / close / rename / message now documented through `cc-devthrottle` (spawn / done / rename / message), which is the agent-facing surface. Dropped retired tools `cc-browser`, `cc-reddit`, and `cc-comm-queue` from the tool list.
 
-**Changes in 5.2:** Corrected 5.1's diagnostic, which was wrong. Rename, done, and "message send all" were restored to the Director's loopback floor (`POST /fleet/rename`, `/fleet/done`, `/fleet/broadcast`) after the v1.1.0 release (issue #1490, closed). A 404 from them means the Director predates that restoration. But do NOT use the `/healthz` version to decide: `Directory.Build.props` still reads `1.1.0` on main, so the shipped v1.1.0 Director WITHOUT the routes and a fresh main build WITH them both report `"version":"1.1.0"` - verified by running both side by side on 2026-07-14. Probe the route and compare it against a deliberately fake route instead; see the fleet-comms skill for the exact commands (issue #1514).
+**Changes in 5.2 (SUPERSEDED by 6.0 - do not act on it):** it described a diagnostic that depended on the Director's loopback floor, which no longer exists. The recipe is deliberately not restated here: prose that repeats an instruction is what the next agent acts on, whatever the sentence around it says. Kept only so a reader who has seen the old text knows it was withdrawn rather than lost.
 **Changes in 4.3:** Added "Who the user is" - the session-start preamble names the signed-in DevThrottle user (email + nickname); "me / my account / email me" means that user unless they say otherwise, and identity must not be guessed from usage or the database (issue #1357).
