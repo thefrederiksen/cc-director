@@ -38,6 +38,9 @@ public static class SessionHookFiles
     public static string PreamblePathFor(Guid sessionId, string? directory)
         => Path.Combine(directory ?? CcStorage.SessionPreambles(), sessionId.ToString() + DropExtension);
 
+    /// <summary>The length a drop token must be: 16 random bytes rendered as lowercase hex.</summary>
+    public const int DropTokenLength = 32;
+
     /// <summary>
     /// Mint the unguessable half of a pointer-drop file name: 32 hex characters from a
     /// cryptographic generator. Hex only, so the value can never contain a dot or a path
@@ -61,12 +64,19 @@ public static class SessionHookFiles
     /// </summary>
     public static string PointerPathFor(Guid sessionId, string dropToken, string? directory)
     {
-        // Hex-only, and checked: the two-argument overloads of this method used to take a DIRECTORY
-        // second, so a stale caller would otherwise compile cleanly and bake a path into the file
-        // name. A token is 32 lowercase hex characters and nothing else.
-        if (string.IsNullOrEmpty(dropToken) || !dropToken.All(char.IsAsciiHexDigitLower))
+        // Hex-only AND full length, both checked: the two-argument overloads of this method used to
+        // take a DIRECTORY second, so a stale caller would otherwise compile cleanly and bake a path
+        // into the file name. A token is 32 lowercase hex characters and nothing else.
+        //
+        // The LENGTH check is not decoration. Cross-family review of this change observed that the
+        // prose above promised 32 characters while the check accepted any non-empty hex run, so a
+        // one-character token would have been minted as a valid-looking capability. Nothing produces
+        // one today - NewDropToken is the only mint - but a contract enforced only by the comment
+        // beside it is exactly the defect this mission has spent its life finding.
+        if (dropToken.Length != DropTokenLength || !dropToken.All(char.IsAsciiHexDigitLower))
             throw new ArgumentException(
-                $"A pointer drop path needs the session's drop token (lowercase hex), got: '{dropToken}'.",
+                $"A pointer drop path needs the session's {DropTokenLength}-character lowercase-hex " +
+                $"drop token, got: '{dropToken}'.",
                 nameof(dropToken));
         return Path.Combine(directory ?? CcStorage.SessionPointers(),
             sessionId.ToString() + "." + dropToken + DropExtension);

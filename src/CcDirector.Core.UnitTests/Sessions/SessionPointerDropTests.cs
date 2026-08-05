@@ -326,4 +326,37 @@ public sealed class SessionPointerDropTests : IDisposable
 
         Assert.False(File.Exists(path));
     }
+
+    /// <summary>
+    /// A SHORT token is refused when the path is built, so a weak capability can never be minted.
+    ///
+    /// Raised by cross-family review of the fix itself: the method's own prose promised 32 characters
+    /// while its check accepted any non-empty lowercase-hex run, so a one-character token would have
+    /// produced a valid-looking drop path that an attacker could spell by guessing sixteen values.
+    /// Nothing produces a short token today - <see cref="SessionHookFiles.NewDropToken"/> is the only
+    /// mint and it always yields 32 - which is exactly why the gap needed a test rather than trust:
+    /// the contract was enforced only by the comment beside it.
+    /// </summary>
+    [Theory]
+    [InlineData("a")]                                   // one character
+    [InlineData("0123456789abcde")]                     // 15 - just short
+    [InlineData("0123456789abcdef0123456789abcdef0")]   // 33 - just long
+    public void A_token_that_is_not_full_length_is_refused(string token)
+    {
+        var ex = Assert.Throws<ArgumentException>(
+            () => SessionHookFiles.PointerPathFor(Guid.NewGuid(), token, Path.GetTempPath()));
+
+        Assert.Contains(SessionHookFiles.DropTokenLength.ToString(), ex.Message);
+    }
+
+    /// <summary>The mint itself satisfies the rule it is checked against - the two cannot drift apart.</summary>
+    [Fact]
+    public void A_minted_token_is_accepted()
+    {
+        var token = SessionHookFiles.NewDropToken();
+
+        Assert.Equal(SessionHookFiles.DropTokenLength, token.Length);
+        var path = SessionHookFiles.PointerPathFor(Guid.NewGuid(), token, Path.GetTempPath());
+        Assert.EndsWith("." + token + ".json", path);
+    }
 }
