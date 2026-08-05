@@ -117,6 +117,15 @@ public partial class MainPage : ContentPage
             await _recorder.StartAsync(TitleEntry.Text ?? "");
             _uiTimer.Start();
             RefreshUi();
+#if ANDROID
+            // Doze ignores wake locks from apps that are not on the battery
+            // optimization exemption list, so all-day capture needs BOTH the
+            // service's wake lock and this exemption. Shows the system consent
+            // dialog once; silently does nothing when already granted. Fired
+            // after StartAsync so the recording is already running regardless
+            // of what the user does with the dialog.
+            RequestIgnoreBatteryOptimizationsIfNeeded();
+#endif
         }
         catch (Exception ex)
         {
@@ -156,6 +165,7 @@ public partial class MainPage : ContentPage
         var options = new List<string> { isPlaying ? "Stop playing" : "Play recording" };
         if (!string.IsNullOrWhiteSpace(row.Transcript)) options.Add("Read transcript");
         if (row.State is "Queued" or "Retry") options.Add("Upload now");
+        if (row.Interrupted) options.Add("Why was it interrupted?");
         if (!string.IsNullOrWhiteSpace(row.UploadError)) options.Add("Why did upload fail?");
         if (!string.IsNullOrWhiteSpace(row.TranscriptError)) options.Add("Why did transcription fail?");
 
@@ -166,6 +176,11 @@ public partial class MainPage : ContentPage
             case "Stop playing": _recorder.StopPlayback(); break;
             case "Read transcript": await DisplayAlert(row.Title, row.Transcript, "Close"); break;
             case "Upload now": await ProcessQueueAsync(); break;
+            case "Why was it interrupted?":
+                await DisplayAlert("Recording interrupted",
+                    (row.CaptureError ?? "The recording was cut off before it was stopped.")
+                    + " Everything captured up to that point was kept and uploaded.", "OK");
+                break;
             case "Why did upload fail?": await DisplayAlert("Upload error", row.UploadError ?? "", "OK"); break;
             case "Why did transcription fail?": await DisplayAlert("Transcription error", row.TranscriptError ?? "", "OK"); break;
         }
@@ -254,10 +269,32 @@ public partial class MainPage : ContentPage
                 return new LibraryRow(
                     r.RecordingId, r.Title, BuildSubtitle(r, r.RecordingId == playingId),
                     r.Transcript, r.State, r.UploadError, r.TranscriptError, progress, working,
-                    uploadStroke, transStroke, !transFailed, transFailed);
+                    uploadStroke, transStroke, !transFailed, transFailed,
+                    r.Interrupted, r.CaptureError);
             })
             .ToList();
     }
+
+#if ANDROID
+    // One-tap system dialog asking to exempt the app from battery optimization.
+    // Required for unlimited recording: Doze ignores wake locks from non-exempt
+    // apps, so without this the capture CPU is suspended about half an hour
+    // after the screen turns off. No-op once granted.
+    private static void RequestIgnoreBatteryOptimizationsIfNeeded()
+    {
+        var ctx = global::Android.App.Application.Context;
+        var pkg = ctx.PackageName;
+        if (string.IsNullOrEmpty(pkg)) return;
+        var pm = (global::Android.OS.PowerManager?)ctx.GetSystemService(
+            global::Android.Content.Context.PowerService);
+        if (pm is null || pm.IsIgnoringBatteryOptimizations(pkg)) return;
+        var intent = new global::Android.Content.Intent(
+            global::Android.Provider.Settings.ActionRequestIgnoreBatteryOptimizations,
+            global::Android.Net.Uri.Parse("package:" + pkg));
+        intent.AddFlags(global::Android.Content.ActivityFlags.NewTask);
+        ctx.StartActivity(intent);
+    }
+#endif
 
     private static string BuildSubtitle(RecordingSummary r, bool playing)
     {
@@ -283,11 +320,15 @@ public partial class MainPage : ContentPage
             _ => r.State,
         };
         var prefix = playing ? "Playing now  -  " : "";
-        return $"{prefix}{dur}  -  {stateText}  -  tap to play";
+        // A cut-off recording must never read as a complete one: say so before
+        // anything else in the row.
+        var interrupted = r.Interrupted ? "INTERRUPTED  -  " : "";
+        return $"{prefix}{interrupted}{dur}  -  {stateText}  -  tap to play";
     }
 
     private sealed record LibraryRow(
         string RecordingId, string Title, string Subtitle, string? Transcript,
         string State, string? UploadError, string? TranscriptError, double Progress, bool IsUploading,
-        Brush UploadStroke, Brush TransCheckStroke, bool TransShowCheck, bool TransShowX);
+        Brush UploadStroke, Brush TransCheckStroke, bool TransShowCheck, bool TransShowX,
+        bool Interrupted, string? CaptureError);
 }

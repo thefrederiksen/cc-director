@@ -21,6 +21,14 @@ public sealed class AndroidAudioRecorder : IAudioRecorder
     // transcription API's per-file size limit. See the plan doc.
     private static readonly TimeSpan SegmentLength = TimeSpan.FromMinutes(1);
 
+    /// <summary>
+    /// True while a capture is genuinely running in this process. The sticky
+    /// foreground service checks this on start so that an automatic restart
+    /// after a process death cannot post a "Recording in progress" notification
+    /// with no recording behind it.
+    /// </summary>
+    internal static volatile bool CaptureLive;
+
     private readonly object _gate = new();
     private MediaRecorder? _recorder;
     private System.Threading.Timer? _rollTimer;
@@ -130,9 +138,23 @@ public sealed class AndroidAudioRecorder : IAudioRecorder
             _paused = false;
             _pausedAccum = TimeSpan.Zero;
             IsRecording = true;
+            CaptureLive = true;
 
-            StartForegroundService();
-            StartSegment();
+            try
+            {
+                StartForegroundService();
+                StartSegment();
+            }
+            catch
+            {
+                // Capture never began. Undo everything so the app is honestly
+                // idle (not stuck showing "Recording") and rethrow so the UI
+                // reports the real error.
+                IsRecording = false;
+                CaptureLive = false;
+                StopForegroundService();
+                throw;
+            }
             SaveManifest();
 
             _rollTimer = new System.Threading.Timer(_ => RollSegment(), null, SegmentLength, SegmentLength);
@@ -178,6 +200,7 @@ public sealed class AndroidAudioRecorder : IAudioRecorder
             if (_paused) { _recorder?.Resume(); _paused = false; } // so FinalizeSegment can stop cleanly
             FinalizeSegment();
             IsRecording = false;
+            CaptureLive = false;
             if (_manifest is not null)
             {
                 _manifest.EndedAt = DateTime.UtcNow.ToString("o");
@@ -273,6 +296,13 @@ public sealed class AndroidAudioRecorder : IAudioRecorder
 
             m.EndedAt = DateTime.UtcNow.ToString("o");
             m.State = "Queued"; // queued for background upload; never deleted until delivered
+            // A recovered recording was CUT OFF, not stopped. Mark it so the
+            // library says so plainly - the original failure mode here was a
+            // truncated recording that looked complete (see the recorder
+            // all-day-capture mission).
+            m.Interrupted = true;
+            m.CaptureError ??= "Recording was cut off before it was stopped "
+                + "(the app was killed or the phone suspended it).";
             WriteManifest(summary.RecordingId, m);
         }
         RaiseChanged();
@@ -434,11 +464,76 @@ public sealed class AndroidAudioRecorder : IAudioRecorder
         lock (_gate)
         {
             if (!IsRecording) return;
-            FinalizeSegment();
-            StartSegment();
-            SaveManifest();
+            try
+            {
+                FinalizeSegment();
+                StartSegment();
+                SaveManifest();
+            }
+            catch (Exception ex)
+            {
+                // A roll that cannot start its next segment means capture is
+                // dead. Never let that pass silently: end the recording now,
+                // keep everything captured so far, and mark it interrupted.
+                AbortCapture("Segment rotation failed: " + ex.Message);
+            }
         }
         RaiseChanged();
+    }
+
+    /// <summary>
+    /// A running <see cref="MediaRecorder"/> reported a fatal error. Try to
+    /// survive it by rolling to a fresh recorder instance; if even that fails,
+    /// end the recording cleanly and visibly. Stale callbacks from an instance
+    /// that was already rotated out are ignored.
+    /// </summary>
+    private void OnRecorderError(MediaRecorder failed, string what)
+    {
+        lock (_gate)
+        {
+            if (!IsRecording || !ReferenceEquals(_recorder, failed)) return;
+            try
+            {
+                FinalizeSegment();
+                StartSegment();
+                SaveManifest();
+            }
+            catch (Exception ex)
+            {
+                AbortCapture($"Recorder error ({what}); restart failed: {ex.Message}");
+            }
+        }
+        RaiseChanged();
+    }
+
+    /// <summary>
+    /// Capture died mid-recording and could not be restarted. Ends the
+    /// recording immediately with everything captured so far, marks it
+    /// Interrupted (with the reason) so the library never presents it as
+    /// complete, and queues it for upload. Must be called inside the gate.
+    /// </summary>
+    private void AbortCapture(string reason)
+    {
+        _rollTimer?.Dispose();
+        _rollTimer = null;
+        if (_recorder is not null)
+        {
+            try { _recorder.Reset(); _recorder.Release(); } catch { /* already dead */ }
+            _recorder = null;
+        }
+        IsRecording = false;
+        _paused = false;
+        CaptureLive = false;
+        if (_manifest is not null)
+        {
+            _manifest.EndedAt = DateTime.UtcNow.ToString("o");
+            _manifest.State = "Queued"; // whatever was captured still uploads
+            _manifest.Interrupted = true;
+            _manifest.CaptureError = reason;
+            SaveManifest();
+        }
+        StopForegroundService();
+        UploadScheduler.EnqueueNow(global::Android.App.Application.Context);
     }
 
     private void StartSegment()
@@ -457,6 +552,10 @@ public sealed class AndroidAudioRecorder : IAudioRecorder
         rec.SetAudioChannels(1);
         rec.SetAudioEncodingBitRate(64000);
         rec.SetOutputFile(path);
+        // Surface capture failures instead of recording silence: without this,
+        // a MediaRecorder that dies mid-segment is invisible until the
+        // transcript comes back short.
+        rec.Error += (_, e) => OnRecorderError(rec, e.What.ToString());
         rec.Prepare();
         rec.Start();
 
@@ -533,7 +632,8 @@ public sealed class AndroidAudioRecorder : IAudioRecorder
                     m.RecordingId, m.Title, m.StartedAt, m.Chunks.Count,
                     m.Chunks.Sum(c => c.DurationMs), state, m.VaultDocId, m.Transcript,
                     m.UploadError, m.UploadProgress, m.UploadPhase, m.UploadCurrent, m.UploadTotal,
-                    m.TranscriptionState, m.TranscriptError, m.Completed));
+                    m.TranscriptionState, m.TranscriptError, m.Completed,
+                    m.Interrupted, m.CaptureError));
             }
             catch { /* skip unreadable manifest */ }
         }
