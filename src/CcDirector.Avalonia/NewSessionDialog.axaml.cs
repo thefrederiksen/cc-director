@@ -246,6 +246,26 @@ public class HandoverViewModel
         SessionName = frontmatter.SessionName;
     }
 
+    /// <summary>
+    /// Read every handover document in <paramref name="folder"/>, newest first.
+    /// Returns an empty list when the folder is absent.
+    ///
+    /// The order is by <see cref="FileDate"/> - the same date each row displays - so the visible
+    /// date column always runs newest to oldest. Ordering by filename instead put every name
+    /// beginning with a letter (move-*, trial-*, director-*) above every dated handover, which
+    /// buried a document written minutes earlier thirteen rows down.
+    /// </summary>
+    public static List<HandoverViewModel> LoadOrdered(string folder)
+    {
+        if (!Directory.Exists(folder))
+            return new List<HandoverViewModel>();
+
+        return Directory.GetFiles(folder, "*.md")
+            .Select(f => new HandoverViewModel(f))
+            .OrderByDescending(h => h.FileDate)
+            .ToList();
+    }
+
     private record HandoverFrontmatter(List<string> RepoPaths, string? SessionName);
 
     private static HandoverFrontmatter ExtractFrontmatter(string filePath)
@@ -1362,24 +1382,19 @@ public partial class NewSessionDialog : Window
         try
         {
             var dir = CcStorage.VaultHandovers();
-            var files = await Task.Run(() =>
-            {
-                if (!Directory.Exists(dir))
-                    return Array.Empty<string>();
-                return Directory.GetFiles(dir, "*.md")
-                    .OrderByDescending(f => Path.GetFileName(f))
-                    .ToArray();
-            });
+            // Newest first (see HandoverViewModel.LoadOrdered). Building the view models reads
+            // frontmatter from every file, so the whole scan stays off the UI thread.
+            var handovers = await Task.Run(() => HandoverViewModel.LoadOrdered(dir));
 
             _handoversLoaded = true;
             HandoverLoadingText.IsVisible = false;
 
-            if (files.Length > 0)
+            if (handovers.Count > 0)
             {
-                _allHandovers = files.Select(f => new HandoverViewModel(f)).ToList();
+                _allHandovers = handovers;
                 HandoverList.ItemsSource = _allHandovers;
                 HandoverList.IsVisible = true;
-                FileLog.Write($"[NewSessionDialog] LoadHandoversAsync: found {files.Length} handovers");
+                FileLog.Write($"[NewSessionDialog] LoadHandoversAsync: found {handovers.Count} handovers");
             }
             else
             {
