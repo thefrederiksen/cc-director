@@ -22,7 +22,9 @@ namespace CcDirector.Gateway.Api;
 /// DevThrottle's internal included wingman ids and never the catalog: the wingman and Car Mode are
 /// internal included features, and a catalog model there would bill credits. The speech kind still reads
 /// the live catalog (text-to-speech is included in its entirety, so every speech model is safe to offer).
-/// The wingman/Car Mode model setters refuse a non-included id with a 400 for the same reason.
+/// The wingman/Car Mode model setters refuse a non-included id with a 400 for the same reason, and so
+/// does test-chat: it sends the requested model with the deployment credential, so an arbitrary id
+/// there would bill credits just as a saved one would.
 ///
 ///   GET  /gateway/ai/models?kind=chat|speech -> { models:[ {id, description, voices[], defaultVoice} ] }
 ///   POST /gateway/ai/test-chat  { model }    -> { ok, reply, seconds } | { error }
@@ -160,6 +162,14 @@ internal static class AiModelsEndpoint
                 if (body is null || string.IsNullOrWhiteSpace(body.Model))
                     return Results.BadRequest(new { error = "body { \"model\": \"<id>\" } is required" });
 
+                // The SAME non-included-id rejection the model setters apply (issue #1360, inspection
+                // round). This route sends the requested model with the deployment credential, so an
+                // arbitrary model id here - a stale picker, a hand-written request - would run a catalog
+                // model on the deployment key and bill the exact credits this mission eliminates. The
+                // picker only offers included ids, so a legitimate caller never sees this refusal.
+                var model = body.Model.Trim();
+                if (RejectNonIncludedModel(model, "test-chat model") is { } refusal) return refusal;
+
                 var mode = TranscriptionModeConfig.Get();
                 var ep = TranscriptionEndpointResolver.ResolveWingman(mode);
                 var key = vault.Get(ep.KeyName);
@@ -169,7 +179,7 @@ internal static class AiModelsEndpoint
 
                 // One real round-trip to the chosen model - the same path the wingman uses - so the user
                 // can prove a newly-picked model actually responds before relying on it.
-                var brain = new HostedInferenceBrain(ep.BaseUrl, key!, body.Model.Trim(), log: FileLog.Write);
+                var brain = new HostedInferenceBrain(ep.BaseUrl, key!, model, log: FileLog.Write);
                 var ask = await brain.AskAsync("Reply with exactly the single word: pong. Output nothing else.", ctx.RequestAborted);
                 return Results.Json(new { ok = true, reply = ask.Text.Trim(), seconds = Math.Round(ask.ReplySeconds, 1) });
             }

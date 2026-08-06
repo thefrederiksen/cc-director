@@ -1846,7 +1846,9 @@ export type PermanentDictationReason = "audio-too-large" | "unsupported-format";
  *    until the user explicitly retries it; nothing was injected.
  *  - otherwise (`terminal` false, `permanent` falsey): nothing final happened; the copy is KEPT and the
  *    driver retries. `error` carries the honest "held, will keep trying" reason and `outOfCredits` flags
- *    the out-of-credits case so the driver can throttle and the app can show the Add-credits notice. */
+ *    any money-shaped 402 (credits, subscription, fair use, unknown) so the driver throttles its retry
+ *    loop - a fast retry fixes none of them. The app-level notice and the held copy both come from the
+ *    Gateway's MAPPED state (issue #1360), never from a hardcoded credits sentence. */
 export interface DictationSubmitResult {
   terminal: boolean;
   submitted: boolean;
@@ -1895,9 +1897,22 @@ export interface DictationUploadArgs {
 export const DICTATION_HELD_NO_CONNECTION_MESSAGE =
   "No connection - your recording is saved and will keep trying.";
 
-/** The held line when transcription credits ran out: kept, and it sends once credits are available. */
+/** The held line when transcription credits ran out: kept, and it sends once credits are available.
+ *  This wording is reachable ONLY from the direct-API `insufficient_credits` state (the Gateway maps
+ *  that 402 code to state "NeedsCredits") - see dictationHeld402Message. */
 export const DICTATION_HELD_CREDITS_MESSAGE =
   "Out of transcription credits - your recording is saved and will send when credits are added.";
+
+/** The held line for a 402 whose mapped state is NOT the credits one: the Gateway's own mapped copy
+ *  (subscription required, fair-use limit, or the neutral unknown-code sentence), followed by the
+ *  honest saved-on-device clause. The Gateway owns the verdict and its wording (rule 7 - the client is
+ *  dumb); this client must never replace a subscription/fair-use/unknown refusal with credits wording
+ *  the owner ruled a normal member never sees (issue #1360). */
+export function dictationHeld402Message(info: HostedAiUnavailable): string {
+  if (info.state === "NeedsCredits") return DICTATION_HELD_CREDITS_MESSAGE;
+  const text = info.text.trim().replace(/\.$/, "");
+  return `${text}. Your recording is saved on this device.`;
+}
 
 export async function uploadDictationToSession(
   args: DictationUploadArgs,
@@ -2039,10 +2054,13 @@ export async function uploadDictationToSession(
     }
 
     if (comp.status === 402) {
-      // Out of transcription credits: fire the app-level Add-credits notice, then keep the audio held so
-      // it sends once credits return. A plain fast retry will not fix it, so the driver throttles this.
-      creditsErrorFrom(await comp.json().catch(() => ({})));
-      return held(DICTATION_HELD_CREDITS_MESSAGE, true);
+      // A money-shaped refusal. The body carries the Gateway's MAPPED state and copy (issue #1360):
+      // creditsErrorFrom parses it and fires the app-level notice, and the held strip renders the SAME
+      // mapped copy - the credits wording only for the direct-API insufficient_credits state, never for
+      // a subscription/fair-use/unknown refusal. The audio stays held either way; a plain fast retry
+      // will not fix any of these, so the driver throttles this.
+      const err = creditsErrorFrom(await comp.json().catch(() => ({})));
+      return held(dictationHeld402Message(err.info), true);
     }
 
     const body = (await comp.json().catch(() => ({}))) as {

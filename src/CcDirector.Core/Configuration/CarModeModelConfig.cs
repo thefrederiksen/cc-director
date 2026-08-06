@@ -10,7 +10,8 @@ namespace CcDirector.Core.Configuration;
 /// separate from any Wingman model, surfaced on the AI Settings screen.
 ///
 /// Resolution precedence (settled with the Architect):
-///   1. the <c>CC_CARMODE_MODEL</c> environment variable (a per-install override / debug switch) - wins;
+///   1. the <c>CC_CARMODE_MODEL</c> environment variable (a per-install override / debug switch) - wins,
+///      honored only when it is a DevThrottle internal included id (issue #1360);
 ///   2. the user's saved setting (config.json <c>car_mode_model</c>) - what the AI Settings dropdown
 ///      writes - honored only when it is a DevThrottle internal included id (issue #1360);
 ///   3. the default, <see cref="Default"/> (the fast wingman id), the fast tier proven cleanest under
@@ -53,12 +54,21 @@ public static class CarModeModelConfig
     /// The EFFECTIVE Car Mode model the brain runs, applying the full precedence: the
     /// <see cref="EnvVar"/> environment override wins, then the user's saved setting, then
     /// <see cref="Default"/>. Read at call time so a settings change (or an env change on restart) is
-    /// honoured on the next turn.
+    /// honoured on the next turn. The environment override is subject to the SAME included-id rule as
+    /// the saved setting (issue #1360): Car Mode is an internal included feature and its model is sent
+    /// with the DevThrottle deployment credential, so a catalog id here would bill credits no matter
+    /// which knob it arrived through. A non-included environment value falls forward exactly as a
+    /// non-included saved value does.
     /// </summary>
     public static string Resolve()
     {
         var env = Environment.GetEnvironmentVariable(EnvVar);
-        if (!string.IsNullOrWhiteSpace(env)) return env.Trim();
+        if (!string.IsNullOrWhiteSpace(env))
+        {
+            var model = env.Trim();
+            if (TranscriptionEndpointResolver.IsDevThrottleIncludedModel(model))
+                return model;
+        }
         return Get();
     }
 

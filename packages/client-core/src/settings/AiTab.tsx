@@ -212,7 +212,7 @@ export function AiTab({ accountHref }: AiTabProps) {
       {!catalogAvailable && (
         <p className="settings-hint settings-hint-inline">
           Model browsing and testing aren&apos;t available on the hosted Gateway yet. Your saved models are
-          shown below; per-account model selection arrives with account-scoped billing.
+          shown below; per-account model selection is coming to the hosted Gateway.
         </p>
       )}
 

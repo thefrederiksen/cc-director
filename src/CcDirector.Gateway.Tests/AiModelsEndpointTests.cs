@@ -147,6 +147,22 @@ public sealed class AiModelsEndpointTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Post_test_chat_refuses_catalog_ids_before_touching_the_credential()
+    {
+        // Included AI revert-proof (issue #1360, inspection round): test-chat sends the requested
+        // model with the deployment credential, so it must refuse a non-included id exactly as the
+        // model setters do. The refusal comes BEFORE the credential is resolved: in this key-less rig
+        // a catalog id answers 400, while an included id gets past the guard to the key check and
+        // answers 503 (not signed in). Put the old accept-any-nonblank-model round trip back and the
+        // catalog id answers 503 too - red.
+        var catalog = await _http.PostAsJsonAsync("gateway/ai/test-chat", new { model = "kimi-k2" });
+        Assert.Equal(HttpStatusCode.BadRequest, catalog.StatusCode);
+
+        var included = await _http.PostAsJsonAsync("gateway/ai/test-chat", new { model = "devthrottle/wingman" });
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, included.StatusCode);
+    }
+
+    [Fact]
     public async Task Put_wingman_model_rejects_blank_and_non_object()
     {
         Assert.Equal(HttpStatusCode.BadRequest,

@@ -154,7 +154,19 @@ public sealed class HostedCarModeChat : ICarModeChat
             // Same base URL + vault key as the wingman endpoint; only the model differs for Car Mode.
             var ep = TranscriptionEndpointResolver.ResolveWingman(mode);
             var key = vaultGet(ep.KeyName) ?? "";
-            return (ep.BaseUrl, tenantSettings.CarModeModel(tenant), key);
+            var model = tenantSettings.CarModeModel(tenant);
+            // Car Mode calls chat completions directly (not through HostedInferenceBrain), so this
+            // resolver is where its model id meets the deployment credential. The resolution above is
+            // already guarded (issue #1360: tenant override, saved setting, and environment override all
+            // fall forward on a non-included id), so this throw is unreachable today - it exists so a
+            // future edit to any resolution leg cannot route a catalog id onto the deployment key and
+            // bill credits on an internal feature. Loud by design (no-fallback rule).
+            if (!TranscriptionEndpointResolver.IsDevThrottleIncludedModel(model))
+                throw new InvalidOperationException(
+                    $"'{model}' is not a DevThrottle internal included model id. Car Mode is an internal " +
+                    "included feature (issue #1360) and runs only the devthrottle/ ids on the deployment " +
+                    "credential; fix the resolution that produced this value.");
+            return (ep.BaseUrl, model, key);
         };
     }
 }

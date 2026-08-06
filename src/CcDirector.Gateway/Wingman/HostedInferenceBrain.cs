@@ -72,6 +72,23 @@ public sealed class HostedInferenceBrain : IAgentBrain
     {
         if (string.IsNullOrWhiteSpace(baseUrl)) throw new ArgumentException("baseUrl is required", nameof(baseUrl));
         if (string.IsNullOrWhiteSpace(model)) throw new ArgumentException("model is required", nameof(model));
+        // THE meeting point of a chat model id and the DevThrottle deployment credential (issue #1360,
+        // inspection round). Every guarded resolution (WingmanModelConfig, CarModeModelConfig, the
+        // tenant settings resolver, the test-chat refusal) already ensures only an internal included id
+        // gets here, so on the DevThrottle base this throw is unreachable today - it exists so a FUTURE
+        // call site cannot hand a catalog id to the deployment key and bill credits on an internal
+        // feature. Loud by design (no-fallback rule): a silent model swap here would hide the caller's
+        // bug. Other base URLs are untouched - this class is a generic provider-compatible client.
+        if (string.Equals(baseUrl.Trim().TrimEnd('/'), Core.Configuration.TranscriptionEndpointResolver.DevThrottleBaseUrl, StringComparison.OrdinalIgnoreCase)
+            && !Core.Configuration.TranscriptionEndpointResolver.IsDevThrottleIncludedModel(model))
+        {
+            throw new ArgumentException(
+                $"'{model.Trim()}' is not a DevThrottle internal included model id. Chat calls on the " +
+                "DevThrottle deployment credential run only the devthrottle/ ids (issue #1360) - a " +
+                "catalog id here would bill credits on an internal feature. Resolve the model through " +
+                "WingmanModelConfig / CarModeModelConfig / TenantSettingsResolver instead of passing a " +
+                "raw string.", nameof(model));
+        }
         _http = http ?? SharedHttp;
         _chatUrl = baseUrl.TrimEnd('/') + "/chat/completions";
         _apiKey = apiKey ?? "";

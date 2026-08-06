@@ -437,10 +437,12 @@ public sealed class HostedOwnerSettingsSelfHostControlTests : IAsyncLifetime
                 // sentence - a handler-unique receipt that costs no network round-trip. (Issue #2022
                 // removed the brain-config receipt route along with the endpoint; issue #1360 made the
                 // CHAT kind a fixed local list that needs no credential, so the receipt row pins the
-                // speech kind explicitly.)
+                // speech kind explicitly. The test-chat row sends an INCLUDED id because the handler now
+                // refuses a non-included id with a 400 BEFORE resolving the credential - the refusal is
+                // pinned by AiModelsEndpointTests; this row pins the credential receipt.)
                 data.Add(hosted, "GET", "gateway/ai/models?kind=speech", "",
                     503, "not signed in to DevThrottle - sign in on the Account tab");
-                data.Add(hosted, "POST", "gateway/ai/test-chat", "{\"model\":\"some-model\"}",
+                data.Add(hosted, "POST", "gateway/ai/test-chat", "{\"model\":\"devthrottle/wingman\"}",
                     503, "not signed in to DevThrottle - sign in on the Account tab");
             }
             return data;
