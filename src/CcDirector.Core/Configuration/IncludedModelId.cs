@@ -11,7 +11,11 @@ namespace CcDirector.Core.Configuration;
 /// inspection: a base-URL string-equality check was defeated by the equivalent
 /// <c>https://devthrottle.com:443/api/v1</c> spelling, and the Car Mode transports publicly accepted
 /// raw resolver tuples around their guarded default resolver. A type cannot be spelled around: the
-/// only way to obtain an instance is the mint on this class, and the mint validates.
+/// mint on this class is the only producer of USABLE instances. An instance forged by invoking the
+/// private constructor through reflection (phase-2 inspection round 3) carries an unvalidated value
+/// and throws at its first use of <see cref="Value"/>, so it can never reach a transport. Deliberate
+/// reflection beyond that is outside the threat model: code already running in this process with
+/// reflection rights could read the deployment credential directly.
 ///
 /// THE ONLY MINT PATH IS HERE. The constructor is private; <see cref="TryMint"/> is the single
 /// validation gate, <see cref="MintOrFallForward"/> is the fall-forward resolution every settings leg
@@ -25,11 +29,32 @@ namespace CcDirector.Core.Configuration;
 /// </summary>
 public sealed class IncludedModelId : IEquatable<IncludedModelId>
 {
-    /// <summary>The proven included model id, trimmed. Always carries the
-    /// <see cref="TranscriptionEndpointResolver.DevThrottleIncludedModelPrefix"/>.</summary>
-    public string Value { get; }
+    private readonly string _value;
 
-    private IncludedModelId(string value) => Value = value;
+    /// <summary>The proven included model id, trimmed. Always carries the
+    /// <see cref="TranscriptionEndpointResolver.DevThrottleIncludedModelPrefix"/> - the getter
+    /// validates that on every read, so a forged instance (private constructor invoked through
+    /// reflection, bypassing the mint) throws here at first use instead of reaching a transport.
+    /// Every legitimate instance comes from the mint, which only stores prefixed values, so no
+    /// legitimate read can throw.</summary>
+    public string Value
+    {
+        get
+        {
+            if (!TranscriptionEndpointResolver.IsDevThrottleIncludedModel(_value))
+            {
+                throw new InvalidOperationException(
+                    $"Forged {nameof(IncludedModelId)}: the stored value does not carry the " +
+                    $"'{TranscriptionEndpointResolver.DevThrottleIncludedModelPrefix}' prefix, so this " +
+                    "instance was constructed outside the mint (for example by invoking the private " +
+                    "constructor through reflection). The mint is the only producer of usable instances.");
+            }
+
+            return _value;
+        }
+    }
+
+    private IncludedModelId(string value) => _value = value;
 
     /// <summary>The wingman thinking tier (<see cref="TranscriptionEndpointResolver.DevThrottleWingmanModel"/>).</summary>
     public static IncludedModelId Wingman { get; } = new(TranscriptionEndpointResolver.DevThrottleWingmanModel);

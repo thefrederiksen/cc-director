@@ -47,6 +47,23 @@ public sealed class IncludedModelIdTests
     }
 
     [Fact]
+    public void AReflectionForgedInstance_ThrowsAtFirstUseOfValue()
+    {
+        // Phase-2 inspection round 3 invoked the private constructor through reflection with the
+        // catalog id both earlier bypasses carried, and the transports trusted the forged instance.
+        // The Value getter now validates on every read, so a forged instance throws at its first
+        // use and can never reach a transport. This is the round-3 inspection's construction made
+        // a permanent test.
+        var constructor = Assert.Single(
+            typeof(IncludedModelId).GetConstructors(BindingFlags.NonPublic | BindingFlags.Instance));
+
+        var forged = (IncludedModelId)constructor.Invoke(new object[] { "Qwen/Qwen2.5-72B-Instruct" });
+
+        var thrown = Assert.Throws<InvalidOperationException>(() => forged.Value);
+        Assert.Contains("outside the mint", thrown.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void TryMint_RefusesACatalogId_AndMintsAnIncludedId()
     {
         // The exact catalog id both inspection bypasses carried must not mint.
