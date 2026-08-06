@@ -151,10 +151,10 @@ public sealed class TenantSettingsRuntimeThreadingTests : IAsyncLifetime
         var mode = TranscriptionModeConfig.Get();
 
         Assert.Equal(
-            WingmanModelConfig.Resolve(mode, WingmanModelRole.Thinking),
+            WingmanModelConfig.Resolve(mode, WingmanModelRole.Thinking).Value,
             _gateway.ResolveWingmanModel(TenantId.Local, WingmanModelRole.Thinking));
         Assert.Equal(
-            WingmanModelConfig.Resolve(mode, WingmanModelRole.Fast),
+            WingmanModelConfig.Resolve(mode, WingmanModelRole.Fast).Value,
             _gateway.ResolveWingmanModel(TenantId.Local, WingmanModelRole.Fast));
     }
 

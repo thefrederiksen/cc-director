@@ -162,13 +162,15 @@ internal static class AiModelsEndpoint
                 if (body is null || string.IsNullOrWhiteSpace(body.Model))
                     return Results.BadRequest(new { error = "body { \"model\": \"<id>\" } is required" });
 
-                // The SAME non-included-id rejection the model setters apply (issue #1360, inspection
-                // round). This route sends the requested model with the deployment credential, so an
-                // arbitrary model id here - a stale picker, a hand-written request - would run a catalog
-                // model on the deployment key and bill the exact credits this mission eliminates. The
-                // picker only offers included ids, so a legitimate caller never sees this refusal.
+                // The SAME non-included-id refusal the model setters apply (issue #1360). This route
+                // sends the requested model with the deployment credential, so an arbitrary model id
+                // here - a stale picker, a hand-written request - would run a catalog model on the
+                // deployment key and bill the exact credits this mission eliminates. The mint is the
+                // gate: the brain's constructor only accepts the minted type, so a raw string cannot
+                // reach the wire even if this refusal were edited away.
                 var model = body.Model.Trim();
-                if (RejectNonIncludedModel(model, "test-chat model") is { } refusal) return refusal;
+                var minted = IncludedModelId.TryMint(model);
+                if (minted is null) return NonIncludedModelRefusal(model, "test-chat model");
 
                 var mode = TranscriptionModeConfig.Get();
                 var ep = TranscriptionEndpointResolver.ResolveWingman(mode);
@@ -179,7 +181,7 @@ internal static class AiModelsEndpoint
 
                 // One real round-trip to the chosen model - the same path the wingman uses - so the user
                 // can prove a newly-picked model actually responds before relying on it.
-                var brain = new HostedInferenceBrain(ep.BaseUrl, key!, model, log: FileLog.Write);
+                var brain = new HostedInferenceBrain(ep.BaseUrl, key!, minted, log: FileLog.Write);
                 var ask = await brain.AskAsync("Reply with exactly the single word: pong. Output nothing else.", ctx.RequestAborted);
                 return Results.Json(new { ok = true, reply = ask.Text.Trim(), seconds = Math.Round(ask.ReplySeconds, 1) });
             }
@@ -312,11 +314,15 @@ internal static class AiModelsEndpoint
     /// The 400 a model setter answers when the value is not a DevThrottle internal included id
     /// (issue #1360). The wingman and Car Mode are internal features: a catalog id here would bill
     /// credits, so the write is refused loudly instead of being stored and silently ignored at
-    /// resolution time.
+    /// resolution time. Validation is the <see cref="IncludedModelId"/> mint - the same single gate
+    /// every wire path is typed against - never a second local check that could drift from it.
     /// </summary>
     private static IResult? RejectNonIncludedModel(string model, string settingName)
+        => IncludedModelId.TryMint(model) is null ? NonIncludedModelRefusal(model, settingName) : null;
+
+    /// <summary>The refusal payload for a non-included model id, shared by the setters and test-chat.</summary>
+    private static IResult NonIncludedModelRefusal(string model, string settingName)
     {
-        if (TranscriptionEndpointResolver.IsDevThrottleIncludedModel(model)) return null;
         FileLog.Write($"[AiModelsEndpoint] {settingName} REFUSED non-included model '{model}'");
         return Results.BadRequest(new
         {

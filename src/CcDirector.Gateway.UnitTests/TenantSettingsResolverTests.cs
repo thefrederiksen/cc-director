@@ -36,7 +36,7 @@ public sealed class TenantSettingsResolverTests
 
         r.SetCarModeModel(TenantA, "devthrottle/wingman", Now);
 
-        Assert.Equal("devthrottle/wingman", r.CarModeModel(TenantA));
+        Assert.Equal("devthrottle/wingman", r.CarModeModel(TenantA).Value);
     }
 
     [Fact]
@@ -71,9 +71,9 @@ public sealed class TenantSettingsResolverTests
         r.SetCarModeModel(TenantA, "devthrottle/wingman", Now);
 
         // Tenant B never set an override: it must get the OPERATOR global default, never tenant A's value.
-        Assert.Equal("devthrottle/wingman", r.CarModeModel(TenantA));
+        Assert.Equal("devthrottle/wingman", r.CarModeModel(TenantA).Value);
         Assert.Equal(CarModeModelConfig.Resolve(), r.CarModeModel(TenantB));
-        Assert.NotEqual("devthrottle/wingman", r.CarModeModel(TenantB));
+        Assert.NotEqual("devthrottle/wingman", r.CarModeModel(TenantB).Value);
     }
 
     [Fact]
@@ -86,8 +86,8 @@ public sealed class TenantSettingsResolverTests
         r.SetWingmanModel(TenantA, WingmanModelRole.Thinking, "devthrottle/wingman-fast", Now);
         r.SetWingmanModel(TenantA, WingmanModelRole.Fast, "devthrottle/wingman", Now);
 
-        Assert.Equal("devthrottle/wingman-fast", r.WingmanModel(TenantA, Mode, WingmanModelRole.Thinking));
-        Assert.Equal("devthrottle/wingman", r.WingmanModel(TenantA, Mode, WingmanModelRole.Fast));
+        Assert.Equal("devthrottle/wingman-fast", r.WingmanModel(TenantA, Mode, WingmanModelRole.Thinking).Value);
+        Assert.Equal("devthrottle/wingman", r.WingmanModel(TenantA, Mode, WingmanModelRole.Fast).Value);
     }
 
     [Fact]

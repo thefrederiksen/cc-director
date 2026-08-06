@@ -296,9 +296,9 @@ public sealed class HostedOwnerSettingsSelfHostControlTests : IAsyncLifetime
         "daily-report" => ReportCadences.Name(_gateway.TenantSettingsResolver.DailyReportCadence(TenantId.Local)),
         "transcription-mode" => TranscriptionModeConfig.Get().ToConfigString(),
         "tts-voice" => _gateway.TenantSettingsResolver.TtsVoice(TenantId.Local, TranscriptionModeConfig.Get()),
-        "wingman-model" => _gateway.TenantSettingsResolver.WingmanModel(TenantId.Local, TranscriptionModeConfig.Get(), WingmanModelRole.Thinking),
-        "wingman-fast-model" => _gateway.TenantSettingsResolver.WingmanModel(TenantId.Local, TranscriptionModeConfig.Get(), WingmanModelRole.Fast),
-        "car-mode-model" => _gateway.TenantSettingsResolver.CarModeModel(TenantId.Local),
+        "wingman-model" => _gateway.TenantSettingsResolver.WingmanModel(TenantId.Local, TranscriptionModeConfig.Get(), WingmanModelRole.Thinking).Value,
+        "wingman-fast-model" => _gateway.TenantSettingsResolver.WingmanModel(TenantId.Local, TranscriptionModeConfig.Get(), WingmanModelRole.Fast).Value,
+        "car-mode-model" => _gateway.TenantSettingsResolver.CarModeModel(TenantId.Local).Value,
         "car-mode-end-phrase" => _gateway.TenantSettingsResolver.CarModeEndPhrase(TenantId.Local),
         "tts-model" => _gateway.TenantSettingsResolver.TtsModel(TenantId.Local, TranscriptionModeConfig.Get()),
         _ => throw new ArgumentOutOfRangeException(nameof(key), key, "no read-back written for this setting"),
@@ -410,7 +410,7 @@ public sealed class HostedOwnerSettingsSelfHostControlTests : IAsyncLifetime
         const string Sentinel = "devthrottle/sentinel-model-no-reset-would-return";
         var mode = TranscriptionModeConfig.Get();
         _gateway.TenantSettingsResolver.SetWingmanModel(TenantId.Local, WingmanModelRole.Thinking, Sentinel, DateTime.UtcNow);
-        Assert.Equal(Sentinel, _gateway.TenantSettingsResolver.WingmanModel(TenantId.Local, mode, WingmanModelRole.Thinking));
+        Assert.Equal(Sentinel, _gateway.TenantSettingsResolver.WingmanModel(TenantId.Local, mode, WingmanModelRole.Thinking).Value);
 
         var response = await OwnerSettingsRoutes.SendAsync(_http, "PUT", "gateway/ai-provider",
             "{\"provider\":\"devthrottle\"}");
@@ -420,7 +420,7 @@ public sealed class HostedOwnerSettingsSelfHostControlTests : IAsyncLifetime
         using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
         Assert.Equal("devthrottle", document.RootElement.GetProperty("provider").GetString());
 
-        var afterwards = _gateway.TenantSettingsResolver.WingmanModel(TenantId.Local, mode, WingmanModelRole.Thinking);
+        var afterwards = _gateway.TenantSettingsResolver.WingmanModel(TenantId.Local, mode, WingmanModelRole.Thinking).Value;
         Assert.NotEqual(Sentinel, afterwards);
         Assert.False(string.IsNullOrWhiteSpace(afterwards));
     }

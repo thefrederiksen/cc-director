@@ -1,6 +1,7 @@
 using System.Net;
 using System.Text;
 using System.Text.Json;
+using CcDirector.Core.Configuration;
 using CcDirector.Gateway.Wingman;
 using Xunit;
 
@@ -34,32 +35,19 @@ public sealed class HostedInferenceBrainTests
     private static string OkBody(string content) =>
         JsonSerializer.Serialize(new { choices = new[] { new { message = new { role = "assistant", content } } } });
 
-    [Fact]
-    public void Ctor_DevThrottleBase_RefusesCatalogModelIds()
-    {
-        // Included AI revert-proof (issue #1360, inspection round): this class is where a chat model id
-        // meets the DevThrottle deployment credential, so on the DevThrottle base only the internal
-        // included ids may be constructed - a catalog id would bill credits on an internal feature.
-        // Remove the constructor guard and this goes red.
-        using var http = new HttpClient(new StubHandler(HttpStatusCode.OK, OkBody("x")));
-        var ex = Assert.Throws<ArgumentException>(() =>
-            new HostedInferenceBrain("https://devthrottle.com/api/v1", "dt_live_abc", "glm-5.2", http, _ => { }));
-        Assert.Contains("included model id", ex.Message);
-
-        // A trailing slash or different casing of the same base is the same base.
-        Assert.Throws<ArgumentException>(() =>
-            new HostedInferenceBrain("https://DevThrottle.com/api/v1/", "dt_live_abc", "Qwen/Qwen2.5-72B-Instruct", http, _ => { }));
-
-        // Any other base stays a generic provider-compatible client: no included-id rule applies.
-        _ = new HostedInferenceBrain("https://api.openai.com/v1", "sk-abc", "gpt-5.5", http, _ => { });
-    }
+    // Included AI (issue #1360): this class is where a chat model id meets the DevThrottle deployment
+    // credential. The earlier constructor guard compared the base URL for string equality and was
+    // bypassed by construction in the phase-2 inspection (https://devthrottle.com:443/api/v1 is the
+    // same endpoint but not the same string). The guard is now the IncludedModelId TYPE on the
+    // constructor - a catalog id string no longer compiles here - pinned by
+    // IncludedModelTypeSurfaceTests, with the mint's own behaviour proven in IncludedModelIdTests.
 
     [Fact]
     public async Task AskAsync_PostsChatCompletions_WithModelBearerAndUserMessage()
     {
         var stub = new StubHandler(HttpStatusCode.OK, OkBody("the spoken summary"));
         using var http = new HttpClient(stub);
-        var brain = new HostedInferenceBrain("https://devthrottle.com/api/v1", "dt_live_abc", "devthrottle/wingman", http, _ => { });
+        var brain = new HostedInferenceBrain("https://devthrottle.com/api/v1", "dt_live_abc", IncludedModelId.Wingman, http, _ => { });
 
         var result = await brain.AskAsync("translate this");
 
@@ -83,7 +71,7 @@ public sealed class HostedInferenceBrainTests
     {
         var stub = new StubHandler(HttpStatusCode.OK, OkBody("x"));
         using var http = new HttpClient(stub);
-        var brain = new HostedInferenceBrain("https://devthrottle.com/api/v1", "", "devthrottle/wingman", http, _ => { });
+        var brain = new HostedInferenceBrain("https://devthrottle.com/api/v1", "", IncludedModelId.Wingman, http, _ => { });
 
         await Assert.ThrowsAsync<InvalidOperationException>(() => brain.AskAsync("hi"));
         Assert.Null(stub.LastRequest);   // no-fallback: never called the model without a credential
@@ -96,7 +84,7 @@ public sealed class HostedInferenceBrainTests
         // string - so it matches every other surface by construction.
         var stub = new StubHandler(HttpStatusCode.PaymentRequired, "{\"error\":{\"code\":\"insufficient_credits\"}}");
         using var http = new HttpClient(stub);
-        var brain = new HostedInferenceBrain("https://devthrottle.com/api/v1", "dt_live_abc", "devthrottle/wingman", http, _ => { });
+        var brain = new HostedInferenceBrain("https://devthrottle.com/api/v1", "dt_live_abc", IncludedModelId.Wingman, http, _ => { });
 
         var ex = await Assert.ThrowsAsync<InvalidOperationException>(() => brain.AskAsync("hi"));
         Assert.Contains(Core.HostedAi.HostedAiMessages.For(Core.HostedAi.HostedAiState.NeedsCredits).Text, ex.Message);
@@ -109,7 +97,7 @@ public sealed class HostedInferenceBrainTests
         // from the out-of-credits copy.
         var stub = new StubHandler(HttpStatusCode.PaymentRequired, "{\"error\":{\"code\":\"monthly_limit_reached\"}}");
         using var http = new HttpClient(stub);
-        var brain = new HostedInferenceBrain("https://devthrottle.com/api/v1", "dt_live_abc", "devthrottle/wingman", http, _ => { });
+        var brain = new HostedInferenceBrain("https://devthrottle.com/api/v1", "dt_live_abc", IncludedModelId.Wingman, http, _ => { });
 
         var ex = await Assert.ThrowsAsync<InvalidOperationException>(() => brain.AskAsync("hi"));
         Assert.Contains(Core.HostedAi.HostedAiMessages.For(Core.HostedAi.HostedAiState.CapReached).Text, ex.Message);
@@ -139,7 +127,7 @@ public sealed class HostedInferenceBrainTests
         // Retry-After hint, so the caller can back off for exactly that long instead of guessing.
         var stub = new RetryAfterStub(HttpStatusCode.TooManyRequests, "{\"error\":\"rate limited\"}", TimeSpan.FromSeconds(12));
         using var http = new HttpClient(stub);
-        var brain = new HostedInferenceBrain("https://devthrottle.com/api/v1", "dt_live_abc", "devthrottle/wingman", http, _ => { });
+        var brain = new HostedInferenceBrain("https://devthrottle.com/api/v1", "dt_live_abc", IncludedModelId.Wingman, http, _ => { });
 
         var ex = await Assert.ThrowsAsync<WingmanModelRateLimitedException>(() => brain.AskAsync("hi"));
         Assert.Equal(TimeSpan.FromSeconds(12), ex.RetryAfter);
@@ -153,7 +141,7 @@ public sealed class HostedInferenceBrainTests
         // its own exponential backoff.
         var stub = new RetryAfterStub(HttpStatusCode.TooManyRequests, "{\"error\":\"rate limited\"}", retryAfter: null);
         using var http = new HttpClient(stub);
-        var brain = new HostedInferenceBrain("https://devthrottle.com/api/v1", "dt_live_abc", "devthrottle/wingman", http, _ => { });
+        var brain = new HostedInferenceBrain("https://devthrottle.com/api/v1", "dt_live_abc", IncludedModelId.Wingman, http, _ => { });
 
         var ex = await Assert.ThrowsAsync<WingmanModelRateLimitedException>(() => brain.AskAsync("hi"));
         Assert.Null(ex.RetryAfter);
@@ -166,7 +154,7 @@ public sealed class HostedInferenceBrainTests
         // failure keeps catching a 429 unchanged (issue #1324).
         var stub = new RetryAfterStub(HttpStatusCode.TooManyRequests, "{}", retryAfter: null);
         using var http = new HttpClient(stub);
-        var brain = new HostedInferenceBrain("https://devthrottle.com/api/v1", "dt_live_abc", "devthrottle/wingman", http, _ => { });
+        var brain = new HostedInferenceBrain("https://devthrottle.com/api/v1", "dt_live_abc", IncludedModelId.Wingman, http, _ => { });
 
         await Assert.ThrowsAsync<WingmanModelRateLimitedException>(() => brain.AskAsync("hi"));
         var caught = await Record.ExceptionAsync(() => brain.AskAsync("hi"));
@@ -197,7 +185,7 @@ public sealed class HostedInferenceBrainTests
         // the voice path maps to Retrying. A tiny injected deadline proves the bound without a real wait.
         var handler = new HangingHandler();
         using var http = new HttpClient(handler);
-        var brain = new HostedInferenceBrain("https://devthrottle.com/api/v1", "dt_live_abc", "devthrottle/wingman", http, _ => { },
+        var brain = new HostedInferenceBrain("https://devthrottle.com/api/v1", "dt_live_abc", IncludedModelId.Wingman, http, _ => { },
             callTimeout: TimeSpan.FromMilliseconds(100));
 
         var sw = System.Diagnostics.Stopwatch.StartNew();
@@ -216,7 +204,7 @@ public sealed class HostedInferenceBrainTests
         // voice path would wrongly turn into a Retrying banner.
         var handler = new HangingHandler();
         using var http = new HttpClient(handler);
-        var brain = new HostedInferenceBrain("https://devthrottle.com/api/v1", "dt_live_abc", "devthrottle/wingman", http, _ => { },
+        var brain = new HostedInferenceBrain("https://devthrottle.com/api/v1", "dt_live_abc", IncludedModelId.Wingman, http, _ => { },
             callTimeout: TimeSpan.FromMinutes(5));   // deadline far away, so only the caller-cancel can fire
 
         using var cts = new CancellationTokenSource();
@@ -231,7 +219,7 @@ public sealed class HostedInferenceBrainTests
     {
         var stub = new StubHandler(HttpStatusCode.OK, OkBody(""));
         using var http = new HttpClient(stub);
-        var brain = new HostedInferenceBrain("https://api.openai.com/v1", "sk-abc", "gpt-5.5", http, _ => { });
+        var brain = new HostedInferenceBrain("https://devthrottle.com/api/v1", "dt_live_abc", IncludedModelId.Wingman, http, _ => { });
 
         await Assert.ThrowsAsync<InvalidOperationException>(() => brain.AskAsync("hi"));
     }
@@ -247,7 +235,7 @@ public sealed class HostedInferenceBrainTests
     [Fact]
     public async Task ClearAndRestart_AreNoOps()
     {
-        var brain = new HostedInferenceBrain("https://api.openai.com/v1", "sk-abc", "gpt-5.5", new HttpClient(new StubHandler(HttpStatusCode.OK, OkBody("x"))), _ => { });
+        var brain = new HostedInferenceBrain("https://devthrottle.com/api/v1", "dt_live_abc", IncludedModelId.Wingman, new HttpClient(new StubHandler(HttpStatusCode.OK, OkBody("x"))), _ => { });
         await brain.ClearAsync();     // must not throw
         await brain.RestartAsync();   // must not throw
         Assert.Null(brain.SessionId);

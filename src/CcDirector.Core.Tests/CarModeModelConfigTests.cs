@@ -26,7 +26,7 @@ public sealed class CarModeModelConfigTests
         {
             // The env var is a per-install debug switch; an INCLUDED id is honored.
             Environment.SetEnvironmentVariable(CarModeModelConfig.EnvVar, "devthrottle/wingman");
-            Assert.Equal("devthrottle/wingman", CarModeModelConfig.Resolve());
+            Assert.Equal("devthrottle/wingman", CarModeModelConfig.Resolve().Value);
         }
         finally
         {
@@ -52,8 +52,8 @@ public sealed class CarModeModelConfigTests
             Environment.SetEnvironmentVariable(CarModeModelConfig.EnvVar, catalogId);
             // A non-included env value is treated as "not chosen": resolution falls forward to the
             // saved-setting-or-default leg, exactly as a non-included saved value does.
-            Assert.Equal(CarModeModelConfig.Get(), CarModeModelConfig.Resolve());
-            Assert.NotEqual(catalogId, CarModeModelConfig.Resolve());
+            Assert.Equal(CarModeModelConfig.Get(), CarModeModelConfig.Resolve().Value);
+            Assert.NotEqual(catalogId, CarModeModelConfig.Resolve().Value);
         }
         finally
         {
@@ -70,7 +70,7 @@ public sealed class CarModeModelConfigTests
             Environment.SetEnvironmentVariable(CarModeModelConfig.EnvVar, null);
             // With no env override the effective model is exactly the persisted user setting (Get()),
             // which is the included fast default when nothing is saved. Never empty.
-            var resolved = CarModeModelConfig.Resolve();
+            var resolved = CarModeModelConfig.Resolve().Value;
             Assert.Equal(CarModeModelConfig.Get(), resolved);
             Assert.False(string.IsNullOrWhiteSpace(resolved));
         }

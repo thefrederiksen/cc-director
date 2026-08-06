@@ -1,4 +1,5 @@
 using System.Net;
+using CcDirector.Core.Configuration;
 using CcDirector.Core.Tenancy;
 using CcDirector.Gateway.CarMode;
 using Xunit;
@@ -31,7 +32,7 @@ public sealed class CarModeWarmupTests
     {
         var handler = new RecordingHandler();
         var warmup = new CarModeWarmup(
-            _ => ("https://api.test/v1", "test-model", "dt_live_key"),
+            _ => ("https://api.test/v1", IncludedModelId.WingmanFast, "dt_live_key"),
             _ => ("https://api.test/v1", "af_bella", "tts-model", "dt_live_key"),
             new HttpClient(handler), _ => { });
 
@@ -46,7 +47,7 @@ public sealed class CarModeWarmupTests
     {
         var handler = new RecordingHandler();
         var warmup = new CarModeWarmup(
-            _ => ("https://api.test/v1", "test-model", ""),          // no model key
+            _ => ("https://api.test/v1", IncludedModelId.WingmanFast, ""),          // no model key
             _ => ("https://api.test/v1", "af_bella", "tts-model", "dt_live_key"),
             new HttpClient(handler), _ => { });
 
@@ -61,7 +62,7 @@ public sealed class CarModeWarmupTests
     {
         var handler = new RecordingHandler { Responder = _ => throw new HttpRequestException("upstream down") };
         var warmup = new CarModeWarmup(
-            _ => ("https://api.test/v1", "m", "k"),
+            _ => ("https://api.test/v1", IncludedModelId.WingmanFast, "k"),
             _ => ("https://api.test/v1", "v", "tm", "k"),
             new HttpClient(handler), _ => { });
 

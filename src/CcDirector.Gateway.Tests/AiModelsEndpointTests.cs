@@ -66,7 +66,7 @@ public sealed class AiModelsEndpointTests : IAsyncLifetime
         // Issue #2017: the model now persists to the per-tenant store, not config.json. Read it back directly
         // from the resolver for the self-host local tenant (an independent store re-read), then confirm the
         // snapshot reflects it too.
-        Assert.Equal("devthrottle/wingman-fast", _gateway.TenantSettingsResolver.WingmanModel(TenantId.Local, TranscriptionModeConfig.Get(), WingmanModelRole.Thinking));
+        Assert.Equal("devthrottle/wingman-fast", _gateway.TenantSettingsResolver.WingmanModel(TenantId.Local, TranscriptionModeConfig.Get(), WingmanModelRole.Thinking).Value);
         var snap = await _http.GetFromJsonAsync<JsonObject>("gateway/ai-provider");
         Assert.Equal("devthrottle/wingman-fast", (string?)snap!["wingmanModel"]);
     }
@@ -78,7 +78,7 @@ public sealed class AiModelsEndpointTests : IAsyncLifetime
         resp.EnsureSuccessStatusCode();
         Assert.Equal("devthrottle/wingman", (string?)(await resp.Content.ReadFromJsonAsync<JsonObject>())!["model"]);
 
-        Assert.Equal("devthrottle/wingman", _gateway.TenantSettingsResolver.WingmanModel(TenantId.Local, TranscriptionModeConfig.Get(), WingmanModelRole.Fast));
+        Assert.Equal("devthrottle/wingman", _gateway.TenantSettingsResolver.WingmanModel(TenantId.Local, TranscriptionModeConfig.Get(), WingmanModelRole.Fast).Value);
         var snap = await _http.GetFromJsonAsync<JsonObject>("gateway/ai-provider");
         Assert.Equal("devthrottle/wingman", (string?)snap!["wingmanFastModel"]);
     }
@@ -97,9 +97,9 @@ public sealed class AiModelsEndpointTests : IAsyncLifetime
 
         // And nothing was stored: the resolver still answers the included defaults.
         var mode = TranscriptionModeConfig.Get();
-        Assert.Equal("devthrottle/wingman", _gateway.TenantSettingsResolver.WingmanModel(TenantId.Local, mode, WingmanModelRole.Thinking));
-        Assert.Equal("devthrottle/wingman-fast", _gateway.TenantSettingsResolver.WingmanModel(TenantId.Local, mode, WingmanModelRole.Fast));
-        Assert.Equal("devthrottle/wingman-fast", _gateway.TenantSettingsResolver.CarModeModel(TenantId.Local));
+        Assert.Equal("devthrottle/wingman", _gateway.TenantSettingsResolver.WingmanModel(TenantId.Local, mode, WingmanModelRole.Thinking).Value);
+        Assert.Equal("devthrottle/wingman-fast", _gateway.TenantSettingsResolver.WingmanModel(TenantId.Local, mode, WingmanModelRole.Fast).Value);
+        Assert.Equal("devthrottle/wingman-fast", _gateway.TenantSettingsResolver.CarModeModel(TenantId.Local).Value);
     }
 
     [Fact]

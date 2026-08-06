@@ -702,10 +702,10 @@ internal static class SettingsEndpoints
             provider = "devthrottle",
             // The per-tenant model/voice choices (issue #2017), each the tenant's override else the operator
             // default, so models picked on the AI tab round-trip across a reload for THIS tenant.
-            wingmanModel = resolver.WingmanModel(tenant, mode, Core.Configuration.WingmanModelRole.Thinking),
-            wingmanFastModel = resolver.WingmanModel(tenant, mode, Core.Configuration.WingmanModelRole.Fast),
+            wingmanModel = resolver.WingmanModel(tenant, mode, Core.Configuration.WingmanModelRole.Thinking).Value,
+            wingmanFastModel = resolver.WingmanModel(tenant, mode, Core.Configuration.WingmanModelRole.Fast).Value,
             // Car Mode runs its OWN model, separate from the Wingman (a fast tier + tool_choice=required).
-            carModeModel = resolver.CarModeModel(tenant),
+            carModeModel = resolver.CarModeModel(tenant).Value,
             // Car Mode's hands-free sign-off phrase, per tenant. Default "over and out".
             carModeEndPhrase = resolver.CarModeEndPhrase(tenant),
             // transcriptionModel + voices are provider-level facts (one hosted option), not per-tenant.

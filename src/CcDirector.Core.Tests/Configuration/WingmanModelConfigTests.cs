@@ -33,8 +33,8 @@ public sealed class WingmanModelConfigTests : IDisposable
     [Fact]
     public void Resolve_Unset_UsesIncludedDefault()
     {
-        Assert.Equal("devthrottle/wingman", WingmanModelConfig.Resolve(TranscriptionMode.DevThrottle));
-        Assert.Equal("devthrottle/wingman", WingmanModelConfig.Resolve(TranscriptionMode.Byo));
+        Assert.Equal("devthrottle/wingman", WingmanModelConfig.Resolve(TranscriptionMode.DevThrottle).Value);
+        Assert.Equal("devthrottle/wingman", WingmanModelConfig.Resolve(TranscriptionMode.Byo).Value);
     }
 
     [Theory]
@@ -44,7 +44,7 @@ public sealed class WingmanModelConfigTests : IDisposable
     public void Resolve_StaleClaudeAlias_FallsForwardToIncludedDefault(string alias)
     {
         WingmanModelConfig.Set(alias);   // a legacy warm-brain value the hosted proxy cannot run
-        Assert.Equal("devthrottle/wingman", WingmanModelConfig.Resolve(TranscriptionMode.DevThrottle));
+        Assert.Equal("devthrottle/wingman", WingmanModelConfig.Resolve(TranscriptionMode.DevThrottle).Value);
     }
 
     /// <summary>
@@ -59,16 +59,16 @@ public sealed class WingmanModelConfigTests : IDisposable
     public void Resolve_SavedCatalogId_FallsForwardToIncludedDefault(string catalogId)
     {
         WingmanModelConfig.Set(catalogId);
-        Assert.Equal("devthrottle/wingman", WingmanModelConfig.Resolve(TranscriptionMode.DevThrottle));
-        Assert.Equal("devthrottle/wingman", WingmanModelConfig.Resolve(TranscriptionMode.Byo));
+        Assert.Equal("devthrottle/wingman", WingmanModelConfig.Resolve(TranscriptionMode.DevThrottle).Value);
+        Assert.Equal("devthrottle/wingman", WingmanModelConfig.Resolve(TranscriptionMode.Byo).Value);
     }
 
     [Fact]
     public void Resolve_SavedIncludedId_IsHonored()
     {
         WingmanModelConfig.Set("devthrottle/wingman-fast");
-        Assert.Equal("devthrottle/wingman-fast", WingmanModelConfig.Resolve(TranscriptionMode.DevThrottle));
-        Assert.Equal("devthrottle/wingman-fast", WingmanModelConfig.Resolve(TranscriptionMode.Byo));
+        Assert.Equal("devthrottle/wingman-fast", WingmanModelConfig.Resolve(TranscriptionMode.DevThrottle).Value);
+        Assert.Equal("devthrottle/wingman-fast", WingmanModelConfig.Resolve(TranscriptionMode.Byo).Value);
     }
 
     [Fact]
@@ -81,15 +81,15 @@ public sealed class WingmanModelConfigTests : IDisposable
     [Fact]
     public void ResolveFast_Unset_UsesIncludedFastDefault()
     {
-        Assert.Equal("devthrottle/wingman-fast", WingmanModelConfig.ResolveFast(TranscriptionMode.DevThrottle));
-        Assert.Equal("devthrottle/wingman-fast", WingmanModelConfig.ResolveFast(TranscriptionMode.Byo));
+        Assert.Equal("devthrottle/wingman-fast", WingmanModelConfig.ResolveFast(TranscriptionMode.DevThrottle).Value);
+        Assert.Equal("devthrottle/wingman-fast", WingmanModelConfig.ResolveFast(TranscriptionMode.Byo).Value);
     }
 
     [Fact]
     public void ResolveFast_StaleClaudeAlias_FallsForwardToIncludedFastDefault()
     {
         WingmanModelConfig.SetFast("opus");
-        Assert.Equal("devthrottle/wingman-fast", WingmanModelConfig.ResolveFast(TranscriptionMode.DevThrottle));
+        Assert.Equal("devthrottle/wingman-fast", WingmanModelConfig.ResolveFast(TranscriptionMode.DevThrottle).Value);
     }
 
     /// <summary>Fast-role half of the same revert-proof: a saved catalog id on brain_model_fast is not
@@ -98,7 +98,7 @@ public sealed class WingmanModelConfigTests : IDisposable
     public void ResolveFast_SavedCatalogId_FallsForwardToIncludedFastDefault()
     {
         WingmanModelConfig.SetFast("Qwen/Qwen2.5-72B-Instruct");
-        Assert.Equal("devthrottle/wingman-fast", WingmanModelConfig.ResolveFast(TranscriptionMode.DevThrottle));
+        Assert.Equal("devthrottle/wingman-fast", WingmanModelConfig.ResolveFast(TranscriptionMode.DevThrottle).Value);
     }
 
     [Fact]
@@ -119,7 +119,7 @@ public sealed class WingmanModelConfigTests : IDisposable
         WingmanModelConfig.Set("devthrottle/wingman-fast");
         WingmanModelConfig.SetFast("devthrottle/wingman");
 
-        Assert.Equal("devthrottle/wingman-fast", WingmanModelConfig.Resolve(TranscriptionMode.DevThrottle, WingmanModelRole.Thinking));
-        Assert.Equal("devthrottle/wingman", WingmanModelConfig.Resolve(TranscriptionMode.DevThrottle, WingmanModelRole.Fast));
+        Assert.Equal("devthrottle/wingman-fast", WingmanModelConfig.Resolve(TranscriptionMode.DevThrottle, WingmanModelRole.Thinking).Value);
+        Assert.Equal("devthrottle/wingman", WingmanModelConfig.Resolve(TranscriptionMode.DevThrottle, WingmanModelRole.Fast).Value);
     }
 }

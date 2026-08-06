@@ -97,7 +97,7 @@ public sealed class AiProviderEndpointTests : IAsyncLifetime
             _gateway.TenantSettingsResolver.WingmanModel(TenantId.Local, mode, WingmanModelRole.Thinking));
         Assert.Equal(WingmanModelConfig.Resolve(mode, WingmanModelRole.Fast),
             _gateway.TenantSettingsResolver.WingmanModel(TenantId.Local, mode, WingmanModelRole.Fast));
-        Assert.NotEqual("sentinel-think", _gateway.TenantSettingsResolver.WingmanModel(TenantId.Local, mode, WingmanModelRole.Thinking));
+        Assert.NotEqual("sentinel-think", _gateway.TenantSettingsResolver.WingmanModel(TenantId.Local, mode, WingmanModelRole.Thinking).Value);
     }
 
     [Fact]

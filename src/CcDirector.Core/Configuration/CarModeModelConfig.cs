@@ -58,18 +58,14 @@ public static class CarModeModelConfig
     /// the saved setting (issue #1360): Car Mode is an internal included feature and its model is sent
     /// with the DevThrottle deployment credential, so a catalog id here would bill credits no matter
     /// which knob it arrived through. A non-included environment value falls forward exactly as a
-    /// non-included saved value does.
+    /// non-included saved value does. Returns the PROVEN type, so what this resolves can be handed
+    /// straight to the deployment credential.
     /// </summary>
-    public static string Resolve()
+    public static IncludedModelId Resolve()
     {
         var env = Environment.GetEnvironmentVariable(EnvVar);
-        if (!string.IsNullOrWhiteSpace(env))
-        {
-            var model = env.Trim();
-            if (TranscriptionEndpointResolver.IsDevThrottleIncludedModel(model))
-                return model;
-        }
-        return Get();
+        return IncludedModelId.TryMint(env)
+               ?? IncludedModelId.MintOrFallForward(Get(), IncludedModelId.WingmanFast);
     }
 
     /// <summary>Persist the chosen Car Mode model to config.json (merge-patch).</summary>
