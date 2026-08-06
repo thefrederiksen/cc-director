@@ -46,18 +46,22 @@ public sealed class IncludedModelIdTests
             producers);
     }
 
-    [Fact]
-    public void AReflectionForgedInstance_ThrowsAtFirstUseOfValue()
+    [Theory]
+    [InlineData("Qwen/Qwen2.5-72B-Instruct")]
+    [InlineData("  devthrottle/wingman  ")]
+    public void AReflectionForgedInstance_ThrowsAtFirstUseOfValue(string forgedValue)
     {
         // Phase-2 inspection round 3 invoked the private constructor through reflection with the
         // catalog id both earlier bypasses carried, and the transports trusted the forged instance.
         // The Value getter now validates on every read, so a forged instance throws at its first
         // use and can never reach a transport. This is the round-3 inspection's construction made
-        // a permanent test.
+        // a permanent test. The round-4 inspection forged a whitespace-padded included id and the
+        // then-lenient getter accepted it; the getter now demands the prefix verbatim on the stored
+        // string, and the mint trims, so a padded value proves a forge and throws too.
         var constructor = Assert.Single(
             typeof(IncludedModelId).GetConstructors(BindingFlags.NonPublic | BindingFlags.Instance));
 
-        var forged = (IncludedModelId)constructor.Invoke(new object[] { "Qwen/Qwen2.5-72B-Instruct" });
+        var forged = (IncludedModelId)constructor.Invoke(new object[] { forgedValue });
 
         var thrown = Assert.Throws<InvalidOperationException>(() => forged.Value);
         Assert.Contains("outside the mint", thrown.Message, StringComparison.Ordinal);
@@ -78,6 +82,10 @@ public sealed class IncludedModelIdTests
         Assert.NotNull(minted);
         Assert.Equal("devthrottle/wingman", minted!.Value);
         Assert.Equal(IncludedModelId.Wingman, minted);
+
+        // The mint normalizes: a padded candidate stores the trimmed id, so no legitimate
+        // instance can carry whitespace and the strict getter never throws on a minted value.
+        Assert.Equal("devthrottle/wingman", IncludedModelId.TryMint("  devthrottle/wingman  ")!.Value);
     }
 
     [Fact]

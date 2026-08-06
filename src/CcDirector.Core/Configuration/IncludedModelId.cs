@@ -10,12 +10,16 @@ namespace CcDirector.Core.Configuration;
 /// The two earlier runtime guards this replaces were both bypassed by construction in the phase-2
 /// inspection: a base-URL string-equality check was defeated by the equivalent
 /// <c>https://devthrottle.com:443/api/v1</c> spelling, and the Car Mode transports publicly accepted
-/// raw resolver tuples around their guarded default resolver. A type cannot be spelled around: the
-/// mint on this class is the only producer of USABLE instances. An instance forged by invoking the
-/// private constructor through reflection (phase-2 inspection round 3) carries an unvalidated value
-/// and throws at its first use of <see cref="Value"/>, so it can never reach a transport. Deliberate
-/// reflection beyond that is outside the threat model: code already running in this process with
-/// reflection rights could read the deployment credential directly.
+/// raw resolver tuples around their guarded default resolver. A type cannot be spelled around: in
+/// ordinary (non-reflective) code the mint on this class is the only producer of instances, and it
+/// normalizes (trims) its input before validating and storing. The exact enforced invariant is on
+/// <see cref="Value"/>: no instance whose stored value is not a devthrottle/-prefixed id (verbatim,
+/// ordinal) is usable. So an instance forged by invoking the private constructor through reflection
+/// (phase-2 inspection rounds 3 and 4) throws at its first use of <see cref="Value"/> unless the
+/// forged value already names an included id verbatim - the harmless case, because this guard's job
+/// is credential/model separation, not provenance. Deliberate reflection beyond that is outside the
+/// threat model: code already running in this process with reflection rights could read the
+/// deployment credential directly.
 ///
 /// THE ONLY MINT PATH IS HERE. The constructor is private; <see cref="TryMint"/> is the single
 /// validation gate, <see cref="MintOrFallForward"/> is the fall-forward resolution every settings leg
@@ -31,17 +35,22 @@ public sealed class IncludedModelId : IEquatable<IncludedModelId>
 {
     private readonly string _value;
 
-    /// <summary>The proven included model id, trimmed. Always carries the
-    /// <see cref="TranscriptionEndpointResolver.DevThrottleIncludedModelPrefix"/> - the getter
-    /// validates that on every read, so a forged instance (private constructor invoked through
-    /// reflection, bypassing the mint) throws here at first use instead of reaching a transport.
-    /// Every legitimate instance comes from the mint, which only stores prefixed values, so no
-    /// legitimate read can throw.</summary>
+    /// <summary>The proven included model id. The getter enforces the exact invariant on every
+    /// read: the STORED string must carry the
+    /// <see cref="TranscriptionEndpointResolver.DevThrottleIncludedModelPrefix"/> verbatim
+    /// (ordinal, no trimming or other normalization at read time), else it throws. The mint trims
+    /// its input before validating and storing, so no legitimate instance can carry whitespace and
+    /// no legitimate read can throw. A forged instance (private constructor invoked through
+    /// reflection, bypassing the mint) is therefore usable only if it already stores a
+    /// devthrottle/-prefixed id verbatim - the harmless case, because this guard exists to keep
+    /// non-included model ids off the deployment credential, not to prove provenance.</summary>
     public string Value
     {
         get
         {
-            if (!TranscriptionEndpointResolver.IsDevThrottleIncludedModel(_value))
+            if (_value is null
+                || !_value.StartsWith(
+                    TranscriptionEndpointResolver.DevThrottleIncludedModelPrefix, StringComparison.Ordinal))
             {
                 throw new InvalidOperationException(
                     $"Forged {nameof(IncludedModelId)}: the stored value does not carry the " +
@@ -72,9 +81,12 @@ public sealed class IncludedModelId : IEquatable<IncludedModelId>
     /// <see cref="MintOrFallForward"/> instead.
     /// </summary>
     public static IncludedModelId? TryMint(string? candidate)
-        => TranscriptionEndpointResolver.IsDevThrottleIncludedModel(candidate)
-            ? new IncludedModelId(candidate!.Trim())
+    {
+        var normalized = candidate?.Trim();
+        return TranscriptionEndpointResolver.IsDevThrottleIncludedModel(normalized)
+            ? new IncludedModelId(normalized!)
             : null;
+    }
 
     /// <summary>
     /// The fall-forward resolution rule (issue #1360): <paramref name="candidate"/> when it is an
