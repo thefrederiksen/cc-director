@@ -63,19 +63,26 @@ public sealed class HostedInferenceBrain : IAgentBrain
 
     /// <param name="baseUrl">The provider-compatible <c>/v1</c> base URL.</param>
     /// <param name="apiKey">The credential to present as the Bearer token. Must be non-empty.</param>
-    /// <param name="model">The chat model id.</param>
+    /// <param name="model">The chat model id, as the PROVEN included type (issue #1360). This class is
+    /// only ever constructed with the DevThrottle deployment credential, so the model must be an
+    /// internal included id - a catalog id would bill credits on an internal feature. The guard is the
+    /// TYPE, not a check in this constructor: an earlier base-URL string-equality check here was
+    /// bypassed by construction with the equivalent <c>https://devthrottle.com:443/api/v1</c> spelling
+    /// (phase-2 inspection round 2), so this constructor no longer tries to recognize the endpoint -
+    /// it simply cannot be handed an unvalidated string. The only mint path is
+    /// <see cref="Core.Configuration.IncludedModelId"/>.</param>
     /// <param name="http">HTTP client (tests inject a stub over a fake handler); a shared client when null.</param>
     /// <param name="log">Log sink; <see cref="FileLog.Write"/> when null.</param>
     /// <param name="callTimeout">Per-call deadline (tests pass a tiny value to prove the fast-fail without
     /// a real wait); <see cref="DefaultCallTimeout"/> when null.</param>
-    public HostedInferenceBrain(string baseUrl, string apiKey, string model, HttpClient? http = null, Action<string>? log = null, TimeSpan? callTimeout = null)
+    public HostedInferenceBrain(string baseUrl, string apiKey, Core.Configuration.IncludedModelId model, HttpClient? http = null, Action<string>? log = null, TimeSpan? callTimeout = null)
     {
         if (string.IsNullOrWhiteSpace(baseUrl)) throw new ArgumentException("baseUrl is required", nameof(baseUrl));
-        if (string.IsNullOrWhiteSpace(model)) throw new ArgumentException("model is required", nameof(model));
+        ArgumentNullException.ThrowIfNull(model);
         _http = http ?? SharedHttp;
         _chatUrl = baseUrl.TrimEnd('/') + "/chat/completions";
         _apiKey = apiKey ?? "";
-        _model = model.Trim();
+        _model = model.Value;
         _callTimeout = callTimeout ?? DefaultCallTimeout;
         _log = log ?? FileLog.Write;
     }

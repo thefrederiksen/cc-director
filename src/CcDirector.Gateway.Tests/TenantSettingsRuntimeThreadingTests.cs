@@ -60,16 +60,30 @@ public sealed class TenantSettingsRuntimeThreadingTests : IAsyncLifetime
     [Fact]
     public void WingmanModel_TwoTenantsAndBothRoles_SelectOnlyTheirOwnRuntimeValues()
     {
-        _gateway.TenantSettingsResolver.SetWingmanModel(TenantA, WingmanModelRole.Thinking, "tenant-a-thinking", Now);
-        _gateway.TenantSettingsResolver.SetWingmanModel(TenantA, WingmanModelRole.Fast, "tenant-a-fast", Now);
-        _gateway.TenantSettingsResolver.SetWingmanModel(TenantB, WingmanModelRole.Thinking, "tenant-b-thinking", Now);
-        _gateway.TenantSettingsResolver.SetWingmanModel(TenantB, WingmanModelRole.Fast, "tenant-b-fast", Now);
+        // Overrides must be DevThrottle internal included ids (issue #1360) or resolution falls
+        // forward to the default - so the four distinct values are crossed role assignments of the
+        // two included ids, which still proves each (tenant, role) cell reads only its own value.
+        _gateway.TenantSettingsResolver.SetWingmanModel(TenantA, WingmanModelRole.Thinking, "devthrottle/wingman", Now);
+        _gateway.TenantSettingsResolver.SetWingmanModel(TenantA, WingmanModelRole.Fast, "devthrottle/wingman-fast", Now);
+        _gateway.TenantSettingsResolver.SetWingmanModel(TenantB, WingmanModelRole.Thinking, "devthrottle/wingman-fast", Now);
+        _gateway.TenantSettingsResolver.SetWingmanModel(TenantB, WingmanModelRole.Fast, "devthrottle/wingman", Now);
 
-        Assert.Equal("tenant-a-thinking", _gateway.ResolveWingmanModel(TenantA, WingmanModelRole.Thinking));
-        Assert.Equal("tenant-a-fast", _gateway.ResolveWingmanModel(TenantA, WingmanModelRole.Fast));
-        Assert.Equal("tenant-b-thinking", _gateway.ResolveWingmanModel(TenantB, WingmanModelRole.Thinking));
-        Assert.Equal("tenant-b-fast", _gateway.ResolveWingmanModel(TenantB, WingmanModelRole.Fast));
+        Assert.Equal("devthrottle/wingman", _gateway.ResolveWingmanModel(TenantA, WingmanModelRole.Thinking));
+        Assert.Equal("devthrottle/wingman-fast", _gateway.ResolveWingmanModel(TenantA, WingmanModelRole.Fast));
+        Assert.Equal("devthrottle/wingman-fast", _gateway.ResolveWingmanModel(TenantB, WingmanModelRole.Thinking));
+        Assert.Equal("devthrottle/wingman", _gateway.ResolveWingmanModel(TenantB, WingmanModelRole.Fast));
         Assert.Throws<ArgumentException>(() => _gateway.ResolveWingmanModel(default, WingmanModelRole.Thinking));
+    }
+
+    [Fact]
+    public void WingmanModel_CatalogIdOverride_FallsForwardToTheIncludedDefault()
+    {
+        // The Included AI revert-proof on the per-tenant path (issue #1360): a catalog-id override
+        // saved by an older release must NOT reach the proxy - it would bill credits on an internal
+        // feature. Put the old honor-any-override read back and this goes red.
+        _gateway.TenantSettingsResolver.SetWingmanModel(TenantA, WingmanModelRole.Thinking, "zai-org/GLM-5.2", Now);
+
+        Assert.Equal("devthrottle/wingman", _gateway.ResolveWingmanModel(TenantA, WingmanModelRole.Thinking));
     }
 
     [Fact]
@@ -110,8 +124,10 @@ public sealed class TenantSettingsRuntimeThreadingTests : IAsyncLifetime
     {
         using var data = new GatewayDbTestHarness();
         var settings = new TenantSettingsResolver(new TenantSettingsStore(data.Open()));
-        settings.SetCarModeModel(TenantA, "car-a", Now);
-        settings.SetCarModeModel(TenantB, "car-b", Now);
+        // Distinct per-tenant values drawn from the DevThrottle internal included ids (issue #1360) -
+        // a non-devthrottle override falls forward to the default and could not tell the tenants apart.
+        settings.SetCarModeModel(TenantA, "devthrottle/wingman", Now);
+        settings.SetCarModeModel(TenantB, "devthrottle/wingman-fast", Now);
 
         var handler = new RecordingCarModeHandler();
         var chat = new HostedCarModeChat(
@@ -123,8 +139,8 @@ public sealed class TenantSettingsRuntimeThreadingTests : IAsyncLifetime
         await chat.CompleteAsync(TenantB, "[]", "[]", CancellationToken.None);
 
         Assert.Collection(handler.Requests,
-            request => Assert.Equal("car-a", JsonDocument.Parse(request).RootElement.GetProperty("model").GetString()),
-            request => Assert.Equal("car-b", JsonDocument.Parse(request).RootElement.GetProperty("model").GetString()));
+            request => Assert.Equal("devthrottle/wingman", JsonDocument.Parse(request).RootElement.GetProperty("model").GetString()),
+            request => Assert.Equal("devthrottle/wingman-fast", JsonDocument.Parse(request).RootElement.GetProperty("model").GetString()));
         await Assert.ThrowsAsync<ArgumentException>(() =>
             chat.CompleteAsync(default, "[]", "[]", CancellationToken.None));
     }
@@ -135,10 +151,10 @@ public sealed class TenantSettingsRuntimeThreadingTests : IAsyncLifetime
         var mode = TranscriptionModeConfig.Get();
 
         Assert.Equal(
-            WingmanModelConfig.Resolve(mode, WingmanModelRole.Thinking),
+            WingmanModelConfig.Resolve(mode, WingmanModelRole.Thinking).Value,
             _gateway.ResolveWingmanModel(TenantId.Local, WingmanModelRole.Thinking));
         Assert.Equal(
-            WingmanModelConfig.Resolve(mode, WingmanModelRole.Fast),
+            WingmanModelConfig.Resolve(mode, WingmanModelRole.Fast).Value,
             _gateway.ResolveWingmanModel(TenantId.Local, WingmanModelRole.Fast));
     }
 

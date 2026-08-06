@@ -65,9 +65,11 @@ public sealed class BriefBuilder : IDisposable
     /// <summary>
     /// Create a condenser, or null when no DevThrottle account key is available. A null condenser is the
     /// EXPLICIT degrade path: the brief endpoint still serves the raw extraction and reports
-    /// <c>Condenser = "unavailable"</c> - visible, never silent.
+    /// <c>Condenser = "unavailable"</c> - visible, never silent. The model is the PROVEN included type
+    /// (issue #1360) - this class presents the DevThrottle deployment credential, so a raw string
+    /// cannot be accepted here; null means the default fast tier.
     /// </summary>
-    public static BriefBuilder? TryCreate(string model = DefaultModel, HttpClient? httpClient = null)
+    public static BriefBuilder? TryCreate(IncludedModelId? model = null, HttpClient? httpClient = null)
     {
         var key = Environment.GetEnvironmentVariable(TranscriptionEndpointResolver.DevThrottleKeyName);
         if (string.IsNullOrWhiteSpace(key))
@@ -75,7 +77,7 @@ public sealed class BriefBuilder : IDisposable
             FileLog.Write("[BriefBuilder] TryCreate: DEVTHROTTLE_API_KEY not set; condenser unavailable");
             return null;
         }
-        return new BriefBuilder(key.Trim(), string.IsNullOrWhiteSpace(model) ? DefaultModel : model, httpClient);
+        return new BriefBuilder(key.Trim(), (model ?? IncludedModelId.WingmanFast).Value, httpClient);
     }
 
     // ====================================================================

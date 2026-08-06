@@ -23,7 +23,7 @@ public sealed class CarModeWarmup
 {
     private static readonly HttpClient SharedHttp = new() { Timeout = TimeSpan.FromSeconds(20) };
 
-    private readonly Func<TenantId, (string BaseUrl, string Model, string Key)> _model;
+    private readonly Func<TenantId, (string BaseUrl, Core.Configuration.IncludedModelId Model, string Key)> _model;
     private readonly Func<TenantId, (string BaseUrl, string Voice, string Model, string Key)> _tts;
     private readonly HttpClient _http;
     private readonly Action<string> _log;
@@ -31,8 +31,13 @@ public sealed class CarModeWarmup
     // 0 = idle, 1 = a warmup is in flight. Collapses an overlapping Start + keep-warm tick.
     private int _inFlight;
 
+    // The chat model resolver carries the PROVEN included type (issue #1360): the warmup presents the
+    // DevThrottle deployment credential, and the phase-2 inspection showed a raw tuple handed to this
+    // constructor bypassed every resolver-internal check - the type makes that construction
+    // inexpressible. The text-to-speech resolver keeps plain strings: speech is included in its
+    // entirety, so no id there can bill credits.
     public CarModeWarmup(
-        Func<TenantId, (string BaseUrl, string Model, string Key)> modelResolver,
+        Func<TenantId, (string BaseUrl, Core.Configuration.IncludedModelId Model, string Key)> modelResolver,
         Func<TenantId, (string BaseUrl, string Voice, string Model, string Key)> ttsResolver,
         HttpClient? http = null,
         Action<string>? log = null)
@@ -77,7 +82,7 @@ public sealed class CarModeWarmup
                 _log("[CarModeWarmup] model warm skipped: no key configured");
                 return;
             }
-            var body = $"{{\"model\":{JsonSerializer.Serialize(model)},\"messages\":[{{\"role\":\"user\",\"content\":\"ping\"}}],\"max_tokens\":1,\"stream\":false}}";
+            var body = $"{{\"model\":{JsonSerializer.Serialize(model.Value)},\"messages\":[{{\"role\":\"user\",\"content\":\"ping\"}}],\"max_tokens\":1,\"stream\":false}}";
             var url = baseUrl.TrimEnd('/') + "/chat/completions";
             using var req = new HttpRequestMessage(HttpMethod.Post, url);
             req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", key);

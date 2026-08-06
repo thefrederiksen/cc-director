@@ -57,28 +57,49 @@ public sealed class AiModelsEndpointTests : IAsyncLifetime
     [Fact]
     public async Task Put_wingman_model_persists_and_snapshot_reflects_it()
     {
-        var resp = await _http.PutAsJsonAsync("gateway/ai/wingman-model", new { model = "kimi-k2" });
+        // The FAST id on the THINKING role: an included id (the setter honors nothing else since issue
+        // #1360) that differs from the role's default, so the re-read proves a write, not a no-op.
+        var resp = await _http.PutAsJsonAsync("gateway/ai/wingman-model", new { model = "devthrottle/wingman-fast" });
         resp.EnsureSuccessStatusCode();
-        Assert.Equal("kimi-k2", (string?)(await resp.Content.ReadFromJsonAsync<JsonObject>())!["model"]);
+        Assert.Equal("devthrottle/wingman-fast", (string?)(await resp.Content.ReadFromJsonAsync<JsonObject>())!["model"]);
 
         // Issue #2017: the model now persists to the per-tenant store, not config.json. Read it back directly
         // from the resolver for the self-host local tenant (an independent store re-read), then confirm the
         // snapshot reflects it too.
-        Assert.Equal("kimi-k2", _gateway.TenantSettingsResolver.WingmanModel(TenantId.Local, TranscriptionModeConfig.Get(), WingmanModelRole.Thinking));
+        Assert.Equal("devthrottle/wingman-fast", _gateway.TenantSettingsResolver.WingmanModel(TenantId.Local, TranscriptionModeConfig.Get(), WingmanModelRole.Thinking).Value);
         var snap = await _http.GetFromJsonAsync<JsonObject>("gateway/ai-provider");
-        Assert.Equal("kimi-k2", (string?)snap!["wingmanModel"]);
+        Assert.Equal("devthrottle/wingman-fast", (string?)snap!["wingmanModel"]);
     }
 
     [Fact]
     public async Task Put_wingman_fast_model_persists_and_snapshot_reflects_it()
     {
-        var resp = await _http.PutAsJsonAsync("gateway/ai/wingman-fast-model", new { model = "qwen-fast" });
+        var resp = await _http.PutAsJsonAsync("gateway/ai/wingman-fast-model", new { model = "devthrottle/wingman" });
         resp.EnsureSuccessStatusCode();
-        Assert.Equal("qwen-fast", (string?)(await resp.Content.ReadFromJsonAsync<JsonObject>())!["model"]);
+        Assert.Equal("devthrottle/wingman", (string?)(await resp.Content.ReadFromJsonAsync<JsonObject>())!["model"]);
 
-        Assert.Equal("qwen-fast", _gateway.TenantSettingsResolver.WingmanModel(TenantId.Local, TranscriptionModeConfig.Get(), WingmanModelRole.Fast));
+        Assert.Equal("devthrottle/wingman", _gateway.TenantSettingsResolver.WingmanModel(TenantId.Local, TranscriptionModeConfig.Get(), WingmanModelRole.Fast).Value);
         var snap = await _http.GetFromJsonAsync<JsonObject>("gateway/ai-provider");
-        Assert.Equal("qwen-fast", (string?)snap!["wingmanFastModel"]);
+        Assert.Equal("devthrottle/wingman", (string?)snap!["wingmanFastModel"]);
+    }
+
+    [Theory]
+    [InlineData("gateway/ai/wingman-model")]
+    [InlineData("gateway/ai/wingman-fast-model")]
+    [InlineData("gateway/ai/car-mode-model")]
+    public async Task Put_model_setters_refuse_catalog_ids(string route)
+    {
+        // Included AI revert-proof (issue #1360): the wingman and Car Mode are internal included
+        // features, and a catalog id would bill credits - the setter must refuse it loudly, never
+        // store it. Put the old accept-anything setter back and this goes red.
+        var resp = await _http.PutAsJsonAsync(route, new { model = "kimi-k2" });
+        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+
+        // And nothing was stored: the resolver still answers the included defaults.
+        var mode = TranscriptionModeConfig.Get();
+        Assert.Equal("devthrottle/wingman", _gateway.TenantSettingsResolver.WingmanModel(TenantId.Local, mode, WingmanModelRole.Thinking).Value);
+        Assert.Equal("devthrottle/wingman-fast", _gateway.TenantSettingsResolver.WingmanModel(TenantId.Local, mode, WingmanModelRole.Fast).Value);
+        Assert.Equal("devthrottle/wingman-fast", _gateway.TenantSettingsResolver.CarModeModel(TenantId.Local).Value);
     }
 
     [Fact]
@@ -97,17 +118,48 @@ public sealed class AiModelsEndpointTests : IAsyncLifetime
     public async Task Snapshot_defaults_wingman_and_tts_model()
     {
         var snap = await _http.GetFromJsonAsync<JsonObject>("gateway/ai-provider");
-        Assert.Equal("zai-org/GLM-5.2", (string?)snap!["wingmanModel"]);   // provider default when unset
-        Assert.Equal("Qwen/Qwen2.5-72B-Instruct", (string?)snap["wingmanFastModel"]);
+        Assert.Equal("devthrottle/wingman", (string?)snap!["wingmanModel"]);   // included default when unset
+        Assert.Equal("devthrottle/wingman-fast", (string?)snap["wingmanFastModel"]);
         Assert.Equal("hexgrad/Kokoro-82M", (string?)snap["ttsModel"]);
     }
 
     [Fact]
-    public async Task Get_models_without_key_reports_not_signed_in()
+    public async Task Get_chat_models_serves_only_the_included_wingman_ids_and_never_the_catalog()
     {
-        // No DevThrottle key stored -> the catalog cannot be fetched; a clear 503, never a crash/empty.
+        // Included AI revert-proof (issue #1360, design C3): the chat kind feeds the wingman pickers,
+        // which must never offer catalog models. NO provider key is stored in this rig, so this list
+        // arriving at all also proves no upstream catalog call is involved - put the old
+        // relay-the-catalog branch back and this answers 503 instead.
         var resp = await _http.GetAsync("gateway/ai/models?kind=chat");
+        resp.EnsureSuccessStatusCode();
+        var body = await resp.Content.ReadFromJsonAsync<JsonObject>();
+        var ids = (body!["models"] as JsonArray)!.Select(m => (string?)m!["id"]).ToList();
+        Assert.Equal(new[] { "devthrottle/wingman", "devthrottle/wingman-fast" }, ids);
+    }
+
+    [Fact]
+    public async Task Get_speech_models_without_key_reports_not_signed_in()
+    {
+        // The SPEECH kind still reads the live catalog: no DevThrottle key stored -> the catalog cannot
+        // be fetched; a clear 503, never a crash/empty.
+        var resp = await _http.GetAsync("gateway/ai/models?kind=speech");
         Assert.Equal(HttpStatusCode.ServiceUnavailable, resp.StatusCode);
+    }
+
+    [Fact]
+    public async Task Post_test_chat_refuses_catalog_ids_before_touching_the_credential()
+    {
+        // Included AI revert-proof (issue #1360, inspection round): test-chat sends the requested
+        // model with the deployment credential, so it must refuse a non-included id exactly as the
+        // model setters do. The refusal comes BEFORE the credential is resolved: in this key-less rig
+        // a catalog id answers 400, while an included id gets past the guard to the key check and
+        // answers 503 (not signed in). Put the old accept-any-nonblank-model round trip back and the
+        // catalog id answers 503 too - red.
+        var catalog = await _http.PostAsJsonAsync("gateway/ai/test-chat", new { model = "kimi-k2" });
+        Assert.Equal(HttpStatusCode.BadRequest, catalog.StatusCode);
+
+        var included = await _http.PostAsJsonAsync("gateway/ai/test-chat", new { model = "devthrottle/wingman" });
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, included.StatusCode);
     }
 
     [Fact]

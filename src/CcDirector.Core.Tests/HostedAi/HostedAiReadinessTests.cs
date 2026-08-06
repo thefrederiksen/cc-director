@@ -5,11 +5,13 @@ using Xunit;
 namespace CcDirector.Core.Tests.HostedAi;
 
 /// <summary>
-/// Issue #938 (epic #937): the shared pre-flight readiness check. Every (mode, balance)
-/// combination must resolve to the one correct <see cref="HostedAiState"/>, an unknown balance must
-/// NOT block, and - the criterion the whole gate exists for - adding $5 must flip a check from
-/// <see cref="HostedAiState.NeedsCredits"/> to <see cref="HostedAiState.Ready"/> with no restart,
-/// proving the balance is re-read fresh on every call (no cache).
+/// Issue #938 (epic #937), rewritten by the Included AI mission (issue #1360): the shared pre-flight
+/// readiness check no longer consults the account balance AT ALL. The internal AI features are
+/// included with an entitled account and never billed to credits, so a zero balance says nothing
+/// about whether the server will serve the call - a client-side balance gate would block exactly the
+/// members the mission exists to serve. The zero-balance-still-Ready and never-reads-the-balance
+/// tests are the REVERT-PROOF: put the old balance gate back and they go red with the mission's
+/// reported symptom (a zero-balance entitled member blocked before recording).
 /// </summary>
 public sealed class HostedAiReadinessTests
 {
@@ -21,50 +23,24 @@ public sealed class HostedAiReadinessTests
             _ => Task.FromResult(balanceMicros));
 
     [Fact]
-    public async Task LegacyByo_NoKey_UsesDevThrottleBalanceAndReadyWhenUnknown()
+    public async Task LegacyByo_Ready()
     {
         var state = await Build(TranscriptionMode.Byo, key: null).CheckAsync();
         Assert.Equal(HostedAiState.Ready, state);
     }
 
     [Theory]
-    [InlineData("")]
-    [InlineData("   ")]
-    public async Task LegacyByo_BlankKey_UsesDevThrottleBalanceAndReadyWhenUnknown(string key)
-    {
-        var state = await Build(TranscriptionMode.Byo, key: key).CheckAsync();
-        Assert.Equal(HostedAiState.Ready, state);
-    }
-
-    [Fact]
-    public async Task LegacyByo_WithKey_Ready()
-    {
-        var state = await Build(TranscriptionMode.Byo, key: "sk-abc123").CheckAsync();
-        Assert.Equal(HostedAiState.Ready, state);
-    }
-
-    [Fact]
-    public async Task LegacyByo_ReadsBalance()
-    {
-        var balanceRead = false;
-        var check = new HostedAiReadiness(
-            () => TranscriptionMode.Byo,
-            _ => "sk-abc123",
-            _ => { balanceRead = true; return Task.FromResult<long?>(0); });
-
-        await check.CheckAsync();
-
-        Assert.True(balanceRead);
-    }
-
-    [Theory]
     [InlineData(0L)]
     [InlineData(-1L)]
     [InlineData(-500_000L)]
-    public async Task DevThrottle_EmptyOrNegativeBalance_NeedsCredits(long balance)
+    public async Task DevThrottle_ZeroOrNegativeBalance_StillReady(long balance)
     {
+        // The Included AI revert-proof (issue #1360): a zero-balance ENTITLED member is served by the
+        // cloud, so the pre-flight must not block them. The old gate answered NeedsCredits here - the
+        // exact defect the mission fixes (the acceptance test is a zero-balance trial account
+        // completing a dictation round-trip).
         var state = await Build(TranscriptionMode.DevThrottle, balanceMicros: balance).CheckAsync();
-        Assert.Equal(HostedAiState.NeedsCredits, state);
+        Assert.Equal(HostedAiState.Ready, state);
     }
 
     [Theory]
@@ -77,47 +53,28 @@ public sealed class HostedAiReadinessTests
     }
 
     [Fact]
-    public async Task DevThrottle_UnknownBalance_DoesNotBlock_Ready()
+    public async Task DevThrottle_UnknownBalance_Ready()
     {
-        // Signed out or the cloud is unreachable -> balance null -> the pre-flight check must not block;
-        // the runtime 402 is the authoritative gate and reports the identical state.
         var state = await Build(TranscriptionMode.DevThrottle, balanceMicros: null).CheckAsync();
         Assert.Equal(HostedAiState.Ready, state);
     }
 
     [Fact]
-    public async Task DevThrottle_AddCredits_UnlocksWithoutRestart()
+    public async Task BalanceProvider_IsNeverInvoked()
     {
-        // The balance the check reads changes underneath the SAME instance (a $5 top-up). Because the
-        // balance is re-read fresh each call, the very next check flips NeedsCredits -> Ready with no
-        // restart and no new object - the epic's headline acceptance criterion.
-        long balance = 0;
-        var check = new HostedAiReadiness(
-            () => TranscriptionMode.DevThrottle,
-            _ => null,
-            _ => Task.FromResult<long?>(balance));
-
-        Assert.Equal(HostedAiState.NeedsCredits, await check.CheckAsync());
-
-        balance = 5_000_000; // user adds $5
-
-        Assert.Equal(HostedAiState.Ready, await check.CheckAsync());
-    }
-
-    [Fact]
-    public async Task DevThrottle_ReadsBalanceFreshEveryCall()
-    {
+        // The check must not even READ the balance (issue #1360): the read was the desktop's
+        // pre-dictation credit fetch, and the balance is a cost fact a normal member's product
+        // experience must not depend on. Reverting the readiness change re-invokes this delegate.
         var reads = 0;
         var check = new HostedAiReadiness(
             () => TranscriptionMode.DevThrottle,
             _ => null,
-            _ => { reads++; return Task.FromResult<long?>(5_000_000); });
+            _ => { reads++; return Task.FromResult<long?>(0); });
 
         await check.CheckAsync();
         await check.CheckAsync();
-        await check.CheckAsync();
 
-        Assert.Equal(3, reads); // no caching between calls
+        Assert.Equal(0, reads);
     }
 
     [Fact]

@@ -33,9 +33,11 @@ export function CreditsNotice(): React.ReactElement | null {
       <div className="banner banner-info banner-action">
         <span>{info.text}</span>
         <span className="credits-notice-actions">
-          {info.ctaUrl !== null && info.ctaUrl !== "" && (
+          {/* The button renders only when the Gateway sent BOTH a destination and a label - the client
+              never invents a call-to-action, and never defaults to a credits one (issue #1360). */}
+          {info.ctaUrl !== null && info.ctaUrl !== "" && info.ctaLabel !== "" && (
             <a className="banner-btn" href={info.ctaUrl} target="_blank" rel="noopener noreferrer">
-              {info.ctaLabel || "Add credits"}
+              {info.ctaLabel}
             </a>
           )}
           <button className="banner-btn credits-notice-dismiss" onClick={() => setInfo(null)}>

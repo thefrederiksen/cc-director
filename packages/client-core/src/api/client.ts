@@ -317,22 +317,23 @@ async function readFailureDetail(res: Response): Promise<GatewayFailureDetail> {
 
 // The shared "hosted AI is unavailable" body every money endpoint returns on HTTP 402 (issue #939/#941;
 // consumed by mobile in #942): the single-source message + call-to-action. `text` is the message to show;
-// `ctaUrl` deep-links to Billing.
+// `ctaUrl` deep-links to the call-to-action page when there is one.
 export interface HostedAiUnavailable {
-  state: string;      // "NeedsCredits" | "CapReached" | "NeedsKey"
+  state: string;      // "NeedsCredits" | "CapReached" | "NeedsKey" | "SubscriptionRequired" | "FairUseLimitReached" | "Unavailable"
   text: string;
   ctaLabel: string;
-  ctaAction: string;  // "OpenBilling" | "OpenSettings"
+  ctaAction: string;  // "OpenBilling" | "OpenSettings" | "OpenPricing" | "None"
   ctaUrl: string | null;
 }
 
-// A 402 from a hosted-AI call (out of credits / cap / no key). Its `message` IS the shared text, so any
-// surface that already shows `err.message` displays the correct copy by construction; `info` carries the
-// call-to-action for the app-level notice (issue #942).
+// A 402 from a hosted-AI call. Its `message` IS the shared text, so any surface that already shows
+// `err.message` displays the correct copy by construction; `info` carries the call-to-action for the
+// app-level notice (issue #942). The fallback for a body with no text is NEUTRAL (issue #1360): a 402
+// we cannot read must never claim the account is out of credits.
 export class CreditsError extends GatewayError {
   readonly info: HostedAiUnavailable;
   constructor(info: HostedAiUnavailable) {
-    super(402, info.text || info.state || "Voice needs credit.");
+    super(402, info.text || "This AI feature is not available for your account right now.");
     this.name = "CreditsError";
     this.info = info;
   }
@@ -348,16 +349,18 @@ export function onCreditsNeeded(fn: CreditsListener): () => void {
   return () => { creditsListeners.delete(fn); };
 }
 
-// Build a CreditsError from an already-parsed 402 body and notify the app-level notice. Defaults keep the
-// message correct even if a field is missing. Call from the `!res.ok` branch of any hosted-AI call when
-// `res.status === 402` (the body is already the shared shape from the Gateway).
+// Build a CreditsError from an already-parsed 402 body and notify the app-level notice. Call from the
+// `!res.ok` branch of any hosted-AI call when `res.status === 402` (the body is already the shared
+// shape from the Gateway). The defaults for missing fields are NEUTRAL (issue #1360): a 402 whose body
+// cannot be read is an unknown money-shaped refusal, and it must never claim the account is out of
+// credits or offer a top-up button - the owner ruled a normal member sees no cost anywhere.
 export function creditsErrorFrom(body: unknown): CreditsError {
   const b = (body ?? {}) as Partial<HostedAiUnavailable> & { error?: string };
   const info: HostedAiUnavailable = {
-    state: b.state ?? "NeedsCredits",
-    text: b.text ?? b.error ?? "Voice needs credit. Add credits to turn it on.",
-    ctaLabel: b.ctaLabel ?? "Add credits",
-    ctaAction: b.ctaAction ?? "OpenBilling",
+    state: b.state ?? "Unavailable",
+    text: b.text ?? b.error ?? "This AI feature is not available for your account right now.",
+    ctaLabel: b.ctaLabel ?? "",
+    ctaAction: b.ctaAction ?? "None",
     ctaUrl: b.ctaUrl ?? null,
   };
   for (const fn of creditsListeners) { try { fn(info); } catch { /* a listener must never break the throw */ } }
@@ -1843,7 +1846,9 @@ export type PermanentDictationReason = "audio-too-large" | "unsupported-format";
  *    until the user explicitly retries it; nothing was injected.
  *  - otherwise (`terminal` false, `permanent` falsey): nothing final happened; the copy is KEPT and the
  *    driver retries. `error` carries the honest "held, will keep trying" reason and `outOfCredits` flags
- *    the out-of-credits case so the driver can throttle and the app can show the Add-credits notice. */
+ *    any money-shaped 402 (credits, subscription, fair use, unknown) so the driver throttles its retry
+ *    loop - a fast retry fixes none of them. The app-level notice and the held copy both come from the
+ *    Gateway's MAPPED state (issue #1360), never from a hardcoded credits sentence. */
 export interface DictationSubmitResult {
   terminal: boolean;
   submitted: boolean;
@@ -1892,9 +1897,22 @@ export interface DictationUploadArgs {
 export const DICTATION_HELD_NO_CONNECTION_MESSAGE =
   "No connection - your recording is saved and will keep trying.";
 
-/** The held line when transcription credits ran out: kept, and it sends once credits are available. */
+/** The held line when transcription credits ran out: kept, and it sends once credits are available.
+ *  This wording is reachable ONLY from the direct-API `insufficient_credits` state (the Gateway maps
+ *  that 402 code to state "NeedsCredits") - see dictationHeld402Message. */
 export const DICTATION_HELD_CREDITS_MESSAGE =
   "Out of transcription credits - your recording is saved and will send when credits are added.";
+
+/** The held line for a 402 whose mapped state is NOT the credits one: the Gateway's own mapped copy
+ *  (subscription required, fair-use limit, or the neutral unknown-code sentence), followed by the
+ *  honest saved-on-device clause. The Gateway owns the verdict and its wording (rule 7 - the client is
+ *  dumb); this client must never replace a subscription/fair-use/unknown refusal with credits wording
+ *  the owner ruled a normal member never sees (issue #1360). */
+export function dictationHeld402Message(info: HostedAiUnavailable): string {
+  if (info.state === "NeedsCredits") return DICTATION_HELD_CREDITS_MESSAGE;
+  const text = info.text.trim().replace(/\.$/, "");
+  return `${text}. Your recording is saved on this device.`;
+}
 
 export async function uploadDictationToSession(
   args: DictationUploadArgs,
@@ -2036,10 +2054,13 @@ export async function uploadDictationToSession(
     }
 
     if (comp.status === 402) {
-      // Out of transcription credits: fire the app-level Add-credits notice, then keep the audio held so
-      // it sends once credits return. A plain fast retry will not fix it, so the driver throttles this.
-      creditsErrorFrom(await comp.json().catch(() => ({})));
-      return held(DICTATION_HELD_CREDITS_MESSAGE, true);
+      // A money-shaped refusal. The body carries the Gateway's MAPPED state and copy (issue #1360):
+      // creditsErrorFrom parses it and fires the app-level notice, and the held strip renders the SAME
+      // mapped copy - the credits wording only for the direct-API insufficient_credits state, never for
+      // a subscription/fair-use/unknown refusal. The audio stays held either way; a plain fast retry
+      // will not fix any of these, so the driver throttles this.
+      const err = creditsErrorFrom(await comp.json().catch(() => ({})));
+      return held(dictationHeld402Message(err.info), true);
     }
 
     const body = (await comp.json().catch(() => ({}))) as {

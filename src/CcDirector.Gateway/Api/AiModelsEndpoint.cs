@@ -14,10 +14,17 @@ using Microsoft.AspNetCore.Routing;
 namespace CcDirector.Gateway.Api;
 
 /// <summary>
-/// The AI model catalog + test surface for the Settings AI tab. It lets the page populate the wingman
-/// and speech model dropdowns from DevThrottle's live catalog (not a hardcoded list), test a
-/// chat model with one round-trip, and persist the chosen wingman/speech model. The browser never sees
+/// The AI model catalog + test surface for the Settings AI tab. It populates the model dropdowns, tests a
+/// chat model with one round-trip, and persists the chosen wingman/speech model. The browser never sees
 /// the credential - the Gateway resolves it from the vault and presents it to DevThrottle.
+///
+/// SINCE THE INCLUDED AI MISSION (issue #1360, design C3) the CHAT kind serves a FIXED list of
+/// DevThrottle's internal included wingman ids and never the catalog: the wingman and Car Mode are
+/// internal included features, and a catalog model there would bill credits. The speech kind still reads
+/// the live catalog (text-to-speech is included in its entirety, so every speech model is safe to offer).
+/// The wingman/Car Mode model setters refuse a non-included id with a 400 for the same reason, and so
+/// does test-chat: it sends the requested model with the deployment credential, so an arbitrary id
+/// there would bill credits just as a saved one would.
 ///
 ///   GET  /gateway/ai/models?kind=chat|speech -> { models:[ {id, description, voices[], defaultVoice} ] }
 ///   POST /gateway/ai/test-chat  { model }    -> { ok, reply, seconds } | { error }
@@ -118,6 +125,15 @@ internal static class AiModelsEndpoint
         app.MapGet("/gateway/ai/models", async (string? kind, CancellationToken ct) =>
         {
             var k = string.Equals(kind, "speech", StringComparison.OrdinalIgnoreCase) ? "speech" : "chat";
+
+            // The CHAT kind feeds the wingman (and Car Mode) model pickers, and since the Included AI
+            // mission (issue #1360, design consequence C3) those pickers offer ONLY DevThrottle's
+            // internal included ids - never the catalog. A wingman pointed at a catalog id would bill
+            // credits, which the ruling forbids for an internal feature. The list is fixed and local:
+            // no upstream call, no provider credential spent, nothing for a catalog outage to break.
+            if (k == "chat")
+                return Results.Json(new { models = IncludedChatModels() });
+
             var mode = TranscriptionModeConfig.Get();
             var ep = TranscriptionEndpointResolver.ResolveTts(mode);   // base URL + key name (same per provider)
             var key = vault.Get(ep.KeyName);
@@ -146,6 +162,16 @@ internal static class AiModelsEndpoint
                 if (body is null || string.IsNullOrWhiteSpace(body.Model))
                     return Results.BadRequest(new { error = "body { \"model\": \"<id>\" } is required" });
 
+                // The SAME non-included-id refusal the model setters apply (issue #1360). This route
+                // sends the requested model with the deployment credential, so an arbitrary model id
+                // here - a stale picker, a hand-written request - would run a catalog model on the
+                // deployment key and bill the exact credits this mission eliminates. The mint is the
+                // gate: the brain's constructor only accepts the minted type, so a raw string cannot
+                // reach the wire even if this refusal were edited away.
+                var model = body.Model.Trim();
+                var minted = IncludedModelId.TryMint(model);
+                if (minted is null) return NonIncludedModelRefusal(model, "test-chat model");
+
                 var mode = TranscriptionModeConfig.Get();
                 var ep = TranscriptionEndpointResolver.ResolveWingman(mode);
                 var key = vault.Get(ep.KeyName);
@@ -155,7 +181,7 @@ internal static class AiModelsEndpoint
 
                 // One real round-trip to the chosen model - the same path the wingman uses - so the user
                 // can prove a newly-picked model actually responds before relying on it.
-                var brain = new HostedInferenceBrain(ep.BaseUrl, key!, body.Model.Trim(), log: FileLog.Write);
+                var brain = new HostedInferenceBrain(ep.BaseUrl, key!, minted, log: FileLog.Write);
                 var ask = await brain.AskAsync("Reply with exactly the single word: pong. Output nothing else.", ctx.RequestAborted);
                 return Results.Json(new { ok = true, reply = ask.Text.Trim(), seconds = Math.Round(ask.ReplySeconds, 1) });
             }
@@ -188,6 +214,7 @@ internal static class AiModelsEndpoint
                 if (body is null || string.IsNullOrWhiteSpace(body.Model))
                     return Results.BadRequest(new { error = "body { \"model\": \"<id>\" } is required" });
                 var model = body.Model.Trim();
+                if (RejectNonIncludedModel(model, "wingman model") is { } refusal) return refusal;
                 resolver.SetWingmanModel(t.Value, WingmanModelRole.Thinking, model, DateTime.UtcNow);
                 FileLog.Write($"[AiModelsEndpoint] wingman thinking model set: {model} for tenant={t.Value.ToLogString()}");
                 return Results.Json(new { model });
@@ -205,6 +232,7 @@ internal static class AiModelsEndpoint
                 if (body is null || string.IsNullOrWhiteSpace(body.Model))
                     return Results.BadRequest(new { error = "body { \"model\": \"<id>\" } is required" });
                 var model = body.Model.Trim();
+                if (RejectNonIncludedModel(model, "wingman fast model") is { } refusal) return refusal;
                 resolver.SetWingmanModel(t.Value, WingmanModelRole.Fast, model, DateTime.UtcNow);
                 FileLog.Write($"[AiModelsEndpoint] wingman fast model set: {model} for tenant={t.Value.ToLogString()}");
                 return Results.Json(new { model });
@@ -222,6 +250,7 @@ internal static class AiModelsEndpoint
                 if (body is null || string.IsNullOrWhiteSpace(body.Model))
                     return Results.BadRequest(new { error = "body { \"model\": \"<id>\" } is required" });
                 var model = body.Model.Trim();
+                if (RejectNonIncludedModel(model, "Car Mode model") is { } refusal) return refusal;
                 resolver.SetCarModeModel(t.Value, model, DateTime.UtcNow);
                 FileLog.Write($"[AiModelsEndpoint] car mode model set: {model} for tenant={t.Value.ToLogString()}");
                 return Results.Json(new { model });
@@ -268,6 +297,40 @@ internal static class AiModelsEndpoint
 
     private static string ProviderKeyMissingMessage(TranscriptionMode mode) =>
         "not signed in to DevThrottle - sign in on the Account tab";
+
+    /// <summary>
+    /// The fixed chat-kind picker list (issue #1360, design C3): DevThrottle's internal included
+    /// wingman ids and nothing else. Catalog models are deliberately absent - they bill credits.
+    /// </summary>
+    private static List<ModelDto> IncludedChatModels() => new()
+    {
+        new ModelDto(TranscriptionEndpointResolver.DevThrottleWingmanModel,
+            "DevThrottle wingman - the thinking tier, included with your account", new List<string>(), null),
+        new ModelDto(TranscriptionEndpointResolver.DevThrottleWingmanFastModel,
+            "DevThrottle wingman fast - the low-latency tier, included with your account", new List<string>(), null),
+    };
+
+    /// <summary>
+    /// The 400 a model setter answers when the value is not a DevThrottle internal included id
+    /// (issue #1360). The wingman and Car Mode are internal features: a catalog id here would bill
+    /// credits, so the write is refused loudly instead of being stored and silently ignored at
+    /// resolution time. Validation is the <see cref="IncludedModelId"/> mint - the same single gate
+    /// every wire path is typed against - never a second local check that could drift from it.
+    /// </summary>
+    private static IResult? RejectNonIncludedModel(string model, string settingName)
+        => IncludedModelId.TryMint(model) is null ? NonIncludedModelRefusal(model, settingName) : null;
+
+    /// <summary>The refusal payload for a non-included model id, shared by the setters and test-chat.</summary>
+    private static IResult NonIncludedModelRefusal(string model, string settingName)
+    {
+        FileLog.Write($"[AiModelsEndpoint] {settingName} REFUSED non-included model '{model}'");
+        return Results.BadRequest(new
+        {
+            error = $"'{model}' is not a DevThrottle included model id. The {settingName} must be one of the " +
+                    $"devthrottle/ ids (for example {TranscriptionEndpointResolver.DevThrottleWingmanModel} or " +
+                    $"{TranscriptionEndpointResolver.DevThrottleWingmanFastModel}).",
+        });
+    }
 
     /// <summary>
     /// List DevThrottle models for a kind. DevThrottle uses GET /models?type=chat|speech; speech

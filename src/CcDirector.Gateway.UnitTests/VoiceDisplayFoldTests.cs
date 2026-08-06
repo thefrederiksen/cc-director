@@ -75,13 +75,30 @@ public sealed class VoiceDisplayFoldTests
     [InlineData(HostedAiState.NeedsCredits)]
     [InlineData(HostedAiState.CapReached)]
     [InlineData(HostedAiState.NeedsKey)]
+    [InlineData(HostedAiState.SubscriptionRequired)]
+    [InlineData(HostedAiState.FairUseLimitReached)]
+    [InlineData(HostedAiState.Unavailable)]
     public void Blocked_CarriesTheSharedCallToAction_NoGenerateButton(HostedAiState state)
     {
         var d = VoiceDisplayFold.Fold(voiceMode: true, agentWorking: false, hasAudio: false, generating: false, unavailable: state, nothingToNarrate: false);
         Assert.Equal("blocked", d.Kind);
-        Assert.NotNull(d.Reason);                 // the add-credit / raise-cap / finish-setup CTA rides here
+        Assert.NotNull(d.Reason);                 // the shared CTA (where one exists) rides here
         Assert.Equal(HostedAiMessages.For(state).Text, d.Message);
         Assert.False(d.CanGenerate);              // a generate button would hit the same wall
+    }
+
+    [Theory]
+    [InlineData(HostedAiState.SubscriptionRequired, "Not included with this account")]
+    [InlineData(HostedAiState.FairUseLimitReached, "Monthly fair-use limit reached")]
+    [InlineData(HostedAiState.Unavailable, "Voice unavailable")]
+    public void IncludedAiRefusals_HaveNoCostWordsInTheirLabelsOrCopy(HostedAiState state, string expectedLabel)
+    {
+        // Issue #1360: the two Included AI refusals and the neutral unknown state must never put credit
+        // or money words on the voice screen.
+        var d = VoiceDisplayFold.Fold(voiceMode: true, agentWorking: false, hasAudio: false, generating: false, unavailable: state, nothingToNarrate: false);
+        Assert.Equal(expectedLabel, d.Label);
+        Assert.DoesNotContain("credit", d.Label, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("credit", d.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

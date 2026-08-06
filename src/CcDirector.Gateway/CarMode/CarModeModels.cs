@@ -70,10 +70,8 @@ public sealed record CarModeSessionInfo
     public int IdleMinutes { get; init; }
 }
 
-/// <summary>The account credit balance for the get_credits read tool, from GET /account/credits. SignedIn
-/// false means the Gateway holds no account credential - there IS no balance, and the brain says so rather
-/// than inventing a zero (the endpoint never fabricates a balance and neither does the tool).</summary>
-public sealed record CarModeCredits(bool SignedIn, long? BalanceMicros, long? LastDebitMicros);
+// The CarModeCredits and CarModeSpendSummary records were removed with the get_credits and get_spend
+// tools (issue #1360, Included AI ruling Q1): no in-product surface reads a balance or a spend total.
 
 /// <summary>One machine running Directors, for the list_machines read tool: the machine name the owner says
 /// out loud, how recently the Gateway heard from it, and how many fleet sessions it is running now.</summary>
@@ -104,15 +102,10 @@ public sealed record CarModeScheduleInfo
     public string? LastStatus { get; init; }
 }
 
-/// <summary>The hosted AI spend total over a trailing window, for the get_spend read tool, from
-/// GET /gateway/governance/hosted-ai-spend/summary.</summary>
-public sealed record CarModeSpendSummary(long TotalMicros, int DebitCount, DateTime SinceUtc, DateTime UntilUtc);
-
 /// <summary>
-/// A fleet tool that is KNOWINGLY unavailable on this deployment (issue #2129: per-tenant credits and
-/// spend are not served on the hosted Gateway yet). Distinct from a genuine failure on purpose: the brain
-/// converts this into a tool-error result the model RELAYS in plain words ("credits are not available
-/// here yet"), instead of failing the whole turn - the owner hears the truth, not an error page.
+/// A fleet tool that is KNOWINGLY unavailable on this deployment (issue #2129). Distinct from a genuine
+/// failure on purpose: the brain converts this into a tool-error result the model RELAYS in plain words,
+/// instead of failing the whole turn - the owner hears the truth, not an error page.
 /// </summary>
 public sealed class CarModeToolUnavailableException : Exception
 {

@@ -4,31 +4,30 @@ using CcDirector.Core.Utilities;
 namespace CcDirector.Core.HostedAi;
 
 /// <summary>
-/// The shared pre-flight "can this user use hosted AI right now?" check (issue #938, epic #937). Hung
-/// on the existing centralized routing path (<see cref="TranscriptionMode"/> +
-/// <see cref="TranscriptionEndpointResolver"/>), it returns ONE typed <see cref="HostedAiState"/> that
-/// every voice/Wingman/TTS surface consults before it lets the user record or fires a hosted call - so
-/// a feature with no way to pay is marked unavailable up front with the consistent message
-/// (<see cref="HostedAiMessages.For"/>), instead of failing badly after the user has already spoken.
+/// The shared pre-flight "can this user use hosted AI right now?" check (issue #938, epic #937).
 ///
-/// Pure of I/O plumbing: the mode and account balance read are injected as delegates, so this class is
-/// fully unit-testable and the Gateway owns the wiring
-/// (<c>GatewayHostedAi.CreateReadiness</c>). The balance delegate is invoked FRESH on every
-/// <see cref="CheckAsync"/> (this class holds no cache), so adding $5 unlocks the feature on the next
-/// check with no restart - the acceptance criterion the whole gate exists for.
+/// SINCE THE INCLUDED AI MISSION (issue #1360) this check ALWAYS answers
+/// <see cref="HostedAiState.Ready"/> in DevThrottle mode and performs NO balance read. It used to
+/// block recording when the account balance was at or below zero - but the internal AI features
+/// (transcription, voice, wingman, text-to-speech) are now INCLUDED with an entitled account and
+/// never billed to credits, so a zero balance says nothing about whether the server will serve the
+/// call. A client-side balance gate would have blocked exactly the members the mission exists to
+/// serve (the acceptance test is a ZERO-balance trial account completing a dictation round-trip).
+/// The runtime 402, mapped by <see cref="HostedAiErrorMapper"/>, is the ONLY gate - the Architect's
+/// ruling on the phase-2 question Q2, recorded in the mission record's surfaces.md.
+///
+/// The class and its call sites are kept (rather than deleted) so every surface still funnels through
+/// one pre-flight seam - the next condition that genuinely CAN be known up front has a home.
 /// </summary>
 public sealed class HostedAiReadiness
 {
     private readonly Func<TranscriptionMode> _modeProvider;
-    private readonly Func<CancellationToken, Task<long?>> _balanceMicrosProvider;
 
     /// <param name="modeProvider">Supplies the current transcription/provider mode, read fresh per check
     /// so a mode change takes effect with no restart.</param>
     /// <param name="keyProvider">Legacy constructor parameter retained for compatibility; ignored.</param>
-    /// <param name="balanceMicrosProvider">Reads the signed-in account's balance in micro-dollars, fresh
-    /// per check. Returns null when the balance is UNKNOWN (signed out or the cloud is unreachable): the
-    /// pre-flight check must not block on an unknown balance - the authoritative gate is the runtime 402
-    /// (<see cref="HostedAiErrorMapper"/>), which reports the identical state.</param>
+    /// <param name="balanceMicrosProvider">Legacy constructor parameter retained for compatibility;
+    /// NEVER invoked (issue #1360 retired the client-side balance gate - see the class summary).</param>
     public HostedAiReadiness(
         Func<TranscriptionMode> modeProvider,
         Func<string, string?> keyProvider,
@@ -36,25 +35,17 @@ public sealed class HostedAiReadiness
     {
         _modeProvider = modeProvider ?? throw new ArgumentNullException(nameof(modeProvider));
         _ = keyProvider ?? throw new ArgumentNullException(nameof(keyProvider));
-        _balanceMicrosProvider = balanceMicrosProvider ?? throw new ArgumentNullException(nameof(balanceMicrosProvider));
+        _ = balanceMicrosProvider ?? throw new ArgumentNullException(nameof(balanceMicrosProvider));
     }
 
     /// <summary>
-    /// Decide whether hosted AI can run for the configured mode right now:
-    /// <list type="bullet">
-    /// <item>DevThrottle hosted -> <see cref="HostedAiState.NeedsCredits"/> when the balance is a known
-    /// value at or below zero, else <see cref="HostedAiState.Ready"/> (including when the balance is
-    /// unknown - see <c>balanceMicrosProvider</c>). The monthly-cap state is generally only known at
-    /// runtime from the 402, so it is not decided here.</item>
-    /// </list>
+    /// Always <see cref="HostedAiState.Ready"/> in DevThrottle mode: the included features are gated by
+    /// the server's runtime 402, never by a client-side balance read (issue #1360 - see the class summary).
     /// </summary>
-    public async Task<HostedAiState> CheckAsync(CancellationToken ct = default)
+    public Task<HostedAiState> CheckAsync(CancellationToken ct = default)
     {
         _ = _modeProvider();
-
-        var balance = await _balanceMicrosProvider(ct);
-        var result = balance is long b && b <= 0 ? HostedAiState.NeedsCredits : HostedAiState.Ready;
-        FileLog.Write($"[HostedAiReadiness] CheckAsync: mode=devthrottle, balanceMicros={(balance is null ? "unknown" : balance.ToString())} -> {result}");
-        return result;
+        FileLog.Write("[HostedAiReadiness] CheckAsync: mode=devthrottle -> Ready (no pre-flight balance gate; the runtime 402 rules)");
+        return Task.FromResult(HostedAiState.Ready);
     }
 }

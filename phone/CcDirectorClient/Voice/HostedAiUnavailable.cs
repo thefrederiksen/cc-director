@@ -30,16 +30,18 @@ public sealed class HostedAiUnavailableException : Exception
 
     /// <summary>
     /// When <paramref name="status"/> is 402, parse the shared body into a typed exception; otherwise
-    /// null (the caller keeps its existing error). Defaults keep the message sensible if a field is
-    /// missing or the body is not the shared shape.
+    /// null (the caller keeps its existing error). The defaults for a body that is missing fields are
+    /// NEUTRAL (issue #1360): a 402 whose body cannot be read is an unknown money-shaped refusal, and
+    /// it must never claim the account is out of credits - the owner ruled a normal member sees no
+    /// cost, no credits, and no top-up prompt anywhere.
     /// </summary>
     public static HostedAiUnavailableException? TryFrom(int status, string body)
     {
         if (status != 402) return null;
 
-        var state = "NeedsCredits";
-        var text = "Voice needs credit. Add credits to turn it on.";
-        var ctaLabel = "Add credits";
+        var state = "Unavailable";
+        var text = "This AI feature is not available for your account right now.";
+        var ctaLabel = "";
         string? ctaUrl = null;
         try
         {
@@ -58,7 +60,7 @@ public sealed class HostedAiUnavailableException : Exception
         }
         catch (JsonException)
         {
-            // A non-JSON 402 body still means out of credits; keep the sensible defaults.
+            // A non-JSON 402 body is an unknown money-shaped refusal; keep the neutral defaults.
         }
         return new HostedAiUnavailableException(state, text, ctaLabel, ctaUrl);
     }

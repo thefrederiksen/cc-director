@@ -60,6 +60,33 @@ public static class HostedAiMessages
             HostedAiCtaAction.None,
             null),
 
+        // No live entitlement (issue #1360). Points at the PRICING page, never a checkout (design C5:
+        // production has none to promise), and NEVER mentions credits, balances, or a top-up - the
+        // owner ruled a normal member sees no cost anywhere. No numbers.
+        HostedAiState.SubscriptionRequired => new HostedAiMessage(
+            "Included AI features come with DevThrottle Pro. This account's trial or plan isn't active - see the plans at devthrottle.com/pricing.",
+            "View plans",
+            HostedAiCtaAction.OpenPricing,
+            HostedAiUrls.Pricing),
+
+        // The monthly fair-use allowance is used up (issue #1360). NO numbers, NO cost, NO
+        // call-to-action: the cap is deliberately invisible ("They should never know this" - the
+        // owner) and nothing the member can click lifts a month-long condition.
+        HostedAiState.FairUseLimitReached => new HostedAiMessage(
+            "This month's fair-use limit for included AI features has been reached. It resets at the start of next month.",
+            "",
+            HostedAiCtaAction.None,
+            null),
+
+        // A 402 whose machine code this build does not recognize (issue #1360). Deliberately neutral:
+        // an unknown code must never claim the account is out of credits, so this names no money and
+        // offers no call-to-action.
+        HostedAiState.Unavailable => new HostedAiMessage(
+            "This AI feature is not available for your account right now.",
+            "",
+            HostedAiCtaAction.None,
+            null),
+
         _ => throw new ArgumentOutOfRangeException(nameof(state), state, "Unknown hosted-AI state"),
     };
 }

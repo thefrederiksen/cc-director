@@ -55,13 +55,13 @@ public sealed class AiProviderEndpointTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Get_ai_provider_defaults_to_devthrottle_with_glm()
+    public async Task Get_ai_provider_defaults_to_devthrottle_with_included_wingman_ids()
     {
         var obj = await _http.GetFromJsonAsync<JsonObject>("gateway/ai-provider");
         Assert.NotNull(obj);
         Assert.Equal("devthrottle", (string?)obj!["provider"]);
-        Assert.Equal("zai-org/GLM-5.2", (string?)obj["wingmanModel"]);
-        Assert.Equal("Qwen/Qwen2.5-72B-Instruct", (string?)obj["wingmanFastModel"]);
+        Assert.Equal("devthrottle/wingman", (string?)obj["wingmanModel"]);
+        Assert.Equal("devthrottle/wingman-fast", (string?)obj["wingmanFastModel"]);
         Assert.Equal("gpt-4o-transcribe", (string?)obj["transcriptionModel"]);
         Assert.Equal("af_bella", (string?)obj["ttsVoice"]);   // DevThrottle (Kokoro) default voice
         var voices = obj["voices"] as JsonArray;
@@ -97,7 +97,7 @@ public sealed class AiProviderEndpointTests : IAsyncLifetime
             _gateway.TenantSettingsResolver.WingmanModel(TenantId.Local, mode, WingmanModelRole.Thinking));
         Assert.Equal(WingmanModelConfig.Resolve(mode, WingmanModelRole.Fast),
             _gateway.TenantSettingsResolver.WingmanModel(TenantId.Local, mode, WingmanModelRole.Fast));
-        Assert.NotEqual("sentinel-think", _gateway.TenantSettingsResolver.WingmanModel(TenantId.Local, mode, WingmanModelRole.Thinking));
+        Assert.NotEqual("sentinel-think", _gateway.TenantSettingsResolver.WingmanModel(TenantId.Local, mode, WingmanModelRole.Thinking).Value);
     }
 
     [Fact]

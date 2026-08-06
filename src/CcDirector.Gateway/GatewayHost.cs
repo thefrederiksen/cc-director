@@ -1408,7 +1408,7 @@ public sealed class GatewayHost : IAsyncDisposable
                 var model = _tenantSettingsResolver.WingmanModel(tenant, mode, Core.Configuration.WingmanModelRole.Thinking);
                 CcDirector.AgentBrain.IAgentBrain brain = new Wingman.HostedInferenceBrain(
                     ep.BaseUrl, key, model, log: FileLog.Write, callTimeout: TimeSpan.FromMinutes(3));
-                return Task.FromResult((brain, model));
+                return Task.FromResult((brain, model.Value));
             });
         // The daily-email block composer. It folds the tenant's "Suggestions in my daily email" choice,
         // whether there is anything pending, and the once-per-batch cadence into ONE verdict, so whatever
@@ -2064,7 +2064,7 @@ public sealed class GatewayHost : IAsyncDisposable
     /// honored on the next turn without a Gateway restart.
     /// </summary>
     internal string ResolveWingmanModel(TenantId tenant, Core.Configuration.WingmanModelRole role)
-        => _tenantSettingsResolver.WingmanModel(tenant, Core.Configuration.TranscriptionModeConfig.Get(), role);
+        => _tenantSettingsResolver.WingmanModel(tenant, Core.Configuration.TranscriptionModeConfig.Get(), role).Value;
 
     private Task<CcDirector.AgentBrain.IAgentBrain> WingmanBrainAsync(TenantId tenant, Core.Configuration.WingmanModelRole role, CancellationToken ct)
     {

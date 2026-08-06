@@ -5,15 +5,16 @@ namespace CcDirector.Core.Configuration;
 
 /// <summary>
 /// The chat model the hosted wingman runs on through DevThrottle. The wingman is a stateless
-/// provider-compatible chat call, so the model must be one DevThrottle serves. The user can pick any
-/// model from the live catalog (the AI tab's "Wingman model" dropdown); the choice is stored in the
-/// existing config.json "brain_model" key.
+/// provider-compatible chat call, so the model must be one DevThrottle serves. The choice is stored in
+/// the existing config.json "brain_model" key.
 ///
-/// Resolution rule (why this exists rather than reading brain_model directly): brain_model historically
-/// defaulted to a Claude tier alias ("opus"/"sonnet"/"haiku") for the old warm claude.exe brain, which
-/// the hosted proxy does NOT serve. So a stale or unset brain_model must fall forward to the provider's
-/// default hosted model (glm-5.2 / gpt-5.5), never a Claude alias - otherwise the wingman would call the
-/// proxy with a model it cannot run. A real hosted model id the user saved is honored as-is.
+/// Resolution rule (issue #1360, Included AI): the wingman is an INCLUDED service - it runs on
+/// DevThrottle's internal model ids (<c>devthrottle/wingman</c>, <c>devthrottle/wingman-fast</c>),
+/// which the hosted proxy meters and never bills to credits. A saved model that is NOT one of the
+/// internal ids - a catalog id picked in an older release, or the legacy Claude tier aliases
+/// ("opus"/"sonnet"/"haiku") from the old warm claude.exe brain - would bill credits (or not run at
+/// all), so it is treated as "not chosen" and resolution falls forward to the included default.
+/// Only a DevThrottle internal id is honored as saved.
 /// </summary>
 public static class WingmanModelConfig
 {
@@ -23,28 +24,25 @@ public static class WingmanModelConfig
     /// <summary>The config.json key the fast wingman model is stored under.</summary>
     public const string FastConfigKey = "brain_model_fast";
 
-    /// <summary>Claude tier aliases that predate the hosted wingman and cannot run on the proxy; treated
-    /// as "not chosen" so they fall forward to the provider default.</summary>
-    private static readonly HashSet<string> ClaudeAliases =
-        new(StringComparer.OrdinalIgnoreCase) { "opus", "sonnet", "haiku" };
-
     /// <summary>
-    /// The hosted wingman model for <paramref name="mode"/>: the saved brain_model when it is a real
-    /// hosted model id, else the provider default (<see cref="TranscriptionEndpointResolver.ResolveWingman"/>).
+    /// The hosted wingman model for <paramref name="mode"/>: the saved brain_model when it is a
+    /// DevThrottle internal included id, else the included default (<see cref="IncludedModelId.Wingman"/>,
+    /// the same id <see cref="TranscriptionEndpointResolver.ResolveWingman"/> names). Returns the
+    /// PROVEN type, so what this resolves can be handed straight to the deployment credential.
     /// </summary>
-    public static string Resolve(TranscriptionMode mode) =>
-        ResolveKey(ConfigKey, () => TranscriptionEndpointResolver.ResolveWingman(mode).Model);
+    public static IncludedModelId Resolve(TranscriptionMode mode) =>
+        ResolveKey(ConfigKey, IncludedModelId.Wingman);
 
     /// <summary>
     /// The hosted fast wingman model for <paramref name="mode"/>: the saved brain_model_fast when it
-    /// is a real hosted model id, else the provider default
-    /// (<see cref="TranscriptionEndpointResolver.ResolveWingmanFast"/>).
+    /// is a DevThrottle internal included id, else the included default
+    /// (<see cref="IncludedModelId.WingmanFast"/>).
     /// </summary>
-    public static string ResolveFast(TranscriptionMode mode) =>
-        ResolveKey(FastConfigKey, () => TranscriptionEndpointResolver.ResolveWingmanFast(mode).Model);
+    public static IncludedModelId ResolveFast(TranscriptionMode mode) =>
+        ResolveKey(FastConfigKey, IncludedModelId.WingmanFast);
 
     /// <summary>Resolve the model for the requested wingman role.</summary>
-    public static string Resolve(TranscriptionMode mode, WingmanModelRole role) => role switch
+    public static IncludedModelId Resolve(TranscriptionMode mode, WingmanModelRole role) => role switch
     {
         WingmanModelRole.Thinking => Resolve(mode),
         WingmanModelRole.Fast => ResolveFast(mode),
@@ -63,16 +61,17 @@ public static class WingmanModelConfig
         CcDirectorConfigService.MergePatch(new JsonObject { [FastConfigKey] = model.Trim() });
     }
 
-    private static string ResolveKey(string configKey, Func<string> providerDefault)
+    private static IncludedModelId ResolveKey(string configKey, IncludedModelId includedDefault)
     {
         var node = CcDirectorConfigService.ReadRaw()[configKey];
         if (node is JsonValue v && v.GetValueKind() == JsonValueKind.String)
         {
-            var model = v.GetValue<string>().Trim();
-            if (model.Length > 0 && !ClaudeAliases.Contains(model))
-                return model;
+            // Only a DevThrottle internal included id is honored (issue #1360): anything else - a
+            // catalog id, a legacy Claude alias, an old default - would bill credits or fail on the
+            // proxy, so the mint falls forward to the included default.
+            return IncludedModelId.MintOrFallForward(v.GetValue<string>(), includedDefault);
         }
-        return providerDefault();
+        return includedDefault;
     }
 }
 

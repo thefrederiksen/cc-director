@@ -31,6 +31,7 @@ public static class DesktopHostedAiCta
         var url = action switch
         {
             HostedAiCtaAction.OpenBilling => HostedAiUrls.Billing,
+            HostedAiCtaAction.OpenPricing => HostedAiUrls.Pricing,
             HostedAiCtaAction.OpenSettings => await ResolveCockpitUrlAsync(ct).ConfigureAwait(false),
             _ => null,
         };

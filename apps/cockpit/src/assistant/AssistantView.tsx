@@ -105,7 +105,7 @@ export function AssistantView() {
     <div className="asst-page">
       <PageHeader
         title="Assistant"
-        subtitle="Ask about your whole fleet - sessions, machines, credits, schedules. Not tied to any session."
+        subtitle="Ask about your whole fleet - sessions, machines, schedules. Not tied to any session."
         actions={entries.length > 0 ? <ModeToggle mode={mode} setMode={setMode} /> : undefined}
       />
 
@@ -127,7 +127,6 @@ export function AssistantView() {
             <ul>
               <li>"How many sessions do I have open, and is anything stuck?"</li>
               <li>"Which sessions have been open too long?"</li>
-              <li>"How are we doing on credits?"</li>
               <li>"Which machines are online?"</li>
               <li>"What runs automatically tonight?"</li>
             </ul>

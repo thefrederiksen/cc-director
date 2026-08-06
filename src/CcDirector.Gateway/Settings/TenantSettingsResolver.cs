@@ -36,8 +36,15 @@ public sealed class TenantSettingsResolver
 
     // ---- reads: tenant override, else operator global default -------------------------------------------
 
-    /// <summary>The tenant's wingman model for a role, or the operator global default when unset.</summary>
-    public string WingmanModel(TenantId tenant, TranscriptionMode mode, WingmanModelRole role)
+    /// <summary>
+    /// The tenant's wingman model for a role, or the operator global default when unset. Only a
+    /// DevThrottle internal included id is honored from the override (issue #1360, Included AI): a
+    /// tenant override saved as a catalog id in an older release would bill credits on an internal
+    /// feature, so the mint falls forward to the included default exactly as the config.json path
+    /// does. Returns the PROVEN <see cref="IncludedModelId"/>, so what this resolves can be handed
+    /// straight to the deployment credential.
+    /// </summary>
+    public IncludedModelId WingmanModel(TenantId tenant, TranscriptionMode mode, WingmanModelRole role)
     {
         var key = role switch
         {
@@ -45,7 +52,8 @@ public sealed class TenantSettingsResolver
             WingmanModelRole.Fast => TenantSettingKeys.WingmanFastModel,
             _ => throw new ArgumentOutOfRangeException(nameof(role), role, "Unknown wingman model role"),
         };
-        return NonEmptyOverride(tenant, key) ?? WingmanModelConfig.Resolve(mode, role);
+        return IncludedModelId.MintOrFallForward(
+            NonEmptyOverride(tenant, key), WingmanModelConfig.Resolve(mode, role));
     }
 
     /// <summary>
@@ -156,9 +164,15 @@ public sealed class TenantSettingsResolver
     public string TtsModel(TenantId tenant, TranscriptionMode mode)
         => NonEmptyOverride(tenant, TenantSettingKeys.TtsModel) ?? TtsModelConfig.Resolve(mode);
 
-    /// <summary>The tenant's Car Mode model, or the operator global default when unset.</summary>
-    public string CarModeModel(TenantId tenant)
-        => NonEmptyOverride(tenant, TenantSettingKeys.CarModeModel) ?? CarModeModelConfig.Resolve();
+    /// <summary>
+    /// The tenant's Car Mode model, or the operator global default when unset. Car Mode is an internal
+    /// feature, so the same included-id rule as <see cref="WingmanModel"/> applies (issue #1360): a
+    /// catalog-id override falls forward to the included default instead of billing credits. Returns
+    /// the PROVEN <see cref="IncludedModelId"/>.
+    /// </summary>
+    public IncludedModelId CarModeModel(TenantId tenant)
+        => IncludedModelId.MintOrFallForward(
+            NonEmptyOverride(tenant, TenantSettingKeys.CarModeModel), CarModeModelConfig.Resolve());
 
     /// <summary>The tenant's Car Mode end phrase, or the operator global default when unset.</summary>
     public string CarModeEndPhrase(TenantId tenant)

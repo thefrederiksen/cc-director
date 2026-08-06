@@ -47,15 +47,18 @@ public sealed class HostedCarModeChat : ICarModeChat
 {
     private static readonly HttpClient SharedHttp = new() { Timeout = TimeSpan.FromMinutes(2) };
 
-    private readonly Func<TenantId, (string BaseUrl, string Model, string Key)> _resolve;
+    private readonly Func<TenantId, (string BaseUrl, IncludedModelId Model, string Key)> _resolve;
     private readonly HttpClient _http;
     private readonly Action<string> _log;
 
     /// <param name="resolve">Resolves the base URL, model, and credential for the current settings, read
-    ///  fresh each call.</param>
+    ///  fresh each call. The model is the PROVEN included type (issue #1360): this transport presents
+    ///  the DevThrottle deployment credential, so a raw string cannot be accepted here - the phase-2
+    ///  inspection bypassed the earlier resolver-internal check by supplying a raw tuple directly to
+    ///  this constructor, and the type is what makes that construction inexpressible.</param>
     /// <param name="http">HTTP client (tests inject a stub handler); a shared 2-minute client when null.</param>
     /// <param name="log">Log sink; <see cref="FileLog.Write"/> when null.</param>
-    public HostedCarModeChat(Func<TenantId, (string BaseUrl, string Model, string Key)> resolve, HttpClient? http = null, Action<string>? log = null)
+    public HostedCarModeChat(Func<TenantId, (string BaseUrl, IncludedModelId Model, string Key)> resolve, HttpClient? http = null, Action<string>? log = null)
     {
         _resolve = resolve ?? throw new ArgumentNullException(nameof(resolve));
         _http = http ?? SharedHttp;
@@ -76,7 +79,7 @@ public sealed class HostedCarModeChat : ICarModeChat
         // call every turn is what makes a fast model choose tools RELIABLY instead of hallucinating an
         // action it never took. Conversational turns still work because the tool catalog carries an
         // explicit speak_answer tool the model calls to say anything - so "required" never traps it.
-        var body = $"{{\"model\":{JsonSerializer.Serialize(model)},\"messages\":{messagesJson},\"tools\":{toolsJson},\"tool_choice\":\"required\",\"stream\":false}}";
+        var body = $"{{\"model\":{JsonSerializer.Serialize(model.Value)},\"messages\":{messagesJson},\"tools\":{toolsJson},\"tool_choice\":\"required\",\"stream\":false}}";
 
         var url = baseUrl.TrimEnd('/') + "/chat/completions";
         using var req = new HttpRequestMessage(HttpMethod.Post, url);
@@ -142,7 +145,7 @@ public sealed class HostedCarModeChat : ICarModeChat
     /// <see cref="CompleteAsync"/> and the brain's tool catalog), which is what makes a fast model choose
     /// tools reliably.
     /// </summary>
-    public static Func<TenantId, (string BaseUrl, string Model, string Key)> DefaultResolver(
+    public static Func<TenantId, (string BaseUrl, IncludedModelId Model, string Key)> DefaultResolver(
         Func<string, string?> vaultGet,
         TenantSettingsResolver tenantSettings)
     {
@@ -154,6 +157,9 @@ public sealed class HostedCarModeChat : ICarModeChat
             // Same base URL + vault key as the wingman endpoint; only the model differs for Car Mode.
             var ep = TranscriptionEndpointResolver.ResolveWingman(mode);
             var key = vaultGet(ep.KeyName) ?? "";
+            // CarModeModel returns the PROVEN included type (issue #1360): every resolution leg -
+            // tenant override, saved setting, environment override - falls forward on a non-included
+            // id inside the IncludedModelId mint, so no runtime check is needed or possible here.
             return (ep.BaseUrl, tenantSettings.CarModeModel(tenant), key);
         };
     }

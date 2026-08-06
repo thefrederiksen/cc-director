@@ -201,28 +201,9 @@ public sealed class LoopbackCarModeFleet : ICarModeFleet
         _log($"[CarModeFleet] snoozed session {sessionId}");
     }
 
-    public async Task<CarModeCredits> GetCreditsAsync(CancellationToken ct)
-    {
-        // Issue #2129: /account/credits reads the MACHINE's one stored account credential, which has no
-        // per-tenant meaning on the hosted Gateway (absent by design there; were it present, every tenant
-        // would be shown the same account's balance). Refuse with a relayable fact instead of either lie.
-        if (GatewayHostedMode.IsHosted)
-            throw new CarModeToolUnavailableException(
-                "The credit balance is not available per account on the hosted Gateway yet. Sessions, machines, and schedules all still work.");
-        // The SAME token-free proxy the Settings account section reads (GET /account/credits). A signed-out
-        // Gateway answers signedIn=false explicitly; a cloud failure is a non-success status and throws loud.
-        var root = await GetJsonObjectAsync("/account/credits", ct);
-        var signedIn = root.TryGetProperty("signedIn", out var si) && si.ValueKind == JsonValueKind.True;
-        var balance = GetInt64OrNull(root, "balanceMicros");
-        var lastDebit = GetInt64OrNull(root, "lastDebitMicros");
-        // Codex review finding 6: a signed-in response with no balance is a MALFORMED payload, and turning
-        // it into a zero-dollar answer is exactly the plausible fabricated number the no-fallback rule
-        // exists to prevent. Fail loud; the turn reports a specific contract failure instead.
-        if (signedIn && balance is null)
-            throw new InvalidOperationException("The /account/credits response said signedIn but carried no balanceMicros - malformed payload.");
-        _log($"[CarModeFleet] credits: signedIn={signedIn}");
-        return new CarModeCredits(signedIn, balance, lastDebit);
-    }
+    // GetCreditsAsync was removed by the Included AI mission (issue #1360, ruling Q1): no in-product
+    // surface reads the credit balance anymore. The Gateway's GET /account/credits wire endpoint
+    // itself stays alive for old-client compatibility.
 
     public async Task<IReadOnlyList<CarModeMachineInfo>> ListMachinesAsync(CancellationToken ct)
     {
@@ -295,32 +276,9 @@ public sealed class LoopbackCarModeFleet : ICarModeFleet
         return schedules;
     }
 
-    public async Task<CarModeSpendSummary> GetSpendAsync(int days, CancellationToken ct)
-    {
-        // Issue #2129: the governance spend store is process-wide, so on the hosted Gateway its total would
-        // AGGREGATE every tenant's spending - an aggregate no single tenant may see (partition when
-        // attributable, deny when aggregate). Refuse with a relayable fact until a per-tenant read exists.
-        if (GatewayHostedMode.IsHosted)
-            throw new CarModeToolUnavailableException(
-                "Spending totals are not available per account on the hosted Gateway yet. Sessions, machines, and schedules all still work.");
-        if (days <= 0) throw new ArgumentOutOfRangeException(nameof(days), "The spend window must be at least one day.");
-        var until = DateTime.UtcNow;
-        var since = until.AddDays(-days);
-        var root = await GetJsonObjectAsync(
-            $"/gateway/governance/hosted-ai-spend/summary?since={Uri.EscapeDataString(since.ToString("o"))}&until={Uri.EscapeDataString(until.ToString("o"))}", ct);
-        // A summary with no total is a malformed response, not a zero - zero dollars is exactly the kind of
-        // plausible fabricated number that ships unnoticed, so it fails loud instead.
-        var total = GetInt64OrNull(root, "totalMicros")
-            ?? throw new InvalidOperationException("The hosted-AI spend summary came back without a totalMicros field.");
-        var summary = new CarModeSpendSummary(
-            total,
-            (int)(GetInt64OrNull(root, "debitCount")
-                ?? throw new InvalidOperationException("The hosted-AI spend summary came back without a debitCount field.")),
-            GetDateTimeOrNull(root, "sinceUtc") ?? since,
-            GetDateTimeOrNull(root, "untilUtc") ?? until);
-        _log($"[CarModeFleet] spend over {days}d -> {summary.DebitCount} debits");
-        return summary;
-    }
+    // GetSpendAsync was removed by the Included AI mission (issue #1360, ruling Q1): no in-product
+    // surface reads a spend total anymore. The governance spend store and sweep keep RECORDING -
+    // recording is not showing - and the admin surfaces on the website keep everything.
 
     /// <summary>Read THIS Gateway's aggregated roster, reusing a read taken within the last
     ///  <see cref="RosterCacheTtl"/> so one turn's several roster reads (and back-to-back turns) collapse to

@@ -139,7 +139,6 @@ export function Assistant() {
             <ul>
               <li>"How many sessions do I have open?"</li>
               <li>"Which have been open too long?"</li>
-              <li>"How are we doing on credits?"</li>
               <li>"Which machines are online?"</li>
             </ul>
             <p>It can also message, snooze, start, or close sessions - closing always asks first.</p>

@@ -5,11 +5,11 @@ using Xunit;
 namespace CcDirector.Core.Tests.HostedAi;
 
 /// <summary>
-/// Issue #940 (epic #937): the Director/desktop readiness helper. It gathers the mode locally and the
-/// balance over HTTP, then defers to the shared
-/// <see cref="HostedAiReadiness"/> - so the desktop resolves the identical state the Gateway does. These
-/// prove it consults only the input the mode needs and maps each combination correctly, including the
-/// add-credits-without-restart flow.
+/// Issue #940 (epic #937), rewritten by the Included AI mission (issue #1360): the Director/desktop
+/// readiness helper defers to the shared <see cref="HostedAiReadiness"/>, which no longer consults
+/// the balance - so the desktop makes NO pre-dictation credit read and always resolves Ready in
+/// DevThrottle mode. The runtime 402 is the only gate. The never-fetches tests are the desktop half
+/// of the Q2 revert-proof.
 /// </summary>
 public sealed class DirectorHostedAiReadinessTests
 {
@@ -25,55 +25,41 @@ public sealed class DirectorHostedAiReadinessTests
             _ => { onBalanceFetch?.Invoke(); return Task.FromResult(balanceMicros); });
 
     [Fact]
-    public async Task LegacyByo_NoKey_UsesDevThrottleBalanceAndReadyWhenUnknown()
+    public async Task LegacyByo_Ready()
         => Assert.Equal(HostedAiState.Ready, await Build(TranscriptionMode.Byo, key: null).CheckAsync());
-
-    [Fact]
-    public async Task LegacyByo_WithKey_Ready()
-        => Assert.Equal(HostedAiState.Ready, await Build(TranscriptionMode.Byo, key: "sk-abc").CheckAsync());
-
-    [Fact]
-    public async Task LegacyByo_FetchesBalance()
-    {
-        var balanceFetched = false;
-        await Build(TranscriptionMode.Byo, key: "sk-abc", onBalanceFetch: () => balanceFetched = true).CheckAsync();
-        Assert.True(balanceFetched);
-    }
 
     [Theory]
     [InlineData(0L)]
     [InlineData(-1L)]
-    public async Task DevThrottle_EmptyBalance_NeedsCredits(long balance)
-        => Assert.Equal(HostedAiState.NeedsCredits, await Build(TranscriptionMode.DevThrottle, balanceMicros: balance).CheckAsync());
+    public async Task DevThrottle_ZeroBalance_StillReady(long balance)
+        // Included AI revert-proof (issue #1360): the old gate answered NeedsCredits here and blocked
+        // the zero-balance entitled member the mission's acceptance test serves.
+        => Assert.Equal(HostedAiState.Ready, await Build(TranscriptionMode.DevThrottle, balanceMicros: balance).CheckAsync());
 
     [Fact]
     public async Task DevThrottle_PositiveBalance_Ready()
         => Assert.Equal(HostedAiState.Ready, await Build(TranscriptionMode.DevThrottle, balanceMicros: 5_000_000).CheckAsync());
 
     [Fact]
-    public async Task DevThrottle_UnknownBalance_DoesNotBlock_Ready()
+    public async Task DevThrottle_UnknownBalance_Ready()
         => Assert.Equal(HostedAiState.Ready, await Build(TranscriptionMode.DevThrottle, balanceMicros: null).CheckAsync());
 
     [Fact]
-    public async Task DevThrottle_DoesNotFetchKey()
+    public async Task NeverFetchesKeyOrBalance()
     {
+        // No credit read and no key read on any check (issue #1360): the balance was the desktop's
+        // 2-second pre-dictation HTTP fetch, now gone entirely.
         var keyFetched = false;
-        await Build(TranscriptionMode.DevThrottle, balanceMicros: 5_000_000, onKeyFetch: () => keyFetched = true).CheckAsync();
+        var balanceFetched = false;
+        await Build(TranscriptionMode.DevThrottle,
+            onKeyFetch: () => keyFetched = true,
+            onBalanceFetch: () => balanceFetched = true).CheckAsync();
+        await Build(TranscriptionMode.Byo,
+            onKeyFetch: () => keyFetched = true,
+            onBalanceFetch: () => balanceFetched = true).CheckAsync();
+
         Assert.False(keyFetched);
-    }
-
-    [Fact]
-    public async Task DevThrottle_AddCredits_UnlocksWithoutRestart()
-    {
-        long balance = 0;
-        var check = new DirectorHostedAiReadiness(
-            () => TranscriptionMode.DevThrottle,
-            _ => Task.FromResult<string?>(null),
-            _ => Task.FromResult<long?>(balance));
-
-        Assert.Equal(HostedAiState.NeedsCredits, await check.CheckAsync());
-        balance = 5_000_000; // user adds $5
-        Assert.Equal(HostedAiState.Ready, await check.CheckAsync());
+        Assert.False(balanceFetched);
     }
 
     [Fact]
@@ -82,5 +68,12 @@ public sealed class DirectorHostedAiReadinessTests
         Assert.Throws<ArgumentNullException>(() => new DirectorHostedAiReadiness(null!, _ => Task.FromResult<string?>(null), _ => Task.FromResult<long?>(0)));
         Assert.Throws<ArgumentNullException>(() => new DirectorHostedAiReadiness(() => TranscriptionMode.Byo, null!, _ => Task.FromResult<long?>(0)));
         Assert.Throws<ArgumentNullException>(() => new DirectorHostedAiReadiness(() => TranscriptionMode.Byo, _ => Task.FromResult<string?>(null), null!));
+    }
+
+    [Fact]
+    public async Task Create_WiresTheModeAndAnswersReady()
+    {
+        var readiness = DirectorHostedAiReadiness.Create(new HostedAiKeyResolver(), () => TranscriptionMode.DevThrottle);
+        Assert.Equal(HostedAiState.Ready, await readiness.CheckAsync());
     }
 }
