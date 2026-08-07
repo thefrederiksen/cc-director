@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { SessionDto } from "@devthrottle/client-core/api/client";
 import type { MissionDto } from "@devthrottle/client-core/missions/missions";
-import { displayRole, groupByMission } from "./missionGrouping";
+import { displayRole, groupByMission, splitEmptyMissions } from "./missionGrouping";
 
 // The Missions board groups by the mission a session is ATTACHED to (SessionDto.missionId), with the role
 // the Gateway resolved (SessionDto.sessionRole). These tests lock that, and in particular they lock the
@@ -200,5 +200,42 @@ describe("groupByMission", () => {
 
   it("returns an empty fleet unchanged", () => {
     expect(groupByMission([], [])).toEqual({ missions: [], standalone: [] });
+  });
+});
+
+describe("splitEmptyMissions", () => {
+  it("separates the missions with sessions from the ones without", () => {
+    const { missions } = groupByMission(
+      [session({ name: "w", number: 1, sessionId: "a", missionId: "m-release" })],
+      [M_RELEASE, M_EMPTY],
+    );
+
+    const { staffed, empty } = splitEmptyMissions(missions);
+    expect(staffed.map((m) => m.name)).toEqual(["Release 2.0.1"]);
+    expect(empty.map((m) => m.name)).toEqual(["Website truth report"]);
+  });
+
+  it("keeps the caller's order within each side", () => {
+    const { missions } = groupByMission([], [
+      { missionId: "m3", missionName: "Zebra" },
+      { missionId: "m1", missionName: "apple" },
+      { missionId: "m2", missionName: "Banya" },
+    ]);
+
+    const { staffed, empty } = splitEmptyMissions(missions);
+    expect(staffed).toHaveLength(0);
+    expect(empty.map((m) => m.name)).toEqual(["apple", "Banya", "Zebra"]);
+  });
+
+  it("handles both extremes", () => {
+    expect(splitEmptyMissions([])).toEqual({ staffed: [], empty: [] });
+
+    const { missions } = groupByMission(
+      [session({ name: "w", number: 1, sessionId: "a", missionId: "m-release" })],
+      [M_RELEASE],
+    );
+    const { staffed, empty } = splitEmptyMissions(missions);
+    expect(staffed).toHaveLength(1);
+    expect(empty).toHaveLength(0);
   });
 });

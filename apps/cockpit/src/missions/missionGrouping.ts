@@ -68,6 +68,28 @@ export interface GroupedFleet {
   standalone: SessionDto[];
 }
 
+/**
+ * Split the missions into the ones with sessions on them and the ones without.
+ *
+ * EMPTY IS NOT THE SAME AS FINISHED, and this function only knows about the first. A mission is empty
+ * because nobody is on it RIGHT NOW - which is equally true of a mission created ten seconds ago and of
+ * one that shipped a week ago. Hiding the empties is therefore a VIEW preference and never a statement
+ * that the work is over; ending a mission is a state on the record, and it is a different feature.
+ *
+ * The caller must show the hidden COUNT whenever it hides any. A card that disappears with no trace is
+ * the same quiet-wrong-answer this screen was rebuilt to stop giving: the owner cannot tell "there are
+ * none" from "you are not being shown them".
+ */
+export function splitEmptyMissions(missions: MissionGroup[]): {
+  staffed: MissionGroup[];
+  empty: MissionGroup[];
+} {
+  const staffed: MissionGroup[] = [];
+  const empty: MissionGroup[] = [];
+  for (const m of missions) (m.members.length > 0 ? staffed : empty).push(m);
+  return { staffed, empty };
+}
+
 // Order roles Architect -> Manager -> Worker within a mission card, so the lead reads first. A role the
 // Gateway sent that is not one of the three, and a session with no role at all, sort last.
 const ROLE_RANK: Record<string, number> = { Architect: 0, Manager: 1, Worker: 2 };

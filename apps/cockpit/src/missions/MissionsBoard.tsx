@@ -5,7 +5,7 @@ import { dotColor, dotHex, effectiveColor, stateLabel } from "@devthrottle/clien
 import { getMissionNotes, setMissionNote } from "@devthrottle/client-core/missions/missionNotes";
 import type { MissionDto } from "@devthrottle/client-core/missions/missions";
 import { repoBasename, relativeTime } from "../fleet/format";
-import { groupByMission, type MissionGroup } from "./missionGrouping";
+import { groupByMission, splitEmptyMissions, type MissionGroup } from "./missionGrouping";
 
 // The Missions board (issue #1405): the same live fleet the Fleet Map draws, seen the way the owner
 // actually thinks about the work - grouped into MISSIONS rather than machines or repos. A mission is the
@@ -45,11 +45,7 @@ function whyKeyFor(missionName: string): string {
   return missionName.trim().toLowerCase();
 }
 
-export function MissionsBoard({
-  sessions,
-  missions = [],
-  error = null,
-}: {
+interface MissionsBoardBaseProps {
   sessions: SessionDto[];
   /** The Gateway's mission records, so a mission with nobody on it still gets a card. Defaults to none,
    *  which renders only the missions at least one session is attached to. */
@@ -58,7 +54,37 @@ export function MissionsBoard({
    *  mission that has a session on it, but not the empty ones, and it must say so rather than present a
    *  short list as the whole truth. */
   error?: string | null;
-}) {
+}
+
+/**
+ * Hiding is only ever offered TOGETHER with the way back, and the type enforces it rather than trusting
+ * every caller to remember. `hideEmpty` without `onShowEmpty` does not compile.
+ *
+ * This is not type ceremony. The first cut of this component took both as independent optional props, and
+ * a caller that hid the empties without supplying the callback rendered a notice saying "1 mission is
+ * hidden - show it" above a button that did nothing. The requirement is that nothing is ever hidden
+ * without a one-click way back; a requirement a caller can silently fail to meet is not enforced, it is
+ * merely written down. One of this file's own tests had already made exactly that mistake.
+ */
+export type MissionsBoardProps = MissionsBoardBaseProps &
+  (
+    | {
+        /** Hide the missions nobody is on right now. A VIEW preference only - it says nothing about
+         *  whether that work is finished. The board always states how many it hid and offers them back. */
+        hideEmpty: true;
+        /** Required when hiding: how the owner asks for the hidden missions back. */
+        onShowEmpty: () => void;
+      }
+    | { hideEmpty?: false; onShowEmpty?: never }
+  );
+
+export function MissionsBoard({
+  sessions,
+  missions = [],
+  error = null,
+  hideEmpty = false,
+  onShowEmpty,
+}: MissionsBoardProps) {
   const navigate = useNavigate();
 
   // The mission WHYs, keyed by the normalized mission key (the same key groupByMission produces). Read
@@ -93,6 +119,12 @@ export function MissionsBoard({
 
   const grouped = useMemo(() => groupByMission(sessions, missions), [sessions, missions]);
 
+  // Split before deciding what to draw, so the count of what is hidden is always available even when it
+  // is being hidden. The board never drops a card without saying how many it dropped.
+  const { staffed, empty } = useMemo(() => splitEmptyMissions(grouped.missions), [grouped.missions]);
+  const shown = hideEmpty ? staffed : grouped.missions;
+  const hiddenCount = hideEmpty ? empty.length : 0;
+
   const openSession = (sid: string | null | undefined) => {
     const id = (sid ?? "").trim();
     if (id.length > 0) navigate(`/session/${encodeURIComponent(id)}`);
@@ -121,7 +153,7 @@ export function MissionsBoard({
         </div>
       )}
 
-      {grouped.missions.map((m) => (
+      {shown.map((m) => (
         <MissionCard
           key={m.key}
           mission={m}
@@ -130,6 +162,16 @@ export function MissionsBoard({
           onOpen={openSession}
         />
       ))}
+
+      {/* Whatever is hidden is COUNTED and offered back, right where the cards would have been. Hiding
+          without saying so would leave the owner unable to tell an empty fleet from a filtered view -
+          and this board is the one that already told him he had two missions when he had eleven. */}
+      {hiddenCount > 0 && (
+        <button type="button" className="msn-hidden-note" onClick={onShowEmpty}>
+          {hiddenCount} mission{hiddenCount === 1 ? "" : "s"} with no sessions{" "}
+          {hiddenCount === 1 ? "is" : "are"} hidden - show {hiddenCount === 1 ? "it" : "them"}
+        </button>
+      )}
 
       {grouped.standalone.length > 0 && (
         <>
@@ -158,9 +200,16 @@ export function MissionsBoard({
 export function missionCounts(
   sessions: SessionDto[],
   missions: MissionDto[] = [],
-): { missions: number; standalone: number } {
+): { missions: number; standalone: number; empty: number } {
   const grouped = groupByMission(sessions, missions);
-  return { missions: grouped.missions.length, standalone: grouped.standalone.length };
+  // `missions` is the TOTAL and stays the total whether or not the empties are being drawn - the header
+  // reports what exists, and reports separately how many of them are currently hidden.
+  const { empty } = splitEmptyMissions(grouped.missions);
+  return {
+    missions: grouped.missions.length,
+    standalone: grouped.standalone.length,
+    empty: empty.length,
+  };
 }
 
 interface MissionCardProps {
