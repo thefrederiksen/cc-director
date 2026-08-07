@@ -56,6 +56,10 @@ public sealed class SessionKeyGuardTests
     [InlineData("PATCH", "/sessions/11111111-1111-1111-1111-111111111111")]
     [InlineData("POST", "/fanout")]
     [InlineData("POST", "/missions")]
+    // The third verb on a record a session key can already create and read: rename it, set its WHY,
+    // and end it (complete / removed) or reopen it. An agent that can open a mission but can never
+    // end one is how the mission list grows forever.
+    [InlineData("PATCH", "/missions/m-123")]
     [InlineData("POST", "/machines/SOREN_NORTH/sessions")]
     [InlineData("POST", "/machines/SOREN_NORTH/launch")]
     [InlineData("POST", "/gateway/skills/move-session/publish")]
