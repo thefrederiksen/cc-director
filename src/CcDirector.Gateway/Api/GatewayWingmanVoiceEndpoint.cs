@@ -637,6 +637,27 @@ internal static class GatewayWingmanVoiceEndpoint
         // Returns { transcript }.
         app.MapPost("/wingman/transcribe", async (HttpContext ctx, CancellationToken ct) =>
         {
+            // THE REQUESTING TENANT IS RESOLVED FIRST, AND NULL IS A REFUSAL. This is the contract
+            // GatewayEndpoints.ResolveReadTenant states in its own documentation: on hosted, a key with no
+            // bound tenant - and a boundary that is not hosted-wired - resolve to null, and null means the
+            // caller is DENIED, never served the Local partition.
+            //
+            // This route used to pass that nullable STRAIGHT into TranscribeAsync, which is where the refusal
+            // became the self-host tenant three layers down. All three of GatewayTranscriptionService's
+            // null-means-Local substitutions then fired on a hosted request: CleanupCoreAsync read the SHARED
+            // FLAT GLOSSARY, so another account's terms could alter their words; RecordHistory took the
+            // injected shared history; and the transcript store wrote their transcript evidence into the Local
+            // partition. Refusing here is also the first defect fixed - an unbound hosted caller should get a
+            // refusal, not a transcription.
+            //
+            // Same shape and the same body as every sibling route on this surface (and as
+            // GatewayDictationEndpoint.NoTenantResult): no new error shape is invented. Self-host is unchanged -
+            // there ResolveReadTenant answers TenantId.Local for every authenticated caller, exactly as the
+            // nullable did before.
+            var reqTenant = GatewayEndpoints.ResolveReadTenant(ctx, tenantBoundary);
+            if (reqTenant is null)
+                return Results.Json(new { error = "no tenant is bound to this request" }, statusCode: StatusCodes.Status403Forbidden);
+
             if (!ctx.Request.HasFormContentType)
                 return Results.Json(new { error = "send the recording as multipart form-data with an 'audio' file" },
                     statusCode: StatusCodes.Status400BadRequest);
@@ -671,7 +692,7 @@ internal static class GatewayWingmanVoiceEndpoint
             // Transcribe WITH the validated dictionary correction applied (the SAME engine every other
             // surface uses; fails open to the raw transcript in local mode or on any cleanup error).
             var result = await transcription.TranscribeAsync(bytes, fileName, contentType, applyCorrection: true, ct,
-                tenant: GatewayEndpoints.ResolveReadTenant(ctx, tenantBoundary), source: "voice");
+                tenant: reqTenant.Value, source: "voice");
             // Out of credits / monthly cap (issue #939): map to the shared 402 state (branch by code)
             // instead of flattening it into a generic 502 - so the client shows the consistent
             // add-credits message and keeps the recording, not "transcription failed".

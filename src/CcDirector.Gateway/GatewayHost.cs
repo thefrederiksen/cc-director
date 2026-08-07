@@ -462,6 +462,13 @@ public sealed class GatewayHost : IAsyncDisposable
     internal Tenancy.HostedTenantBoundary TenantBoundary => _tenantBoundary;
 
     /// <summary>
+    /// The per-tenant transcript store this host injects into every transcription path. Exposed to the test
+    /// assembly so a refusal test can ask the store ITSELF whether a partition was written, rather than
+    /// inferring it from a status code - a refused request must leave the Local partition at zero rows.
+    /// </summary>
+    internal Transcription.TranscriptStore Transcripts => _transcripts;
+
+    /// <summary>
     /// The account-to-tenant resolver (Hosted Multi-Tenancy increment 1): owns the tenants mapping table and
     /// mints or looks up a tenant from a verified account subject. Exposed so the hosted enrollment boundary
     /// can resolve a tenant once, at the point the account token is validated. Unused on the single-tenant
