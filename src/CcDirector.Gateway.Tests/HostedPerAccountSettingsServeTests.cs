@@ -7,6 +7,7 @@ using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Text.Json;
 using System.Threading.Tasks;
+using CcDirector.Core.Configuration;
 using CcDirector.Gateway.Tenancy;
 using Xunit;
 
@@ -122,9 +123,13 @@ public sealed class HostedPerAccountSettingsServeTests : IAsyncLifetime
         ("PUT", "gateway/daily-report",             "{\"cadence\":\"off\"}"),
         ("GET", "gateway/injected-text",            null),
         ("PUT", "gateway/injected-text",            "{\"use_yours\":true,\"yours\":\"words for one account only\"}"),
-        ("PUT", "gateway/ai/wingman-model",         "{\"model\":\"m-think\"}"),
-        ("PUT", "gateway/ai/wingman-fast-model",    "{\"model\":\"m-fast\"}"),
-        ("PUT", "gateway/ai/car-mode-model",        "{\"model\":\"m-car\"}"),
+        // Issue #1360: these three setters REFUSE any id that is not a devthrottle/ included
+        // model, and that refusal is the feature - so the ids here must be real included ones.
+        // Taken from the product constants rather than written out, so a rename moves the test
+        // with it instead of leaving another stale literal behind.
+        ("PUT", "gateway/ai/wingman-model",         "{\"model\":\"" + TranscriptionEndpointResolver.DevThrottleWingmanModel + "\"}"),
+        ("PUT", "gateway/ai/wingman-fast-model",    "{\"model\":\"" + TranscriptionEndpointResolver.DevThrottleWingmanFastModel + "\"}"),
+        ("PUT", "gateway/ai/car-mode-model",        "{\"model\":\"" + TranscriptionEndpointResolver.DevThrottleWingmanModel + "\"}"),
         ("PUT", "gateway/ai/car-mode-end-phrase",   "{\"phrase\":\"alpha out\"}"),
         ("PUT", "gateway/ai/tts-model",             "{\"model\":\"m-speech\"}"),
     };
@@ -235,11 +240,16 @@ public sealed class HostedPerAccountSettingsServeTests : IAsyncLifetime
     [Fact]
     public async Task Wingman_model_written_by_one_tenant_is_invisible_to_another_on_hosted()
     {
-        (await OwnerSettingsRoutes.SendAsync(_httpA, "PUT", "gateway/ai/wingman-model", "{\"model\":\"alpha-only-model\"}"))
+        // A real included id (issue #1360 - the setter refuses anything else), and deliberately NOT the
+        // default one: tenant B is left on the default, so a value equal to it would make the isolation
+        // assertion below pass no matter how leaky the store was.
+        const string alphaModel = TranscriptionEndpointResolver.DevThrottleWingmanFastModel;
+
+        (await OwnerSettingsRoutes.SendAsync(_httpA, "PUT", "gateway/ai/wingman-model", "{\"model\":\"" + alphaModel + "\"}"))
             .EnsureSuccessStatusCode();
 
-        Assert.Equal("alpha-only-model", await ReadString(_httpA, "gateway/ai-provider", "wingmanModel"));
-        Assert.NotEqual("alpha-only-model", await ReadString(_httpB, "gateway/ai-provider", "wingmanModel"));
+        Assert.Equal(alphaModel, await ReadString(_httpA, "gateway/ai-provider", "wingmanModel"));
+        Assert.NotEqual(alphaModel, await ReadString(_httpB, "gateway/ai-provider", "wingmanModel"));
     }
 
     /// <summary>ISOLATED - the Car Mode end phrase, written through AiModelsEndpoint, read via the snapshot.</summary>
