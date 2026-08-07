@@ -249,6 +249,46 @@ public sealed class GatewayTranscriptionServiceTests : IDisposable
             () => Service().TranscribeSegmentRawAsync(new byte[] { 1, 2, 3 }, "audio.webm", "audio/webm", CancellationToken.None));
     }
 
+    [Fact]
+    public async Task TranscribeAsync_DictionaryProviderThrows_StillReturnsRawText()
+    {
+        // Issue #2483: a malformed or unreadable dictionary file made the provider read throw AFTER
+        // the transcription had already succeeded, failing the whole request. The documented contract
+        // is fail-open - the dictionary corrector degrades to the raw transcript on any fault, and a
+        // fault reading the dictionary is exactly such a fault.
+        TranscriptionModeConfig.Set(TranscriptionMode.DevThrottle);
+        new KeyVault(_vaultPath).Set(TranscriptionEndpointResolver.DevThrottleKeyName, "dt_live_abc");
+
+        var service = new GatewayTranscriptionService(
+            new KeyVault(_vaultPath),
+            dictionaryProvider: () => throw new InvalidDataException("dictionary file is malformed"),
+            http: new HttpClient(new StatusHandler(HttpStatusCode.OK, "{\"text\":\"the raw words\"}")),
+            audioArchive: ScratchArchive());
+
+        var result = await service.TranscribeAsync(
+            new byte[] { 1, 2, 3 }, "clip.wav", "audio/wav", applyCorrection: true, CancellationToken.None);
+
+        Assert.Equal(TranscriptionOutcome.Ok, result.Outcome);
+        Assert.Equal("the raw words", result.Text);
+    }
+
+    [Fact]
+    public async Task CleanupAsync_DictionaryProviderThrows_FailsOpenToRawText()
+    {
+        // The Notes assemble-then-clean path goes through CleanupAsync directly; a throwing
+        // dictionary provider must yield the raw text there too, never an exception.
+        var service = new GatewayTranscriptionService(
+            new KeyVault(_vaultPath),
+            dictionaryProvider: () => throw new InvalidDataException("dictionary file is malformed"),
+            audioArchive: ScratchArchive());
+
+        var outcome = await service.CleanupAsync("the raw words", CancellationToken.None);
+
+        Assert.Equal("the raw words", outcome.Text);
+        Assert.False(outcome.Applied);
+        Assert.Contains("dictionary unavailable", outcome.Reason);
+    }
+
     [Theory]
     [InlineData("audio/webm;codecs=opus", "webm")]
     [InlineData("audio/wav", "wav")]
