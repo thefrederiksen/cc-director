@@ -81,6 +81,33 @@
   color: var(--text-dim);
 }
 
+/* A mission the roster knows about but the Gateway's mission list does not contain. Amber, not red: the
+   sessions and their grouping are real and correct - it is the agreement between the two stores that is
+   not, and that is worth showing without shouting. */
+.msn-unlisted {
+  padding: 1px 7px;
+  border-radius: 9px;
+  border: 1px solid rgba(251, 191, 36, 0.45);
+  color: #fbbf24;
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+/* The mission records failed to load. The board still draws every mission that has a session attached,
+   so this says exactly what is MISSING rather than replacing the whole board with an error. */
+.msn-loaderr {
+  padding: 10px 14px;
+  border-radius: 8px;
+  border: 1px solid rgba(248, 113, 113, 0.45);
+  background: rgba(248, 113, 113, 0.08);
+  color: #fca5a5;
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
 /* ---- list ---- */
 .msn-list {
   padding-bottom: 28px;
@@ -370,10 +397,53 @@
   min-width: 0;
 }
 
+/* The row's primary line: the session NAME, with its role as a badge beside it. The name is what tells
+   one worker from another - the role alone repeats itself down a mission with several workers on it. */
 .msn-role {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
   font-size: 12.5px;
   font-weight: 500;
   color: var(--text);
+}
+
+.msn-sname {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+/* Same shape and the same three role colors as the Fleet Map's .fmap-role, so a role reads identically
+   on both surfaces. */
+.msn-rolebadge {
+  flex: 0 0 auto;
+  font-size: 9.5px;
+  letter-spacing: 0.04em;
+  padding: 2px 7px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text-dim);
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+.msn-rolebadge.architect {
+  border-color: rgba(168, 85, 247, 0.5);
+  color: #c084fc;
+}
+
+.msn-rolebadge.manager {
+  border-color: rgba(59, 130, 246, 0.5);
+  color: #60a5fa;
+}
+
+.msn-rolebadge.worker {
+  border-color: rgba(148, 163, 184, 0.4);
+  color: #94a3b8;
 }
 
 .msn-rmeta {
