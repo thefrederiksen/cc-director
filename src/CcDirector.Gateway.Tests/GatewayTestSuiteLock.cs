@@ -58,6 +58,20 @@ namespace CcDirector.Gateway.Tests;
 /// They exist so a blocked run can name its blocker - a blocked run that cannot say who is blocking it is
 /// indistinguishable from a hang, and somebody will kill the wrong thing. They never decide ownership.
 ///
+/// IF YOU ARE ABOUT TO KILL A GATEWAY TEST RUN THAT LOOKS HUNG, READ THIS FIRST.
+///
+/// FROM OUTSIDE THE PROCESS, WAITING ON THIS LOCK AND BEING WEDGED LOOK IDENTICAL: long wall-clock time,
+/// almost no processor time. Measured on 2026-08-07 - a run showing 1.9 seconds of processor time after
+/// more than an hour of wall clock was not stuck at all. It was queued behind another suite, and its tests
+/// took 57 seconds once it got in. Low processor time is what CORRECT waiting looks like, so it is evidence
+/// of nothing on its own, and it is the exact reading that makes somebody reach for the kill.
+///
+/// Do not judge it from Task Manager or <c>Get-Process</c>. Read the run's own output, or the log beside
+/// the lock file (<see cref="LogFilePath"/>): a waiting run prints WAITING with its holder named, and
+/// reprints the wait every 30 seconds. A WAITING line means it is behaving correctly, and the thing to look
+/// at is the HOLDER, not the waiter. Killing the waiter accomplishes nothing either way, because the waiter
+/// is not what is slow.
+///
 /// THE GUARANTEE IS PER-USER-PER-MACHINE. Not machine-wide - say it precisely, because someone will
 /// eventually rely on the words. Two runs by the SAME operating-system user on the SAME machine cannot
 /// overlap. Two runs by DIFFERENT users on one machine are NOT serialized by this, and on Windows they
