@@ -472,6 +472,49 @@ public sealed class AgentDictionaryAddTests : IAsyncLifetime
         }
     }
 
+    /// <summary>
+    /// An add whose provenance cannot be recorded FAILS, over HTTP, and adds nothing. The endpoint used to
+    /// swallow a trail-write failure and return 200, which is a silent loss of the traceability the owner
+    /// traded the confirmation step for. Forced by putting a directory where the trail file belongs.
+    /// </summary>
+    [Fact]
+    public async Task An_add_whose_provenance_cannot_be_written_fails_over_http()
+    {
+        Directory.CreateDirectory(GlossaryAdditionLog.PathFor(_tenantA));
+
+        var resp = await _agentA.PostAsync("ingest/dictionary/terms", Body("{\"terms\":[\"Kubernetes\"]}"));
+
+        Assert.Equal(HttpStatusCode.InternalServerError, resp.StatusCode);
+        Assert.Contains("glossary_write_failed", await resp.Content.ReadAsStringAsync());
+
+        // And it really added nothing - failing loudly after doing the damage would not satisfy the ruling.
+        Assert.DoesNotContain("Kubernetes", await Vocabulary(_personA));
+    }
+
+    /// <summary>Every term a racing pair of sessions lands is attributable afterwards - the pair of writes
+    /// is atomic through the real endpoints, not only at the writer.</summary>
+    [Fact]
+    public async Task Racing_sessions_over_http_keep_every_terms_provenance()
+    {
+        var (sessionTwo, agentTwo) = LiveSessionIn(_tenantA, "director-b");
+        using var second = agentTwo;
+
+        var one = _agentA.PostAsync("ingest/dictionary/terms", Body("{\"terms\":[\"Kubernetes\"]}"));
+        var two = second.PostAsync("ingest/dictionary/terms", Body("{\"terms\":[\"Helm\"]}"));
+        Assert.Equal(HttpStatusCode.OK, (await one).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await two).StatusCode);
+
+        var vocabulary = await Vocabulary(_personA);
+        var trail = GlossaryAdditionLog.Read(_tenantA);
+
+        Assert.Contains("Kubernetes", vocabulary);
+        Assert.Contains("Helm", vocabulary);
+        foreach (var term in vocabulary)
+            Assert.True(trail.Any(e => e.Term == term), $"'{term}' has no trail entry - it cannot be swept");
+        Assert.Equal("Kubernetes", trail.Single(e => e.SessionId == _sessionA.ToString()).Term);
+        Assert.Equal("Helm", trail.Single(e => e.SessionId == sessionTwo.ToString()).Term);
+    }
+
     /// <summary>Finding is not acting. The trail read offers no way to act on what it finds - removal stays
     /// the person's, in the Cockpit editor.</summary>
     [Theory]

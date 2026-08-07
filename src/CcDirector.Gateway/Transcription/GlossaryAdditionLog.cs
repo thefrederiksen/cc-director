@@ -22,9 +22,12 @@ namespace CcDirector.Gateway.Transcription;
 /// itself being deleted, so the trail outlives what it describes. It also keeps the glossary schema
 /// untouched, which matters because the desktop, the phone and the Cockpit all read that schema.
 ///
-/// WHAT IT IS NOT. It is not an audit log and nothing enforces anything from it - it is a trail for a person
-/// (or a later sweep) to read. A failure to write it must never fail the addition: the word going in is the
-/// thing the owner asked for, and losing the note is a smaller harm than losing the word.
+/// A FAILURE TO WRITE IT FAILS THE ADDITION. This file originally said the opposite - that losing the note
+/// was a smaller harm than losing the word - and that was wrong. The owner traded away the confirmation step
+/// FOR this record, so a word added with nothing saying who added it cannot be traced and cannot be swept,
+/// which is the state the whole grant was justified against. <see cref="TenantGlossaryWriter.MutateAndRecord"/>
+/// therefore writes this INSIDE the glossary's per-tenant lock and BEFORE the glossary itself, so a throw
+/// here leaves nothing added and nothing recorded rather than a word with no provenance.
 /// </summary>
 public static class GlossaryAdditionLog
 {
@@ -66,19 +69,16 @@ public static class GlossaryAdditionLog
                 SessionId: sessionId,
                 DirectorId: directorId))).Append('\n');
 
-        // Entry point for a side effect that must never take the addition down with it: the word is in the
-        // glossary by the time this runs, and a disk that refused the note is not a reason to tell the agent
-        // its word did not land. Logged loudly so a trail that has stopped being written is visible.
-        try
-        {
-            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-            File.AppendAllText(path, builder.ToString());
-            FileLog.Write($"[GlossaryAdditionLog] Record: tenant={tenant.Value}, session={sessionId}, terms={terms.Count}");
-        }
-        catch (Exception ex)
-        {
-            FileLog.Write($"[GlossaryAdditionLog] Record FAILED (the terms were still added): {ex.Message}");
-        }
+        // NO CATCH HERE, AND THAT IS THE POINT. This used to swallow its own failure and let the addition
+        // report success, on the reasoning that losing the note was a smaller harm than losing the word.
+        // That reasoning was wrong (second review finding on #2484): the owner traded away the confirmation
+        // step FOR this record, so a word added with no trace of who added it is un-sweepable, and an add
+        // that returns success having silently lost the guarantee is worse than an add that fails. The
+        // caller writes this INSIDE the glossary lock and BEFORE the glossary itself, so a throw here leaves
+        // nothing added and nothing recorded.
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        File.AppendAllText(path, builder.ToString());
+        FileLog.Write($"[GlossaryAdditionLog] Record: tenant={tenant.Value}, session={sessionId}, terms={terms.Count}");
     }
 
     /// <summary>

@@ -370,7 +370,12 @@ internal static class RecordingEndpoints
                 // that made a concurrent human edit losable in the first place.
                 var added = new List<string>();
 
-                var reread = TenantGlossaryWriter.Mutate(t.Value, current =>
+                // MutateAndRecord, not Mutate: the glossary change and the provenance record are ONE atomic
+                // pair inside one per-tenant lock, with the record written first. The record used to happen
+                // out here, after the lock was released, appending unlocked and swallowing its own failure -
+                // so two sessions could both land their terms while one session's trail entries vanished,
+                // and a word with no trail entry is un-traceable and therefore un-sweepable.
+                var reread = TenantGlossaryWriter.MutateAndRecord(t.Value, current =>
                 {
                     // The writer calls this once inside the lock; cleared anyway so that if it ever gains a
                     // retry, a second pass cannot report a term twice.
@@ -408,20 +413,11 @@ internal static class RecordingEndpoints
                         }
                     }
 
-                    return FromDto(document);
-                });
-
-                // Record WHICH SESSION added the word. There is no confirmation step by the owner's ruling,
-                // so this trail is the only thing that lets a bad entry be traced and swept later. Outside
-                // the glossary lock on purpose: it writes a different file, and holding a lock across two
-                // files is how two writers that each want both end up deadlocked.
-                if (callingSession is not null)
-                    GlossaryAdditionLog.Record(
-                        t.Value,
-                        callingSession.SessionId.ToString(),
-                        callingSession.DirectorId,
-                        added,
-                        DateTime.UtcNow);
+                    return (FromDto(document), (IReadOnlyList<string>)added);
+                },
+                callingSession?.SessionId.ToString(),
+                callingSession?.DirectorId ?? "",
+                DateTime.UtcNow);
 
                 return Results.Json(ToDto(reread));
             }
@@ -429,6 +425,32 @@ internal static class RecordingEndpoints
             {
                 FileLog.Write($"[RecordingEndpoints] dictionary add bad JSON: {ex.Message}");
                 return Results.BadRequest(new { error = "invalid JSON" });
+            }
+            catch (IOException ex)
+            {
+                // The glossary lock could not be taken, or the provenance record could not be written. Both
+                // mean NOTHING was added, and both are reported as a failure rather than a success - an add
+                // that silently lost its provenance would silently lose the traceability the owner traded
+                // the confirmation step for.
+                FileLog.Write($"[RecordingEndpoints] dictionary add FAILED: {ex.Message}");
+                return Results.Json(new
+                {
+                    error = "the term was NOT added: the dictation glossary could not be written together " +
+                            "with the record of which session added it, and adding a word without that " +
+                            "record would leave an entry nobody could trace or sweep. " + ex.Message,
+                    code = "glossary_write_failed",
+                }, statusCode: StatusCodes.Status500InternalServerError);
+            }
+            catch (UnauthorizedAccessException ex)
+            {
+                FileLog.Write($"[RecordingEndpoints] dictionary add FAILED: {ex.Message}");
+                return Results.Json(new
+                {
+                    error = "the term was NOT added: the dictation glossary could not be written together " +
+                            "with the record of which session added it, and adding a word without that " +
+                            "record would leave an entry nobody could trace or sweep. " + ex.Message,
+                    code = "glossary_write_failed",
+                }, statusCode: StatusCodes.Status500InternalServerError);
             }
         });
 

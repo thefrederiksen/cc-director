@@ -179,6 +179,156 @@ public sealed class TenantGlossaryWriterRaceTests : IDisposable
         }
     }
 
+    // ---------- THE GLOSSARY AND ITS PROVENANCE MOVE TOGETHER OR NOT AT ALL ----------
+
+    /// <summary>An agent add exactly as the endpoint composes it: change the glossary and record who did
+    /// it, as one atomic pair.</summary>
+    private static void AgentAdds(TenantId tenant, string sessionId, string term) =>
+        TenantGlossaryWriter.MutateAndRecord(
+            tenant,
+            current =>
+            {
+                var vocab = current.Vocabulary.ToList();
+                var added = new List<string>();
+                if (!vocab.Any(v => string.Equals(v, term, StringComparison.OrdinalIgnoreCase)))
+                {
+                    vocab.Add(term);
+                    added.Add(term);
+                }
+                return (new DictationDictionary(vocab, current.CommonMistranscriptions, current.Profiles),
+                        (IReadOnlyList<string>)added);
+            },
+            sessionId,
+            "director-race",
+            new DateTime(2026, 8, 7, 12, 0, 0, DateTimeKind.Utc));
+
+    /// <summary>
+    /// EVERY SURVIVING TERM HAS ITS TRAIL ENTRY - the invariant the first round of racing tests was
+    /// structurally blind to.
+    ///
+    /// Those tests asserted glossary state only, and the glossary was perfectly correct in every run while
+    /// the provenance write sat outside the lock, appended unlocked, and swallowed its own failure. So two
+    /// sessions could both land their terms with one session's trail entries lost, and
+    /// `dictionary additions` would then be unable to find that session's bad batch - which is the whole
+    /// purpose of the record. A term nobody can attribute is un-sweepable.
+    /// </summary>
+    [Fact]
+    public void Two_racing_sessions_each_keep_their_provenance()
+    {
+        for (var round = 0; round < Rounds; round++)
+        {
+            var tenant = TenantFor(round);
+            var sessionOne = $"11111111-0000-0000-0000-{round:D12}";
+            var sessionTwo = $"22222222-0000-0000-0000-{round:D12}";
+
+            RaceTwo(
+                () => AgentAdds(tenant, sessionOne, "Kubernetes"),
+                () => AgentAdds(tenant, sessionTwo, "Helm"));
+
+            var glossary = TenantGlossary.Load(tenant);
+            var trail = GlossaryAdditionLog.Read(tenant);
+
+            // Neither add is a replace, so both words must be there...
+            Assert.Contains("Kubernetes", glossary.Vocabulary);
+            Assert.Contains("Helm", glossary.Vocabulary);
+
+            // ...and every one of them must be attributable, which is the half that used to be losable.
+            foreach (var term in glossary.Vocabulary)
+                Assert.True(trail.Any(e => e.Term == term),
+                    $"round {round}: '{term}' is in the glossary with NO trail entry - it cannot be traced " +
+                    $"or swept. Trail holds: [{string.Join(", ", trail.Select(e => e.Term))}]");
+
+            // And the two sessions are still told apart, which is what makes a batch findable.
+            Assert.Equal("Kubernetes", trail.Single(e => e.SessionId == sessionOne).Term);
+            Assert.Equal("Helm", trail.Single(e => e.SessionId == sessionTwo).Term);
+        }
+    }
+
+    /// <summary>Eight at once. Two writers can miss a narrow window by luck; this is the version that fails
+    /// loudly when the trail append is unlocked, because concurrent appends to one file lose lines.</summary>
+    [Fact]
+    public void Many_racing_sessions_lose_no_provenance()
+    {
+        const int writers = 8;
+        for (var round = 0; round < 15; round++)
+        {
+            var tenant = TenantFor(round);
+            using var gate = new ManualResetEventSlim(false);
+            Exception? failure = null;
+
+            var threads = Enumerable.Range(0, writers).Select(i => new Thread(() =>
+            {
+                try
+                {
+                    gate.Wait();
+                    AgentAdds(tenant, $"session-{i}", $"term-{i}");
+                }
+                catch (Exception ex) { Interlocked.CompareExchange(ref failure, ex, null); }
+            })).ToList();
+
+            foreach (var t in threads) t.Start();
+            gate.Set();
+            foreach (var t in threads) t.Join();
+
+            if (failure is not null)
+                throw new Xunit.Sdk.XunitException($"round {round}: a concurrent writer threw: {failure}");
+
+            var glossary = TenantGlossary.Load(tenant);
+            var trail = GlossaryAdditionLog.Read(tenant);
+
+            Assert.Equal(writers, glossary.Vocabulary.Count);
+            for (var i = 0; i < writers; i++)
+            {
+                Assert.Contains($"term-{i}", glossary.Vocabulary);
+                Assert.True(trail.Any(e => e.Term == $"term-{i}" && e.SessionId == $"session-{i}"),
+                    $"round {round}: term-{i} landed in the glossary but its provenance was LOST - " +
+                    $"trail has {trail.Count} of {writers} entries");
+            }
+        }
+    }
+
+    // ---------- A TRAIL THAT CANNOT BE WRITTEN FAILS THE ADD ----------
+
+    /// <summary>
+    /// If the provenance cannot be recorded, the word must NOT be added. The record used to be written after
+    /// the glossary, inside a catch that swallowed the failure and let the add report success - a silent
+    /// loss of exactly the guarantee the owner traded the confirmation step for.
+    ///
+    /// The failure is forced by putting a DIRECTORY where the trail file belongs, so the append cannot
+    /// succeed. What is asserted is not just that it throws, but that the glossary is untouched afterwards:
+    /// throwing while having already added the word would leave the forbidden state behind and merely
+    /// report it.
+    /// </summary>
+    [Fact]
+    public void An_add_whose_provenance_cannot_be_written_fails_and_adds_nothing()
+    {
+        var tenant = TenantFor(0);
+
+        // Make the trail unwritable: a directory sitting exactly where the append expects a file.
+        var trailPath = GlossaryAdditionLog.PathFor(tenant);
+        Directory.CreateDirectory(trailPath);
+
+        Assert.ThrowsAny<Exception>(() => AgentAdds(tenant, "session-one", "Kubernetes"));
+
+        // The word must not be in the glossary. This is the assertion that distinguishes "fails loudly"
+        // from "fails loudly after doing the damage".
+        var glossary = TenantGlossary.Load(tenant);
+        Assert.DoesNotContain("Kubernetes", glossary.Vocabulary);
+    }
+
+    /// <summary>The control for the test above: with the trail writable, the identical call succeeds and
+    /// records. Without this, a bug that made every add throw would pass the failure test.</summary>
+    [Fact]
+    public void The_same_add_succeeds_when_the_provenance_can_be_written()
+    {
+        var tenant = TenantFor(0);
+
+        AgentAdds(tenant, "session-one", "Kubernetes");
+
+        Assert.Contains("Kubernetes", TenantGlossary.Load(tenant).Vocabulary);
+        Assert.Equal("Kubernetes", GlossaryAdditionLog.Read(tenant).Single().Term);
+    }
+
     [Fact]
     public void Many_concurrent_adds_lose_nothing()
     {

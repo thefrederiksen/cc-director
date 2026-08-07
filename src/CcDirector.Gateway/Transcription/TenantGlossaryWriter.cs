@@ -83,6 +83,63 @@ public static class TenantGlossaryWriter
         => Mutate(tenant, _ => replacement);
 
     /// <summary>
+    /// Change this tenant's glossary AND record which session added what, as ONE atomic pair - the whole
+    /// point being that neither half can be observed without the other.
+    ///
+    /// WHY THIS EXISTS SEPARATELY FROM <see cref="Mutate"/> (second review finding on #2484). The provenance
+    /// write used to sit in the endpoint, OUTSIDE this lock, appending unlocked and swallowing its own
+    /// failure to return success. So two sessions could both land their terms while one session's trail
+    /// entries vanished - and a word in the glossary with no trail entry is exactly the state the owner's
+    /// grant was justified against, because it is un-traceable and therefore un-sweepable. Racing tests over
+    /// glossary state could not see it: the glossary was perfectly correct in every one of those runs.
+    ///
+    /// THE ORDER IS THE GUARANTEE, and it is chosen for which failure is survivable. The trail is written
+    /// BEFORE the glossary, so:
+    ///   * trail write fails -> it throws, the glossary is never written, and the caller is told the add
+    ///     failed. Nothing was added and nothing was recorded - consistent;
+    ///   * glossary write fails -> it throws after a trail entry exists. That over-reports: the trail names
+    ///     a word that is not in the dictionary, which a person reading it can see is absent and which
+    ///     removes nothing;
+    ///   * both succeed -> correct.
+    /// The one state that is UNREACHABLE is the forbidden one - a term present with no record of who added
+    /// it. Writing the glossary first would have made that the common failure instead.
+    ///
+    /// There is no swallowing catch anywhere on this path, deliberately. A silent provenance failure is a
+    /// silent loss of the guarantee the owner traded the confirmation step for, and an add that returns
+    /// success having lost it is worse than an add that fails.
+    /// </summary>
+    /// <param name="tenant">The tenant whose glossary is being written. Required and valid.</param>
+    /// <param name="change">Given the CURRENT document, returns the document to store and the terms that
+    /// were ACTUALLY new. Runs inside the lock.</param>
+    /// <param name="sessionId">The calling session, or null when the caller is a person - a person's own
+    /// edit records nothing, so there is nothing to keep atomic and the pair collapses to the glossary write.</param>
+    /// <param name="directorId">The Director that session belongs to; may be empty.</param>
+    /// <param name="nowUtc">The time to stamp, so a test does not depend on the clock.</param>
+    public static DictationDictionary MutateAndRecord(
+        TenantId tenant,
+        Func<DictationDictionary, (DictationDictionary Updated, IReadOnlyList<string> Added)> change,
+        string? sessionId,
+        string directorId,
+        DateTime nowUtc)
+    {
+        var path = TenantGlossary.PathFor(tenant);
+        lock (Gates.GetOrAdd(tenant.Value, _ => new object()))
+        {
+            using var crossProcess = AcquireFileLock(path);
+            var current = DictionaryLoader.LoadFromDisk(path);
+            var (updated, added) = change(current);
+
+            // Inside the lock, and BEFORE the glossary write. Any failure here propagates and the glossary
+            // is left untouched.
+            if (sessionId is not null)
+                GlossaryAdditionLog.Record(tenant, sessionId, directorId, added, nowUtc);
+
+            DictionaryLoader.WriteToDisk(path, updated);
+            return DictionaryLoader.LoadFromDisk(path);
+        }
+    }
+
+    /// <summary>
     /// Hold an exclusive OS lock for this tenant's glossary, so two Gateway PROCESSES over one file share
     /// cannot both be inside a read-modify-write. A dedicated <c>.lock</c> file rather than the glossary
     /// itself, because the write path replaces the glossary by rename - locking a file that is about to be
