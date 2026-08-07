@@ -657,17 +657,41 @@ jobs:
           TARGET="${{ needs.deploy.outputs.short }}"
 
           # Scan the WHOLE timeline, not just a final sample: once production has served TARGET, any later
-          # 200 carrying a different commit is the supersession. A single closing request would miss a
-          # rollback that was itself swapped over again before the watch ended.
-          # Arm only after TARGET has been served 3 times running. A single sample is not enough: the front
-          # door can flap back to the old instance for a moment during the cutover itself, and calling that
-          # "superseded" would cry rollback on every healthy deploy.
-          # A later "none" counts too - an image that reports no commit is not this deploy either, and
-          # treating it as clean would hide exactly the swap this scan exists to catch.
-          other=$(awk -v t="$TARGET" '
+          # SUSTAINED run of 200s carrying a different commit is the supersession. A single closing
+          # request would miss a rollback that was itself swapped over again before the watch ended.
+          # A "none" counts as a different commit - an image that reports no commit is not this deploy
+          # either, and treating it as clean would hide exactly the swap this scan exists to catch.
+          #
+          # BOTH thresholds exist because ONE of them was not enough, and the run that proved it is
+          # 31005677755 (2026-08-05). Arming after 3 consecutive TARGET samples was meant to sit past the
+          # cutover, but the cutover is not a clean edge: for ~2.9 seconds the front door alternated
+          # between the old instance and the new one, so the third consecutive TARGET landed INSIDE the
+          # flap and the very next straggler from the old instance fired the verdict. That deploy was
+          # healthy - production served TARGET solidly for the rest of the record and is serving it now -
+          # and it was reported superseded. The 2026-08-03 run reported the same shape for the same reason.
+          #
+          # This is the expensive direction of wrong. A pipeline that cries rollback on healthy deploys
+          # is a pipeline whose rollback verdict stops being read, and then a real rollback goes by
+          # unnoticed. So the OTHER commit must now also be sustained - it is not enough to appear.
+          #
+          # 10 consecutive is ~1.5s at the observed median sample interval of 0.15s. The measured flap
+          # never produced more than 2 consecutive samples from the old instance; a genuine swap-back
+          # serves the old commit for the whole remainder of the watch (hundreds of samples), so it
+          # clears this bar immediately. The gap between 2 and 10 is the margin, and it is deliberate:
+          # missing a real swap-back by a second costs nothing (the run reports the closing commit too,
+          # in the `serving` check below), while a false alarm costs the verdict's credibility.
+          OTHER_RUN_REQUIRED=10
+          other=$(awk -v t="$TARGET" -v need="$OTHER_RUN_REQUIRED" '
             !armed && $2=="200" && $3==t { run++; if (run >= 3) armed=1; next }
             !armed { run=0; next }
-            armed && $2=="200" && $3!=t { print ($3=="" ? "none" : $3); exit }
+            # Armed. Count only CONSECUTIVE 200s carrying something other than the target; anything
+            # else (a 200 back on the target, an outage sample) breaks the run and resets it.
+            armed && $2=="200" && $3!=t {
+              seen++; last=($3=="" ? "none" : $3)
+              if (seen >= need) { print last; exit }
+              next
+            }
+            armed { seen=0; next }
           ' "$LOG")
           serving=$(printf '%s' "$(curl -s -m 10 "${GATEWAY_URL}/healthz" 2>/dev/null)" | jq -r '.commit // empty' 2>/dev/null || echo "")
           echo "serving_commit_at_end=${serving}" >> "$GITHUB_OUTPUT"

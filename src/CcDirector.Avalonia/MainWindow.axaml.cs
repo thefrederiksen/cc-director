@@ -1410,12 +1410,28 @@ public partial class MainWindow : Window
                 credential.Revoke();
             }
         }
+        catch (CcDirector.ControlApi.GatewayRefusedSessionKeyException ex)
+        {
+            // The Gateway is there and refusing us. This is a VERDICT, not an absence of one, and it
+            // has to be its own: no verdict renders as no Sessions row, so this exact failure - every
+            // session in the fleet locked out - used to leave the Home page blank while the log named
+            // the cause every ten seconds (#2457, #2459). It is the one screen that should have said
+            // so, and it said nothing.
+            //
+            // Not the no-Gateway verdict either: that is the benign accepted trade, and dressing a
+            // live refusal in it would be worse than silence.
+            FileLog.Write($"[MainWindow] the Gateway REFUSED this Director's session key: {ex.Message}");
+            _lastFleetToolCheck = new FleetToolCheck(
+                FleetToolVerdict.GatewayRefusedKey, null, OwnToolBinDir(),
+                "The Gateway is connected but refuses this Director's session keys, so every "
+                + "session's command line is answered 401. The Gateway is older than this Director "
+                + "and needs deploying; nothing on this machine can repair it.");
+        }
         catch (Exception ex)
         {
             // Never let a probe failure take the window down, and never let it read as a pass either.
-            // NO VERDICT is the honest outcome here, and it is deliberately NOT the no-Gateway
-            // verdict: a Gateway that refused the probe key throws into this branch, and calling
-            // that "no Gateway" would dress a real refusal up as an expected, benign state.
+            // NO VERDICT is the honest outcome for anything we cannot name - an unexplained failure
+            // must not be handed a confident label just because a label is available.
             FileLog.Write($"[MainWindow] RefreshFleetToolReachabilityAsync FAILED: {ex.Message}");
             _lastFleetToolCheck = null;
         }

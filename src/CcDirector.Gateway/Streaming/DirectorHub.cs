@@ -143,14 +143,25 @@ public sealed class DirectorHub : Hub
         }
     }
 
-    /// <summary>Bind this connection to a Director. Must be the first message; aborts the connection on a bad id.</summary>
-    public void Hello(DirectorStreamHello hello)
+    /// <summary>
+    /// Bind this connection to a Director. Must be the first message; aborts the connection on a bad id.
+    ///
+    /// RETURNS this Gateway's capabilities, so a Director learns at the moment of connection what the
+    /// Gateway it just reached can do - see <see cref="GatewayCapabilities"/> for why a null answer
+    /// (an older Gateway, whose Hello returns nothing) is the useful case rather than a problem.
+    /// Returning a value changes nothing for an older Director: it invokes Hello non-generically and
+    /// discards the result.
+    ///
+    /// The rejection paths return null. The connection is being aborted, so nothing is waiting for an
+    /// answer on it; a capabilities object there would describe a Gateway the caller is not bound to.
+    /// </summary>
+    public GatewayCapabilities? Hello(DirectorStreamHello hello)
     {
         if (hello is null || string.IsNullOrWhiteSpace(hello.DirectorId))
         {
             FileLog.Write($"[DirectorHub] Hello REJECTED (missing directorId): conn={Short(Context.ConnectionId)}");
             Context.Abort();
-            return;
+            return null;
         }
 
         var directorId = hello.DirectorId.Trim();
@@ -159,7 +170,7 @@ public sealed class DirectorHub : Hub
         {
             FileLog.Write($"[DirectorHub] Hello REJECTED (conn already bound to {alreadyBound}, cannot re-claim {directorId}): conn={Short(Context.ConnectionId)}");
             Context.Abort();
-            return;
+            return null;
         }
 
         // Hosted Multi-Tenancy increment 1: resolve the tenant this connection belongs to ONCE, here at bind
@@ -172,7 +183,7 @@ public sealed class DirectorHub : Hub
         {
             FileLog.Write($"[DirectorHub] Hello REJECTED (hosted: the authenticated device key resolves to no tenant): conn={Short(Context.ConnectionId)}");
             Context.Abort();
-            return;
+            return null;
         }
         Context.Items[DirectorIdItemKey] = directorId;
         Context.Items[TenantIdItemKey] = tenant;
@@ -196,6 +207,49 @@ public sealed class DirectorHub : Hub
         _registry.RegisterFromStream(directorId, hello.MachineName, hello.User, hello.Version, hello.Pid, hello.StartedAt, tenant,
             hello.DisplayName);
         FileLog.Write($"[DirectorHub] Hello: director={directorId} bound to conn={Short(Context.ConnectionId)} (version={hello.Version}, machine={hello.MachineName})");
+        return Capabilities;
+    }
+
+    /// <summary>
+    /// This Gateway's capabilities, computed ONCE from the hub itself.
+    ///
+    /// The method list is REFLECTED, never hand-maintained. A hand-written list is a second statement
+    /// of the same fact, and the two drift the moment someone adds a hub method and does not think to
+    /// update it - at which point the Director is told a method is missing that is right there, or
+    /// worse, told one exists that does not. Reflection cannot be wrong about what this class exposes.
+    /// </summary>
+    private static readonly GatewayCapabilities Capabilities = BuildCapabilities();
+
+    private static GatewayCapabilities BuildCapabilities()
+    {
+        // Public instance methods declared on the hub ARE the callable surface; anything inherited
+        // from Hub itself (Dispose, ToString, and friends) is not something a Director invokes.
+        //
+        // The OVERRIDES have to go too, and they are the non-obvious part: OnConnectedAsync and
+        // OnDisconnectedAsync are declared right here, so DeclaredOnly keeps them - but they are
+        // lifecycle callbacks the server calls on itself, and a Director can no more invoke them than
+        // it can invoke Dispose. Detected by asking whether the method's base definition still points
+        // at this type: an override's does not. That covers any future override without naming it.
+        var methods = typeof(DirectorHub)
+            .GetMethods(System.Reflection.BindingFlags.Public
+                        | System.Reflection.BindingFlags.Instance
+                        | System.Reflection.BindingFlags.DeclaredOnly)
+            .Where(m => !m.IsSpecialName)
+            .Where(m => m.GetBaseDefinition().DeclaringType == typeof(DirectorHub))
+            .Select(m => m.Name)
+            .Distinct(StringComparer.Ordinal)
+            .OrderBy(n => n, StringComparer.Ordinal)
+            .ToList();
+
+        return new GatewayCapabilities
+        {
+            Version = Core.Utilities.AppVersion.Semver,
+            // The same source /healthz reads, so the commit a Director is told over the tunnel and the
+            // commit a deploy verifies over HTTP are the same string by construction rather than by
+            // coincidence.
+            Commit = Environment.GetEnvironmentVariable("COCKPIT_COMMIT") ?? "",
+            HubMethods = methods,
+        };
     }
 
     /// <summary>

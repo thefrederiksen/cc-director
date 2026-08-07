@@ -476,6 +476,72 @@ public sealed class GatewayStreamClient : IAsyncDisposable
         }
     }
 
+    /// <summary>
+    /// The hub methods this Director will actually call on a Gateway, and therefore the ones whose
+    /// absence it should say something about. Kept deliberately SHORT: this is not an inventory of
+    /// the hub, it is the list whose absence has a consequence a person needs to hear about.
+    /// </summary>
+    private static readonly string[] MethodsThisDirectorNeeds =
+    {
+        "RegisterSessionKey", "RevokeSessionKey", "PushSnapshot", "PushDelta", "PushRepoSnapshot",
+    };
+
+    /// <summary>The capability line already reported, so a ten-second reseed does not repeat it forever.</summary>
+    private string _lastCapabilityReport = "";
+
+    /// <summary>
+    /// Say ONCE, plainly, what the Gateway on the other end cannot do.
+    ///
+    /// This is the line that did not exist on 2026-08-05. The hosted Gateway predated
+    /// <c>RegisterSessionKey</c>, so this Director kept minting session keys and sending registrations
+    /// that could never be accepted, and every agent it launched was handed a credential answering 401.
+    /// The only trace was a transport-level "Method does not exist" logged every ten seconds by the
+    /// recovery path - true, but describing one failed call rather than the state of the connection
+    /// (#2457, #2459).
+    ///
+    /// A NULL argument is the important case, not an error: a Gateway built before capabilities were
+    /// reported returns nothing from Hello, and that alone dates it before this work.
+    ///
+    /// It only LOGS. Nothing here refuses to mint a key or short-circuits a call - the recovery paths
+    /// already retry every reseed, and a second mechanism deciding the same question would give two
+    /// answers to it. The fix for an out-of-date Gateway is to deploy it, and the point of this line
+    /// is that someone reading the log can tell that is what is needed.
+    ///
+    /// Reported on CHANGE only. The reseed runs every ten seconds and an unchanged fact repeated
+    /// forever is how a log stops being read.
+    /// </summary>
+    private void ReportGatewayCapabilities(GatewayCapabilities? capabilities)
+    {
+        var report = DescribeGatewayCapabilities(capabilities);
+        if (string.Equals(report, _lastCapabilityReport, StringComparison.Ordinal)) return;
+        _lastCapabilityReport = report;
+        FileLog.Write($"[GatewayStreamClient] {report}");
+    }
+
+    /// <summary>
+    /// The sentence <see cref="ReportGatewayCapabilities"/> writes. Pure and separate from the logging
+    /// so the wording - which is the entire value of this feature - can be tested directly rather than
+    /// inferred from a log file.
+    /// </summary>
+    internal static string DescribeGatewayCapabilities(GatewayCapabilities? capabilities)
+    {
+        if (capabilities is null)
+            return "the Gateway did not report its capabilities, so it was built before capability "
+                + "reporting existed - it is OLDER than this Director. If session keys are being refused, "
+                + "this is why, and deploying the Gateway is the fix.";
+
+        var missing = MethodsThisDirectorNeeds
+            .Where(m => !capabilities.HubMethods.Contains(m, StringComparer.Ordinal))
+            .ToArray();
+        var identity = $"Gateway v{capabilities.Version}"
+            + (capabilities.Commit.Length > 0 ? $" ({capabilities.Commit})" : "");
+        return missing.Length == 0
+            ? $"{identity}: has every hub method this Director needs"
+            : $"{identity} is MISSING the hub method(s) this Director needs: {string.Join(", ", missing)}. "
+              + "Calls to them will fail until the Gateway is deployed; a missing RegisterSessionKey "
+              + "means EVERY session's command line will answer 401.";
+    }
+
     private async Task<ReseedReport> ReseedAsync()
     {
         var conn = _connection;
@@ -490,7 +556,10 @@ public sealed class GatewayStreamClient : IAsyncDisposable
             var seq = Interlocked.Increment(ref _sequence);
 
             var helloStarted = DateTime.UtcNow;
-            await conn.InvokeAsync("Hello", new DirectorStreamHello
+            // Invoked GENERICALLY so the Gateway's answer is read. A Gateway too old to return
+            // capabilities returns nothing, which SignalR gives us as null - and null is the answer
+            // that matters. See ReportGatewayCapabilities.
+            var capabilities = await conn.InvokeAsync<GatewayCapabilities?>("Hello", new DirectorStreamHello
             {
                 DirectorId = _directorId,
                 Version = _version,
@@ -501,6 +570,7 @@ public sealed class GatewayStreamClient : IAsyncDisposable
                 DisplayName = ReadDisplayName(),
             });
             awaitGateway += DateTime.UtcNow - helloStarted;
+            ReportGatewayCapabilities(capabilities);
 
             // OUR work, on this machine: assembling the roster. Timed apart from the send because a slow build
             // is a local problem (a starved machine, a lock held too long) and a slow send is the Gateway's -

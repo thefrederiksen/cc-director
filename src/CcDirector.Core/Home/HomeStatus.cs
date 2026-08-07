@@ -166,6 +166,23 @@ public static class HomeStatusBuilder
                 new HomeCheck(SessionsRowTitle, HomeCheckLevel.Bad,
                     $"the command line cannot reach the fleet: {check.Detail}", HomeCheckAction.OpenTools),
 
+            // The Gateway is connected and refusing the key. RED, and routed to SETTINGS rather than
+            // to Tools: OpenTools would send someone to repair an install that has nothing wrong
+            // with it, which is the same wrong-destination mistake #1045 fixed for the row above.
+            // Settings is where the Gateway this Director is attached to is named, which is the one
+            // thing the user can actually act on from here - a Director cannot deploy a Gateway, and
+            // a row that offers nowhere to go reads as broken.
+            //
+            // The sentence names the Gateway because the failure the user has in front of them is an
+            // agent saying DevThrottle is broken, on a machine where nothing is. It also says EVERY
+            // session, because that is the fact that turns this from "my session is odd" into "the
+            // Gateway needs deploying" - one refused session looks like bad luck, all of them do not.
+            Setup.FleetToolVerdict.GatewayRefusedKey =>
+                new HomeCheck(SessionsRowTitle, HomeCheckLevel.Bad,
+                    "the Gateway is refusing this Director's session keys, so EVERY session's "
+                    + "command line answers 401 - the Gateway is out of date and needs deploying",
+                    HomeCheckAction.OpenSettings),
+
             // No Gateway means no agent tooling - the accepted trade, not a fault in the install.
             // No row, matching what this page has always done for the standalone state: a local-only
             // machine must not carry a standing warning for a configuration it chose, and painting the
