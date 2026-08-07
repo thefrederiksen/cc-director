@@ -83,7 +83,10 @@ def wired(monkeypatch):
             "previousMissionName": "Voice cleanup",
         }
 
-    monkeypatch.setattr(mission_ops.MissionClient, "list_all", lambda self: list(MISSIONS))
+    # list_all now takes a state filter (missions can be completed or removed); the resolver asks
+    # for "all" so an ended mission can still be renamed or reopened.
+    monkeypatch.setattr(mission_ops.MissionClient, "list_all",
+                        lambda self, state=None: list(MISSIONS))
     monkeypatch.setattr(mission_ops.MissionClient, "__init__", lambda self, base_url=None: None)
     monkeypatch.setattr(session_ops.gateway, "get_fleet", lambda: (list(ROSTER), True, None, None))
     monkeypatch.setattr(session_ops.gateway, "post_json", fake_post_json)
@@ -201,7 +204,10 @@ def test_a_remote_attach_still_reports_the_mission_it_left(monkeypatch, capsys, 
     # about that session, so nothing on the return path knows what the session left. The roster row
     # the caller was just resolved against does, so the move is still visible rather than silently
     # reported as a plain attach.
-    monkeypatch.setattr(mission_ops.MissionClient, "list_all", lambda self: list(MISSIONS))
+    # list_all now takes a state filter (missions can be completed or removed); the resolver asks
+    # for "all" so an ended mission can still be renamed or reopened.
+    monkeypatch.setattr(mission_ops.MissionClient, "list_all",
+                        lambda self, state=None: list(MISSIONS))
     monkeypatch.setattr(mission_ops.MissionClient, "__init__", lambda self, base_url=None: None)
     monkeypatch.setattr(
         session_ops.gateway, "get_fleet",
@@ -231,7 +237,10 @@ def test_a_remote_attach_still_reports_the_mission_it_left(monkeypatch, capsys, 
 
 
 def _wire(monkeypatch, response):
-    monkeypatch.setattr(mission_ops.MissionClient, "list_all", lambda self: list(MISSIONS))
+    # list_all now takes a state filter (missions can be completed or removed); the resolver asks
+    # for "all" so an ended mission can still be renamed or reopened.
+    monkeypatch.setattr(mission_ops.MissionClient, "list_all",
+                        lambda self, state=None: list(MISSIONS))
     monkeypatch.setattr(mission_ops.MissionClient, "__init__", lambda self, base_url=None: None)
     monkeypatch.setattr(session_ops.gateway, "get_fleet", lambda: (list(ROSTER), True, None, None))
     monkeypatch.setattr(
