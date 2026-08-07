@@ -763,6 +763,21 @@ _ACTIONS = [
         "mutatesState": True,
         "args": [{"name": "terms", "required": True}],
     },
+    {
+        "id": "dictionary-additions",
+        "description": (
+            "List every word an AGENT added to the dictation dictionary - when, and which session "
+            "added it - so a bad entry can be traced and its whole batch found. Shows only what "
+            "agents added, never the person's own terms. Finding is not removing: the person prunes "
+            "in the Cockpit editor."
+        ),
+        "command": "cc-devthrottle dictionary additions [--session <id>] [--json]",
+        "mutatesState": False,
+        "args": [
+            {"name": "session", "required": False},
+            {"name": "json", "required": False},
+        ],
+    },
 ]
 
 
@@ -862,6 +877,24 @@ def dictionary_add(
     list attached to one. The person prunes the dictionary in the Cockpit editor.
     """
     dictionary_ops.add_command(terms)
+
+
+@dictionary_app.command("additions")
+def dictionary_additions(
+    session: str = typer.Option(
+        "", "--session", help="Only terms added by this session (full id or an id prefix)."
+    ),
+    json_output: bool = typer.Option(False, "--json", "-j", help="Output as JSON."),
+) -> None:
+    """List every word an AGENT added to the dictionary - when, and which session added it.
+
+    This is how a bad entry gets traced and swept: find the session that added it, see the rest of
+    that session's batch, and hand it to the person to prune in the Cockpit editor. It shows only
+    what agents added - the person's own terms and the wrong-spellings lists are not in this trail.
+
+    You can find a bad batch here. You cannot remove one - that stays the person's.
+    """
+    dictionary_ops.additions_command(session, json_output)
 
 
 @app.callback()

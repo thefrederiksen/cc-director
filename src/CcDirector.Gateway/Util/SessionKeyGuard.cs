@@ -86,9 +86,10 @@ public static class SessionKeyGuard
         if (segments.Length >= 2 && segments[0] == "ingest" && segments[1] == "dictionary")
             return SessionKeyVerdict.Refuse(
                 $"a session key may not call {verb} {p}; the dictation dictionary is ADD ONLY for an agent - " +
-                "POST /ingest/dictionary/terms with a 'terms' list adds words, and nothing else on this " +
-                "surface is open to a session key, so an agent can never delete, rename or overwrite a term " +
-                "the person relies on. Prune in the Cockpit dictionary editor");
+                "POST /ingest/dictionary/terms with a 'terms' list adds words, and GET " +
+                "/ingest/dictionary/additions reads back what agents added. Nothing else on this surface is " +
+                "open to a session key, so an agent can never delete, rename or overwrite a term the person " +
+                "relies on. Prune in the Cockpit dictionary editor");
 
         return SessionKeyVerdict.Refuse(
             $"a session key may not call {verb} {p}; it may run the fleet's agent routes and configure the " +
@@ -151,6 +152,10 @@ public static class SessionKeyGuard
             // The automation browsers on one Director's machine. See IsBrowserRoute for how the /directors
             // surface is split between configuration and admission.
             if (IsBrowserRoute(verb, s)) return true;
+
+            // What agents added to the dictation dictionary, and which one added it. See
+            // IsDictionaryAdditionTrail for why this ONE read is open while the glossary itself is not.
+            if (IsDictionaryAdditionTrail(verb, s)) return true;
 
             // Configuration, read side. A Director's settings, the application's own settings, and the
             // handovers on a Director - all three by the owner's ruling that an agent configures the product.
@@ -395,6 +400,31 @@ public static class SessionKeyGuard
     /// </summary>
     private static bool IsDictionaryAdd(string verb, string[] s)
         => verb == "POST" && s.Length == 3 && s[0] == "ingest" && s[1] == "dictionary" && s[2] == "terms";
+
+    /// <summary>
+    /// READING BACK WHAT AGENTS ADDED - <c>GET /ingest/dictionary/additions</c>, and nothing else.
+    ///
+    /// WHY A READ IS OPEN HERE WHEN <c>GET /ingest/dictionary</c> IS REFUSED. These are not the same kind of
+    /// thing, and the difference is whose material each one holds. The glossary is the OWNER's: his
+    /// hand-added terms, his wrong-spellings lists, the corrections he curates. The addition trail holds
+    /// exactly one thing - what AGENTS wrote - because a person adding a term through the Cockpit is not a
+    /// session and leaves no entry at all. So this route lets agents read back agents' own writes, and
+    /// reaches none of the owner's material; opening the glossary would reach all of it.
+    ///
+    /// WHY IT IS NOT OPTIONAL. The owner's ruling asks that a bad entry can be "traced AND swept". Writing
+    /// the trail satisfies only the first verb. A record no tooling can read is a file somebody has to go
+    /// and find on disk, and the traceability that was traded for removing the confirmation step would have
+    /// been nominal - which is the whole reason the ruling asked for it.
+    ///
+    /// FINDING IS NOT ACTING. There is no verb here to remove what this read finds, and there deliberately
+    /// is not one: pruning stays the person's, in the Cockpit editor. This route makes a bad batch
+    /// FINDABLE and stops there.
+    ///
+    /// Matched by exact length so a sibling hung off it later is refused until classified on purpose.
+    /// </summary>
+    private static bool IsDictionaryAdditionTrail(string verb, string[] s)
+        => verb is "GET" or "HEAD"
+           && s.Length == 3 && s[0] == "ingest" && s[1] == "dictionary" && s[2] == "additions";
 
     /// <summary>The read shapes of the shared skill/workflow catalogue.</summary>
     private static bool IsCatalogueRead(string[] s)

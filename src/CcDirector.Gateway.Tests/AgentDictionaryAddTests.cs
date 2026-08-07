@@ -339,4 +339,103 @@ public sealed class AgentDictionaryAddTests : IAsyncLifetime
         Assert.Contains("Kubernetes", await Vocabulary(_personA));
         Assert.Empty(GlossaryAdditionLog.Read(_tenantA));
     }
+
+    // ---------- THE TRAIL CAN BE READ, WHICH IS WHAT MAKES IT A SWEEP ----------
+
+    /// <summary>The ruling asks that a bad entry can be traced AND SWEPT. Writing the trail satisfies only
+    /// the first verb; until it can be read it is a file somebody has to find on disk. This is the read.</summary>
+    [Fact]
+    public async Task An_agent_can_read_back_what_agents_added()
+    {
+        (await _agentA.PostAsync("ingest/dictionary/terms", Body("{\"terms\":[\"Kubernetes\",\"Helm\"]}")))
+            .EnsureSuccessStatusCode();
+
+        var resp = await _agentA.GetAsync("ingest/dictionary/additions");
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+        using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
+
+        Assert.Equal(2, doc.RootElement.GetProperty("count").GetInt32());
+        var entries = doc.RootElement.GetProperty("additions").EnumerateArray().ToArray();
+        // Newest first, so the batch somebody just noticed is at the top.
+        Assert.Equal("Helm", entries[0].GetProperty("term").GetString());
+        Assert.Equal("Kubernetes", entries[1].GetProperty("term").GetString());
+        Assert.All(entries, e => Assert.Equal(_sessionA.ToString(), e.GetProperty("sessionId").GetString()));
+        Assert.All(entries, e => Assert.Equal("director-a", e.GetProperty("directorId").GetString()));
+    }
+
+    /// <summary>The sweep it has to support: two sessions added words, and the trail says which was which,
+    /// so ONE session's bad batch can be picked out rather than the person having to distrust the lot.</summary>
+    [Fact]
+    public async Task The_trail_separates_one_sessions_batch_from_anothers()
+    {
+        var (sessionTwo, agentTwo) = LiveSessionIn(_tenantA, "director-b");
+        using var second = agentTwo;
+
+        (await _agentA.PostAsync("ingest/dictionary/terms", Body("{\"terms\":[\"Kubernetes\"]}"))).EnsureSuccessStatusCode();
+        (await second.PostAsync("ingest/dictionary/terms", Body("{\"terms\":[\"Kubernetees\",\"Kuberentes\"]}"))).EnsureSuccessStatusCode();
+
+        var resp = await _agentA.GetAsync("ingest/dictionary/additions");
+        using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
+        var entries = doc.RootElement.GetProperty("additions").EnumerateArray().ToArray();
+
+        var badBatch = entries
+            .Where(e => e.GetProperty("sessionId").GetString() == sessionTwo.ToString())
+            .Select(e => e.GetProperty("term").GetString())
+            .OrderBy(t => t)
+            .ToArray();
+
+        Assert.Equal(new[] { "Kuberentes", "Kubernetees" }, badBatch);
+        Assert.Single(entries, e => e.GetProperty("sessionId").GetString() == _sessionA.ToString());
+    }
+
+    /// <summary>The trail is partitioned like the glossary it describes: one account's agents never see
+    /// another account's additions.</summary>
+    [Fact]
+    public async Task One_tenants_trail_is_invisible_to_another()
+    {
+        (await _agentA.PostAsync("ingest/dictionary/terms", Body("{\"terms\":[\"alphaonlyagentterm\"]}")))
+            .EnsureSuccessStatusCode();
+
+        var (_, agentB) = LiveSessionIn(_tenantB, "director-b");
+        using var otherAccount = agentB;
+
+        var resp = await otherAccount.GetAsync("ingest/dictionary/additions");
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+        Assert.DoesNotContain("alphaonlyagentterm", await resp.Content.ReadAsStringAsync());
+    }
+
+    /// <summary>Reading the trail is not reading the dictionary. The trail holds only what AGENTS wrote, so
+    /// the owner's own curation stays out of reach of a session key - which is the whole reason this one
+    /// read could be opened while GET /ingest/dictionary stays refused.</summary>
+    [Fact]
+    public async Task The_trail_does_not_expose_the_persons_own_terms()
+    {
+        (await _personA.PostAsync("ingest/dictionary/terms",
+            Body("{\"terms\":[\"PersonsPrivateTerm\"],\"mistranscriptions\":{\"PersonsPrivateTerm\":[\"Mangled\"]}}")))
+            .EnsureSuccessStatusCode();
+        (await _agentA.PostAsync("ingest/dictionary/terms", Body("{\"terms\":[\"Kubernetes\"]}"))).EnsureSuccessStatusCode();
+
+        var body = await (await _agentA.GetAsync("ingest/dictionary/additions")).Content.ReadAsStringAsync();
+
+        Assert.Contains("Kubernetes", body);
+        Assert.DoesNotContain("PersonsPrivateTerm", body);
+        Assert.DoesNotContain("Mangled", body);
+    }
+
+    /// <summary>Finding is not acting. The trail read offers no way to act on what it finds - removal stays
+    /// the person's, in the Cockpit editor.</summary>
+    [Theory]
+    [InlineData("POST", "ingest/dictionary/additions")]
+    [InlineData("PUT", "ingest/dictionary/additions")]
+    [InlineData("DELETE", "ingest/dictionary/additions")]
+    public async Task The_trail_cannot_be_written_or_swept_by_an_agent(string method, string path)
+    {
+        var request = new HttpRequestMessage(new HttpMethod(method), path);
+        if (method is "PUT" or "POST") request.Content = Body("{}");
+
+        var resp = await _agentA.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.Forbidden, resp.StatusCode);
+        Assert.Contains("session_key_out_of_scope", await resp.Content.ReadAsStringAsync());
+    }
 }

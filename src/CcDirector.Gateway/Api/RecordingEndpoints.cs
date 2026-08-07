@@ -419,6 +419,35 @@ internal static class RecordingEndpoints
             }
         });
 
+        // WHAT AGENTS ADDED, AND WHICH ONE ADDED IT - the READ half of the traceability the owner's
+        // ruling asks for (issue #2484). Newest first.
+        //
+        // WHY THIS ROUTE HAD TO EXIST. The ruling says a bad entry must be able to be "traced AND swept".
+        // Writing the trail satisfies only the first verb: a record nothing can read is a file somebody has
+        // to go and find on disk, which is not a sweep, and the traceability the ruling traded the
+        // confirmation step for would have been nominal.
+        //
+        // WHY A SESSION KEY MAY READ IT, WHEN IT MAY NOT READ THE GLOSSARY. This serves the addition trail
+        // ONLY, and the trail contains exactly one thing: what AGENTS wrote. A person adding a term through
+        // the Cockpit is not a session and leaves no entry (asserted in AgentDictionaryAddTests), so the
+        // owner's own curation - his hand-added terms and every wrong-spellings list - is not in this file
+        // and is not reachable through this route. Letting agents read back what agents wrote exposes none
+        // of the owner's material, which is why this is not the widening that opening GET /ingest/dictionary
+        // would be. That route stays refused.
+        //
+        // Removal is still the person's, in the Cockpit editor. This route makes a bad batch FINDABLE; it
+        // deliberately offers no way to act on what it finds.
+        app.MapGet("/dictionary/additions", (HttpContext ctx) =>
+        {
+            var t = GatewayEndpoints.ResolveReadTenant(ctx, tenantBoundary);
+            if (t is null) return TenantRequired();
+            var entries = GlossaryAdditionLog.Read(t.Value)
+                .Reverse()
+                .Select(e => new GlossaryAdditionDto(e.AddedAtUtc, e.Term, e.SessionId, e.DirectorId))
+                .ToList();
+            return Results.Json(new GlossaryAdditionsResponse(entries, entries.Count));
+        });
+
         // ===== Dictionary suggestions API (devthrottle #2075) ================
         // The server mines this tenant's stored transcripts for terms the model keeps getting wrong that are
         // not yet in the glossary, and offers them for one-press addition. Everything the Dictionary page does
@@ -970,6 +999,17 @@ internal sealed record DictionaryProfileDto(bool CleanupEnabled);
 internal sealed record DictionaryAddRequest(
     List<string>? Terms,
     Dictionary<string, List<string>>? Mistranscriptions);
+
+/// <summary>One entry of GET /ingest/dictionary/additions - a word an agent added, and which one (#2484).</summary>
+internal sealed record GlossaryAdditionDto(
+    DateTime AddedAtUtc,
+    string Term,
+    string SessionId,
+    string DirectorId);
+
+/// <summary>GET /ingest/dictionary/additions - what agents added to this tenant's glossary, newest first,
+/// plus the count (the client never re-derives it - rule 7).</summary>
+internal sealed record GlossaryAdditionsResponse(List<GlossaryAdditionDto> Additions, int Count);
 
 // ===== Dictionary suggestions DTOs (devthrottle #2075) ==================================================
 

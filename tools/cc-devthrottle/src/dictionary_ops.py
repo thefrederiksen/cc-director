@@ -7,12 +7,21 @@ true: no command existed, and the Gateway refused a session key on the term endp
 The owner ruled on 2026-08-07 that agents MAY add words, with no confirmation step in the way -
 being asked to confirm every time is worse than the occasional stray entry.
 
-ADD ONLY, AND THAT IS THE WHOLE VERB. There is deliberately no `dictionary remove`, no
-`dictionary set`, and no `dictionary list` here, because the Gateway refuses a session key on
-every one of those. A session key may add a term and nothing else: it can never delete, rename or
-overwrite an existing term, and it can never touch the wrong-spellings list attached to one. So
-the worst an agent can do is leave a stray extra word, and the person prunes in the Cockpit
-dictionary editor exactly as they would a word they typed in themselves.
+TWO VERBS: `add`, and `additions` to read back what agents added. There is deliberately no
+`dictionary remove`, no `dictionary set`, and no `dictionary list` of the glossary itself, because
+the Gateway refuses a session key on every one of those. A session key may add a term and read the
+addition trail: it can never delete, rename or overwrite an existing term, and it can never touch
+the wrong-spellings list attached to one. So the worst an agent can do is leave a stray extra word,
+and the person prunes in the Cockpit dictionary editor exactly as they would a word they typed in
+themselves.
+
+WHY `additions` EXISTS. The owner's ruling asks that a bad entry can be traced AND SWEPT. A record
+that nothing can read is a file somebody would have to go and find on disk, which satisfies the
+first verb and not the second. `additions` names every word an agent added, when, and which session
+added it - so one session's bad batch can be picked out and handed to the person to prune, rather
+than the person having to distrust the whole list. Note what it does NOT show: the person's own
+terms, and every wrong-spellings list, are not in the trail at all (a person's edit leaves no
+entry), which is exactly why this read could be opened while the glossary itself stays closed.
 
 SPELL IT THE WAY IT IS WRITTEN DOWN. The spelling you add becomes the canonical one, and the
 failure mode the owner named is a word that arrived through dictation ALREADY MANGLED being added
@@ -28,7 +37,9 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 import typer
+from rich import box
 from rich.console import Console
+from rich.table import Table
 
 # Make cc_shared importable when running from source, matching the existing cc-* tools.
 _tools_dir = str(Path(__file__).resolve().parent.parent.parent)
@@ -114,4 +125,68 @@ def add_command(terms: List[str]) -> None:
     console.print(
         "[dim]The person prunes this list in the Cockpit dictionary editor. You can add words; "
         "you cannot remove or change one.[/dim]"
+    )
+
+
+ADDITIONS_PATH = "/ingest/dictionary/additions"
+
+
+def read_additions() -> List[Dict[str, Any]]:
+    """Every word an agent added to this account's glossary, newest first."""
+    result = gateway.get_json(ADDITIONS_PATH)
+    if not isinstance(result, dict):
+        return []
+    entries = result.get("additions")
+    return entries if isinstance(entries, list) else []
+
+
+def additions_command(session: str = "", json_output: bool = False) -> None:
+    """`cc-devthrottle dictionary additions [--session <id>] [--json]`.
+
+    The sweep half of the traceability. `--session` matches a full id or an id prefix, which is how
+    the fleet addresses a session everywhere else - somebody chasing a bad batch has the short id
+    from the roster, not the full one.
+    """
+    try:
+        entries = read_additions()
+    except GatewayError as err:
+        err_console.print(f"[red]{err}[/red]")
+        raise typer.Exit(code=1)
+
+    wanted = (session or "").strip().lower()
+    if wanted:
+        entries = [e for e in entries if str(e.get("sessionId", "")).lower().startswith(wanted)]
+
+    if json_output:
+        import json as _json
+
+        console.print_json(_json.dumps(entries))
+        return
+
+    # Say the empty case in words rather than printing an empty table. "No agent has added a word"
+    # and "the filter matched nothing" are different facts, and a reader chasing a bad entry needs
+    # to know which one they are looking at.
+    if not entries:
+        if wanted:
+            console.print(f"No agent-added terms from a session matching '{session}'.")
+        else:
+            console.print("No agent has added a term to this account's dictation dictionary.")
+        return
+
+    table = Table(box=box.SIMPLE, header_style="bold")
+    table.add_column("Added (UTC)")
+    table.add_column("Term")
+    table.add_column("Session")
+    table.add_column("Director")
+    for entry in entries:
+        table.add_row(
+            str(entry.get("addedAtUtc", ""))[:19].replace("T", " "),
+            str(entry.get("term", "")),
+            str(entry.get("sessionId", ""))[:8],
+            str(entry.get("directorId", "")),
+        )
+    console.print(table)
+    console.print(
+        "[dim]Newest first. To remove a bad entry, the person deletes it in the Cockpit dictionary "
+        "editor - an agent can find a bad batch here but cannot sweep it.[/dim]"
     )

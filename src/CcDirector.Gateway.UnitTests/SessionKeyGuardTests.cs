@@ -219,8 +219,31 @@ public sealed class SessionKeyGuardTests
     public void A_session_may_add_a_dictionary_term()
     {
         // The owner's ruling of 2026-08-07: an agent may add words to the dictation dictionary, with no
-        // confirmation step in the way. This is the ONE route that grant opens.
+        // confirmation step in the way. This is the ONE write route that grant opens.
         Assert.True(SessionKeyGuard.Check("POST", "/ingest/dictionary/terms").Allowed);
+    }
+
+    [Fact]
+    public void A_session_may_read_back_what_agents_added_but_not_the_glossary()
+    {
+        // The pair that carries the whole shape of the grant, and the one a later edit is most likely to
+        // collapse into "the dictionary is readable". It is not. The ADDITION TRAIL is open because it holds
+        // only what agents wrote - a person's own edit leaves no entry - so an agent reads back agents'
+        // writes and reaches none of the owner's curation. The GLOSSARY holds the owner's hand-added terms
+        // and every wrong-spellings list, and stays refused.
+        Assert.True(SessionKeyGuard.Check("GET", "/ingest/dictionary/additions").Allowed);
+        Assert.False(SessionKeyGuard.Check("GET", "/ingest/dictionary").Allowed);
+    }
+
+    [Fact]
+    public void The_addition_trail_is_readable_and_nothing_more()
+    {
+        // Finding is not acting. There is deliberately no verb to remove what the trail finds - pruning is
+        // the person's, in the Cockpit editor - so every write shape on this path is refused.
+        Assert.False(SessionKeyGuard.Check("POST", "/ingest/dictionary/additions").Allowed);
+        Assert.False(SessionKeyGuard.Check("PUT", "/ingest/dictionary/additions").Allowed);
+        Assert.False(SessionKeyGuard.Check("DELETE", "/ingest/dictionary/additions").Allowed);
+        Assert.False(SessionKeyGuard.Check("GET", "/ingest/dictionary/additions/sweep").Allowed);
     }
 
     [Theory]

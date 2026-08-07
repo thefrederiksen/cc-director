@@ -164,9 +164,19 @@ refuses every one of those to a session key, so the worst you can do here is lea
 word, and a correction the person relies on can never be lost. The person prunes the list in the
 Cockpit dictionary editor, where anything you added looks exactly like a word they typed themselves.
 
-**Which session added which word is recorded.** Because nothing confirms an addition at the time,
-the Gateway notes the adding session beside that account's glossary, so a bad entry can be traced
-back and swept later. Add carefully - the note says who did it.
+**Which session added which word is recorded, and you can read it back.** Because nothing confirms
+an addition at the time, the Gateway notes the adding session beside that account's glossary:
+
+```
+cc-devthrottle dictionary additions
+cc-devthrottle dictionary additions --session 9b2f     # one session's batch
+```
+
+That is how a bad entry gets traced and swept - find the session that added it, see the rest of what
+that session added, and hand the batch to the person to prune. Add carefully: the note says who did
+it. The trail shows only what AGENTS added; the person's own terms and every wrong-spellings list
+are not in it, which is why you can read this while the dictionary itself stays closed to you. You
+can find a bad batch; you cannot remove one.
 
 ## Closing a session - yours and the ones you started
 
@@ -235,12 +245,14 @@ use the identity the preamble gave you. If no user is named (nobody signed in), 
 
 **Skill Version:** 6.1 (an agent can teach dictation a word)
 **Last Updated:** 2026-08-07
-**Changes in 6.1:** Added "Teaching dictation a word" - `cc-devthrottle dictionary add`, the owner's
-ruling of 2026-08-07 (issue #2484). An agent may add words to the dictation dictionary with no
-confirmation step; the grant is ADD ONLY (no delete, rename, overwrite, or wrong-spellings edit) and
-the adding session is recorded. The spelling instruction lives here rather than in a runtime prompt,
-because a rule an agent reads before it acts is the only kind that can stop a mangled word being
-added as canonical.
+**Changes in 6.1:** Added "Teaching dictation a word" - `cc-devthrottle dictionary add` and
+`dictionary additions`, the owner's ruling of 2026-08-07 (issue #2484). An agent may add words to the
+dictation dictionary with no confirmation step; the grant is ADD ONLY (no delete, rename, overwrite,
+or wrong-spellings edit), the adding session is recorded, and that trail is readable so a bad entry
+can be traced and its batch swept - the ruling asks for both verbs, and writing a record nothing can
+read would satisfy only the first. The spelling instruction lives here rather than in a runtime
+prompt, because a rule an agent reads before it acts is the only kind that can stop a mangled word
+being added as canonical.
 **Changes in 6.0:** The remove-the-network-port mission deleted the Director's listener entirely.
 There is no loopback floor, no `/healthz`, no `/fleet/*` relay, no `/reconnect`, no local settings
 routes, and no `CC_DIRECTOR_API` or `CC_DIRECTOR_TOKEN` in any session's environment. Agents reach
