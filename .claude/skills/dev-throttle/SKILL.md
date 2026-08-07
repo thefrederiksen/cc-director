@@ -136,6 +136,38 @@ An unregistered name fails loudly, and a name matching two Directors fails listi
 falls back to another Director - if you get one of those errors, run `director list` and pick, rather
 than dropping the flag and spawning wherever.
 
+## Teaching dictation a word: `cc-devthrottle dictionary add`
+
+DevThrottle cleans up what it hears against a per-account glossary of words the person cares about -
+product names, surnames, repositories, tools. When the person says a word the transcriber keeps
+getting wrong, or when you notice one, add it:
+
+```
+cc-devthrottle dictionary add "Kubernetes"
+cc-devthrottle dictionary add "mindzie" "DevThrottle" "Frederiksen"
+```
+
+There is no confirmation step and you do not need to ask. The owner ruled on 2026-08-07 that being
+asked to confirm every addition is worse than the occasional stray entry, so just add the word.
+
+**SPELL IT THE WAY IT IS WRITTEN DOWN.** This is the one thing that can go wrong here, and it is
+yours to get right. The spelling you add becomes the CANONICAL one - it is what dictation will
+correct other spellings *to*. A word that reached you THROUGH dictation may already be mangled, and
+adding that mangled spelling as canonical teaches the transcriber the error instead of the fix. So
+take the spelling from something you can SEE: the repository in front of you, the code, the file
+name, the product's own page. Never add a spelling you only heard. If you are not sure how a word is
+written, look it up before adding it, or do not add it.
+
+**ADD ONLY - and that is deliberate, not a gap.** You can add a term. You CANNOT remove one, rename
+one, overwrite one, or touch the wrong-spellings list attached to an existing term. The Gateway
+refuses every one of those to a session key, so the worst you can do here is leave a stray extra
+word, and a correction the person relies on can never be lost. The person prunes the list in the
+Cockpit dictionary editor, where anything you added looks exactly like a word they typed themselves.
+
+**Which session added which word is recorded.** Because nothing confirms an addition at the time,
+the Gateway notes the adding session beside that account's glossary, so a bad entry can be traced
+back and swept later. Add carefully - the note says who did it.
+
 ## Closing a session - yours and the ones you started
 
 A session can close itself. When an agent has finished its work and nothing is waiting on the
@@ -201,8 +233,14 @@ use the identity the preamble gave you. If no user is named (nobody signed in), 
 - It does not replace the **fleet-comms** skill, which is the full reference for `cc-devthrottle`.
 
 
-**Skill Version:** 6.0 (no Director listener)
-**Last Updated:** 2026-08-03
+**Skill Version:** 6.1 (an agent can teach dictation a word)
+**Last Updated:** 2026-08-07
+**Changes in 6.1:** Added "Teaching dictation a word" - `cc-devthrottle dictionary add`, the owner's
+ruling of 2026-08-07 (issue #2484). An agent may add words to the dictation dictionary with no
+confirmation step; the grant is ADD ONLY (no delete, rename, overwrite, or wrong-spellings edit) and
+the adding session is recorded. The spelling instruction lives here rather than in a runtime prompt,
+because a rule an agent reads before it acts is the only kind that can stop a mangled word being
+added as canonical.
 **Changes in 6.0:** The remove-the-network-port mission deleted the Director's listener entirely.
 There is no loopback floor, no `/healthz`, no `/fleet/*` relay, no `/reconnect`, no local settings
 routes, and no `CC_DIRECTOR_API` or `CC_DIRECTOR_TOKEN` in any session's environment. Agents reach

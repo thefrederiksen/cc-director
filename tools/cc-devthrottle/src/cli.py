@@ -12,6 +12,7 @@ from rich.table import Table
 from . import __version__
 from . import browser_ops
 from . import diag_ops
+from . import dictionary_ops
 from . import email_ops
 from . import mission_ops
 from . import schedule_ops
@@ -93,6 +94,14 @@ autostart_app = typer.Typer(
     add_completion=False,
     no_args_is_help=True,
 )
+dictionary_app = typer.Typer(
+    # ADD is the only verb, and the help says so, because the Gateway refuses a session key on every
+    # other shape of this surface. A command list that offered "remove" and then failed with 403 would
+    # read as a broken tool rather than as the line the owner deliberately drew (issue #2484).
+    help="Add words to the dictation dictionary. ADD ONLY - a person prunes it in the Cockpit editor.",
+    add_completion=False,
+    no_args_is_help=True,
+)
 browser_app = typer.Typer(
     # The verb stays "browser": it is the resource name agents already hold, in the actions registry
     # and in the attach command baked into the fold. The HELP says "profile", which is what the thing
@@ -117,6 +126,7 @@ app.add_typer(email_app, name="email")
 app.add_typer(diag_app, name="diag")
 app.add_typer(autostart_app, name="autostart")
 app.add_typer(browser_app, name="browser")
+app.add_typer(dictionary_app, name="dictionary")
 console = Console()
 
 _ACTIONS = [
@@ -741,6 +751,18 @@ _ACTIONS = [
         "mutatesState": True,
         "args": [],
     },
+    {
+        "id": "dictionary-add",
+        "description": (
+            "Add a word to the dictation dictionary so dictation stops getting it wrong. ADD ONLY: "
+            "an agent cannot remove, rename or overwrite a term, and the person prunes the list in "
+            "the Cockpit editor. Add a spelling you can SEE WRITTEN DOWN - a word that reached you "
+            "through dictation may already be mangled, and the spelling you add becomes canonical."
+        ),
+        "command": 'cc-devthrottle dictionary add "Kubernetes"',
+        "mutatesState": True,
+        "args": [{"name": "terms", "required": True}],
+    },
 ]
 
 
@@ -823,6 +845,23 @@ def browser_remove(
 ) -> None:
     """Stop the browser, delete its folder, and drop it from the registry."""
     browser_ops.remove_browser(name, json_output)
+
+
+@dictionary_app.command("add")
+def dictionary_add(
+    terms: List[str] = typer.Argument(..., help="One or more words or phrases to add."),
+) -> None:
+    """Add words to this account's dictation dictionary, so dictation stops getting them wrong.
+
+    SPELL IT THE WAY IT IS WRITTEN DOWN. The spelling you add becomes the canonical one, and a word
+    that reached you THROUGH dictation may already be mangled - adding that is the failure this
+    warning exists for. Take the spelling from the repository, the code, or the product name in
+    front of you, never from something you only heard.
+
+    ADD ONLY. You cannot remove, rename or overwrite a term, and you cannot touch the wrong-spellings
+    list attached to one. The person prunes the dictionary in the Cockpit editor.
+    """
+    dictionary_ops.add_command(terms)
 
 
 @app.callback()

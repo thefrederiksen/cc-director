@@ -39,7 +39,9 @@ public readonly record struct SessionKeyVerdict(bool Allowed, string Reason)
 /// to end a session (<c>request-deletion</c>), and this one is flagged to the owner as a line he may want
 /// moved. Also still refused, for the separate reason that they are not configuration at all: the
 /// diagnostics surface, and voice, dictation and transcription DATA - note the distinction from the voice
-/// SETTINGS above, which say how the product should behave and are therefore allowed.
+/// SETTINGS above, which say how the product should behave and are therefore allowed. There is exactly ONE
+/// opening in that dictation surface, <c>POST /ingest/dictionary/terms</c>, and it is an ADD ONLY grant -
+/// see <see cref="IsDictionaryAdd"/>.
 ///
 /// WHAT CHANGED, AND WHY THIS PARAGRAPH WAS REWRITTEN RATHER THAN AMENDED. Phase 1b refused the whole
 /// <c>/directors</c> surface bar two sub-paths, and said so here in prose. The owner's ruling reverses that
@@ -76,6 +78,17 @@ public static class SessionKeyGuard
 
         if (IsAllowed(verb, segments))
             return SessionKeyVerdict.Allow;
+
+        // A refusal on the dictation surface gets its OWN sentence, because the general one would send the
+        // reader somewhere the truth is not. An agent that tried to replace the glossary has not run into
+        // the admission boundary, and telling it about device enrollment and billing would have it hunting a
+        // credential problem instead of reading the one line that answers it: the grant here is add only.
+        if (segments.Length >= 2 && segments[0] == "ingest" && segments[1] == "dictionary")
+            return SessionKeyVerdict.Refuse(
+                $"a session key may not call {verb} {p}; the dictation dictionary is ADD ONLY for an agent - " +
+                "POST /ingest/dictionary/terms with a 'terms' list adds words, and nothing else on this " +
+                "surface is open to a session key, so an agent can never delete, rename or overwrite a term " +
+                "the person relies on. Prune in the Cockpit dictionary editor");
 
         return SessionKeyVerdict.Refuse(
             $"a session key may not call {verb} {p}; it may run the fleet's agent routes and configure the " +
@@ -206,6 +219,9 @@ public static class SessionKeyGuard
             // Write a handover. This is the one that makes moving a session possible without the owner
             // opening the interface, which is the whole point of the ruling.
             if (IsHandoverWrite(s)) return true;
+
+            // Add a word to the dictation dictionary.
+            if (IsDictionaryAdd(verb, s)) return true;
 
             return false;
         }
@@ -348,6 +364,37 @@ public static class SessionKeyGuard
     /// <summary>Creating or removing a handover, both at <c>/directors/{id}/handovers</c> exactly.</summary>
     private static bool IsHandoverWrite(string[] s)
         => s.Length == 3 && s[0] == "directors" && s[2] == "handovers";
+
+    /// <summary>
+    /// ADDING A WORD TO THE DICTATION DICTIONARY - <c>POST /ingest/dictionary/terms</c>, and nothing else
+    /// anywhere under <c>/ingest</c>. The owner's ruling of 2026-08-07 (issue #2484).
+    ///
+    /// WHY THIS ONE ROUTE AND NOT THE SURFACE IT SITS ON. The rest of <c>/ingest</c> is the owner's dictation
+    /// audio and his transcripts, which stay refused for the reason the class comment gives. The glossary is
+    /// different in kind: it says how the product should hear a word, which is configuration, and an agent
+    /// that has just read a product name off the repository in front of it is the best-placed thing on the
+    /// machine to teach the transcriber that word. The owner ruled that asking him to confirm every such
+    /// addition is worse than the occasional stray one.
+    ///
+    /// ADD ONLY, AND WHY THAT IS THE WHOLE OF THE GRANT. A session key may add a term. It may NOT delete,
+    /// rename or overwrite an existing term, and it may not touch the wrong-spellings list attached to one -
+    /// so the worst an agent can do here is leave a stray extra word, never remove a correction the owner
+    /// relies on. That is why <c>PUT /ingest/dictionary</c> (the editor's whole-document save, which can drop
+    /// or empty anything) and the suggestion routes (apply writes a term AND its wrong spellings; dismiss and
+    /// restore change what the owner is shown) are all still refused. The person keeps the pruning shears:
+    /// anything an agent adds is removable in the Cockpit dictionary editor like any hand-added term.
+    ///
+    /// THE ROUTE IS HALF THE GRANT; THE HANDLER IS THE OTHER HALF. This guard can only see a method and a
+    /// path, and the same path carries both a term and a wrong-spellings map. So the narrowing that a path
+    /// cannot express - a session key may send <c>terms</c> and may not send <c>mistranscriptions</c> - is
+    /// enforced in the handler, in <c>RecordingEndpoints</c>, which is the one place that can read a body.
+    /// Neither half is sufficient alone, and both are pinned by tests.
+    ///
+    /// Matched by structure and by exact length, so a sibling somebody hangs off the add route later is
+    /// refused until it is classified here on purpose.
+    /// </summary>
+    private static bool IsDictionaryAdd(string verb, string[] s)
+        => verb == "POST" && s.Length == 3 && s[0] == "ingest" && s[1] == "dictionary" && s[2] == "terms";
 
     /// <summary>The read shapes of the shared skill/workflow catalogue.</summary>
     private static bool IsCatalogueRead(string[] s)

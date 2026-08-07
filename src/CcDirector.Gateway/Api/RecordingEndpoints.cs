@@ -317,6 +317,23 @@ internal static class RecordingEndpoints
         // Additive convenience endpoint so an agent in a session can add a term
         // (and optional mistranscription spellings) without round-tripping the
         // whole document. Existing entries are preserved; duplicates are ignored.
+        //
+        // THE ONE ROUTE UNDER /ingest A SESSION KEY MAY CALL (issue #2484, the owner's ruling of
+        // 2026-08-07). SessionKeyGuard opens POST /ingest/dictionary/terms and nothing else here, so an
+        // agent adds a word with no confirmation step in the way. THIS handler enforces the half of that
+        // grant a path cannot express: the same route carries a term AND a wrong-spellings map, and only a
+        // reader of the body can tell them apart. For a SESSION caller:
+        //
+        //   * 'terms' is accepted - a new word goes in, a word already present is skipped, nothing is
+        //     removed or renamed. Worst case is a stray extra word, which is exactly the worst case the
+        //     ruling weighed and accepted;
+        //   * 'mistranscriptions' is REFUSED. A wrong-spellings entry rewrites what the transcriber HEARS,
+        //     so a careless one ("the" -> "Kubernetes") corrupts dictation everywhere rather than leaving a
+        //     stray word, and on an existing term the ruling forbids touching that list outright. Refusing
+        //     the field wholesale is what makes "worst case is a stray extra word" a true sentence rather
+        //     than an approximate one.
+        //
+        // A person in the Cockpit, or a device key, is unchanged and may still send both.
         app.MapPost("/dictionary/terms", async (HttpContext ctx) =>
         {
             var t = GatewayEndpoints.ResolveReadTenant(ctx, tenantBoundary);
@@ -330,14 +347,37 @@ internal static class RecordingEndpoints
                 if (add is null || (!hasTerms && !hasPatterns))
                     return Results.BadRequest(new { error = "provide 'terms' and/or 'mistranscriptions'" });
 
+                // Read the caller from the identity the auth gate resolved, never from the raw request -
+                // see AuthMiddleware.CallingSession. Null means the caller is not a session (the Cockpit,
+                // the phone, a Director), and the add-only narrowing does not apply to them.
+                var callingSession = Util.AuthMiddleware.CallingSession(ctx);
+                if (callingSession is not null && hasPatterns)
+                {
+                    FileLog.Write($"[RecordingEndpoints] dictionary add REFUSED wrong spellings from session {callingSession.SessionId}");
+                    return Results.Json(new
+                    {
+                        error = "a session key may add vocabulary 'terms' only; 'mistranscriptions' " +
+                                "(the wrong-spellings list) is edited by a person in the Cockpit dictionary editor",
+                        code = "session_key_add_only",
+                    }, statusCode: StatusCodes.Status403Forbidden);
+                }
+
                 var path = GlossaryPathFor(t.Value);
                 var current = ToDto(DictionaryLoader.LoadFromDisk(path));
 
+                // The terms that are ACTUALLY new, so the trail below names a session that changed
+                // something. Matched case-insensitively for the same reason TenantGlossary.AddTerms does:
+                // "kubernetes" beside "Kubernetes" is two entries for one word, and the existing one wins.
+                var added = new List<string>();
                 foreach (var term in add.Terms ?? new())
                 {
                     var trimmed = term?.Trim();
-                    if (!string.IsNullOrWhiteSpace(trimmed) && !current.Vocabulary.Contains(trimmed))
+                    if (!string.IsNullOrWhiteSpace(trimmed) &&
+                        !current.Vocabulary.Any(v => string.Equals(v, trimmed, StringComparison.OrdinalIgnoreCase)))
+                    {
                         current.Vocabulary.Add(trimmed);
+                        added.Add(trimmed);
+                    }
                 }
 
                 foreach (var kv in add.Mistranscriptions ?? new())
@@ -359,6 +399,17 @@ internal static class RecordingEndpoints
                 }
 
                 DictionaryLoader.WriteToDisk(path, FromDto(current));
+
+                // Record WHICH SESSION added the word. There is no confirmation step by the owner's ruling,
+                // so this trail is the only thing that lets a bad entry be traced and swept later.
+                if (callingSession is not null)
+                    GlossaryAdditionLog.Record(
+                        t.Value,
+                        callingSession.SessionId.ToString(),
+                        callingSession.DirectorId,
+                        added,
+                        DateTime.UtcNow);
+
                 return Results.Json(ToDto(DictionaryLoader.LoadFromDisk(path)));
             }
             catch (JsonException ex)

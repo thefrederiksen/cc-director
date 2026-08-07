@@ -916,6 +916,34 @@ COMMANDS:
   doctor [--json]
 ```
 
+### Dictionary
+
+Add words to the account's dictation dictionary, so dictation stops getting them wrong.
+
+```
+USAGE: cc-devthrottle dictionary add TERM [TERM ...]
+
+ARGUMENTS:
+  TERM  A word or phrase to add. One word or phrase per argument. [required]
+```
+
+```
+cc-devthrottle dictionary add "Kubernetes"
+cc-devthrottle dictionary add "mindzie" "DevThrottle" "Frederiksen"
+```
+
+**ADD is the only verb, deliberately.** A session key may add a term and nothing else - it can never
+delete, rename or overwrite an existing term, and it can never touch the wrong-spellings list
+attached to one (the owner's ruling of 2026-08-07, issue #2484). So the worst an agent can do is
+leave a stray extra word; the person prunes the list in the Cockpit dictionary editor. There is no
+confirmation step: being asked every time is worse than the occasional stray entry.
+
+**Spell it the way it is written down.** The spelling you add becomes the canonical one that
+dictation corrects other spellings to, and a word that reached you through dictation may already be
+mangled. Take the spelling from the repository, the code, or the product name in front of you -
+never from something you only heard. Which session added which word is recorded beside that
+account's glossary, so a bad entry can be traced back and swept.
+
 ---
 
 ## cc-reddit
