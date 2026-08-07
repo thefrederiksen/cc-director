@@ -11,6 +11,7 @@ import { describeAndReport } from "@devthrottle/client-core/errors/reportClientE
 import { DictationDialog } from "@devthrottle/client-core/dictation/DictationDialog";
 import { DictationStatusStrip } from "@devthrottle/client-core/dictation/DictationStatusStrip";
 import { backgroundTranscribeAndSend, type CapturedUtterance } from "@devthrottle/client-core/dictation/backgroundSend";
+import { useDictationBaseline } from "@devthrottle/client-core/dictation/baseline";
 import { insertAt, joinText } from "@devthrottle/client-core/dictation/transcript";
 
 // The composer (issue #972, completed in issue #1210) - the React port of the Blazor Cockpit composer.
@@ -113,6 +114,10 @@ export function SessionComposer({ sessionId, value, onChange, onQueued, focusHan
   useEffect(() => {
     valueRef.current = value;
   }, [value]);
+  // The session's terminal-byte position, snapshotted when Speak is pressed, so the Gateway's
+  // "session moved on" guard can judge a clip resumed later against where the terminal stood when it
+  // was recorded (issue #2478 - this flow used to omit the field, so the guard never armed).
+  const baseline = useDictationBaseline(sessionId);
 
   // Publish a focuser for the composer textarea into the parent-owned ref (issue #1266), and clear it on
   // unmount so the Source Control tab never calls into a torn-down composer.
@@ -256,9 +261,11 @@ export function SessionComposer({ sessionId, value, onChange, onQueued, focusHan
   // transcript at the caret (no submit); Send inserts at the caret and submits.
   const onSpeak = useCallback(() => {
     caretRef.current = textareaRef.current?.selectionStart ?? value.length;
+    // Snapshot the terminal-byte position at record start, for the moved-on guard (#2478).
+    baseline.snapshot();
     setError(null);
     setDictating(true);
-  }, [value]);
+  }, [value, baseline]);
 
   const onDictateInsert = useCallback(
     (text: string) => {
@@ -315,6 +322,10 @@ export function SessionComposer({ sessionId, value, onChange, onQueued, focusHan
         // Insert the dictated words at the snapshotted caret inside the typed text: the Gateway
         // submits before + dictation + after. The caret splits the typed text into the two halves.
         composeParts: { before: composerText.slice(0, caret), after: composerText.slice(caret) },
+        // The terminal-byte position snapshot the Speak press started, for the moved-on guard
+        // (issue #2478). A promise: the pipeline awaits it before persisting, so a quick Send
+        // cannot outrun the roster read.
+        baselineBufferBytes: baseline.read(),
         // Restore the typed text (ahead of anything typed since - valueRef reads the box as it is at
         // failure time, this callback's own `value` is a stale snapshot by then) so Send never
         // silently loses it. The audio itself is kept durably for resume; the typed text is
@@ -324,7 +335,7 @@ export function SessionComposer({ sessionId, value, onChange, onQueued, focusHan
         },
       });
     },
-    [sessionId, value, onChange],
+    [sessionId, value, onChange, baseline],
   );
 
   const empty = value.trim().length === 0;

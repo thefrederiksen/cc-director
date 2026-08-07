@@ -119,8 +119,16 @@ export interface BackgroundSendHooks {
    *  case omits this and the transcript is submitted alone. */
   composeParts?: { before: string; after: string };
   /** The session's TotalBufferBytes at record time, for the Gateway's "session moved on" guard when a
-   *  clip is resumed later. Omit when unknown (the guard is then skipped for safety). */
-  baselineBufferBytes?: number;
+   *  clip is resumed later. A promise is the PRESS-TIME snapshot (issue #2478): the Speak press starts
+   *  the roster read and hands the promise here, so a quick Send cannot outrun it and record "unknown"
+   *  for a session whose position was knowable. Durability never waits on it - the clip is persisted
+   *  immediately with the baseline unknown, then the pending record is enriched before the first
+   *  upload once this ORIGINAL promise resolves; the pipeline never starts a later roster read of its
+   *  own, because a post-recording reading would mask the very movement the guard detects. Omit when
+   *  genuinely unknown; unknown is persisted as unknown and the wire request omits the field (the
+   *  guard is then skipped for safety) - it is NEVER collapsed into zero, which is a real reading (a
+   *  terminal that had produced nothing yet). */
+  baselineBufferBytes?: number | Promise<number | undefined>;
 }
 
 // ---- driver state ----------------------------------------------------------------------------------
@@ -194,7 +202,13 @@ export async function backgroundTranscribeAndSend(
     );
   }
 
-  const rec: PendingDictation = {
+  // The moved-on baseline is the PRESS-TIME snapshot or nothing (issue #2478). A plain number (the
+  // Voice screen) rides the first durable write below; a promise is awaited only AFTER the clip is
+  // safely on disk - the durable-send contract (persist before any network work) outranks the guard,
+  // so a slow or timed-out roster read must never leave the clip memory-only.
+  const pressTimeBaseline = hooks.baselineBufferBytes;
+
+  let rec: PendingDictation = {
     id: crypto.randomUUID(),
     sessionId,
     blob: uploadBlob,
@@ -206,7 +220,7 @@ export async function backgroundTranscribeAndSend(
     before: hooks.composeParts?.before ?? "",
     after: hooks.composeParts?.after ?? "",
     prefix: captured.prefixText ?? "",
-    baselineBufferBytes: hooks.baselineBufferBytes ?? 0,
+    baselineBufferBytes: typeof pressTimeBaseline === "number" ? pressTimeBaseline : undefined,
     createdAt: Date.now(),
   };
 
@@ -214,27 +228,68 @@ export async function backgroundTranscribeAndSend(
   // pressed and the screen is never quiet.
   publishDictationStatus({ sessionId, uploadId: rec.id, phase: "saving" });
 
+  // RESERVE the upload id from the kick machinery for the whole save-and-enrich window. The first
+  // durable write makes the record VISIBLE to every automatic trigger (app load, the online event,
+  // foreground), and a kick landing before enrichment would list the record and drive it with the
+  // baseline still unknown - uploading unguarded and racing both the enrichment write and this flow's
+  // own first drive. The reservation is the same in-flight set every drive honors, so a kick no-ops
+  // on exactly this id until enrichment has finished and THIS flow drives it. It lives only in
+  // memory, deliberately: a crash or reload drops it with the process, and the resume path then
+  // drives the durable unknown record - unguarded, which is exactly what the durable copy honestly
+  // knows.
+  _inFlight.add(rec.id);
   try {
-    await savePending(rec);
-  } catch {
-    // Durable storage genuinely unavailable (rare, e.g. a private-mode tab with IndexedDB disabled): the
-    // clip cannot be queued, so say so loudly and restore the typed text. We do NOT silently one-shot it.
-    publishDictationStatus({
-      sessionId,
-      uploadId: rec.id,
-      phase: "failed",
-      retryable: false,
-      error: NO_DURABLE_STORE_MESSAGE,
-    });
-    hooks.onError?.(NO_DURABLE_STORE_MESSAGE);
-    hooks.onFailed?.();
-    return;
+    try {
+      await savePending(rec);
+    } catch {
+      // Durable storage genuinely unavailable (rare, e.g. a private-mode tab with IndexedDB disabled): the
+      // clip cannot be queued, so say so loudly and restore the typed text. We do NOT silently one-shot it.
+      publishDictationStatus({
+        sessionId,
+        uploadId: rec.id,
+        phase: "failed",
+        retryable: false,
+        error: NO_DURABLE_STORE_MESSAGE,
+      });
+      hooks.onError?.(NO_DURABLE_STORE_MESSAGE);
+      hooks.onFailed?.();
+      return;
+    }
+
+    // The clip is durable. Now - and only now - wait for the press-time baseline snapshot and enrich
+    // the pending record with it before the first upload. When the ORIGINAL press-time promise cannot
+    // answer, unknown is FINAL: never a fresh roster read here, because a reading taken now can include
+    // bytes the session produced during or after the recording, over-stating the baseline and masking
+    // exactly the movement the guard exists to detect. The wait is bounded (the shared snapshot rides
+    // the roster read's own timeout and never rejects); the defensive catch is for a foreign caller's
+    // promise only, because a guard input must never cost the user's words.
+    if (pressTimeBaseline !== undefined && typeof pressTimeBaseline !== "number") {
+      let bytes: number | undefined;
+      try {
+        bytes = await pressTimeBaseline;
+      } catch {
+        bytes = undefined;
+      }
+      if (bytes !== undefined) {
+        rec = { ...rec, baselineBufferBytes: bytes };
+        try {
+          await savePending(rec);
+        } catch {
+          // The durable copy keeps unknown (a resume would go unguarded); this attempt still carries
+          // the press-time reading in memory. Never a reason to hold the words.
+        }
+      }
+    }
+  } finally {
+    // Release, and hand off to the drive below with NO await in between: driveRecord re-takes the
+    // in-flight entry synchronously on entry, so no kick can slip into the gap.
+    _inFlight.delete(rec.id);
   }
 
-  // Saved durably. Drive the first delivery attempt now. resumed:false so an immediate send injects
-  // without the moved-on guard; any failure becomes a held-and-retrying state the driver owns. The
-  // caller does not await this (it fired and moved on), but awaiting the first attempt here keeps the
-  // returned promise honest about when that attempt settled.
+  // Drive the first delivery attempt now. resumed:false so an immediate send injects without the
+  // moved-on guard; any failure becomes a held-and-retrying state the driver owns. The caller does
+  // not await this (it fired and moved on), but awaiting the first attempt here keeps the returned
+  // promise honest about when that attempt settled.
   await driveRecord(rec, { resumed: false, attempt: 0 });
 }
 
@@ -389,8 +444,9 @@ export async function sendDroppedDictationAnyway(uploadId: string): Promise<void
 // Retry a dropped dictation whose words we never got (the rare drop before transcription, issue #1590).
 // The audio is still on the device, but its upload id is tombstoned moved-on for good (#1183), so it is
 // re-driven under a FRESH upload id - a genuinely new dictation carrying the same recording. The baseline
-// is cleared to zero: the recorded-at baseline describes a terminal that has long since moved on, and
-// re-sending it would simply invite the same drop. The user asked for this send now, deliberately.
+// is cleared to UNKNOWN (the field is omitted on the wire, so the server skips the guard): the
+// recorded-at baseline describes a terminal that has long since moved on, and re-sending it would simply
+// invite the same drop. The user asked for this send now, deliberately.
 // Guarded on the OLD id by the same in-flight set: each tap mints a NEW upload id, so without this two rapid
 // taps would stage two fresh clips and inject the same recording twice - and being different ids, nothing
 // downstream would de-duplicate them.
@@ -415,7 +471,7 @@ export async function retryDroppedDictation(uploadId: string): Promise<void> {
       id: crypto.randomUUID(),
       staleDropped: undefined,
       droppedTranscript: undefined,
-      baselineBufferBytes: 0,
+      baselineBufferBytes: undefined,
       createdAt: Date.now(),
     };
     try {

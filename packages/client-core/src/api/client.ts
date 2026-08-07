@@ -1876,7 +1876,12 @@ export interface DictationUploadArgs {
   before: string;
   after: string;
   prefix: string;
-  baselineBufferBytes: number;
+  /** The session's TotalBufferBytes when the clip was recorded, for the server's moved-on guard.
+   *  Omitted when genuinely unknown - JSON.stringify drops the key, and the server's absent-field
+   *  default skips the guard for this clip. Never a fabricated zero: zero is a real reading (a
+   *  terminal that had produced nothing yet), and unknown must stay distinguishable from it
+   *  (issue #2478). */
+  baselineBufferBytes?: number;
   resumed: boolean;
   /** Capture-health (issue #863), optional: the recording wall-clock, the decoded audio duration, and
    *  the source blob size, measured once at Send time. Forwarded on the complete call so the Gateway

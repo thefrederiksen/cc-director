@@ -130,6 +130,132 @@ describe("backgroundTranscribeAndSend", () => {
     expect(vi.mocked(savePending).mock.calls[0][0].blob).toBe(captured.blob);
   });
 
+  it("saves the clip durably AT ONCE (baseline unknown), then enriches it from the press-time snapshot before upload (issue #2478)", async () => {
+    // Two contracts at once, in the right order. Durability never waits on the roster: the clip is on
+    // disk immediately, so a slow or timed-out roster read cannot leave it memory-only. And a quick
+    // Send still cannot outrun the snapshot: the UPLOAD holds until the press-time promise resolves,
+    // and the durable record is enriched with the reading before the first attempt.
+    vi.mocked(uploadDictationToSession).mockResolvedValue(SUBMITTED);
+    let releaseBaseline: (bytes: number | undefined) => void = () => {};
+    const pending = new Promise<number | undefined>((resolve) => { releaseBaseline = resolve; });
+
+    const send = backgroundTranscribeAndSend("sid", captured, { baselineBufferBytes: pending });
+    await flush();
+    // The snapshot has not answered yet - the clip is ALREADY durable (unknown baseline), and the
+    // upload is holding for the press-time answer.
+    expect(savePending).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(savePending).mock.calls[0][0].baselineBufferBytes).toBeUndefined();
+    expect(uploadDictationToSession).not.toHaveBeenCalled();
+
+    releaseBaseline(48213);
+    await send;
+    // The durable record was enriched with the press-time reading before the first upload carried it.
+    expect(savePending).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(savePending).mock.calls[1][0].baselineBufferBytes).toBe(48213);
+    expect(vi.mocked(savePending).mock.calls[1][0].id).toBe(vi.mocked(savePending).mock.calls[0][0].id);
+    expect(vi.mocked(uploadDictationToSession).mock.calls[0][0].baselineBufferBytes).toBe(48213);
+  });
+
+  it("a kick landing between the first save and enrichment cannot drive the unknown record (issue #2478 round three)", async () => {
+    // The first durable write makes the record visible to every automatic trigger, and the
+    // enrichment window is as long as a roster read. A kick (online, foreground, app load) that
+    // listed and drove the record inside that window would upload with the baseline still unknown
+    // and race the enrichment write and the original drive. The upload id is reserved from the kick
+    // machinery for the whole window, so the kick must no-op.
+    vi.mocked(uploadDictationToSession).mockResolvedValue(SUBMITTED);
+    let releaseBaseline: (bytes: number | undefined) => void = () => {};
+    const pending = new Promise<number | undefined>((resolve) => { releaseBaseline = resolve; });
+
+    const send = backgroundTranscribeAndSend("sid", captured, { baselineBufferBytes: pending });
+    await flush();
+    expect(savePending).toHaveBeenCalledTimes(1);
+    const saved = vi.mocked(savePending).mock.calls[0][0];
+    expect(saved.baselineBufferBytes).toBeUndefined();
+
+    // The kick lands mid-window: the durable store lists the unknown record and the kick machinery
+    // tries to drive it, exactly as the online/visibility listeners would.
+    vi.mocked(listPending).mockResolvedValue([saved]);
+    await resumePendingDictations();
+    expect(uploadDictationToSession).not.toHaveBeenCalled(); // the reservation held: no unguarded upload
+
+    releaseBaseline(48213);
+    await send;
+    // Exactly ONE upload happened, from the original flow: enriched with the press-time reading and
+    // an immediate (not resumed) send - never the kick's resumed, unknown-baseline drive.
+    expect(uploadDictationToSession).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(uploadDictationToSession).mock.calls[0][0].baselineBufferBytes).toBe(48213);
+    expect(vi.mocked(uploadDictationToSession).mock.calls[0][0].resumed).toBe(false);
+  });
+
+  it("a crash or reload still resumes the durable unknown record - the reservation dies with the process", async () => {
+    // The reservation lives only in memory, deliberately. After a crash mid-enrichment a fresh
+    // process holds no reservation, and the resume path drives the durable unknown record from the
+    // on-device copy - unguarded, which is exactly what that copy honestly knows.
+    vi.mocked(uploadDictationToSession).mockResolvedValue(SUBMITTED);
+    const rec: PendingDictation = { ...makeRecord("id-unknown-crash"), baselineBufferBytes: undefined };
+    vi.mocked(listPending).mockResolvedValue([rec]);
+
+    await resumePendingDictations();
+
+    expect(uploadDictationToSession).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(uploadDictationToSession).mock.calls[0][0].baselineBufferBytes).toBeUndefined();
+    expect(vi.mocked(uploadDictationToSession).mock.calls[0][0].resumed).toBe(true);
+  });
+
+  it("an UNKNOWN press-time baseline is FINAL - persisted as unknown, no later re-read, never a fabricated zero (issue #2478)", async () => {
+    // Unknown (the press-time read could not answer) and zero (a terminal that had produced nothing
+    // yet) are different facts. Collapsing unknown into zero at persist time was how the moved-on
+    // guard silently stayed unarmed; and substituting a LATER roster reading would be worse - it can
+    // include bytes produced after recording, masking the movement the guard detects. Unknown stays
+    // absent all the way to the wire, where JSON omits the field and the server skips the guard.
+    vi.mocked(uploadDictationToSession).mockResolvedValue(SUBMITTED);
+
+    await backgroundTranscribeAndSend("sid", captured, {
+      baselineBufferBytes: Promise.resolve(undefined),
+    });
+
+    // Exactly one durable write - no enrich pass, and no roster call of the pipeline's own.
+    expect(savePending).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(savePending).mock.calls[0][0].baselineBufferBytes).toBeUndefined();
+    expect(vi.mocked(uploadDictationToSession).mock.calls[0][0].baselineBufferBytes).toBeUndefined();
+  });
+
+  it("passes a GENUINE zero baseline through as a real reading, distinct from unknown (issue #2478)", async () => {
+    vi.mocked(uploadDictationToSession).mockResolvedValue(SUBMITTED);
+
+    await backgroundTranscribeAndSend("sid", captured, { baselineBufferBytes: Promise.resolve(0) });
+
+    // Zero is an answer: it lands in the enriched durable record and on the upload.
+    expect(vi.mocked(savePending).mock.calls.at(-1)?.[0].baselineBufferBytes).toBe(0);
+    expect(vi.mocked(uploadDictationToSession).mock.calls[0][0].baselineBufferBytes).toBe(0);
+  });
+
+  it("a plain-number baseline (the Voice screen) rides the FIRST durable write, unchanged", async () => {
+    vi.mocked(uploadDictationToSession).mockResolvedValue(SUBMITTED);
+
+    await backgroundTranscribeAndSend("sid", captured, { baselineBufferBytes: 321 });
+
+    expect(savePending).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(savePending).mock.calls[0][0].baselineBufferBytes).toBe(321);
+    expect(vi.mocked(uploadDictationToSession).mock.calls[0][0].baselineBufferBytes).toBe(321);
+  });
+
+  it("a foreign baseline promise that REJECTS costs the guard, never the words", async () => {
+    // The shared snapshot never rejects, but the hooks contract cannot force that on every caller. A
+    // rejection must not escape and strand the clip - it is already durable by then, and it still
+    // delivers, unguarded.
+    vi.mocked(uploadDictationToSession).mockResolvedValue(SUBMITTED);
+
+    await backgroundTranscribeAndSend("sid", captured, {
+      baselineBufferBytes: Promise.reject(new Error("roster exploded")),
+    });
+
+    expect(vi.mocked(savePending).mock.calls[0][0].baselineBufferBytes).toBeUndefined();
+    // The clip still delivered: persisted durably and driven through one upload attempt.
+    expect(savePending).toHaveBeenCalledTimes(1);
+    expect(uploadDictationToSession).toHaveBeenCalledTimes(1);
+  });
+
   it("a delivered send that dropped audio carries a capture-loss warning on done (never silent)", async () => {
     // The send succeeds, but the record was flagged with a capture-loss warning at Send time. The delivered
     // `done` status must carry that warning so the strip shows a non-clearing caution instead of a silent
@@ -605,8 +731,9 @@ describe("recovering a dropped dictation (#1590)", () => {
     expect(fresh?.blob).toBe(old.blob); // the SAME recording, under a new id - the audio is what we are retrying
     expect(fresh?.staleDropped).toBeUndefined();
     // The record-time baseline describes a terminal that has long since moved on; re-sending it would just
-    // invite the same drop. The user asked for this send now.
-    expect(fresh?.baselineBufferBytes).toBe(0);
+    // invite the same drop. The user asked for this send now. Cleared to UNKNOWN (field omitted on the
+    // wire, guard skipped) - never a fabricated zero, which is a real reading (issue #2478).
+    expect(fresh?.baselineBufferBytes).toBeUndefined();
     // The fresh clip really was driven, and the old id is retired.
     expect(vi.mocked(uploadDictationToSession).mock.calls[0][0].uploadId).toBe(fresh?.id);
     expect(deletePending).toHaveBeenCalledWith("id-old");

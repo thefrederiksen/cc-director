@@ -43,8 +43,12 @@ export interface PendingDictation {
   after: string;
   /** Earlier paused dictation segments already turned to text, joined ahead of this clip. */
   prefix: string;
-  /** The session's TotalBufferBytes when the clip was recorded (server moved-on guard). */
-  baselineBufferBytes: number;
+  /** The session's TotalBufferBytes when the clip was recorded (server moved-on guard). Absent means
+   *  UNKNOWN - the roster could not answer at record time - and it stays absent durably, so the wire
+   *  request omits the field and the server skips the guard for exactly this clip. It is NEVER written
+   *  as a fabricated zero: zero is a real reading (a session whose terminal had produced nothing yet),
+   *  and collapsing unknown into it was how the guard silently stayed unarmed (issue #2478). */
+  baselineBufferBytes?: number;
   /** Epoch milliseconds the clip was recorded. Drives the retry cadence (hard for the first hour,
    *  then throttled) - NOT a prune deadline: undelivered audio is never aged out (issue #1182). */
   createdAt: number;
