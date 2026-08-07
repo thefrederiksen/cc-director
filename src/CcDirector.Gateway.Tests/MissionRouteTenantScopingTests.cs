@@ -167,31 +167,18 @@ public sealed class MissionRouteTenantScopingTests : IAsyncLifetime
         Assert.True(ContainsMission(bBody, bMission));
     }
 
-    [Fact]
-    public async Task Another_tenants_mission_cannot_be_named_as_a_parent()
-    {
-        // A parent is a reference INTO the mission set, so it resolves under the same scope as any other
-        // read. Otherwise the id would be a way to attach to - and imply the existence of - a record the
-        // caller cannot see.
-        var aMission = await CreateMission(_keyA, "A's root mission");
-
-        var resp = await PostMission(_keyB, new NewMissionRequest
-        {
-            MissionName = "B's child of A's mission",
-            ParentMissionId = aMission.MissionId,
-        });
-        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
-
-        // The control: B nesting under its OWN mission is accepted, so the refusal above is about the
-        // owner and not about parents being rejected wholesale.
-        var bParent = await CreateMission(_keyB, "B's root mission");
-        var ok = await PostMission(_keyB, new NewMissionRequest
-        {
-            MissionName = "B's child of B's mission",
-            ParentMissionId = bParent.MissionId,
-        });
-        Assert.Equal(HttpStatusCode.Created, ok.StatusCode);
-    }
+    // REMOVED 2026-08-07 WITH THE FEATURE IT GUARDED, not because it stopped mattering.
+    //
+    // There was a test here - Another_tenants_mission_cannot_be_named_as_a_parent - proving a caller could
+    // not name another tenant's mission as the parent of its own. Mission NESTING has been removed (see
+    // Mission.cs for why): there is no parent field, POST /missions takes a name and nothing else, and so
+    // there is no longer any path by which a caller-supplied mission id enters the create route at all.
+    //
+    // That is the deletion of an ATTACK SURFACE, not of a defence. The tenant boundary on create, list and
+    // get-by-id is still held by the tests around this comment, and the attach route - the other place a
+    // caller hands in a mission id - has its own suite. If nesting is ever reintroduced, this test comes
+    // back with it: a parent is a reference INTO the mission set and must resolve under the caller's own
+    // scope, exactly as it did before.
 
     // ---- helpers -------------------------------------------------------------------------------------
 

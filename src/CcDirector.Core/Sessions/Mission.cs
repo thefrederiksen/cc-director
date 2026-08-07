@@ -7,7 +7,14 @@ namespace CcDirector.Core.Sessions;
 /// later anchors the cockpit map. Sessions ATTACH to a Mission by its <see cref="MissionId"/>.
 ///
 /// Role cardinality (one Architect, one Manager, N Workers) is enforced by the derived role model, so a
-/// Mission deliberately stores NO role seats - only its identity, name, and optional parent for nesting.
+/// Mission deliberately stores NO role seats - only its identity and name.
+///
+/// MISSIONS ARE FLAT. Nesting (a parent link, making a tree of Missions) was specified in the design
+/// document, built, and tested - and then never used once across every Mission this fleet created. It was
+/// removed on 2026-08-07 rather than carried indefinitely: an unused field still has to be understood by
+/// everyone who reads this type, kept correct in every store and route that touches it, and reasoned about
+/// by every feature added afterwards. If a real case for sub-Missions turns up, add it back deliberately
+/// then - the design document records the original reasoning and the removal.
 /// </summary>
 public sealed class Mission
 {
@@ -17,8 +24,21 @@ public sealed class Mission
     /// <summary>Human-friendly name of the Mission (e.g. "Session Lifecycle").</summary>
     public string MissionName { get; set; } = string.Empty;
 
-    /// <summary>The parent Mission this one nests under (a tree of Missions), or null for a root Mission.</summary>
-    public Guid? ParentMissionId { get; set; }
+    /// <summary>
+    /// WHY this mission exists, in the owner's own words - shown front and center on its card, because a
+    /// mission with no stated reason is a red flag the screen makes obvious rather than a silent blank.
+    /// Empty means UNSET, and the card shows its flag; there is no separate "has a why" boolean.
+    ///
+    /// This lives ON THE MISSION, keyed by <see cref="MissionId"/> like everything else. It used to live in
+    /// its own <c>mission_notes</c> table keyed by the mission's LOWER-CASED NAME, which meant the WHY was
+    /// attached to a string rather than to a mission: two missions sharing a name shared one WHY, and
+    /// renaming a mission would have orphaned it silently - the card simply falling back to "no why set".
+    /// That is why this moved here BEFORE rename was built rather than after.
+    /// </summary>
+    public string Why { get; set; } = string.Empty;
+
+    /// <summary>When <see cref="Why"/> was last set (UTC), or null if it has never been set.</summary>
+    public DateTimeOffset? WhyUpdatedAt { get; set; }
 
     /// <summary>UTC timestamp the Mission was created. Used for stable list ordering.</summary>
     public DateTimeOffset CreatedAt { get; set; }

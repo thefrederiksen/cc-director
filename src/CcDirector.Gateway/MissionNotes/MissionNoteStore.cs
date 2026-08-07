@@ -165,6 +165,51 @@ public sealed class MissionNoteStore
         }
     }
 
+    /// <summary>
+    /// MIGRATION READ ONLY: every note on the box, grouped by the tenant that owns it, as
+    /// tenant -> (normalized name -> why). Bypasses the ambient tenant filter with IgnoreQueryFilters,
+    /// because this runs at startup where there is no ambient tenant to scope to, and the caller needs
+    /// EVERY account's notes in order to hand each account its own back.
+    ///
+    /// The grouping IS the safety property, not a convenience. These notes are keyed by mission NAME, and a
+    /// mission name is free text a person typed - customer names, project names. Handing a flat set to a
+    /// name-matching migration would give one account's stated reason for its work to another account that
+    /// happened to name a mission the same thing, which is precisely the disclosure #1039 closed. So this
+    /// returns the tenant WITH the data and never without it, and
+    /// <see cref="Core.Sessions.MissionStore.ImportWhys"/> takes one tenant's map at a time.
+    ///
+    /// An UNATTRIBUTED note (no tenant) belongs to nobody and is given to nobody - the same rule the mission
+    /// store applies to unattributed rows on hosted.
+    ///
+    /// Nothing else may use this. Every serving read goes through <see cref="All"/>, which is scoped.
+    /// </summary>
+    public IReadOnlyDictionary<string, IReadOnlyDictionary<string, string>> AllByTenantForMigration()
+    {
+        lock (_gate)
+        {
+            using var ctx = _db.CreateContext();
+            var rows = ctx.MissionNotes.AsNoTracking().IgnoreQueryFilters().ToList();
+
+            var byTenant = new Dictionary<string, IReadOnlyDictionary<string, string>>(StringComparer.Ordinal);
+            foreach (var group in rows.GroupBy(r => r.TenantId ?? "", StringComparer.Ordinal))
+            {
+                if (string.IsNullOrWhiteSpace(group.Key))
+                    continue;
+
+                var map = new Dictionary<string, string>(StringComparer.Ordinal);
+                foreach (var row in group)
+                {
+                    if (string.IsNullOrWhiteSpace(row.Key) || string.IsNullOrWhiteSpace(row.Why))
+                        continue;
+                    map[row.Key] = row.Why;
+                }
+                if (map.Count > 0)
+                    byTenant[group.Key] = map;
+            }
+            return byTenant;
+        }
+    }
+
     private static MissionNote ToRecord(MissionNoteEntity e)
         => new(e.Key, e.Mission, e.Why, e.UpdatedAtUtc);
 

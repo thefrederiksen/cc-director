@@ -30,7 +30,7 @@ describe("listMissions", () => {
     stubFetch(
       jsonResponse([
         { missionId: "m1", missionName: "Release 2.0.1" },
-        { missionId: "m2", missionName: "Banya", parentMissionId: null },
+        { missionId: "m2", missionName: "Banya" },
       ]),
     );
 

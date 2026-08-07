@@ -1370,6 +1370,15 @@ public sealed class GatewayHost : IAsyncDisposable
         // a cosmetic store must not block boot) then renamed aside. Tests MUST pass an isolated path so they
         // never touch the real legacy file.
         _missionNotes = new MissionNotes.MissionNoteStore(_gatewayDb, missionNotesPath ?? Path.Combine(CcStorage.Root(), "mission-notes.json"));
+        // The WHY moved ONTO the Mission record (keyed by mission id) - see Mission.Why. Adopt whatever the
+        // old name-keyed note store still holds, once, so no owner loses a WHY they wrote. Idempotent and
+        // non-overwriting, so it is safe to run on every boot and safe to run after somebody has already set
+        // a WHY through the new route.
+        //
+        // The notes table is deliberately NOT dropped in the same change that starts reading from the
+        // mission record. Migrate, stop reading, verify against the real data, and only then drop - a table
+        // drop is the one step here that cannot be undone if the match turns out to be wrong.
+        AdoptMissionNoteWhys();
         // Per-tenant settings (issue #2017): the store + typed resolver the settings-page endpoints read and
         // write through. No legacy file to import - an unset per-tenant override falls back to the operator
         // global default (the existing config.json value), so an existing install's settings are unchanged
@@ -1678,6 +1687,50 @@ public sealed class GatewayHost : IAsyncDisposable
     /// material to the gateway log, violating security rule DT-05. Every other path keeps its query
     /// unchanged so a remote-side problem stays traceable after the fact.
     /// </summary>
+    /// <summary>
+    /// Adopt the WHYs the old name-keyed note store still holds onto the Mission records they describe.
+    ///
+    /// Each account's notes go only to that account's own missions - the note store hands them over already
+    /// grouped by tenant, and the mission store takes one tenant at a time, so there is no call shape here
+    /// that could match a note to another account's mission by name.
+    ///
+    /// NON-FATAL BY DESIGN, and this is the one place a swallow is right: the WHY is cosmetic, and the store
+    /// it comes from is already documented as quarantine-on-corrupt precisely so a bad WHY file cannot stop
+    /// the Gateway booting. A migration that threw here would turn "one account's note is unreadable" into
+    /// "nobody's Gateway starts". The failure is LOGGED with its reason rather than hidden, and the WHYs
+    /// that did not come across are recoverable - the notes table is still there and is not dropped by this
+    /// change.
+    /// </summary>
+    private void AdoptMissionNoteWhys()
+    {
+        try
+        {
+            var byTenant = _missionNotes.AllByTenantForMigration();
+            if (byTenant.Count == 0)
+                return;
+
+            var adopted = 0;
+            foreach (var (tenantValue, whys) in byTenant)
+            {
+                // The constructor is the validator and fails loud on a blank value; AllByTenantForMigration
+                // has already dropped unattributed rows, so this only guards against a malformed one.
+                if (string.IsNullOrWhiteSpace(tenantValue))
+                {
+                    FileLog.Write($"[GatewayHost] AdoptMissionNoteWhys: skipping {whys.Count} note(s) with " +
+                                  $"no usable tenant");
+                    continue;
+                }
+                adopted += Missions.ImportWhys(new Core.Tenancy.TenantId(tenantValue), whys);
+            }
+            FileLog.Write($"[GatewayHost] AdoptMissionNoteWhys: tenants={byTenant.Count} adopted={adopted}");
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[GatewayHost] AdoptMissionNoteWhys FAILED (non-fatal, the notes table is " +
+                          $"untouched and the WHYs can still be recovered): {ex.Message}");
+        }
+    }
+
     private static string SafeQueryForLog(PathString path, QueryString query)
     {
         if (string.Equals(path.Value, Api.AccountSignInCallbackEndpoint.Path, StringComparison.OrdinalIgnoreCase))
@@ -3224,7 +3277,14 @@ public sealed class GatewayHost : IAsyncDisposable
         // client route under /gateway/missions/notes - the host-wide token middleware gates it (proven by
         // MissionNotesEndpointTests). Deliberately NOT in GatewayEndpoints.cs and NOT on the bare /missions
         // prefix (the Gateway-native mission store owns that), so it stays clear of the Gateway Cleanup work.
-        MissionNotesEndpoint.Map(_app, _missionNotes);
+        // The mission-WHY routes are RETIRED. The WHY now lives on the Mission record and is written through
+        // PATCH /missions/{mid}; GET /missions carries it. The old routes were keyed by the mission's
+        // lower-cased NAME and did no tenant resolution of their own, so they are not kept as a compatibility
+        // surface - a second way to write the WHY, under a weaker boundary and a key a rename would orphan,
+        // is exactly the kind of leftover that made the missions area need untangling in the first place.
+        //
+        // The STORE stays for now (it is what AdoptMissionNoteWhys reads), and so does its table. Migrate,
+        // stop serving, verify against the real data, then drop.
 
         // Issue #806 (mobile foundation): the OpenAPI document the mobile codegen consumes, and the
         // mobile app static serving at /mobile (built shell + token-injected index.html). Mapped before

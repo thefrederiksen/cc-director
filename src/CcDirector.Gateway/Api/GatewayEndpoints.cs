@@ -248,11 +248,11 @@ internal static class GatewayEndpoints
         }
 
         // Gateway Cleanup mission (Wave 4b): the Gateway-native mission surface. Missions are a fleet-level
-        // concept (they span Directors and machines and nest), so the source of truth lives here at the
-        // Gateway - like fleet messaging and scheduling - and mission-existence VALIDATION lives here now.
+        // concept (they span Directors and machines), so the source of truth lives here at the Gateway -
+        // like fleet messaging and scheduling - and mission-existence VALIDATION lives here now.
         // These routes inherit the host-wide token middleware, exactly like /cron/jobs and /session-numbers.
         // The Director's own /missions routes stay until a later phase; this is the additive equivalent.
-        //   POST /missions        body { missionName, parentMissionId? } -> 201 MissionDto | 400
+        //   POST /missions        body { missionName } -> 201 MissionDto | 400
         //   GET  /missions        -> [ MissionDto ]
         //   GET  /missions/{mid}  -> MissionDto | 404
         if (missions is not null)
@@ -270,11 +270,6 @@ internal static class GatewayEndpoints
                 if (tenant is null)
                     return Results.Json(new { error = "no tenant is bound to this request" },
                         statusCode: StatusCodes.Status403Forbidden);
-
-                // A parent is a reference INTO the mission set, so it resolves under the same scope as any
-                // other read: naming another tenant's mission as a parent is not a way to reach it.
-                if (req.ParentMissionId is Guid parentId && missions.Get(tenant.Value, parentId) is null)
-                    return Results.BadRequest(new { error = $"unknown parent mission '{parentId}'" });
 
                 // Workflows mission (phase 4, issue #1771): a mission IS a run of the built-in
                 // "mission" workflow. The EXPECTED failure (mission workflow unrunnable) is checked
@@ -303,7 +298,7 @@ internal static class GatewayEndpoints
                     }
                 }
 
-                var mission = missions.Create(tenant.Value, req.MissionName, req.ParentMissionId);
+                var mission = missions.Create(tenant.Value, req.MissionName);
                 var dto = ToMissionDto(mission);
                 if (workflowRuns is not null && missionWorkflowEnabled != false)
                 {
@@ -362,6 +357,61 @@ internal static class GatewayEndpoints
                 return mission is null
                     ? Results.NotFound(new { error = "mission not found" })
                     : Results.Json(ToMissionDto(mission));
+            });
+
+            // PATCH /missions/{mid}  body { why } -> 200 MissionDto | 400 | 403 | 404
+            //
+            // Set or clear a mission's WHY. A blank why CLEARS it, returning the card to its "no why set"
+            // flag - the same "empty means unset" rule the old note store had, kept so the observable
+            // behaviour does not change under the owner.
+            //
+            // This route REPLACES PUT /gateway/missions/notes, which keyed the WHY by the mission's
+            // lower-cased NAME. Two differences matter beyond the key:
+            //
+            //  * It resolves the CALLER's tenant explicitly, exactly like GET /missions/{mid} above, and
+            //    refuses when none is bound. The old notes route did no tenant resolution of its own at all
+            //    - it leaned on an ambient query filter - so this is a strictly stronger boundary, not a
+            //    port of the same one.
+            //  * An unknown mission and another tenant's mission answer IDENTICALLY (404). The id alone
+            //    reaches nothing, and cannot be probed for existence.
+            //
+            // Phase 2 grows this same route with missionName (rename) and state (complete/removed). It is
+            // deliberately a PATCH from the start so those are added fields rather than a second route.
+            app.MapPatch("/missions/{mid}", async (string mid, HttpContext ctx) =>
+            {
+                if (!Guid.TryParse(mid, out var missionId))
+                    return Results.BadRequest(new { error = "invalid mission id format" });
+
+                var tenant = ResolveReadTenant(ctx, tenantBoundary);
+                if (tenant is null)
+                    return Results.Json(new { error = "no tenant is bound to this request" },
+                        statusCode: StatusCodes.Status403Forbidden);
+
+                MissionPatchRequest? req;
+                try
+                {
+                    req = await ctx.Request.ReadFromJsonAsync<MissionPatchRequest>();
+                }
+                catch (System.Text.Json.JsonException)
+                {
+                    return Results.BadRequest(new { error = "the request body is not valid JSON" });
+                }
+
+                // Nothing to change is a client mistake worth naming, not a silent success that looks like
+                // the edit was applied.
+                if (req?.Why is null)
+                    return Results.BadRequest(new { error = "why is required" });
+
+                var updated = missions.SetWhy(tenant.Value, missionId, req.Why, DateTimeOffset.UtcNow);
+                if (updated is null)
+                {
+                    FileLog.Write($"[GatewayEndpoints] PATCH /missions/{mid}: unknown to this tenant");
+                    return Results.NotFound(new { error = "mission not found" });
+                }
+
+                FileLog.Write($"[GatewayEndpoints] PATCH /missions/{mid}: why " +
+                              (updated.Why.Length == 0 ? "cleared" : "set"));
+                return Results.Json(ToMissionDto(updated));
             });
 
             FileLog.Write("[GatewayEndpoints] mapped Gateway-native /missions routes");
@@ -3911,7 +3961,8 @@ internal static class GatewayEndpoints
     {
         MissionId = m.MissionId,
         MissionName = m.MissionName,
-        ParentMissionId = m.ParentMissionId,
+        Why = m.Why,
+        WhyUpdatedAt = m.WhyUpdatedAt,
     };
 
     /// <summary>

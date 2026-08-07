@@ -7431,8 +7431,6 @@ export interface components {
         };
         NewMissionRequest: {
             missionName?: null | string;
-            /** Format: uuid */
-            parentMissionId?: null | string;
         };
         NewSessionRequest: {
             repoPath?: string;

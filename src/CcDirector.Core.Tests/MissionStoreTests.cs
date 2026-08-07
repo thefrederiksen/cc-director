@@ -35,7 +35,6 @@ public class MissionStoreTests
 
             Assert.NotEqual(Guid.Empty, mission.MissionId);
             Assert.Equal("Session Lifecycle", mission.MissionName);
-            Assert.Null(mission.ParentMissionId);
 
             var fetched = store.Get(TenantId.Local, mission.MissionId);
             Assert.NotNull(fetched);
@@ -49,25 +48,9 @@ public class MissionStoreTests
         }
     }
 
-    [Fact]
-    public void Create_WithParent_NestsUnderIt()
-    {
-        var tempFile = TempPath();
-        try
-        {
-            var store = NewStore(tempFile);
-            var parent = store.Create(TenantId.Local, "Parent Mission");
-
-            var child = store.Create(TenantId.Local, "Child Mission", parent.MissionId);
-
-            Assert.Equal(parent.MissionId, child.ParentMissionId);
-        }
-        finally
-        {
-            if (File.Exists(tempFile))
-                File.Delete(tempFile);
-        }
-    }
+    // Create_WithParent_NestsUnderIt was removed on 2026-08-07 along with mission nesting itself. Missions
+    // are flat: the parent link was specified, built and tested, then never used once, so it went rather
+    // than being carried indefinitely. See Mission.cs.
 
     [Fact]
     public void Create_BlankName_Throws()
@@ -186,6 +169,160 @@ public class MissionStoreTests
             Assert.Single(result.Sessions);
             Assert.Equal(missionId, result.Sessions[0].MissionId);
             Assert.Equal("Session Lifecycle", result.Sessions[0].MissionName);
+        }
+        finally
+        {
+            if (File.Exists(tempFile))
+                File.Delete(tempFile);
+        }
+    }
+
+    // ---- the WHY, which lives ON the mission (Phase 1) ------------------------------------------------
+
+    [Fact]
+    public void SetWhy_StoresItAndSurvivesAFreshStore()
+    {
+        var tempFile = TempPath();
+        try
+        {
+            var store = NewStore(tempFile);
+            var mission = store.Create(TenantId.Local, "Release 2.0.1");
+            var now = DateTimeOffset.UtcNow;
+
+            var updated = store.SetWhy(TenantId.Local, mission.MissionId, "  So we can ship the video  ", now);
+
+            Assert.NotNull(updated);
+            Assert.Equal("So we can ship the video", updated.Why);
+            Assert.Equal(now, updated.WhyUpdatedAt);
+
+            // The whole point of moving it here: it is durable, keyed by the mission id.
+            var reopened = NewStore(tempFile);
+            var fetched = reopened.Get(TenantId.Local, mission.MissionId);
+            Assert.NotNull(fetched);
+            Assert.Equal("So we can ship the video", fetched.Why);
+        }
+        finally
+        {
+            if (File.Exists(tempFile))
+                File.Delete(tempFile);
+        }
+    }
+
+    [Fact]
+    public void SetWhy_BlankClearsItAndDropsTheTimestamp()
+    {
+        var tempFile = TempPath();
+        try
+        {
+            var store = NewStore(tempFile);
+            var mission = store.Create(TenantId.Local, "Release 2.0.1");
+            store.SetWhy(TenantId.Local, mission.MissionId, "a reason", DateTimeOffset.UtcNow);
+
+            var cleared = store.SetWhy(TenantId.Local, mission.MissionId, "   ", DateTimeOffset.UtcNow);
+
+            Assert.NotNull(cleared);
+            Assert.Equal("", cleared.Why);
+            // Unset, not "set to empty at a moment" - so the card shows its flag with nothing behind it.
+            Assert.Null(cleared.WhyUpdatedAt);
+        }
+        finally
+        {
+            if (File.Exists(tempFile))
+                File.Delete(tempFile);
+        }
+    }
+
+    [Fact]
+    public void SetWhy_UnknownMission_ReturnsNull()
+    {
+        var tempFile = TempPath();
+        try
+        {
+            var store = NewStore(tempFile);
+            Assert.Null(store.SetWhy(TenantId.Local, Guid.NewGuid(), "why", DateTimeOffset.UtcNow));
+        }
+        finally
+        {
+            if (File.Exists(tempFile))
+                File.Delete(tempFile);
+        }
+    }
+
+    [Fact]
+    public void ImportWhys_FillsByNormalizedName_AndIsIdempotent()
+    {
+        var tempFile = TempPath();
+        try
+        {
+            var store = NewStore(tempFile);
+            var release = store.Create(TenantId.Local, "Release 2.0.1");
+            var other = store.Create(TenantId.Local, "Banya");
+
+            var map = new Dictionary<string, string>
+            {
+                ["release 2.0.1"] = "So we can get the Video Competition started",
+            };
+
+            Assert.Equal(1, store.ImportWhys(TenantId.Local, map));
+            Assert.Equal("So we can get the Video Competition started",
+                store.Get(TenantId.Local, release.MissionId)!.Why);
+            Assert.Equal("", store.Get(TenantId.Local, other.MissionId)!.Why);
+
+            // Running it again fills nothing - the mission already has a WHY.
+            Assert.Equal(0, store.ImportWhys(TenantId.Local, map));
+        }
+        finally
+        {
+            if (File.Exists(tempFile))
+                File.Delete(tempFile);
+        }
+    }
+
+    [Fact]
+    public void ImportWhys_NeverOverwritesAWhyThatIsAlreadySet()
+    {
+        var tempFile = TempPath();
+        try
+        {
+            var store = NewStore(tempFile);
+            var mission = store.Create(TenantId.Local, "Release 2.0.1");
+            store.SetWhy(TenantId.Local, mission.MissionId, "the current reason", DateTimeOffset.UtcNow);
+
+            var filled = store.ImportWhys(TenantId.Local, new Dictionary<string, string>
+            {
+                ["release 2.0.1"] = "a stale reason from the old note store",
+            });
+
+            Assert.Equal(0, filled);
+            Assert.Equal("the current reason", store.Get(TenantId.Local, mission.MissionId)!.Why);
+        }
+        finally
+        {
+            if (File.Exists(tempFile))
+                File.Delete(tempFile);
+        }
+    }
+
+    [Fact]
+    public void ImportWhys_FillsEveryMissionSharingAName()
+    {
+        var tempFile = TempPath();
+        try
+        {
+            var store = NewStore(tempFile);
+            // Two missions with the same name is exactly the case the old name-keyed store could not tell
+            // apart - it showed one WHY on both cards. The migration preserves what was on screen.
+            var first = store.Create(TenantId.Local, "Release");
+            var second = store.Create(TenantId.Local, "release");
+
+            var filled = store.ImportWhys(TenantId.Local, new Dictionary<string, string>
+            {
+                ["release"] = "one shared reason",
+            });
+
+            Assert.Equal(2, filled);
+            Assert.Equal("one shared reason", store.Get(TenantId.Local, first.MissionId)!.Why);
+            Assert.Equal("one shared reason", store.Get(TenantId.Local, second.MissionId)!.Why);
         }
         finally
         {
