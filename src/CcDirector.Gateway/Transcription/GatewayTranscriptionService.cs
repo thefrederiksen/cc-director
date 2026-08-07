@@ -352,7 +352,6 @@ public sealed class GatewayTranscriptionService
             return new CleanupOutcome(raw, Applied: false, Reason: "dictionary unavailable: " + ex.Message);
         }
 
-
         if (dictionary.Vocabulary.Count == 0 && dictionary.CommonMistranscriptions.Count == 0)
             return new CleanupOutcome(raw, Applied: false, Reason: "empty dictionary");
 

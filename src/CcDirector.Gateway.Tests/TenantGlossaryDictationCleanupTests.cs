@@ -65,6 +65,17 @@ public sealed class TenantGlossaryDictationCleanupTests : IDisposable
 
     private void WriteTenantGlossary(TenantId tenant) => WriteGlossary(TenantGlossary.PathFor(tenant), "TenantCanonical");
 
+    /// <summary>A genuinely corrupt glossary for this tenant - an unterminated YAML flow sequence, which
+    /// makes the real loader's parse throw rather than quietly returning an empty dictionary. Written
+    /// through the same <see cref="TenantGlossary.PathFor"/> the Cockpit dictionary editor writes, so the
+    /// fault is raised by the PRODUCTION read path and not by a test stub standing in for it.</summary>
+    private static void WriteMalformedTenantGlossary(TenantId tenant)
+    {
+        var path = TenantGlossary.PathFor(tenant);
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        File.WriteAllText(path, "common_mistranscriptions:\n  TenantCanonical: [glotword\n");
+    }
+
     /// <summary>A service built the way the endpoints build it: default dictionary provider, stubbed
     /// transcription POST, and a scratch archive/history under this test's own root so an omitted
     /// default can never write into the real user's folders.</summary>
@@ -160,5 +171,50 @@ public sealed class TenantGlossaryDictationCleanupTests : IDisposable
 
         Assert.True(outcome.Applied);
         Assert.Equal("please spell TenantCanonical now", outcome.Text);
+    }
+
+    // ---- The COMBINED contract: issues #2482 and #2483 together ----
+    //
+    // These two belong to neither issue alone, which is why neither branch carried them. 2482 makes the
+    // read tenant-keyed; 2483 makes the read fail open. Only together do they answer the question a
+    // hosted user actually poses: MY glossary is corrupt - what happens to my dictation? All three parts
+    // of the answer are asserted, because each can regress on its own:
+    //   1. the request still succeeds (2483 - a dictionary fault must not fail transcribed text),
+    //   2. the text comes back RAW (2483 - fail open, not fail closed),
+    //   3. and it is NOT corrected from the global file (2482 - a fault must not become a global fallback,
+    //      which is the tenancy defect wearing a different hat).
+    //
+    // The fault is raised by the REAL loader on a REAL corrupt file through the DEFAULT provider - the
+    // service is built exactly as the endpoints build it - so this proves the production path fails open,
+    // not merely that the guard catches a stub that was told to throw.
+
+    [Fact]
+    public async Task TranscribeAsync_HostedTenantWithMalformedGlossary_FailsOpenToRawText_AndNeverTheGlobalFile()
+    {
+        WriteGlobalFlatFile();
+        WriteMalformedTenantGlossary(HostedTenant);
+
+        var result = await Service().TranscribeAsync(
+            new byte[] { 1, 2, 3 }, "clip.webm", "audio/webm", applyCorrection: true, CancellationToken.None,
+            tenant: HostedTenant, source: "batch");
+
+        Assert.Equal(TranscriptionOutcome.Ok, result.Outcome);
+        Assert.Equal(RawTranscript, result.Text);
+        Assert.DoesNotContain("GlobalCanonical", result.Text);
+    }
+
+    [Fact]
+    public async Task CleanupAsync_HostedTenantWithMalformedGlossary_FailsOpenToRawText_AndNeverTheGlobalFile()
+    {
+        // The same combined contract on the phone Notes assemble-then-clean path.
+        WriteGlobalFlatFile();
+        WriteMalformedTenantGlossary(HostedTenant);
+
+        var outcome = await Service().CleanupAsync(RawTranscript, HostedTenant);
+
+        Assert.False(outcome.Applied);
+        Assert.Equal(RawTranscript, outcome.Text);
+        Assert.DoesNotContain("GlobalCanonical", outcome.Text);
+        Assert.Contains("dictionary unavailable", outcome.Reason);
     }
 }
