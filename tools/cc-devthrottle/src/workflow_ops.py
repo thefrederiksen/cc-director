@@ -153,13 +153,26 @@ class WorkflowClient:
 
     def _json_or_raise(self, resp: requests.Response) -> Dict[str, Any]:
         if 200 <= resp.status_code < 300:
-            if not resp.content:
-                return {}
-            return resp.json()
+            # The shared guard, not a bare resp.json(): a request no endpoint matches falls
+            # through to the Gateway's web app and answers HTTP 200 with text/html, and parsing
+            # that unguarded is how 'workflow run <short id>' died with a raw JSONDecodeError
+            # traceback (issue #2486).
+            return gateway.parse_json_body(resp, self.base_url)
         raise GatewayError(self._gateway_message(resp))
 
     def _text_or_raise(self, resp: requests.Response) -> str:
         if 200 <= resp.status_code < 300:
+            # This output lands in an agent's context as the conduct to follow. The same
+            # fallthrough issue #2486 hit on the JSON routes answers HTTP 200 with the web app
+            # shell here, and printing that as instructions would have an agent obeying a web
+            # page that looks like it worked.
+            content_type = (resp.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+            if content_type == "text/html":
+                raise GatewayError(
+                    f"the Gateway at {self.base_url} answered with its web app page instead of "
+                    "the requested text, so it did not recognise this request. Nothing in that "
+                    "answer is the workflow's conduct."
+                )
             return resp.text
         raise GatewayError(self._gateway_message(resp))
 
@@ -238,13 +251,15 @@ class WorkflowClient:
     # ---- runs (the governance outcome spine, issue #1771) -------------------------------------
 
     def list_runs(
-        self, workflow_id: Optional[str], status: Optional[str]
+        self, workflow_id: Optional[str], status: Optional[str], limit: Optional[int] = None
     ) -> List[Dict[str, Any]]:
         params = []
         if workflow_id:
             params.append(f"workflowId={workflow_id}")
         if status:
             params.append(f"status={status}")
+        if limit is not None:
+            params.append(f"limit={limit}")
         path = "/gateway/workflow-runs" + (("?" + "&".join(params)) if params else "")
         data = self._json_or_raise(self._request("GET", path))
         return list(data.get("runs", []))
@@ -671,9 +686,68 @@ def list_runs(workflow_id: Optional[str], status: Optional[str], json_output: bo
     console.print("Details with: cc-devthrottle workflow run <run id>")
 
 
+#: One list read returns at most this many runs - the server's own hard ceiling
+#: (WorkflowRunStore.MaxListLimit), in place since the runs endpoint was born. Requesting exactly
+#: this many makes the answer PROVE its own completeness: fewer rows back means the whole history
+#: was seen, exactly this many means there may be more beyond the page.
+RUN_LIST_PROOF_LIMIT = 1000
+
+
+def _resolve_run_id(client: WorkflowClient, run_id: str) -> str:
+    """The full run id for what the user typed, resolved the way session ids are.
+
+    'workflow runs' prints run ids truncated to eight characters and tells the reader to use
+    them, so a short prefix is a first-class input here. It also cannot be sent to the Gateway
+    raw: the run route only matches a full id ('/gateway/workflow-runs/{id:guid}'), and an
+    unmatched path falls through to the Gateway's web app with HTTP 200 (issue #2486). Unknown
+    and ambiguous prefixes are refused in one sentence, like every other lookup on this tool.
+
+    Runs are retained forever and one list read is capped, so resolution only trusts a list
+    that PROVED itself complete (came back smaller than RUN_LIST_PROOF_LIMIT). Against a
+    possibly-truncated page, a lone match may have an invisible older twin and a miss may hide
+    an older hit - both are refused rather than guessed. More than one match is ambiguous no
+    matter what lies beyond the page, so that keeps its more specific error.
+    """
+    candidate = run_id.strip().lower()
+    if not candidate:
+        raise GatewayError("A run id, or a unique prefix of one, is required.")
+    if len(candidate) == 36:
+        return candidate
+    runs = client.list_runs(None, None, RUN_LIST_PROOF_LIMIT)
+    matches = sorted(
+        {
+            (run.get("id") or "")
+            for run in runs
+            if (run.get("id") or "").lower().startswith(candidate)
+        }
+    )
+    if len(matches) > 1:
+        shown = ", ".join(matches[:5]) + (
+            f", and {len(matches) - 5} more" if len(matches) > 5 else ""
+        )
+        raise GatewayError(
+            f"'{run_id}' matches {len(matches)} workflow runs: {shown}. "
+            "Give more of the id."
+        )
+    if len(runs) >= RUN_LIST_PROOF_LIMIT:
+        raise GatewayError(
+            f"The Gateway holds at least {RUN_LIST_PROOF_LIMIT} workflow runs - more than one "
+            "list read returns - so a short prefix cannot be proven unique or absent against "
+            "the whole history. Give the full run id "
+            "('cc-devthrottle workflow runs --json' prints full ids)."
+        )
+    if not matches:
+        raise GatewayError(
+            f"No workflow run matches '{run_id}'. "
+            "List them with: cc-devthrottle workflow runs"
+        )
+    return matches[0]
+
+
 def show_run(run_id: str, json_output: bool) -> None:
     try:
-        run = _client().get_run(run_id)
+        client = _client()
+        run = client.get_run(_resolve_run_id(client, run_id))
     except GatewayError as ex:
         _fail(str(ex))
         return

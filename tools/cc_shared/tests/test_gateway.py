@@ -576,3 +576,58 @@ def test_a_200_that_is_not_json_is_a_sentence_not_a_decode_error(monkeypatch):
         assert "usable answer" in str(caught.value)
     finally:
         srv.shutdown()
+
+
+# --- parse_json_body: the shared 2xx guard for the requests-based clients (issue #2486) ----------
+
+
+class _SuccessResponse:
+    """Duck-typed stand-in for requests.Response - exactly the shape parse_json_body reads."""
+
+    def __init__(self, status_code=200, content=b"", content_type=None, parsed=None):
+        self.status_code = status_code
+        self.content = content
+        self.headers = {"Content-Type": content_type} if content_type else {}
+        self._parsed = parsed
+
+    def json(self):
+        if self._parsed is None:
+            raise ValueError("Expecting value: line 1 column 1 (char 0)")
+        return self._parsed
+
+
+def test_parse_json_body_returns_the_parsed_json():
+    resp = _SuccessResponse(
+        content=b'{"a": 1}', content_type="application/json; charset=utf-8", parsed={"a": 1}
+    )
+    assert gateway.parse_json_body(resp, "http://gw") == {"a": 1}
+
+
+def test_parse_json_body_treats_an_empty_body_as_an_empty_object():
+    assert gateway.parse_json_body(_SuccessResponse(content=b""), "http://gw") == {}
+
+
+def test_parse_json_body_refuses_the_web_app_shell_in_a_sentence():
+    resp = _SuccessResponse(content=b"<!doctype html>", content_type="text/html; charset=utf-8")
+    with pytest.raises(gateway.GatewayError) as caught:
+        gateway.parse_json_body(resp, "http://gw")
+    assert "fell through to the Gateway's web app" in str(caught.value)
+
+
+def test_parse_json_body_refuses_unparseable_json_in_a_sentence():
+    resp = _SuccessResponse(content=b"{ truncated", content_type="application/json")
+    with pytest.raises(gateway.GatewayError) as caught:
+        gateway.parse_json_body(resp, "http://gw")
+    assert "could not be parsed" in str(caught.value)
+
+
+def test_parse_json_body_raises_the_callers_own_error_class():
+    """The email and diagnostics clients keep their own GatewayError classes; the guard must raise
+    THEIRS so their except handlers still catch it - the aliasing trap workflow_ops.py documents."""
+
+    class LocalGatewayError(Exception):
+        pass
+
+    resp = _SuccessResponse(content=b"<!doctype html>", content_type="text/html")
+    with pytest.raises(LocalGatewayError):
+        gateway.parse_json_body(resp, "http://gw", LocalGatewayError)

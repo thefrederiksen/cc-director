@@ -28,6 +28,7 @@ _tools_dir = str(Path(__file__).resolve().parent.parent.parent)
 if _tools_dir not in sys.path:
     sys.path.insert(0, _tools_dir)
 
+from cc_shared import gateway  # noqa: E402
 from cc_shared.config import CCDirectorConfig  # noqa: E402
 
 LOOPBACK_DEFAULT = "http://127.0.0.1:7878"
@@ -139,7 +140,10 @@ class EmailClient:
             ) from exc
 
         if 200 <= resp.status_code < 300:
-            return resp.json() if resp.content else {}
+            # The shared guard, not a bare resp.json(): a request no endpoint matches falls
+            # through to the Gateway's web app and answers HTTP 200 with text/html (issue #2486).
+            # This module's own GatewayError travels along so the handlers here still catch it.
+            return gateway.parse_json_body(resp, self.base_url, GatewayError)
         raise GatewayError(_gateway_message(resp))
 
 

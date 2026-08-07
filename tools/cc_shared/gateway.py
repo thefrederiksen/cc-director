@@ -160,6 +160,44 @@ def _error_message(body: str, code: int, fault_is_director: bool = False) -> str
     return sentence
 
 
+def parse_json_body(resp: Any, base_url: str, error: type = GatewayError) -> Any:
+    """The body of a successful (2xx) Gateway answer, parsed as the JSON it was promised - or `error`.
+
+    A 2XX IS NOT PROOF THE GATEWAY UNDERSTOOD THE REQUEST. The Gateway serves its web app at "/"
+    and falls unknown paths back to index.html, so a request no endpoint matches answers HTTP 200
+    with the app shell as text/html - never a 404. Two roads lead there: a Gateway build from
+    before the route existed, and an id whose shape the route refuses - 'workflow run <eight
+    character prefix>' against '/gateway/workflow-runs/{id:guid}' died as a raw JSONDecodeError
+    traceback exactly this way (issue #2486). Both must come back as the one-sentence refusal
+    every other failure on these commands gets.
+
+    Duck-typed over requests.Response (this module itself speaks urllib), so every requests-based
+    client shares the one guard instead of each carrying its own unguarded resp.json(). `error` is
+    the exception class to raise: the email and diagnostics clients keep their own GatewayError
+    classes, and raising THIS module's class inside them would fly straight past their
+    `except GatewayError` handlers - the aliasing trap workflow_ops.py documents.
+    """
+    if not resp.content:
+        return {}
+    content_type = (resp.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+    if content_type != "application/json":
+        raise error(
+            f"the Gateway at {base_url} answered HTTP {resp.status_code} with "
+            f"{content_type or 'an unlabelled body'} instead of the JSON this command asked for. "
+            "The request fell through to the Gateway's web app, which means the Gateway did not "
+            "recognise it - usually an id in a shape the route does not accept, or a Gateway "
+            "build from before this command existed. Nothing in that answer can be acted on."
+        )
+    try:
+        return resp.json()
+    except ValueError as exc:
+        # Labelled JSON that is not JSON: a proxy or error page, never something to act on.
+        raise error(
+            f"the Gateway at {base_url} returned a body labelled JSON that could not be "
+            f"parsed: {exc}"
+        ) from exc
+
+
 def _origin(url: str) -> tuple:
     """Scheme, host and port - the three things that decide whether a URL is the SAME place."""
     parsed = urllib.parse.urlparse(url)

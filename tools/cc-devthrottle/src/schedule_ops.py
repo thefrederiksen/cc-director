@@ -114,9 +114,9 @@ class ScheduleClient:
 
     def _ok_or_raise(self, resp: requests.Response) -> Dict[str, Any]:
         if 200 <= resp.status_code < 300:
-            if not resp.content:
-                return {}
-            return resp.json()
+            # The shared guard, not a bare resp.json(): a request no endpoint matches falls
+            # through to the Gateway's web app and answers HTTP 200 with text/html (issue #2486).
+            return gateway.parse_json_body(resp, self.base_url)
         raise GatewayError(self._gateway_message(resp))
 
     def list_jobs(self) -> List[Dict[str, Any]]:
