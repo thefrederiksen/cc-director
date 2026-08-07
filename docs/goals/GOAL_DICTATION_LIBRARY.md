@@ -161,6 +161,9 @@ Stop and ask the user in any of these situations:
 - You hit an OpenAI or Anthropic API behavior that contradicts what
   PLAN.md assumes (for example, the Realtime API does not actually
   support the prompt parameter the way we expect).
+  > CORRECTION, 2026-08-07 (owner ruling, issue 2481): whether the provider supports a
+  > prompt parameter is moot - we do not use one. Nothing but audio is sent to the
+  > transcriber.
 - Something requires the user's microphone to verify. This is Phase 2
   territory.
 - You are unsure whether a change is in scope. Ask first.

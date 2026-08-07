@@ -101,6 +101,9 @@ GitHub repo, no separate package, no multi-vendor abstraction.
 1. **Phase 0, proof of fact.** No code commitment. Record a 30 second
    clip of representative speech with company terms. Send it through
    OpenAI gpt-4o-transcribe both with and without the prompt parameter.
+   > CORRECTION, 2026-08-07 (owner ruling, issue 2481): the "with the prompt parameter"
+   > arm was REJECTED. Nothing is ever sent to the transcriber but audio. The script that
+   > ran this experiment is tombstoned and will not run.
    Run both transcripts through a Haiku cleanup pass that knows the term
    list. Compare. Only proceed if the dictionary mechanism works
    reliably enough on your real voice and real terms.

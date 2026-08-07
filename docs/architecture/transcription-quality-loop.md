@@ -47,7 +47,9 @@ We already have `tools/harnesses/transcription-eval-harness/` (audio -> transcri
 recall) and 5 recorded English fixtures. Transcription is now third-party, so the new harness focuses on
 the DICTIONARY CLEANUP step, holds transcription constant, and is multilingual. The design is lifted from
 established ASR-customization / contextual-biasing methodology (GenSEC/HyPoradise, LibriSpeech biasing),
-NOT invented.
+NOT invented. To be clear about what is borrowed: the MEASUREMENT method (the B-WER / U-WER split
+below), not the technique. We do not do contextual biasing - nothing is sent to the transcriber but
+audio (issue 2481). Transcription is held constant and only the cleanup step is measured.
 
 Central design decision - hold transcription constant (text-in / text-out). Each fixture is:
 `{ language (BCP-47), raw_transcript (frozen mishearing), term_list (targets + distractors),

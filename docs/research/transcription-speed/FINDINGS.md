@@ -45,6 +45,13 @@ Speed-first ranking for short dictation clips (~2s-2min), .NET Windows host w/ o
 | **Parakeet-TDT 0.6B (sherpa-onnx)** | Local | <0.05 s GPU / ~0.5 s CPU | $0 | weak | Good (C# NuGet, in-proc) |
 | **Whisper.net (whisper.cpp)** | Local | ~0.1-0.5 s GPU / 1-5 s CPU | $0 | initial_prompt | Best (native C#, Vulkan/CUDA/CPU) |
 
+> CORRECTION, 2026-08-07 (owner ruling, issue 2481): ignore the "Custom vocab" column when
+> choosing an engine. DevThrottle does not use any provider's custom-vocabulary channel -
+> no `prompt` hint, no keyterms, no `initial_prompt` - because priming the transcriber
+> changes wording and sentence structure and corrupts the record of what was said. Terms
+> are corrected on the finished transcript instead. Speed, cost and .NET fit are the real
+> selection criteria here; that column is not one.
+
 **Recommendation:**
 - **Fastest win, minimal effort: switch the default to Groq `whisper-large-v3-turbo`.**
   It is an OpenAI-compatible endpoint, so the Gateway proxy changes only base URL + key +
@@ -81,6 +88,10 @@ fixes SOME rare terms but not all, and does not reliably enforce casing (lowerca
 Stronger engines if we ever switch: Deepgram Keyterm / AssemblyAI keyterms_prompt (~90% recall,
 casing preserved) / Speechmatics `sounds_like` (encode the exact mishearings).
 
+> CORRECTION, 2026-08-07 (owner ruling, issue 2481): none of these engine features will be
+> used, however strong. Switching engine is a speed and cost decision only; the keyword
+> channel is not a reason to pick one, because we never send words to the transcriber.
+
 ### 3b. Replace the o4-mini cleanup with an in-process deterministic matcher
 The cleanup's only job is fixing a known, finite custom vocabulary - a deterministic
 string-matching problem, not a generative one. The mishearings are phonetic
@@ -98,6 +109,10 @@ proposal mechanism (stage b), catching the NEW variants that currently escape to
 
 **Can biasing alone drop cleanup?** No - no engine guarantees rare-proper-noun spelling/casing.
 Keep a cleanup step, but make it the deterministic matcher above, not an LLM.
+
+> CORRECTION, 2026-08-07 (owner ruling, issue 2481): the question is moot - there is no
+> biasing at all. Nothing is sent to the transcriber but audio, so the cleanup pass is not
+> merely kept, it is the ONLY correction stage there is.
 
 ---
 
@@ -138,6 +153,11 @@ Both are enforced by skipping multi-token windows containing a canonical term or
    and an entire class of network failures; deterministic and unit-testable.
 3. **Bias transcription** with the vocabulary glossary via the `prompt` parameter (nearly free,
    reduces how often cleanup is even needed).
+   > CORRECTION, 2026-08-07 (owner ruling, issue 2481): step 3 is REJECTED and will not be
+   > built. The vocabulary is never passed to the transcriber in any form. Priming it makes it
+   > steer toward the suggested words, changing wording and sentence structure and corrupting
+   > the record of what was said. Steps 1, 2 and 4 are unaffected. Left in place as the dated
+   > record of what was recommended.
 4. **Later / optional:** local Parakeet/Whisper.net backend for GPU machines (offline, free,
    fastest); streaming for live on-screen dictation.
 
