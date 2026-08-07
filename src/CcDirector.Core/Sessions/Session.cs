@@ -583,8 +583,41 @@ public sealed class Session : IDisposable
     /// </summary>
     public void UpdateClaudeSessionPointer(string? claudeSessionId, string? transcriptPath, string? source)
     {
+        // A session id must LOOK like one before it is allowed to replace a working one.
+        //
+        // This guard used to be `!IsNullOrWhiteSpace`, and that is the whole of how issue #2456 destroyed
+        // three sessions. A drop arrived carrying the literal one-character id "x" - with no event, no
+        // source and no transcript - and it was accepted over a verified GUID and persisted. The session
+        // could no longer resolve its own transcript, so narration read no reply, recorded "nothing to
+        // narrate", and returned before generating anything. The rail sat on "Preparing voice" forever and
+        // the session never spoke again. Nothing failed loudly; nothing retried; no reason was recorded
+        // anywhere. One of the three took the damage while running the v1.9.11 release gate.
+        //
+        // The writer in that case was a TEST inheriting the caller's environment, and that is fixed at its
+        // own site - but fixing only the messenger would leave this door open to every other writer. Any
+        // non-blank string could overwrite a known-good pointer, and the damage was silent and permanent.
+        // This guard alone would have prevented all three cases with that test unchanged.
+        //
+        // REFUSING is strictly better than accepting here, and the asymmetry is the point: keeping a
+        // slightly stale id costs one turn of narration, while taking a malformed one costs the session
+        // its voice for good, with no error to notice. So a value that does not parse as a GUID is
+        // refused and said out loud, and the previous good value stands.
         if (!string.IsNullOrWhiteSpace(claudeSessionId))
-            ClaudeSessionId = claudeSessionId;
+        {
+            if (Guid.TryParse(claudeSessionId, out _))
+            {
+                ClaudeSessionId = claudeSessionId;
+            }
+            else
+            {
+                FileLog.Write(
+                    $"[Session] UpdateClaudeSessionPointer REFUSED a malformed claude session id for sid={Id}: "
+                    + $"'{claudeSessionId}' is not a GUID (source={source ?? "(none)"}). Keeping "
+                    + $"'{ClaudeSessionId ?? "(none)"}'. A pointer drop carrying a non-GUID id is a bug in "
+                    + "whatever wrote it - see issue #2456.");
+                return;
+            }
+        }
         if (!string.IsNullOrWhiteSpace(transcriptPath))
             ClaudeTranscriptPath = transcriptPath;
         FileLog.Write($"[Session] UpdateClaudeSessionPointer: sid={Id} source={source ?? "(none)"} claudeId={claudeSessionId ?? "(none)"} transcript={transcriptPath ?? "(none)"}");
