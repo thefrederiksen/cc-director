@@ -96,7 +96,32 @@ TRANSFER_OBJECT = re.compile(
     r"|spelling hints?|term set|our terms|the terms)\b",
     re.I,
 )
-NEGATION = re.compile(r"\b(never|nothing|not|n't|no)\b", re.I)
+NEGATION = re.compile(r"\b(never|nothing|not|n't|no|nor)\b", re.I)
+# Where one clause ends and the next begins. A negation only reaches the verb in ITS OWN clause:
+# in "Do not omit the dictionary; send it to the transcriber" the "not" governs "omit", and the
+# instruction after the semicolon is the banned one, fully positive.
+CLAUSE_BREAK = re.compile(r"[;:,]|\b(but|and|while|whereas|however|though|although|yet|then)\b",
+                          re.I)
+
+
+def negated_transfer(line):
+    """True only when EVERY transfer verb on the line is itself negated.
+
+    The guard used to be line-wide, which meant any "not" anywhere switched the whole detector
+    off - so six different ways of writing the banned instruction with an unrelated or
+    contrastive "not" sailed through. The negation has to govern the transfer PREDICATE, so it
+    is looked for between the start of the verb's own clause and the verb itself. If even one
+    transfer verb is positive, the line states the banned behaviour and is a claim.
+    """
+    verbs = list(TRANSFER_VERB.finditer(line))
+    if not verbs:
+        return False
+    for verb in verbs:
+        breaks = [b.end() for b in CLAUSE_BREAK.finditer(line) if b.end() <= verb.start()]
+        clause = line[(max(breaks) if breaks else 0):verb.end()]
+        if not NEGATION.search(clause):
+            return False        # a positive transfer survives - this is a claim
+    return True                 # every transfer on the line is explicitly negated
 TRANSFER_DEST = re.compile(
     r"\b(speech.to.text|stt|transcriber|transcription request|\bprovider\b|audio upload"
     r"|prompt field|prompt parameter|\basr\b|whisper|speech model|speech engine"
@@ -113,10 +138,11 @@ def is_claim(line):
     if WEAK.search(line) and STRICT_CONTEXT.search(line):
         return True
     # A line stating the CORRECT behaviour - "nothing in it is ever sent to the speech model" -
-    # is the transfer shape negated, and must not be reported as the thing it forbids. Applied
-    # to this tier only: an explicit "biased into speech-to-text" still counts even if the line
-    # happens to contain "not", because the strong and weak tiers name the behaviour outright.
-    if NEGATION.search(line):
+    # is the transfer shape negated, and must not be reported as the thing it forbids. The
+    # exemption is scoped twice over: to this tier only (an outright "biased into speech-to-text"
+    # still counts whatever else is on the line), and to the transfer PREDICATE (a "not"
+    # governing some other verb does not excuse a positive transfer sitting beside it).
+    if negated_transfer(line):
         return False
     return bool(TRANSFER_VERB.search(line)
                 and TRANSFER_OBJECT.search(line)
@@ -197,6 +223,22 @@ DETECTOR_CASES = [
     ("nothing in it is ever sent to the speech model", False, "the correct behaviour, stated"),
     ("the dictionary is never passed to the transcriber", False, "the correct behaviour, stated"),
     ("we do not send the glossary to the provider", False, "the correct behaviour, stated"),
+    ("The dictionary is never sent to the provider, nor given to the ASR engine",
+     False, "two transfers, both negated"),
+    # --- the banned instruction wearing an unrelated or contrastive "not". A line-wide negation
+    # --- guard missed every one of these; the guard is scoped to the transfer predicate now.
+    ("Do not omit the dictionary; send it to the transcriber",
+     True, "negation governs 'omit', the transfer is positive"),
+    ("The transcriber receives the glossary, not the cleanup pass",
+     True, "contrastive 'not' after a positive transfer"),
+    ("Never leave the term list local; pass it to the ASR provider",
+     True, "negation governs 'leave', the transfer is positive"),
+    ("No restart is needed: the transcriber receives the glossary on each request",
+     True, "negation belongs to an unrelated clause"),
+    ("The provider must receive the dictionary, not just audio",
+     True, "contrastive 'not just' after a positive transfer"),
+    ("The dictionary is not only stored locally; it is sent to the provider",
+     True, "'not only ... ; it is sent' - the transfer is positive"),
 ]
 
 
