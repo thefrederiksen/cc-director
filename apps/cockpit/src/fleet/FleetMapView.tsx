@@ -92,7 +92,8 @@ const PIVOTS: ReadonlyArray<{ key: Pivot; label: string; kindLabel: string }> = 
 ];
 
 // The pivots that lay the fleet out on the node canvas (root -> lanes). "list" is a flat grid and
-// "mission" is its own board; neither uses the canvas or the title search.
+// "mission" is its own board, so neither uses the canvas. The title search applies to the canvas
+// pivots and to "list"; only the Missions board hides it.
 const CANVAS_PIVOTS: ReadonlySet<Pivot> = new Set<Pivot>(["machine", "director", "repo", "worktree", "agent", "model"]);
 
 // The grouping is sticky per browser: the map opens on whatever the user last chose (rather than a
