@@ -132,11 +132,11 @@ public sealed class CensusRouteTenancyProbeTests : IAsyncLifetime
 
         var setA = await Json(await Send("PATCH", $"missions/{idA}", _keyA, WhyBody(whyA)),
             HttpStatusCode.OK, "SEED    PATCH /missions/{A} (tenant A)");
-        Assert.Equal(whyA, Str(setA, "why"));
+        Assert.Equal(whyA, Str(Obj(setA, "mission"), "why"));
 
         var setB = await Json(await Send("PATCH", $"missions/{idB}", _keyB, WhyBody(whyB)),
             HttpStatusCode.OK, "SEED    PATCH /missions/{B} (tenant B)");
-        Assert.Equal(whyB, Str(setB, "why"));
+        Assert.Equal(whyB, Str(Obj(setB, "mission"), "why"));
 
         // Each tenant reads back EXACTLY its own why - not the other's, and not overwritten by it.
         var readA = await Json(await Send("GET", $"missions/{idA}", _keyA, null),
@@ -164,7 +164,7 @@ public sealed class CensusRouteTenancyProbeTests : IAsyncLifetime
         // B's untouched. Without this, the reads above could be an inert route rather than a partitioned one.
         var clearA = await Json(await Send("PATCH", $"missions/{idA}", _keyA, WhyBody("")),
             HttpStatusCode.OK, "CONTROL PATCH /missions/{A} (tenant A clears its OWN why)");
-        Assert.Equal("", Str(clearA, "why"));
+        Assert.Equal("", Str(Obj(clearA, "mission"), "why"));
 
         var survivingBAgain = await Json(await Send("GET", $"missions/{idB}", _keyB, null),
             HttpStatusCode.OK, "AFTER   GET /missions/{B} (after A cleared its own)");

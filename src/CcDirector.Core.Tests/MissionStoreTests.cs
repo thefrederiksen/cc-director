@@ -330,4 +330,182 @@ public class MissionStoreTests
                 File.Delete(tempFile);
         }
     }
+
+    // ---- rename and ending a mission (Phase 2) -------------------------------------------------------
+
+    [Fact]
+    public void Rename_ChangesTheDisplayName_AndKeepsIdAndWhy()
+    {
+        var tempFile = TempPath();
+        try
+        {
+            var store = NewStore(tempFile);
+            var mission = store.Create(TenantId.Local, "Release 2.0.0");
+            store.SetWhy(TenantId.Local, mission.MissionId, "the reason", DateTimeOffset.UtcNow);
+
+            var renamed = store.Rename(TenantId.Local, mission.MissionId, "  Release 2.0.1  ");
+
+            Assert.NotNull(renamed);
+            Assert.Equal("Release 2.0.1", renamed.MissionName);
+            // The identity does not move, and neither does the WHY - which is the whole reason the WHY had
+            // to stop being keyed by name before rename existed.
+            Assert.Equal(mission.MissionId, renamed.MissionId);
+            Assert.Equal("the reason", renamed.Why);
+
+            var reopened = NewStore(tempFile);
+            Assert.Equal("Release 2.0.1", reopened.Get(TenantId.Local, mission.MissionId)!.MissionName);
+            Assert.Equal("the reason", reopened.Get(TenantId.Local, mission.MissionId)!.Why);
+        }
+        finally
+        {
+            if (File.Exists(tempFile))
+                File.Delete(tempFile);
+        }
+    }
+
+    [Fact]
+    public void Rename_BlankThrows_AndUnknownReturnsNull()
+    {
+        var tempFile = TempPath();
+        try
+        {
+            var store = NewStore(tempFile);
+            var mission = store.Create(TenantId.Local, "Release");
+
+            Assert.Throws<ArgumentException>(() => store.Rename(TenantId.Local, mission.MissionId, "  "));
+            Assert.Null(store.Rename(TenantId.Local, Guid.NewGuid(), "Anything"));
+            // The refused rename changed nothing.
+            Assert.Equal("Release", store.Get(TenantId.Local, mission.MissionId)!.MissionName);
+        }
+        finally
+        {
+            if (File.Exists(tempFile))
+                File.Delete(tempFile);
+        }
+    }
+
+    [Fact]
+    public void A_new_mission_is_active_and_listed()
+    {
+        var tempFile = TempPath();
+        try
+        {
+            var store = NewStore(tempFile);
+            var mission = store.Create(TenantId.Local, "Release 2.0.1");
+
+            Assert.Equal(MissionStates.Active, mission.State);
+            Assert.True(mission.IsActive);
+            Assert.Null(mission.StateChangedAt);
+            Assert.Single(store.List(TenantId.Local));
+        }
+        finally
+        {
+            if (File.Exists(tempFile))
+                File.Delete(tempFile);
+        }
+    }
+
+    [Theory]
+    [InlineData(MissionStates.Complete)]
+    [InlineData(MissionStates.Removed)]
+    public void An_ended_mission_leaves_the_default_list_but_is_still_there(string ending)
+    {
+        var tempFile = TempPath();
+        try
+        {
+            var store = NewStore(tempFile);
+            var mission = store.Create(TenantId.Local, "Remove the network port");
+            var now = DateTimeOffset.UtcNow;
+
+            var ended = store.SetState(TenantId.Local, mission.MissionId, ending, now);
+
+            Assert.NotNull(ended);
+            Assert.Equal(ending, ended.State);
+            Assert.Equal(now, ended.StateChangedAt);
+            Assert.False(ended.IsActive);
+
+            // Gone from the default view...
+            Assert.Empty(store.List(TenantId.Local));
+            // ...but NOT gone. Removed is a soft delete: the record stays, and the id still resolves.
+            Assert.NotNull(store.Get(TenantId.Local, mission.MissionId));
+            Assert.Single(store.List(TenantId.Local, includeEnded: true));
+            Assert.Single(store.List(TenantId.Local, state: ending));
+        }
+        finally
+        {
+            if (File.Exists(tempFile))
+                File.Delete(tempFile);
+        }
+    }
+
+    [Fact]
+    public void An_ended_mission_can_be_reopened()
+    {
+        var tempFile = TempPath();
+        try
+        {
+            var store = NewStore(tempFile);
+            var mission = store.Create(TenantId.Local, "Ended by mistake");
+            store.SetState(TenantId.Local, mission.MissionId, MissionStates.Complete, DateTimeOffset.UtcNow);
+            Assert.Empty(store.List(TenantId.Local));
+
+            var reopened = store.SetState(TenantId.Local, mission.MissionId, MissionStates.Active,
+                DateTimeOffset.UtcNow);
+
+            Assert.NotNull(reopened);
+            Assert.True(reopened.IsActive);
+            Assert.Single(store.List(TenantId.Local));
+        }
+        finally
+        {
+            if (File.Exists(tempFile))
+                File.Delete(tempFile);
+        }
+    }
+
+    [Fact]
+    public void SetState_RejectsAnythingElse_AndUnknownReturnsNull()
+    {
+        var tempFile = TempPath();
+        try
+        {
+            var store = NewStore(tempFile);
+            var mission = store.Create(TenantId.Local, "Release");
+
+            Assert.Throws<ArgumentException>(() =>
+                store.SetState(TenantId.Local, mission.MissionId, "archived", DateTimeOffset.UtcNow));
+            Assert.Null(store.SetState(TenantId.Local, Guid.NewGuid(), MissionStates.Complete,
+                DateTimeOffset.UtcNow));
+            Assert.True(store.Get(TenantId.Local, mission.MissionId)!.IsActive);
+        }
+        finally
+        {
+            if (File.Exists(tempFile))
+                File.Delete(tempFile);
+        }
+    }
+
+    [Fact]
+    public void A_record_written_before_states_existed_reads_as_active()
+    {
+        var tempFile = TempPath();
+        try
+        {
+            // No State property at all - exactly what every missions.json on disk holds today.
+            File.WriteAllText(tempFile,
+                "[{\"MissionId\":\"" + Guid.NewGuid() + "\",\"MissionName\":\"Older Mission\"," +
+                "\"CreatedAt\":\"2026-01-01T00:00:00+00:00\",\"TenantId\":null}]");
+
+            var store = NewStore(tempFile);
+            var listed = store.List(TenantId.Local);
+
+            Assert.Single(listed);
+            Assert.True(listed[0].IsActive);
+        }
+        finally
+        {
+            if (File.Exists(tempFile))
+                File.Delete(tempFile);
+        }
+    }
 }

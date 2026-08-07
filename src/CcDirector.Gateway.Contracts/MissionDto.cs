@@ -31,6 +31,12 @@ public sealed class MissionDto
     /// <summary>When the WHY was last set (UTC), or null if it has never been set.</summary>
     public DateTimeOffset? WhyUpdatedAt { get; set; }
 
+    /// <summary>"active", "complete", or "removed". Older Gateways send nothing, which reads as active.</summary>
+    public string State { get; set; } = "active";
+
+    /// <summary>When the state last changed (UTC), or null while it has only ever been active.</summary>
+    public DateTimeOffset? StateChangedAt { get; set; }
+
     /// <summary>ADDITIVE (Workflows mission, phase 4, issue #1771): the workflow run opened beside
     /// this Mission when it was created through the Gateway - a mission is a run of the built-in
     /// "mission" workflow. Null on reads that do not resolve it and on missions predating the spine.
@@ -57,9 +63,40 @@ public sealed class NewMissionRequest
 public sealed class MissionPatchRequest
 {
     /// <summary>The mission's WHY. An empty or whitespace value CLEARS it, returning the card to its "no
-    /// why set" flag. Null means "do not change the why" - and, until other fields exist here, is rejected
-    /// as an empty request rather than treated as a silent no-op.</summary>
+    /// why set" flag. Null means "do not change the why".</summary>
     public string? Why { get; set; }
+
+    /// <summary>The mission's display name. Null means "do not rename"; blank is REJECTED rather than
+    /// treated as a clear, because a mission with no name cannot be referred to.</summary>
+    public string? MissionName { get; set; }
+
+    /// <summary>"active", "complete", or "removed". Null means "do not change the state". Setting "active"
+    /// on an ended mission REOPENS it, which is the way back from a mistaken ending.</summary>
+    public string? State { get; set; }
+}
+
+/// <summary>
+/// The result of PATCH /missions/{mid}: the updated Mission, plus anything the caller needs TOLD that the
+/// mission record alone does not say.
+/// </summary>
+public sealed class MissionPatchResultDto
+{
+    /// <summary>The mission after the change.</summary>
+    public MissionDto? Mission { get; set; }
+
+    /// <summary>
+    /// A plain sentence about something that happened alongside the change and that the caller cannot see
+    /// from the mission itself - a workflow run that could not be advanced, or an ending applied while
+    /// sessions were still attached. Null when the outcome speaks for itself.
+    ///
+    /// Returned rather than left to be inferred, for the same reason MissionAttachResultDto returns its
+    /// seat note: only the Gateway knows what happened to the run, and a caller told nothing would report a
+    /// clean ending it has no basis for.
+    /// </summary>
+    public string? Note { get; set; }
+
+    /// <summary>How many sessions were still attached when the mission was ended. Zero otherwise.</summary>
+    public int AttachedSessionCount { get; set; }
 }
 
 /// <summary>

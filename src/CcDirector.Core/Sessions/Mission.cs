@@ -1,6 +1,37 @@
 namespace CcDirector.Core.Sessions;
 
 /// <summary>
+/// The states a Mission can be in. Stored as a string rather than an enum so an unrecognised value from a
+/// newer writer round-trips instead of deserialising to whatever happens to be zero.
+///
+/// There are exactly three, and the two endings are DIFFERENT ENDINGS rather than one with a flag:
+/// COMPLETE means the work finished and is worth keeping - "what did we ship in July" is a real question.
+/// REMOVED means the mission should not have existed - a duplicate, a mistake, an abandoned idea. It is
+/// not an outcome, and lumping it in with completed work would quietly corrupt the answer to that question.
+/// </summary>
+public static class MissionStates
+{
+    /// <summary>Live work. The ordinary state, and what a mission is created in.</summary>
+    public const string Active = "active";
+
+    /// <summary>The work finished. Kept forever; out of the default view.</summary>
+    public const string Complete = "complete";
+
+    /// <summary>This should not exist. Soft-deleted: the record stays, out of every default view.</summary>
+    public const string Removed = "removed";
+
+    /// <summary>The states that are an ENDING - a mission in one of these is no longer live work.</summary>
+    public static readonly string[] Ended = { Complete, Removed };
+
+    /// <summary>Normalize a caller-supplied state, or null when it is not one of the three.</summary>
+    public static string? Normalize(string? value)
+    {
+        var v = (value ?? string.Empty).Trim().ToLowerInvariant();
+        return v == Active || v == Complete || v == Removed ? v : null;
+    }
+}
+
+/// <summary>
 /// A Mission: the named unit of work a pod of sessions is collectively chartered to accomplish
 /// (see docs/new_architecture/mission-as-first-class-unit-of-work.md). A Mission is its OWN persisted
 /// record - not merely an attachment field on a session - so it survives a Director/Manager restart and
@@ -39,6 +70,23 @@ public sealed class Mission
 
     /// <summary>When <see cref="Why"/> was last set (UTC), or null if it has never been set.</summary>
     public DateTimeOffset? WhyUpdatedAt { get; set; }
+
+    /// <summary>
+    /// One of <see cref="MissionStates"/>. Defaults to Active, which is also what a record written before
+    /// this field existed reads as - every mission that predates it was, by definition, never ended.
+    ///
+    /// A mission can be ended while sessions are still attached to it, and that is deliberate. Refusing
+    /// would make ending hardest exactly when a mission has sprawled, which is when it most needs ending,
+    /// and a single idle-but-alive session would block it for no reason. The contradiction is shown rather
+    /// than prevented - see the Cockpit's mission card.
+    /// </summary>
+    public string State { get; set; } = MissionStates.Active;
+
+    /// <summary>When <see cref="State"/> last changed (UTC), or null while it has only ever been Active.</summary>
+    public DateTimeOffset? StateChangedAt { get; set; }
+
+    /// <summary>True when this mission is still live work - the ordinary case, and what the default view shows.</summary>
+    public bool IsActive => MissionStates.Normalize(State) is null or MissionStates.Active;
 
     /// <summary>UTC timestamp the Mission was created. Used for stable list ordering.</summary>
     public DateTimeOffset CreatedAt { get; set; }

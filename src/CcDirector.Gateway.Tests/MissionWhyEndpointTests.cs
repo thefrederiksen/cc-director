@@ -200,4 +200,145 @@ public sealed class MissionWhyEndpointTests : IAsyncLifetime
         using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync());
         return doc.RootElement.TryGetProperty("why", out var why) ? why.GetString() ?? "" : "";
     }
+
+    // ---- rename and ending (Phase 2) ------------------------------------------------------------------
+
+    [Fact]
+    public async Task Rename_changes_the_name_and_keeps_the_why()
+    {
+        var mission = await CreateMission("Release 2.0.0");
+        await PatchWhy(mission, "the reason");
+
+        using var res = await Patch(mission, new { missionName = "  Release 2.0.1  " });
+        Assert.Equal(HttpStatusCode.OK, res.StatusCode);
+
+        var listed = await GetMission(mission);
+        Assert.Equal("Release 2.0.1", listed.GetProperty("missionName").GetString());
+        // The WHY survives the rename. Under the old name-keyed store it would simply have vanished.
+        Assert.Equal("the reason", listed.GetProperty("why").GetString());
+    }
+
+    [Fact]
+    public async Task A_blank_name_is_rejected_rather_than_stored()
+    {
+        var mission = await CreateMission("Release 2.0.1");
+
+        using var res = await Patch(mission, new { missionName = "   " });
+        Assert.Equal(HttpStatusCode.BadRequest, res.StatusCode);
+
+        var listed = await GetMission(mission);
+        Assert.Equal("Release 2.0.1", listed.GetProperty("missionName").GetString());
+    }
+
+    [Theory]
+    [InlineData("complete")]
+    [InlineData("removed")]
+    public async Task Ending_a_mission_takes_it_out_of_the_default_list_but_keeps_the_record(string ending)
+    {
+        var mission = await CreateMission("Remove the network port");
+
+        using var res = await Patch(mission, new { state = ending });
+        Assert.Equal(HttpStatusCode.OK, res.StatusCode);
+
+        Assert.DoesNotContain(mission, await ListMissionIds(null));
+        Assert.Contains(mission, await ListMissionIds("all"));
+        Assert.Contains(mission, await ListMissionIds(ending));
+
+        // Soft: the record is still addressable by id.
+        var listed = await GetMission(mission);
+        Assert.Equal(ending, listed.GetProperty("state").GetString());
+    }
+
+    [Fact]
+    public async Task An_ended_mission_can_be_reopened()
+    {
+        var mission = await CreateMission("Ended by mistake");
+        await Patch(mission, new { state = "complete" });
+        Assert.DoesNotContain(mission, await ListMissionIds(null));
+
+        using var res = await Patch(mission, new { state = "active" });
+        Assert.Equal(HttpStatusCode.OK, res.StatusCode);
+        Assert.Contains(mission, await ListMissionIds(null));
+    }
+
+    // The run store refuses created -> succeeded, and EVERY mission run on this fleet is still at created
+    // because nothing has ever advanced one. So the ordinary case is the one needing two steps, and this is
+    // the test that would catch it silently not happening.
+    [Fact]
+    public async Task Completing_a_mission_drives_its_workflow_run_to_a_terminal_state()
+    {
+        var mission = await CreateMission("Release 2.0.1");
+        Assert.Equal("created", await RunStatusFor(mission));
+
+        using var res = await Patch(mission, new { state = "complete" });
+        Assert.Equal(HttpStatusCode.OK, res.StatusCode);
+
+        Assert.Equal("succeeded", await RunStatusFor(mission));
+    }
+
+    [Fact]
+    public async Task Removing_a_mission_abandons_its_workflow_run()
+    {
+        var mission = await CreateMission("A duplicate");
+
+        using var res = await Patch(mission, new { state = "removed" });
+        Assert.Equal(HttpStatusCode.OK, res.StatusCode);
+
+        Assert.Equal("abandoned", await RunStatusFor(mission));
+    }
+
+    [Fact]
+    public async Task An_unrecognised_state_is_rejected()
+    {
+        var mission = await CreateMission("Release 2.0.1");
+        using var res = await Patch(mission, new { state = "archived" });
+        Assert.Equal(HttpStatusCode.BadRequest, res.StatusCode);
+    }
+
+    [Fact]
+    public async Task A_state_filter_the_route_does_not_know_is_rejected()
+    {
+        using var res = await Authed(HttpMethod.Get, "/missions?state=parked");
+        Assert.Equal(HttpStatusCode.BadRequest, res.StatusCode);
+    }
+
+    // ---- Phase 2 helpers -----------------------------------------------------------------------------
+
+    private async Task<HttpResponseMessage> Patch(string missionId, object body)
+    {
+        using var req = new HttpRequestMessage(HttpMethod.Patch, $"/missions/{missionId}")
+        {
+            Content = JsonContent.Create(body),
+        };
+        req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", Token);
+        return await _http.SendAsync(req);
+    }
+
+    private async Task<JsonElement> GetMission(string missionId)
+    {
+        using var res = await Authed(HttpMethod.Get, $"/missions/{missionId}");
+        Assert.Equal(HttpStatusCode.OK, res.StatusCode);
+        return JsonDocument.Parse(await res.Content.ReadAsStringAsync()).RootElement.Clone();
+    }
+
+    private async Task<List<string>> ListMissionIds(string? state)
+    {
+        var route = state is null ? "/missions" : $"/missions?state={state}";
+        using var res = await Authed(HttpMethod.Get, route);
+        Assert.Equal(HttpStatusCode.OK, res.StatusCode);
+        using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync());
+        return doc.RootElement.EnumerateArray()
+            .Select(e => e.GetProperty("missionId").GetString()!)
+            .ToList();
+    }
+
+    private async Task<string> RunStatusFor(string missionId)
+    {
+        using var res = await Authed(HttpMethod.Get, $"/gateway/workflow-runs?missionId={missionId}&limit=1");
+        Assert.Equal(HttpStatusCode.OK, res.StatusCode);
+        using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync());
+        var runs = doc.RootElement.TryGetProperty("runs", out var r) ? r : doc.RootElement;
+        var first = runs.EnumerateArray().FirstOrDefault();
+        return first.ValueKind == JsonValueKind.Undefined ? "(no run)" : first.GetProperty("status").GetString()!;
+    }
 }
