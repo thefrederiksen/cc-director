@@ -284,6 +284,50 @@ public sealed class IngestUploader
         }
     }
 
+    // ===== connection check =================================================
+
+    /// <summary>Outcome of a deliberate connection test: whether the pasted
+    /// server + device key work, and a plain-English sentence saying exactly
+    /// what happened. The message is the product here - it is shown verbatim.</summary>
+    public sealed record ConnectionCheckResult(bool Ok, string Message);
+
+    /// <summary>
+    /// Verifies the configured server and device key by calling
+    /// <c>GET /ingest/recordings</c> - the same call every upload depends on.
+    /// Names each failure honestly instead of collapsing them: a 401/403 means
+    /// the key expired or was revoked (paste a fresh one), any other status
+    /// means the server is reachable but refused, and an exception means the
+    /// server could not be reached at all. This method reports failures as its
+    /// RESULT - the catch is the feature, not a fallback.
+    /// </summary>
+    public async Task<ConnectionCheckResult> CheckConnectionAsync(CancellationToken ct = default)
+    {
+        using var http = NewClient();
+        try
+        {
+            var resp = await http.GetAsync($"{_baseUrl}/ingest/recordings", ct);
+            if (resp.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
+                return new ConnectionCheckResult(false,
+                    $"The server rejected the device key (HTTP {(int)resp.StatusCode}). "
+                    + "The key has expired or was revoked - paste a fresh one from a signed-in browser.");
+            if (!resp.IsSuccessStatusCode)
+                return new ConnectionCheckResult(false,
+                    $"The server is reachable but answered HTTP {(int)resp.StatusCode}.");
+            var json = await resp.Content.ReadAsStringAsync(ct);
+            var items = JsonSerializer.Deserialize<List<ServerRecording>>(json, CaseInsensitive);
+            if (items is null)
+                return new ConnectionCheckResult(false,
+                    "The server answered, but the recording list could not be read - is the server URL a Gateway?");
+            return new ConnectionCheckResult(true,
+                $"Connected. The server holds {items.Count} recording(s) for this key.");
+        }
+        catch (Exception ex)
+        {
+            return new ConnectionCheckResult(false,
+                "The server could not be reached: " + ex.Message);
+        }
+    }
+
     private sealed record ServerRecording(string? RecordingId);
 
     private sealed record CompleteStatus(

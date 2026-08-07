@@ -396,14 +396,18 @@ export function Recorder() {
         disabled={phase === "stopping"}
       />
 
-      {recording && (
-        <div className="rec-section-hint">
-          There is no time limit - recording continues while you use the rest of the app, and the
-          red bar up top shows it is live. Keep the screen on: if the phone locks or the browser
-          suspends the page, the microphone is cut - the recording then stops, saves everything
-          captured, and says here that it was cut short.
-        </div>
-      )}
+      {/* The locked-screen limit is stated BEFORE recording starts, not discovered a day later
+          (recorder-background-capture-decision mission). The wording matches what was MEASURED:
+          a locked phone feeds the page pure silence, often without ending the microphone track,
+          so the capture can look alive while recording nothing. Live silence DETECTION is issue
+          #2468's job; this is the honest up-front statement. */}
+      <div className="rec-section-hint">
+        There is no time limit - recording continues while you use the rest of the app, and the
+        red bar up top shows it is live. But keep the screen ON and the phone UNLOCKED: a locked
+        screen silences the microphone, and the phone may keep feeding this app silence without
+        any signal that capture died. Recording through a locked screen is something no web app
+        can do - it needs a native recorder app.
+      </div>
 
       {!recording ? (
         <button

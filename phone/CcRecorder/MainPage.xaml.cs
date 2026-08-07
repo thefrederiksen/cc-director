@@ -156,6 +156,50 @@ public partial class MainPage : ContentPage
         _ = ProcessQueueAsync();
     }
 
+    // Deliberate verification of the pasted server + device key against the
+    // same call every upload depends on. Immediate feedback ("Testing..."),
+    // then the checker's plain-English verdict verbatim - success, a rejected
+    // (expired/revoked) key, a refusing server, and an unreachable server are
+    // four different sentences, never one vague failure.
+    private async void OnTestConnectionClicked(object? sender, EventArgs e)
+    {
+        try
+        {
+            SaveCreds();
+            TestConnectionButton.IsEnabled = false;
+            ConnectionStatusLabel.IsVisible = true;
+            ConnectionStatusLabel.Text = "Testing...";
+            ConnectionStatusLabel.TextColor = Color.FromArgb("#8A93A6");
+
+            var server = Preferences.Get(PrefServer, "");
+            var token = Preferences.Get(PrefToken, "");
+            if (string.IsNullOrWhiteSpace(server) || string.IsNullOrWhiteSpace(token))
+            {
+                ConnectionStatusLabel.Text = string.IsNullOrWhiteSpace(server)
+                    ? "Enter the server URL first."
+                    : "Paste a device key first (copy it from a browser signed in to the Gateway).";
+                ConnectionStatusLabel.TextColor = Color.FromArgb("#E8B339");
+                return;
+            }
+
+            var result = await new IngestUploader(server, token).CheckConnectionAsync();
+            ConnectionStatusLabel.Text = result.Message;
+            ConnectionStatusLabel.TextColor = result.Ok
+                ? Color.FromArgb("#5FD08A")
+                : Color.FromArgb("#E5484D");
+        }
+        catch (Exception ex)
+        {
+            ConnectionStatusLabel.IsVisible = true;
+            ConnectionStatusLabel.Text = "The connection test itself failed: " + ex.Message;
+            ConnectionStatusLabel.TextColor = Color.FromArgb("#E5484D");
+        }
+        finally
+        {
+            TestConnectionButton.IsEnabled = true;
+        }
+    }
+
     // Tapping a recording shows its transcript (if uploaded) or explains state.
     private async void OnRecordingSelected(object? sender, SelectionChangedEventArgs e)
     {

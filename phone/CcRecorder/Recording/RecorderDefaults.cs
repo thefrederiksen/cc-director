@@ -1,16 +1,15 @@
 namespace CcRecorder.Recording;
 
 /// <summary>
-/// Built-in defaults for the recorder. The gateway URL below is a placeholder -
-/// set it to your own machine's Tailscale Serve hostname (or just edit the
-/// server field in the app UI; the saved preference always wins over this
-/// fallback, so a configured device never reads it again).
+/// Built-in defaults for the recorder. The saved <c>gateway_url</c> preference
+/// always wins over these; a configured device never reads them again.
 /// </summary>
 public static class RecorderDefaults
 {
     /// <summary>
-    /// Default CC Director Gateway base URL (Tailscale Serve, HTTPS only).
-    /// Used when no <c>gateway_url</c> preference has been set yet.
+    /// Default CC Director Gateway base URL. This is the HOSTED Gateway - the
+    /// one the phone actually records against (recorder-background-capture-decision
+    /// mission). A self-hosted setup edits the server field in the app UI.
     /// </summary>
-    public const string GatewayUrl = "https://your-gateway.tail0123.ts.net";
+    public const string GatewayUrl = "https://gateway.devthrottle.com";
 }

@@ -99,14 +99,26 @@
                 </CollectionView.ItemTemplate>
             </CollectionView>
 
-            <!-- Server settings (out of the way; pre-filled) -->
+            <!-- Server settings (out of the way; pre-filled). The deliberate
+                 paste-a-key flow (recorder-background-capture-decision mission):
+                 the key is borrowed from a signed-in browser, it expires with
+                 that browser sign-in, and Test connection verifies it against
+                 the same call every upload depends on - naming the failure
+                 honestly instead of letting the first upload discover it. -->
             <Label Text="Server settings" FontSize="13" FontAttributes="Bold" TextColor="#5A6378" Margin="0,12,0,0" />
-            <Entry x:Name="ServerEntry" Placeholder="https://gateway-host.ts.net"
+            <Entry x:Name="ServerEntry" Placeholder="https://gateway.devthrottle.com"
                    TextColor="#A9B4C8" PlaceholderColor="#5A6378" BackgroundColor="#0F1626"
                    Unfocused="OnCredsChanged" />
-            <Entry x:Name="TokenEntry" Placeholder="Gateway token" IsPassword="True"
+            <Entry x:Name="TokenEntry" Placeholder="Device key (paste from a signed-in browser)" IsPassword="True"
                    TextColor="#A9B4C8" PlaceholderColor="#5A6378" BackgroundColor="#0F1626"
                    Unfocused="OnCredsChanged" />
+            <Label Text="The device key is borrowed from a browser signed in to the Gateway and expires with that sign-in. When uploads start failing as unauthorized, paste a fresh key."
+                   FontSize="11" TextColor="#5A6378" />
+            <Button x:Name="TestConnectionButton" Text="Test connection"
+                    BackgroundColor="#2B6CB0" TextColor="White" HeightRequest="44"
+                    CornerRadius="10" Clicked="OnTestConnectionClicked" />
+            <Label x:Name="ConnectionStatusLabel" Text="" FontSize="12" TextColor="#8A93A6"
+                   IsVisible="False" />
 
         </VerticalStackLayout>
     </ScrollView>
