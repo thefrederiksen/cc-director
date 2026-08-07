@@ -321,7 +321,21 @@ public sealed class GatewayTranscriptionService
         // Cleanup is deterministic and in-process now - no key or provider endpoint is needed, so it
         // runs even offline. CleanAsync short-circuits an empty dictionary to a verbatim passthrough;
         // the early check just avoids constructing the orchestrator for nothing.
-        var dictionary = _dictionaryProvider();
+        //
+        // The dictionary read shares the corrector's fail-open contract (issue #2483): a malformed or
+        // unreadable dictionary file must never fail a transcription that already produced text, so a
+        // provider fault degrades to the raw transcript exactly like a fault inside CleanAsync does.
+        DictationDictionary dictionary;
+        try
+        {
+            dictionary = _dictionaryProvider();
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[GatewayTranscriptionService] dictionary read FAILED (fail-open, returning raw text): {ex.Message}");
+            return new CleanupOutcome(raw, Applied: false, Reason: "dictionary unavailable: " + ex.Message);
+        }
+
         if (dictionary.Vocabulary.Count == 0 && dictionary.CommonMistranscriptions.Count == 0)
             return new CleanupOutcome(raw, Applied: false, Reason: "empty dictionary");
 
