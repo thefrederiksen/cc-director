@@ -168,20 +168,18 @@ describe("Mobile Speak Send-direct (recording-stage)", () => {
     await expect(opts.baselineBufferBytes).resolves.toBe(777);
   });
 
-  it("delivers the clip unguarded (baseline unknown, never zero) when the roster fails even after the retry", async () => {
-    // Two rejections: the snapshot retries a transient roster failure once, so a single rejection
-    // would succeed on the retry and hide what this test is about.
-    listSessions
-      .mockRejectedValueOnce(new Error("gateway unreachable"))
-      .mockRejectedValueOnce(new Error("gateway unreachable"));
+  it("delivers the clip unguarded (baseline unknown, never zero) when the press-time roster read fails - and that is FINAL", async () => {
+    listSessions.mockRejectedValueOnce(new Error("gateway unreachable"));
     render(<SessionControls sessionId="sess-42" onFlash={() => {}} onError={() => {}} showKeyRows />);
     const dialog = await typeAndOpenRecordingDialog();
 
     fireEvent.click(within(dialog).getByText("Send"));
 
-    // The words still go: a failed roster read yields an UNKNOWN baseline (the pipeline's documented
-    // omit-when-unknown contract, guard skipped for safety) - never a blocked or lost dictation, and
-    // never a fabricated zero.
+    // The words still go: a failed press-time read yields an UNKNOWN baseline (the pipeline's
+    // documented omit-when-unknown contract, guard skipped for safety) - never a blocked or lost
+    // dictation, never a fabricated zero, and never a later substitute reading: exactly one roster
+    // call, because a reading taken after the press can include bytes produced during or after the
+    // recording and would mask the very movement the guard detects.
     await waitFor(() => expect(backgroundTranscribeAndSend).toHaveBeenCalledTimes(1));
     const [, , opts] = backgroundTranscribeAndSend.mock.calls[0] as unknown as [
       string,
@@ -189,6 +187,6 @@ describe("Mobile Speak Send-direct (recording-stage)", () => {
       { baselineBufferBytes?: Promise<number | undefined> },
     ];
     await expect(opts.baselineBufferBytes).resolves.toBeUndefined();
-    expect(listSessions).toHaveBeenCalledTimes(2);
+    expect(listSessions).toHaveBeenCalledTimes(1);
   });
 });

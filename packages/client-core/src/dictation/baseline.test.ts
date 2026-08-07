@@ -6,8 +6,10 @@ import { act, renderHook } from "@testing-library/react";
 // baselineBufferBytes above zero, and both taught Speak flows omitted it - so the guard never armed.
 // This file pins the shared snapshot the flows now take: the roster's terminal-byte position for the
 // selected session, STARTED when Speak is pressed and handed to the send pipeline AS A PROMISE (so a
-// quick Send waits for the answer instead of racing it), retried once on a transient roster failure,
-// and "unknown" (undefined - never a fabricated zero) only when the position is genuinely unknowable.
+// quick Send takes the answer instead of racing it). The press-time reading is the only valid one: a
+// failed read is FINAL - exactly one roster call, never a retry or a later substitute, because a
+// reading taken after the press can include bytes produced during or after the recording and mask
+// the very movement the guard detects. Unknown is undefined - never a fabricated zero.
 
 const { listSessions } = vi.hoisted(() => ({
   listSessions: vi.fn(async (): Promise<{ sessionId?: string; totalBufferBytes?: number | string }[]> => []),
@@ -42,25 +44,17 @@ describe("snapshotBaselineBufferBytes", () => {
     await expect(snapshotBaselineBufferBytes("sess-42")).resolves.toBe(0);
   });
 
-  it("retries ONCE on a transient roster failure and returns the second answer", async () => {
-    listSessions
-      .mockRejectedValueOnce(new Error("request timed out"))
-      .mockResolvedValueOnce([{ sessionId: "sess-42", totalBufferBytes: 555 }]);
-    await expect(snapshotBaselineBufferBytes("sess-42")).resolves.toBe(555);
-    expect(listSessions).toHaveBeenCalledTimes(2);
-  });
-
-  it("returns unknown when the roster fails twice - and never rejects", async () => {
-    listSessions
-      .mockRejectedValueOnce(new Error("gateway unreachable"))
-      .mockRejectedValueOnce(new Error("gateway unreachable"));
+  it("a failed press-time read is FINAL: unknown, exactly one roster call, never a retry - and never rejects", async () => {
+    // Deliberately no second attempt: a roster call made after the press can capture bytes the
+    // session produced during or after the recording, over-stating the baseline and masking exactly
+    // the movement the guard exists to detect. A second answer would be a DIFFERENT reading, not the
+    // press-time one.
+    listSessions.mockRejectedValueOnce(new Error("gateway unreachable"));
     await expect(snapshotBaselineBufferBytes("sess-42")).resolves.toBeUndefined();
-    expect(listSessions).toHaveBeenCalledTimes(2);
+    expect(listSessions).toHaveBeenCalledTimes(1);
   });
 
-  it("does NOT retry when the roster answered but does not know the session", async () => {
-    // The retry exists for the transient network failure only: a roster that answered without the
-    // session (or without its byte position) gave its answer, and asking again cannot change it.
+  it("returns unknown when the roster answered but does not know the session - one call, no retry", async () => {
     listSessions.mockResolvedValueOnce([{ sessionId: "other", totalBufferBytes: 5 }]);
     await expect(snapshotBaselineBufferBytes("sess-42")).resolves.toBeUndefined();
     expect(listSessions).toHaveBeenCalledTimes(1);

@@ -119,12 +119,15 @@ export interface BackgroundSendHooks {
    *  case omits this and the transcript is submitted alone. */
   composeParts?: { before: string; after: string };
   /** The session's TotalBufferBytes at record time, for the Gateway's "session moved on" guard when a
-   *  clip is resumed later. A promise is AWAITED before the durable record is persisted (issue #2478):
-   *  the Speak press starts the roster read and hands the promise here, so a quick Send cannot outrun
-   *  it and persist "unknown" for a session whose position was knowable - the wait is bounded by the
-   *  roster read's own timeout. Omit when genuinely unknown; unknown is persisted as unknown and the
-   *  wire request omits the field (the guard is then skipped for safety) - it is NEVER collapsed into
-   *  zero, which is a real reading (a terminal that had produced nothing yet). */
+   *  clip is resumed later. A promise is the PRESS-TIME snapshot (issue #2478): the Speak press starts
+   *  the roster read and hands the promise here, so a quick Send cannot outrun it and record "unknown"
+   *  for a session whose position was knowable. Durability never waits on it - the clip is persisted
+   *  immediately with the baseline unknown, then the pending record is enriched before the first
+   *  upload once this ORIGINAL promise resolves; the pipeline never starts a later roster read of its
+   *  own, because a post-recording reading would mask the very movement the guard detects. Omit when
+   *  genuinely unknown; unknown is persisted as unknown and the wire request omits the field (the
+   *  guard is then skipped for safety) - it is NEVER collapsed into zero, which is a real reading (a
+   *  terminal that had produced nothing yet). */
   baselineBufferBytes?: number | Promise<number | undefined>;
 }
 
@@ -199,19 +202,13 @@ export async function backgroundTranscribeAndSend(
     );
   }
 
-  // The moved-on baseline: WAIT for the snapshot the Speak press started before persisting, so the
-  // durable record carries the real record-time reading even when Send was pressed quickly (issue
-  // #2478). The wait is bounded (the roster read carries the poll timeout and the shared snapshot
-  // never rejects); the defensive catch is for a foreign caller's promise only, because a baseline -
-  // a guard input - must never cost the user's words, exactly like the decode above.
-  let baselineBufferBytes: number | undefined;
-  try {
-    baselineBufferBytes = await hooks.baselineBufferBytes;
-  } catch {
-    baselineBufferBytes = undefined;
-  }
+  // The moved-on baseline is the PRESS-TIME snapshot or nothing (issue #2478). A plain number (the
+  // Voice screen) rides the first durable write below; a promise is awaited only AFTER the clip is
+  // safely on disk - the durable-send contract (persist before any network work) outranks the guard,
+  // so a slow or timed-out roster read must never leave the clip memory-only.
+  const pressTimeBaseline = hooks.baselineBufferBytes;
 
-  const rec: PendingDictation = {
+  let rec: PendingDictation = {
     id: crypto.randomUUID(),
     sessionId,
     blob: uploadBlob,
@@ -223,7 +220,7 @@ export async function backgroundTranscribeAndSend(
     before: hooks.composeParts?.before ?? "",
     after: hooks.composeParts?.after ?? "",
     prefix: captured.prefixText ?? "",
-    baselineBufferBytes,
+    baselineBufferBytes: typeof pressTimeBaseline === "number" ? pressTimeBaseline : undefined,
     createdAt: Date.now(),
   };
 
@@ -248,10 +245,35 @@ export async function backgroundTranscribeAndSend(
     return;
   }
 
-  // Saved durably. Drive the first delivery attempt now. resumed:false so an immediate send injects
-  // without the moved-on guard; any failure becomes a held-and-retrying state the driver owns. The
-  // caller does not await this (it fired and moved on), but awaiting the first attempt here keeps the
-  // returned promise honest about when that attempt settled.
+  // The clip is durable. Now - and only now - wait for the press-time baseline snapshot and enrich
+  // the pending record with it before the first upload. When the ORIGINAL press-time promise cannot
+  // answer, unknown is FINAL: never a fresh roster read here, because a reading taken now can include
+  // bytes the session produced during or after the recording, over-stating the baseline and masking
+  // exactly the movement the guard exists to detect. The wait is bounded (the shared snapshot rides
+  // the roster read's own timeout and never rejects); the defensive catch is for a foreign caller's
+  // promise only, because a guard input must never cost the user's words.
+  if (pressTimeBaseline !== undefined && typeof pressTimeBaseline !== "number") {
+    let bytes: number | undefined;
+    try {
+      bytes = await pressTimeBaseline;
+    } catch {
+      bytes = undefined;
+    }
+    if (bytes !== undefined) {
+      rec = { ...rec, baselineBufferBytes: bytes };
+      try {
+        await savePending(rec);
+      } catch {
+        // The durable copy keeps unknown (a resume would go unguarded); this attempt still carries
+        // the press-time reading in memory. Never a reason to hold the words.
+      }
+    }
+  }
+
+  // Drive the first delivery attempt now. resumed:false so an immediate send injects without the
+  // moved-on guard; any failure becomes a held-and-retrying state the driver owns. The caller does
+  // not await this (it fired and moved on), but awaiting the first attempt here keeps the returned
+  // promise honest about when that attempt settled.
   await driveRecord(rec, { resumed: false, attempt: 0 });
 }
 

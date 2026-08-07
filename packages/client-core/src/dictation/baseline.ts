@@ -14,11 +14,18 @@ import { listSessions } from "../api/client";
 // zero and the guard never armed; this module is the one shared place they now snapshot it, the same
 // roster reading the Voice screen has always sent (useVoiceMode).
 //
+// THE PRESS-TIME READING IS THE ONLY VALID ONE - there is deliberately no retry and no later re-read.
+// A roster call made after the press can capture bytes the session produced DURING or after the
+// recording, over-stating the baseline and masking exactly the movement the guard exists to detect.
+// So the read is started once, when Speak is pressed; if it cannot answer (the request failed or
+// timed out), unknown is FINAL for this clip.
+//
 // The snapshot is handed around AS A PROMISE, never as a peek at whatever has resolved so far: the
-// Speak press starts the roster read, and the send pipeline AWAITS it before persisting the durable
-// record. A quick Send therefore cannot outrun the read and record "unknown" for a session whose
-// position was perfectly knowable - the race the first version of this file had. The wait is bounded:
-// listSessions carries the poll timeout, and this module never rejects.
+// Speak press starts the roster read and the send pipeline takes the promise, so a quick Send cannot
+// outrun the read and record "unknown" for a session whose position was perfectly knowable - the race
+// the first version of this file had. The promise always settles (the roster read carries the poll
+// timeout, and this module never rejects), and the pipeline persists the clip durably FIRST, then
+// enriches the pending record when the promise resolves - durability never waits on the roster.
 //
 // An unknown baseline (undefined) is a DEFINED state of the pipeline's contract (BackgroundSendHooks
 // .baselineBufferBytes: unknown means the field is omitted on the wire, and the guard is then skipped
@@ -27,24 +34,13 @@ import { listSessions } from "../api/client";
 // terminal had produced nothing yet) and is passed through as such.
 export async function snapshotBaselineBufferBytes(sessionId: string): Promise<number | undefined> {
   try {
-    return await readBaselineOnce(sessionId);
-  } catch {
-    // One deliberate retry, for the transient roster failure only (a dropped request, a timeout). A
-    // roster that ANSWERED but does not know the session gets no retry - asking again cannot change
-    // that answer. Two failures in a row mean the baseline is genuinely unknowable right now.
-  }
-  try {
-    return await readBaselineOnce(sessionId);
+    const all = await listSessions();
+    // totalBufferBytes is a 64-bit integer on the wire, so the schema admits number | string.
+    const bytes = Number(all.find((s) => s.sessionId === sessionId)?.totalBufferBytes);
+    return Number.isFinite(bytes) ? bytes : undefined;
   } catch {
     return undefined;
   }
-}
-
-async function readBaselineOnce(sessionId: string): Promise<number | undefined> {
-  const all = await listSessions();
-  // totalBufferBytes is a 64-bit integer on the wire, so the schema admits number | string.
-  const bytes = Number(all.find((s) => s.sessionId === sessionId)?.totalBufferBytes);
-  return Number.isFinite(bytes) ? bytes : undefined;
 }
 
 export interface DictationBaseline {
@@ -52,15 +48,16 @@ export interface DictationBaseline {
    *  session's terminal-byte position, replacing any previous recording's snapshot so a stale
    *  number can never describe a new recording. */
   snapshot: () => void;
-  /** The snapshot for the recording in progress, as a promise the send pipeline awaits. Resolves to
-   *  the terminal-byte position, or to undefined when it is genuinely unknowable (the roster read
-   *  failed even after the retry, no session is selected, or Speak was never pressed). Never rejects. */
+  /** The snapshot for the recording in progress, as a promise the send pipeline takes. Resolves to
+   *  the press-time terminal-byte position, or to undefined when it is genuinely unknowable (the
+   *  press-time roster read failed, no session is selected, or Speak was never pressed) - which is
+   *  final for the clip. Never rejects. */
   read: () => Promise<number | undefined>;
 }
 
 // The per-recording snapshot both Speak flows share. Each Speak press replaces the stored promise,
 // so a second recording can never be stamped by the first recording's late answer, and Send always
-// awaits exactly the read its own Speak press started.
+// takes exactly the read its own Speak press started.
 export function useDictationBaseline(sessionId: string | undefined): DictationBaseline {
   const promiseRef = useRef<Promise<number | undefined> | undefined>(undefined);
 
