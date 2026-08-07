@@ -199,7 +199,10 @@ _ACTIONS = [
     },
     {
         "id": "mission-list",
-        "description": "List the Missions on the Gateway - the named bodies of work sessions attach to.",
+        "description": (
+            "List the ACTIVE Missions on the Gateway - the named bodies of work sessions attach to. "
+            "Add --all (or --state complete|removed) to include ones that have been ended."
+        ),
         "command": "cc-devthrottle mission list",
         "mutatesState": False,
         "args": [],
@@ -234,6 +237,49 @@ _ACTIONS = [
         "command": "cc-devthrottle mission detach <session>",
         "mutatesState": True,
         "args": [{"name": "session", "required": True}],
+    },
+    {
+        # Discoverable for the same reason attach is. An agent that finishes a body of work and cannot
+        # find the verb to END it leaves the mission list growing forever, which is exactly the state
+        # the owner found it in: eleven missions, several finished days earlier, with no way out.
+        "id": "mission-rename",
+        "description": (
+            "Rename a Mission. Its id does not change, so every attached session stays attached and "
+            "its WHY is kept."
+        ),
+        "command": 'cc-devthrottle mission rename <mission> "<new name>"',
+        "mutatesState": True,
+        "args": [
+            {"name": "mission", "required": True},
+            {"name": "name", "required": True},
+        ],
+    },
+    {
+        "id": "mission-complete",
+        "description": (
+            "Mark a Mission as FINISHED. It leaves the default list and is kept as a record - this is "
+            "the ending to use when the work is done."
+        ),
+        "command": "cc-devthrottle mission complete <mission>",
+        "mutatesState": True,
+        "args": [{"name": "mission", "required": True}],
+    },
+    {
+        "id": "mission-remove",
+        "description": (
+            "Remove a Mission that should not exist - a duplicate, a mistake, an abandoned idea. NOT "
+            "an outcome: use complete for finished work. Soft, so the record is kept and can be reopened."
+        ),
+        "command": "cc-devthrottle mission remove <mission>",
+        "mutatesState": True,
+        "args": [{"name": "mission", "required": True}],
+    },
+    {
+        "id": "mission-reopen",
+        "description": "Return a completed or removed Mission to active.",
+        "command": "cc-devthrottle mission reopen <mission>",
+        "mutatesState": True,
+        "args": [{"name": "mission", "required": True}],
     },
     {
         "id": "machine-list",
@@ -1227,20 +1273,70 @@ def spawn(
 @mission_app.command("create")
 def mission_create(
     name: str = typer.Argument(..., help="Human-friendly name for the Mission."),
-    parent: Optional[str] = typer.Option(
-        None, "--parent", help="Parent Mission id to nest this Mission under (a tree of Missions)."
-    ),
 ) -> None:
     """Create a Mission record on the Gateway and print its id."""
-    mission_ops.create_mission(name, parent)
+    mission_ops.create_mission(name)
 
 
 @mission_app.command("list")
 def mission_list(
     json_output: bool = typer.Option(False, "--json", "-j", help="Output raw JSON."),
+    show_all: bool = typer.Option(
+        False,
+        "--all",
+        "-a",
+        help="Include missions that have been completed or removed. Off by default: the question "
+        "this command answers is 'what am I working on', and finished work is the wrong answer to it.",
+    ),
+    state: Optional[str] = typer.Option(
+        None,
+        "--state",
+        help="Show only this state: active, complete, or removed. Overrides --all.",
+    ),
 ) -> None:
-    """List every Mission record on the Gateway."""
-    mission_ops.list_missions(json_output)
+    """List the Missions on the Gateway (active ones by default)."""
+    mission_ops.list_missions(json_output, state=state or ("all" if show_all else None))
+
+
+@mission_app.command("rename")
+def mission_rename(
+    mission: str = typer.Argument(
+        ..., help="The Mission to rename: its id, an id prefix, or part of its name."
+    ),
+    name: str = typer.Argument(..., help="The new display name."),
+) -> None:
+    """Rename a Mission. Its id does not change, so every attached session stays attached."""
+    mission_ops.rename_mission(mission, name)
+
+
+@mission_app.command("complete")
+def mission_complete(
+    mission: str = typer.Argument(
+        ..., help="The Mission to complete: its id, an id prefix, or part of its name."
+    ),
+) -> None:
+    """Mark a Mission as finished. It leaves the default list but is kept - this is the outcome."""
+    mission_ops.end_mission(mission, "complete")
+
+
+@mission_app.command("remove")
+def mission_remove(
+    mission: str = typer.Argument(
+        ..., help="The Mission to remove: its id, an id prefix, or part of its name."
+    ),
+) -> None:
+    """Remove a Mission that should not exist (a duplicate, a mistake). Soft: the record is kept."""
+    mission_ops.end_mission(mission, "removed")
+
+
+@mission_app.command("reopen")
+def mission_reopen(
+    mission: str = typer.Argument(
+        ..., help="The Mission to reopen: its id, an id prefix, or part of its name."
+    ),
+) -> None:
+    """Return a completed or removed Mission to active."""
+    mission_ops.reopen_mission(mission)
 
 
 @mission_app.command("attach")

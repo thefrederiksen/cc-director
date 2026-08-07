@@ -136,15 +136,25 @@ class MissionClient:
             return gateway.parse_json_body(resp, self.base_url)
         raise GatewayError(self._gateway_message(resp))
 
-    def create(self, name: str, parent: Optional[str]) -> Dict[str, Any]:
-        body: Dict[str, Any] = {"missionName": name}
-        if parent:
-            body["parentMissionId"] = parent
-        return self._ok_or_raise(self._request("POST", "/missions", body))
+    def create(self, name: str) -> Dict[str, Any]:
+        # Missions are FLAT. The parent link was removed on 2026-08-07 after never being used once;
+        # see docs/new_architecture/mission-as-first-class-unit-of-work.md.
+        return self._ok_or_raise(self._request("POST", "/missions", {"missionName": name}))
 
-    def list_all(self) -> List[Dict[str, Any]]:
-        data = self._ok_or_raise(self._request("GET", "/missions"))
+    def list_all(self, state: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Missions from the Gateway. ACTIVE ONLY unless `state` asks otherwise ("all" for every state).
+
+        The default matches the Gateway's: "what am I working on" is the question nearly every caller
+        is asking, and a list padded with finished work is the wrong answer to it.
+        """
+        path = "/missions" if not state else f"/missions?state={state}"
+        data = self._ok_or_raise(self._request("GET", path))
         return list(data) if isinstance(data, list) else []
+
+    def patch(self, mission_id: str, body: Dict[str, Any]) -> Dict[str, Any]:
+        """Change a mission: its why, its name, or its state. Returns MissionPatchResultDto."""
+        resp = self._ok_or_raise(self._request("PATCH", f"/missions/{mission_id}", body))
+        return resp if isinstance(resp, dict) else {}
 
 
 def _resolve_mission(query: str) -> Dict[str, Any]:
@@ -155,8 +165,12 @@ def _resolve_mission(query: str) -> Dict[str, Any]:
     full one from the caller's OWN mission list, and the Gateway resolves it inside the caller's own
     tenant regardless of what was typed here.
     """
+    # EVERY state, not just active. A mission that has been completed or removed still has to be
+    # addressable - reopening one, or correcting its name, is exactly when you reach for it, and
+    # resolving against the default active-only list would answer "no mission matches" for a record
+    # that is plainly there.
     try:
-        missions = MissionClient().list_all()
+        missions = MissionClient().list_all(state="all")
     except GatewayError as err:
         console.print(f"[red]Error:[/red] {err}")
         raise typer.Exit(1)
@@ -203,10 +217,10 @@ def _short_id(value: Optional[str]) -> str:
     return value.split("-")[0] if "-" in value else value
 
 
-def create_mission(name: str, parent: Optional[str]) -> None:
+def create_mission(name: str) -> None:
     """Create a Mission record on the Gateway and print its id."""
     try:
-        resp = MissionClient().create(name, parent)
+        resp = MissionClient().create(name)
     except GatewayError as err:
         console.print(f"[red]Error:[/red] {err}")
         raise typer.Exit(1)
@@ -224,10 +238,10 @@ def create_mission(name: str, parent: Optional[str]) -> None:
     )
 
 
-def list_missions(json_output: bool) -> None:
-    """List every Mission record on the Gateway."""
+def list_missions(json_output: bool, state: Optional[str] = None) -> None:
+    """List the Missions on the Gateway - active ones unless `state` asks for otherwise."""
     try:
-        missions = MissionClient().list_all()
+        missions = MissionClient().list_all(state=state)
     except GatewayError as err:
         console.print(f"[red]Error:[/red] {err}")
         raise typer.Exit(1)
@@ -237,22 +251,115 @@ def list_missions(json_output: bool) -> None:
         return
 
     if not missions:
-        console.print(
-            "No missions on the Gateway yet. Create one with 'cc-devthrottle mission create <name>'."
-        )
+        if state and state != "active":
+            # Say WHICH list is empty. "No missions" under a filter would read as "you have none at
+            # all", which is a different and much more alarming statement.
+            console.print(f"No missions with state '{state}'.")
+        else:
+            console.print(
+                "No active missions on the Gateway. "
+                "Create one with 'cc-devthrottle mission create <name>', "
+                "or see finished ones with 'cc-devthrottle mission list --all'."
+            )
         return
 
     table = Table(show_header=True, header_style="bold", box=box.ASCII)
     table.add_column("Id")
     table.add_column("Name")
-    table.add_column("Parent")
+    table.add_column("State")
+    table.add_column("Why")
 
     for mission in missions:
         mid = _field(mission, "missionId", "MissionId")
         name = _field(mission, "missionName", "MissionName") or "-"
-        parent = _field(mission, "parentMissionId", "ParentMissionId") or "-"
-        table.add_row(_short_id(mid) if mid else "-", name, parent)
+        mstate = _field(mission, "state", "State") or "active"
+        why = _field(mission, "why", "Why") or ""
+        # A mission with no WHY is FLAGGED, not blank - the same rule the Cockpit card follows. A
+        # mission whose reason nobody wrote down is the thing worth noticing in this list.
+        why_cell = why if why else "[yellow]no why set[/yellow]"
+        table.add_row(_short_id(mid) if mid else "-", name, mstate, why_cell)
     console.print(table)
+
+
+def _patch_mission(mission_query: str, body: Dict[str, Any], command_name: str) -> Dict[str, Any]:
+    """Resolve a mission, apply a patch, and surface anything the Gateway had to say about it."""
+    mission = _resolve_mission(mission_query)
+    mission_id = _field(mission, "missionId", "MissionId")
+    if not mission_id:
+        console.print("[red]Error:[/red] the Gateway returned a mission with no id.")
+        raise typer.Exit(1)
+
+    try:
+        resp = MissionClient().patch(mission_id, body)
+    except GatewayError as err:
+        console.print(f"[red]Error:[/red] {err}")
+        raise typer.Exit(1)
+
+    resp["_before"] = mission
+    return resp
+
+
+def _patched_mission(resp: Dict[str, Any]) -> Dict[str, Any]:
+    inner = resp.get("mission", resp.get("Mission"))
+    return inner if isinstance(inner, dict) else {}
+
+
+def _print_patch_note(resp: Dict[str, Any]) -> None:
+    """Print the Gateway's sentence about anything that happened alongside the change.
+
+    Passed through verbatim, exactly like the attach seat note: what happened to the workflow run is
+    decided at the Gateway, and a client that re-worded it would be writing its own account of a
+    decision it did not make.
+    """
+    note = _field(resp, "note", "Note")
+    if note:
+        console.print(f"[yellow]Note:[/yellow] {note}")
+
+
+def rename_mission(mission_query: str, new_name: str) -> None:
+    """Rename a Mission. Its id does not change, so nothing attached to it moves."""
+    if not new_name.strip():
+        console.print("[red]Error:[/red] a mission name cannot be blank.")
+        raise typer.Exit(1)
+
+    resp = _patch_mission(mission_query, {"missionName": new_name}, "rename")
+    before = _field(resp.get("_before", {}), "missionName", "MissionName") or "(unnamed)"
+    after = _field(_patched_mission(resp), "missionName", "MissionName") or new_name.strip()
+
+    # NAME THE OLD NAME. A rename that reports only the new one hides which mission moved, which is
+    # the same failure the attach command avoids by naming the mission a session LEFT.
+    console.print(f'[green]Renamed[/green] "{before}" to "{after}".')
+    console.print("Its id is unchanged, so every attached session stays attached.")
+    _print_patch_note(resp)
+
+
+def end_mission(mission_query: str, state: str) -> None:
+    """Complete or remove a Mission (both are endings; both are reversible)."""
+    resp = _patch_mission(mission_query, {"state": state}, state)
+    mission = _patched_mission(resp)
+    name = _field(mission, "missionName", "MissionName") or "(unnamed)"
+    mid = _field(mission, "missionId", "MissionId") or ""
+
+    verb = "Completed" if state == "complete" else "Removed"
+    console.print(f"[green]{verb}[/green] mission {name} ({_short_id(mid)}).")
+    _print_patch_note(resp)
+
+    # SAY WHERE IT WENT, and how to get it back. An ending that reports only success leaves the owner
+    # unable to find the record afterwards - and the Cockpit has no archive view yet, so the command
+    # line is currently the ONLY way to see it again.
+    console.print(
+        f"It is out of the default list. See it with 'cc-devthrottle mission list --state {state}', "
+        f"or bring it back with 'cc-devthrottle mission reopen {_short_id(mid)}'."
+    )
+
+
+def reopen_mission(mission_query: str) -> None:
+    """Return an ended Mission to active - the way back from a mistaken ending."""
+    resp = _patch_mission(mission_query, {"state": "active"}, "reopen")
+    mission = _patched_mission(resp)
+    name = _field(mission, "missionName", "MissionName") or "(unnamed)"
+    console.print(f"[green]Reopened[/green] mission {name}. It is back in the default list.")
+    _print_patch_note(resp)
 
 
 # ===== Attach and detach (issue #2387) =====================================================
