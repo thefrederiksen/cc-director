@@ -124,6 +124,9 @@ jobs:
       - name: Run Cockpit tests
         run: npm test --workspace @devthrottle/cockpit
 
+      - name: Run mobile tests
+        run: npm test --workspace @devthrottle/mobile
+
       # The shells must still BUILD, not just typecheck: the production build runs the real Vite
       # pipeline (bundling, the PWA service worker) and fails on things tsc never sees.
       - name: Build the mobile PWA

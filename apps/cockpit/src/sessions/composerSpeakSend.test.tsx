@@ -29,19 +29,22 @@ import { useState } from "react";
 
 // vi.mock is hoisted above module scope, so the spies it references must be created in the same
 // hoisted phase (vi.hoisted) rather than as ordinary consts.
-const { sendPrompt, transcribeUtterance, backgroundTranscribeAndSend } = vi.hoisted(() => ({
+const { sendPrompt, transcribeUtterance, backgroundTranscribeAndSend, listSessions } = vi.hoisted(() => ({
   // The synchronous POST /prompt path: PAUSED-stage Send (text already in hand) and Insert use it.
   sendPrompt: vi.fn(async () => {}),
   // The synchronous /wingman/utterance/* transcription: the Pause checkpoint and Insert use it.
   transcribeUtterance: vi.fn(async () => "the dictated words"),
   // The durable background pipeline (POST /dictation/*) the recording-stage Send now rides.
   backgroundTranscribeAndSend: vi.fn(async () => {}),
+  // The roster read the Speak press snapshots its moved-on baseline from (issue #2478).
+  listSessions: vi.fn(async () => [{ sessionId: "sess-42", totalBufferBytes: 4321 }]),
 }));
 
 // The Gateway client boundary.
 vi.mock("@devthrottle/client-core/api/client", () => ({
   sendPrompt,
   transcribeUtterance,
+  listSessions,
   enqueuePrompt: vi.fn(async () => []),
   uploadImage: vi.fn(async () => ""),
   gatewayErrorMessage: (e: unknown) => (e instanceof Error ? e.message : String(e)),
@@ -159,12 +162,17 @@ describe("Cockpit Speak Send-direct (recording-stage)", () => {
     const [sid, captured, opts] = backgroundTranscribeAndSend.mock.calls[0] as unknown as [
       string,
       { blob: Blob; recordedMs: number },
-      { composeParts?: { before: string; after: string } },
+      { composeParts?: { before: string; after: string }; baselineBufferBytes?: number },
     ];
     expect(sid).toBe("sess-42");
     expect(captured.blob).toBeInstanceOf(Blob);
     expect(captured.recordedMs).toBe(1000);
     expect(opts.composeParts).toEqual({ before: "A", after: "B" });
+    // The moved-on guard's baseline (issue #2478): the session's terminal-byte position, snapshotted
+    // from the roster when Speak was pressed. Above zero, so the Gateway's guard actually ARMS for a
+    // clip resumed later - this flow used to omit the field, it defaulted to zero, and the guard was
+    // unreachable from the shipped Speak Send.
+    expect(opts.baselineBufferBytes).toBe(4321);
 
     // The screen is released immediately: the dialog is gone without waiting for any transcription.
     await waitFor(() => expect(screen.queryByRole("dialog", { name: "Dictate" })).toBeNull());
