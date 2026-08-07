@@ -31,11 +31,22 @@ namespace CcDirector.Gateway.Transcription;
 /// HOW. Two gates, because there are two ways to race:
 ///   * a per-tenant monitor, for two requests inside THIS Gateway process - the common case, and the cheap
 ///     one;
-///   * an exclusive per-tenant LOCK FILE, for two Gateway processes over one shared file share. That is not
-///     hypothetical here: a hosted deploy has run two containers against one share, and a lock that lived
-///     only in memory would be silently useless in exactly the window a deploy opens.
+///   * an exclusive per-tenant LOCK FILE, for two Gateway PROCESSES writing the same glossary directory.
 /// Both are held across the whole read-modify-write, which is the point - a lock taken only around the
 /// write would still lose the update, because the loss happens between the read and the write.
+///
+/// EXACTLY WHAT THE FILE LOCK IS PROVEN TO DO, and nothing wider. It serialises two processes against a
+/// LOCAL file system: <c>CrossProcessGlossaryLockTests</c> races a real second operating-system process
+/// against this one, forty writes each, and without the file lock half of them vanish (80 terms expected,
+/// 40 actual). That is measured, and it is the whole of the claim.
+///
+/// IT IS NOT PROVEN on the hosted deployment's NETWORK FILE SHARE. Whether the operating system's file
+/// locking is honoured there is unknown and unreachable from this repository's test rig, so a Gateway
+/// running two containers against one share is NOT covered by evidence here - only by the assumption that
+/// the share honours the lock. That gap is tracked as its own issue rather than papered over. The reason
+/// this paragraph exists at all: the in-process monitor makes single-process tests pass whether the file
+/// lock works or not, so a claim about processes could sit here indefinitely with nothing checking it - as
+/// this one did until review asked.
 ///
 /// The critical section is deliberately SYNCHRONOUS end to end. An await inside it would let the
 /// continuation resume on another thread while the monitor was held by the first, which is the standard way

@@ -16,11 +16,11 @@ namespace CcDirector.Gateway.Tests;
 /// nothing is holding, and the claim that this Gateway is safe against two containers on one shared file
 /// share rested entirely on reading the code.
 ///
-/// The file lock exists for OVERLAPPING GATEWAY PROCESSES on one file share - a state a hosted deploy has
-/// really been in - so it is proven where it operates: this test starts a SECOND operating-system process
-/// that writes the same tenant's glossary at the same time, and asserts that every term that survives has
-/// its provenance entry. The two processes share nothing but the directory, so the in-process monitor
-/// cannot be what makes it pass.
+/// The file lock exists for OVERLAPPING GATEWAY PROCESSES writing one glossary directory, so it is proven
+/// where it operates: this test starts a SECOND operating-system process that writes the same tenant's
+/// glossary at the same time, and asserts that every term that survives has its provenance entry. The two
+/// processes share nothing but the directory, so the in-process monitor cannot be what makes it pass.
+/// Measured both ways - with the lock, 80 terms and no flake over three runs; without it, 40.
 ///
 /// HOW THE SECOND PROCESS IS RUN. It is this same test assembly, re-entered by <c>dotnet test</c> with a
 /// filter selecting <see cref="CrossProcessGlossaryWriterHelper"/> - the repository has no spare console
@@ -28,9 +28,20 @@ namespace CcDirector.Gateway.Tests;
 /// inert unless its environment variable is present, so a normal suite run never executes the writing path.
 ///
 /// WHAT THIS STILL DOES NOT PROVE, stated plainly rather than left implied: it proves the lock serialises
-/// two processes on THIS machine's local file system. It does NOT prove that the operating system's file
-/// locking is honoured by the hosted deployment's network file share, which no test in this repository can
-/// reach. If that guarantee matters it needs a check against the real share, not a unit test.
+/// two processes on a LOCAL file system. It does NOT prove that the operating system's file locking is
+/// honoured by the hosted deployment's NETWORK FILE SHARE, which no test in this repository can reach. A
+/// hosted Gateway running two containers against one share therefore rests on an assumption, not on this
+/// evidence; the gap is tracked as its own issue. If that guarantee matters it needs a check against the
+/// real share, not a unit test.
+///
+/// AND THE TRAP THAT ALMOST MADE THIS TEST WORTHLESS, kept here because it will catch the next person too:
+/// A CROSS-PROCESS TEST THAT RACES NOTHING STILL PASSES. The first version reported a child that "wrote
+/// nothing" - it had written all forty terms, into its OWN redirected root, because this assembly's
+/// start-up points CC_DIRECTOR_ROOT at a per-run isolated directory and overwrote the value the parent
+/// passed. Had the parent not checked that both sides actually wrote, it would have raced only itself,
+/// passed, and certified a lock it never exercised. Hence: the child re-asserts the parent's root from a
+/// variable the redirect does not touch, it writes a diagnostics file, and the parent asserts BOTH sides
+/// wrote before judging anything.
 /// </summary>
 public sealed class CrossProcessGlossaryLockTests : IDisposable
 {
