@@ -70,6 +70,10 @@ Avoid DeepInfra for the latency-critical path (the 4-45s variability already exp
 
 ## 3. Dictionary cleanup WITHOUT an LLM (threads: non-LLM cleanup + ASR biasing)
 
+> CORRECTION, 2026-08-07 (owner ruling, issue 2481): the "ASR biasing" thread named in this
+> heading is REJECTED in full - see 3a below. Nothing is sent to the speech-to-text provider
+> but audio. Only the non-LLM cleanup thread survives, and it is the whole approach.
+
 Both research threads converge on the SAME architecture: **no LLM in the hot path.**
 
 ### 3a. Bias the transcriber (nearly free)

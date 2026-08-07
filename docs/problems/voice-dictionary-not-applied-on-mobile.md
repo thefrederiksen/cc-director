@@ -163,6 +163,12 @@ After the fix, correct the two stale docs:
 
 ## Acceptance
 
+> CORRECTION, 2026-08-07 (owner ruling, issue 2481): the first criterion below names the
+> rejected behaviour as REQUIRED, which would make a tester sign off on the thing that is
+> banned. There is no "vocabulary bias" to confirm and there must never be one. The criterion
+> that applies is that the new CORRECTION is applied to the finished transcript; the
+> transcriber is given audio only.
+
 - Edit the dictionary, do NOT restart the Gateway, upload a phone recording with
   the affected term, and confirm the new correction/vocabulary bias is applied.
 - A regression test that constructs the recording transcriber, changes the
