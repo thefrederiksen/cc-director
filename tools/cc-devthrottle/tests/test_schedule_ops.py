@@ -20,10 +20,13 @@ from src.schedule_ops import (  # noqa: E402
 
 
 def _fake_response(status_code: int, json_body=None, text: str = "") -> MagicMock:
+    """A response WITH headers: the client asserts the promised content type on success bodies
+    (issue #2486), and a fake without headers would let that guard go untested."""
     resp = MagicMock(spec=requests.Response)
     resp.status_code = status_code
     resp.content = b"x" if (json_body is not None or text) else b""
     resp.text = text
+    resp.headers = {"Content-Type": "application/json" if json_body is not None else "text/plain"}
     if json_body is not None:
         resp.json.return_value = json_body
     else:

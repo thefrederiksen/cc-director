@@ -25,10 +25,13 @@ runner = CliRunner()
 
 
 def _fake_response(status_code: int, json_body=None, text: str = "") -> MagicMock:
+    """A response WITH headers: the client asserts the promised content type on success bodies
+    (issue #2486), and a fake without headers would let that guard go untested."""
     resp = MagicMock(spec=requests.Response)
     resp.status_code = status_code
     resp.content = b"x" if (json_body is not None or text) else b""
     resp.text = text
+    resp.headers = {"Content-Type": "application/json" if json_body is not None else "text/plain"}
     if json_body is not None:
         resp.json.return_value = json_body
     else:
@@ -237,6 +240,120 @@ class TestInspectionHardening:
             workflow_ops.push_workflow("release-train", str(tmp_path), None)
         body = push_client.update_draft.call_args.args[1]
         assert body["instructionsMarkdown"] == "line one\r\nline two\n"
+
+
+FULL_RUN_ID = "3990e87c-3511-41e8-80d5-8962f173be33"
+OTHER_RUN_ID = "39aa0000-1111-2222-3333-444455556666"
+
+RUN = {
+    "id": FULL_RUN_ID,
+    "workflowId": "mission",
+    "workflowVersion": 8,
+    "name": "mission v8",
+    "status": "created",
+    "acceptanceStatus": "none",
+}
+
+
+class TestRunShortIdResolution:
+    """Regression tests for issue #2486.
+
+    'workflow runs' prints run ids truncated to eight characters and tells the reader to use
+    them, so 'workflow run <eight characters>' is the advertised path. It used to die with a raw
+    JSONDecodeError traceback: the Gateway's run route only matches a full id, the short one fell
+    through to the web app fallback with HTTP 200 text/html, and the client parsed that as JSON.
+    A short prefix now resolves against the run list; unknown and ambiguous prefixes are refused
+    in one sentence, like every other lookup on this tool.
+    """
+
+    @staticmethod
+    def _readable(plain, text: str) -> str:
+        """Styling and line wrapping stripped, so wording assertions are about wording."""
+        return " ".join(plain(text).split())
+
+    def test_a_short_prefix_resolves_against_the_run_list(self):
+        client = MagicMock()
+        client.list_runs.return_value = [dict(RUN), {"id": OTHER_RUN_ID}]
+        client.get_run.return_value = dict(RUN)
+        with patch.object(workflow_ops, "_client", return_value=client):
+            result = runner.invoke(app, ["workflow", "run", "3990e87c"])
+        assert result.exit_code == 0
+        client.get_run.assert_called_once_with(FULL_RUN_ID)
+
+    def test_a_full_id_goes_straight_to_the_gateway(self):
+        client = MagicMock()
+        client.get_run.return_value = dict(RUN)
+        with patch.object(workflow_ops, "_client", return_value=client):
+            result = runner.invoke(app, ["workflow", "run", FULL_RUN_ID])
+        assert result.exit_code == 0
+        client.list_runs.assert_not_called()
+        client.get_run.assert_called_once_with(FULL_RUN_ID)
+
+    def test_an_unknown_prefix_is_refused_in_one_sentence(self, plain, capsys):
+        client = MagicMock()
+        client.list_runs.return_value = [dict(RUN)]
+        with patch.object(workflow_ops, "_client", return_value=client):
+            result = runner.invoke(app, ["workflow", "run", "deadbeef"])
+        assert result.exit_code == 1
+        combined = self._readable(plain, result.output + capsys.readouterr().err)
+        assert "No workflow run matches 'deadbeef'" in combined
+        assert "Traceback" not in combined
+        client.get_run.assert_not_called()
+
+    def test_an_ambiguous_prefix_names_the_candidates(self, plain, capsys):
+        client = MagicMock()
+        client.list_runs.return_value = [dict(RUN), {"id": OTHER_RUN_ID}]
+        with patch.object(workflow_ops, "_client", return_value=client):
+            result = runner.invoke(app, ["workflow", "run", "39"])
+        assert result.exit_code == 1
+        combined = self._readable(plain, result.output + capsys.readouterr().err)
+        assert "matches 2 workflow runs" in combined
+        assert FULL_RUN_ID in combined
+        assert OTHER_RUN_ID in combined
+        client.get_run.assert_not_called()
+
+
+class TestWebAppFallthroughAnswer:
+    """The transport half of issue #2486: a request no Gateway endpoint matches falls through to
+    the web app and answers HTTP 200 with the app shell as text/html - never a 404. That answer
+    must be refused as a GatewayError in one sentence, on the JSON routes and on the text route,
+    not parsed, not printed, and never a raw JSONDecodeError traceback."""
+
+    APP_SHELL = (
+        '<!doctype html><html><head><title>DevThrottle Cockpit</title></head>'
+        '<body><div id="root"></div></body></html>'
+    )
+
+    @classmethod
+    def _shell_response(cls) -> MagicMock:
+        resp = MagicMock(spec=requests.Response)
+        resp.status_code = 200
+        resp.content = cls.APP_SHELL.encode()
+        resp.text = cls.APP_SHELL
+        resp.headers = {"Content-Type": "text/html; charset=utf-8"}
+        resp.json.side_effect = ValueError("Expecting value: line 1 column 1 (char 0)")
+        return resp
+
+    def test_a_2xx_web_app_answer_is_reported_not_raised(self, plain, capsys):
+        with patch.object(workflow_ops.WorkflowClient, "_request") as request:
+            request.return_value = self._shell_response()
+            result = runner.invoke(app, ["workflow", "runs"])
+        assert result.exit_code == 1
+        combined = " ".join(plain(result.output + capsys.readouterr().err).split())
+        assert "fell through to the Gateway's web app" in combined
+        assert "Traceback" not in combined
+
+    def test_instructions_refuse_the_app_shell_instead_of_printing_it_as_conduct(
+        self, plain, capsys
+    ):
+        with patch.object(workflow_ops.WorkflowClient, "_request") as request:
+            request.return_value = self._shell_response()
+            result = runner.invoke(app, ["workflow", "instructions", "mission"])
+        assert result.exit_code == 1
+        combined = plain(result.output + capsys.readouterr().err)
+        # Nothing of the page reached standard output as the workflow's conduct.
+        assert "<!doctype html" not in combined
+        assert "DevThrottle Cockpit</title>" not in combined
 
 
 class TestAuthoringVersionPick:

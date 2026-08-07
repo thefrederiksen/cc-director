@@ -153,13 +153,26 @@ class WorkflowClient:
 
     def _json_or_raise(self, resp: requests.Response) -> Dict[str, Any]:
         if 200 <= resp.status_code < 300:
-            if not resp.content:
-                return {}
-            return resp.json()
+            # The shared guard, not a bare resp.json(): a request no endpoint matches falls
+            # through to the Gateway's web app and answers HTTP 200 with text/html, and parsing
+            # that unguarded is how 'workflow run <short id>' died with a raw JSONDecodeError
+            # traceback (issue #2486).
+            return gateway.parse_json_body(resp, self.base_url)
         raise GatewayError(self._gateway_message(resp))
 
     def _text_or_raise(self, resp: requests.Response) -> str:
         if 200 <= resp.status_code < 300:
+            # This output lands in an agent's context as the conduct to follow. The same
+            # fallthrough issue #2486 hit on the JSON routes answers HTTP 200 with the web app
+            # shell here, and printing that as instructions would have an agent obeying a web
+            # page that looks like it worked.
+            content_type = (resp.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+            if content_type == "text/html":
+                raise GatewayError(
+                    f"the Gateway at {self.base_url} answered with its web app page instead of "
+                    "the requested text, so it did not recognise this request. Nothing in that "
+                    "answer is the workflow's conduct."
+                )
             return resp.text
         raise GatewayError(self._gateway_message(resp))
 
@@ -671,9 +684,47 @@ def list_runs(workflow_id: Optional[str], status: Optional[str], json_output: bo
     console.print("Details with: cc-devthrottle workflow run <run id>")
 
 
+def _resolve_run_id(client: WorkflowClient, run_id: str) -> str:
+    """The full run id for what the user typed, resolved the way session ids are.
+
+    'workflow runs' prints run ids truncated to eight characters and tells the reader to use
+    them, so a short prefix is a first-class input here. It also cannot be sent to the Gateway
+    raw: the run route only matches a full id ('/gateway/workflow-runs/{id:guid}'), and an
+    unmatched path falls through to the Gateway's web app with HTTP 200 (issue #2486). Unknown
+    and ambiguous prefixes are refused in one sentence, like every other lookup on this tool.
+    """
+    candidate = run_id.strip().lower()
+    if not candidate:
+        raise GatewayError("A run id, or a unique prefix of one, is required.")
+    if len(candidate) == 36:
+        return candidate
+    matches = sorted(
+        {
+            (run.get("id") or "")
+            for run in client.list_runs(None, None)
+            if (run.get("id") or "").lower().startswith(candidate)
+        }
+    )
+    if not matches:
+        raise GatewayError(
+            f"No workflow run matches '{run_id}'. "
+            "List them with: cc-devthrottle workflow runs"
+        )
+    if len(matches) > 1:
+        shown = ", ".join(matches[:5]) + (
+            f", and {len(matches) - 5} more" if len(matches) > 5 else ""
+        )
+        raise GatewayError(
+            f"'{run_id}' matches {len(matches)} workflow runs: {shown}. "
+            "Give more of the id."
+        )
+    return matches[0]
+
+
 def show_run(run_id: str, json_output: bool) -> None:
     try:
-        run = _client().get_run(run_id)
+        client = _client()
+        run = client.get_run(_resolve_run_id(client, run_id))
     except GatewayError as ex:
         _fail(str(ex))
         return
