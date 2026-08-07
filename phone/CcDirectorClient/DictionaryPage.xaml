@@ -46,7 +46,7 @@
                     <VerticalStackLayout Spacing="10">
                         <Label Text="Vocabulary" FontSize="15" FontAttributes="Bold"
                                TextColor="#E6EAF2" />
-                        <Label Text="Terms biased into speech-to-text."
+                        <Label Text="Terms corrected to this spelling after transcription."
                                FontSize="12" TextColor="#8A93A6" />
 
                         <Label x:Name="VocabEmptyLabel" Text="No vocabulary terms yet."

@@ -23,8 +23,10 @@ import { gatewayErrorMessage } from "@devthrottle/client-core/api/client";
 import { ConfirmDialog } from "../components";
 
 // The dictation Dictionary editor (issue #977, epic #967) - the React port of the Blazor Cockpit
-// Dictionary.razor (#183). The human edits the vocabulary chips biased into speech-to-text and the
-// common-mistranscriptions term-to-variant map fed to the cleanup pass, with a dirty-state Save that
+// Dictionary.razor (#183). The human edits the vocabulary chips and the common-mistranscriptions
+// term-to-variant map. BOTH are fed to the cleanup pass and NEITHER is ever sent to the
+// speech-to-text provider: the transcriber gets audio only, and the listed words are substituted
+// afterwards on the finished transcript (issue 2481). Edited with a dirty-state Save that
 // PUTs the whole glossary and re-renders the returned dictionary. It reads and writes same-origin
 // through the Gateway front door (client-core) - never a Director address.
 //
@@ -567,7 +569,7 @@ export function DictionaryView() {
             {/* ---- Vocabulary ---- */}
             <div className="dc-section">
               <h2>Vocabulary</h2>
-              <p className="dc-hint">Terms biased into speech-to-text.</p>
+              <p className="dc-hint">Terms corrected to this spelling after transcription.</p>
               <div className="dc-chips">
                 {dict.vocabulary.map((term, i) => (
                   <span className="dc-chip" key={`${term}/${i}`}>

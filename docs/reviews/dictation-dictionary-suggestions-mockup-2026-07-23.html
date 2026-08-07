@@ -83,6 +83,12 @@
   <main class="main">
     <h1>Dictionary</h1>
     <p class="sub">Terms that bias transcription, plus corrections for words the model keeps getting wrong.</p>
+    <!-- CORRECTION, 2026-08-07 (owner ruling, issue 2481): this subhead is WRONG. No term biases
+         transcription. The transcriber is given audio only; these terms correct the FINISHED
+         transcript. Do NOT copy this line. -->
+    <p class="sub" style="color:#c0392b;"><strong>CORRECTION (issue 2481):</strong>
+      nothing biases transcription - the transcriber gets audio only. These terms correct the
+      finished transcript afterwards.</p>
 
     <!-- SUGGESTIONS CARD -->
     <section class="card suggest">
@@ -140,6 +146,19 @@
     <section class="card">
       <div class="card-head"><h2>Vocabulary</h2></div>
       <p class="why">Proper nouns the model is nudged toward. Safe - it only biases, never replaces.</p>
+      <!-- CORRECTION, 2026-08-07 (owner ruling, issue 2481): WRONG, and wrong in the most
+           dangerous way - it argues the rejected approach is the SAFE one. The model is nudged
+           toward nothing; no term is ever sent to the transcriber. And biasing is not the safe
+           option, it is the unsafe one: steering the transcriber changes wording and sentence
+           structure, not just spelling, which corrupts the record of what was actually said.
+           Replacing a listed word on the finished transcript is the safe operation, because it
+           is a known, configured substitution that leaves everything else untouched. Do NOT
+           copy this line or its reasoning. -->
+      <p class="why" style="color:#c0392b;"><strong>CORRECTION (issue 2481):</strong>
+        nothing is nudged - no term reaches the transcriber. And this has the safety argument
+        backwards: biasing is the UNSAFE option, because steering changes wording and sentence
+        structure and corrupts the record of what was said. Substituting a listed word on the
+        finished transcript is the safe one.</p>
       <div class="chips">
         <span class="chip">mindzie</span><span class="chip">Frederiksen</span><span class="chip">Soren</span>
         <span class="chip">Center Consulting</span><span class="chip">DevThrottle</span><span class="chip">ConPty</span>

@@ -3,9 +3,16 @@ namespace CcDirector.Core.Dictation.Models;
 /// <summary>
 /// User-editable dictation dictionary loaded from a YAML file.
 ///
+/// NOTHING IN HERE IS EVER SENT TO THE SPEECH-TO-TEXT PROVIDER. The transcriber
+/// is given audio only, with no vocabulary and no other steering hint, so that it
+/// writes down what was actually said. Everything below is applied afterwards, by
+/// a separate pass over the finished transcript. See the note where
+/// <c>BuildSttPrompt</c> was deleted in <c>DictionaryLoader</c> for why (issue 2481).
+///
 /// Two layers of knowledge:
-/// 1. <see cref="Vocabulary"/> - canonical terms the speaker uses. Packed into
-///    the OpenAI prompt parameter as a soft decode-time bias.
+/// 1. <see cref="Vocabulary"/> - canonical terms the speaker uses. Read by the
+///    correction pass, which restores a term to its correct spelling on the
+///    finished transcript.
 /// 2. <see cref="CommonMistranscriptions"/> - known mistranscription patterns
 ///    the user has observed in practice. Passed to the dictionary-correction
 ///    LLM, which replaces these exact wrong forms with the canonical term and

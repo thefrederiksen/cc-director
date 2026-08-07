@@ -2,7 +2,12 @@
 Multilingual evaluation harness for the deterministic dictionary-cleanup step.
 
 Design (from established ASR-customization / contextual-biasing methodology): hold transcription
-CONSTANT and score ONLY the cleanup. Each fixture is text-in / text-out - a frozen raw transcript, a
+CONSTANT and score ONLY the cleanup. What is borrowed from that literature is the MEASUREMENT - the
+B-WER / U-WER split below - and NOT the technique: DevThrottle does no contextual biasing and sends
+nothing but audio to the transcriber (issue 2481). "Biased tokens" below is the standard B-WER name
+for the target-term tokens being scored; nothing is being biased.
+
+Each fixture is text-in / text-out - a frozen raw transcript, a
 term list (targets + distractors), the gold corrected text, and the gold edits. The harness POSTs each
 fixture to the Gateway's /transcription/cleanup endpoint (the REAL production cleanup) and scores the
 result. No audio, no third-party ASR variance.
@@ -81,7 +86,11 @@ def align(ref, hyp):
 
 
 def biased_surface_tokens(target_terms, lang):
-    """The set of normalized tokens that belong to any target term (the 'biased' vocabulary)."""
+    """The set of normalized tokens that belong to any target term (the 'biased' vocabulary).
+
+    "Biased" is the standard B-WER term for the target-term tokens being scored. Nothing is
+    biased: DevThrottle sends nothing but audio to the transcriber (issue 2481).
+    """
     s = set()
     for term in target_terms:
         for tok in tokenize(term, lang):

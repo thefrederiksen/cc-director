@@ -16,6 +16,14 @@ YAML file.
 - File: `%LOCALAPPDATA%\cc-director\dictation\dictionary.yaml`
 - Parsed by `DictionaryLoader` (`src/CcDirector.Core/Dictation/DictionaryLoader.cs`),
   shaped by `DictationDictionary` (`Models/Dictionary.cs`).
+
+> CORRECTION, 2026-08-07 (owner ruling, issue 2481): the `vocabulary` description immediately
+> below is wrong about CURRENT behaviour. Nothing is packed into a speech-to-text `prompt`
+> bias - that code (`DictionaryLoader.BuildSttPrompt`) has been deleted. The transcriber is
+> given audio only; the canonical terms are applied by the cleanup pass to the finished
+> transcript, because priming the transcriber changes wording and sentence structure and
+> corrupts the record of what was said.
+
 - Three sections:
   - `vocabulary` - canonical terms, packed into the OpenAI STT `prompt` bias.
   - `common_mistranscriptions` - correct term -> wrong spellings seen in practice,
@@ -117,6 +125,12 @@ definition of the path (extract a small helper, e.g.
 
 ## Dictionary page layout (target)
 
+> CORRECTION, 2026-08-07 (owner ruling, issue 2481): the mockup below labels the vocabulary
+> "terms biased into speech-to-text". That was never how it should have read and the shipped
+> page no longer says it. Nothing in the glossary is sent to the speech-to-text provider; the
+> terms are corrected on the finished transcript after it comes back. The mockup is left as
+> the dated record of the design.
+
 ```
 +=======================================================================+
 |  Voice Recorder                                       <- Dashboard     |
@@ -126,6 +140,9 @@ definition of the path (extract a small helper, e.g.
 |  desktop voice-to-type. Edits apply on the next recording.  [ Save ]   |
 +-----------------------------------------------------------------------+
 |  VOCABULARY                  terms biased into speech-to-text          |
+|  <-- WRONG COPY, issue 2481. Shipped page reads "Terms corrected to    |
+|      this spelling after transcription." Nothing is sent to the        |
+|      transcriber. Do not copy the line above.                          |
 |  +-----------------------------------------------------------------+  |
 |  |  [ acmeflow x ] [ CenCon x ] [ ConPTY x ] [ cc-director x ]      |  |
 |  |  [ Avalonia x ] [ Example User x ]                        |  |
@@ -157,6 +174,9 @@ definition of the path (extract a small helper, e.g.
   PUT with malformed body returns 400; missing file GET returns empty shape.
 - Manual: edit a term on the page, save, record a phone clip, confirm the new
   term biases the transcript.
+  > CORRECTION, 2026-08-07 (owner ruling, issue 2481): nothing biases the transcript. The
+  > check that applies is that the new term is CORRECTED into the finished transcript by the
+  > cleanup pass; the transcriber never sees it.
 
 ## Risks / notes
 

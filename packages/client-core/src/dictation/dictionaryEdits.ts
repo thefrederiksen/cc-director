@@ -19,7 +19,9 @@ export type AddEntryResult =
   // The entry was added - `dict` is the new Dictionary the page should adopt.
   | { status: "added"; word: string; dict: Dictionary };
 
-/** Add a word to the vocabulary biased into speech-to-text. Trims first; rejects empty and duplicates. */
+/** Add a word to the canonical vocabulary the cleanup pass corrects towards on the finished
+ *  transcript - it is never sent to the transcriber (issue 2481). Trims first; rejects empty
+ *  and duplicates. */
 export function addVocabularyWord(dict: Dictionary, raw: string): AddEntryResult {
   const word = raw.trim();
   if (word.length === 0) return { status: "empty" };

@@ -47,7 +47,9 @@ We already have `tools/harnesses/transcription-eval-harness/` (audio -> transcri
 recall) and 5 recorded English fixtures. Transcription is now third-party, so the new harness focuses on
 the DICTIONARY CLEANUP step, holds transcription constant, and is multilingual. The design is lifted from
 established ASR-customization / contextual-biasing methodology (GenSEC/HyPoradise, LibriSpeech biasing),
-NOT invented.
+NOT invented. To be clear about what is borrowed: the MEASUREMENT method (the B-WER / U-WER split
+below), not the technique. We do not do contextual biasing - nothing is sent to the transcriber but
+audio (issue 2481). Transcription is held constant and only the cleanup step is measured.
 
 Central design decision - hold transcription constant (text-in / text-out). Each fixture is:
 `{ language (BCP-47), raw_transcript (frozen mishearing), term_list (targets + distractors),
@@ -101,9 +103,17 @@ Findings (full report saved separately). Our approach is the standard one; we ar
     Metaphone. Add per-term precomputed IPA rather than a runtime dependency if possible.
   - Borrow Microsoft.PhoneticMatching's `EnHybridDistance` design (phonetic blended with edit distance)
     as the scoring template, swapping its English engine for the multilingual one.
-- **Orthogonal wins:** use the transcription provider's own biasing channel (Whisper `initial_prompt`,
-  Deepgram keywords, AssemblyAI word_boost, Speechmatics `sounds_like`) so fewer errors reach cleanup;
-  and consider an optional per-term `sounds_like`/pronunciation field (every serious product offers it).
+- **RULED OUT - the provider's own biasing channel.** This bullet used to propose exactly that
+  (Whisper `initial_prompt`, Deepgram keywords, AssemblyAI word_boost, Speechmatics `sounds_like`,
+  plus a per-term pronunciation field) so fewer errors would reach cleanup. The owner ruled against
+  it on 2026-08-07 (issue 2481) and the dead code for it has been deleted. **Do not propose it
+  again.** Nothing - no vocabulary, no keyword list, no pronunciation hint - is ever sent to the
+  speech-to-text provider; it gets audio only. Priming the transcriber makes it steer toward the
+  suggested words, changing wording and sentence structure rather than just spelling, and that
+  corrupts the record of what was actually said. Meaning preservation outranks the error rate: a
+  faithful transcript with a wrong spelling beats a fluent one with altered meaning, and the wrong
+  spelling is what the cleanup pass exists to fix. This constrains the whole section - every recall
+  improvement has to come from the cleanup matcher, which is why that is where the work goes.
 
 ## 6. Continuous improvement + always-deploy-best - PROCESS
 

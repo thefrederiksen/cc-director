@@ -4,6 +4,15 @@ Verdict: PASS (9/9 expected company-term occurrences recovered in the final vari
 
 ## Method
 
+> **CORRECTION, 2026-08-07 (owner ruling, issue 2481).** The variants below that use the
+> transcription **prompt parameter** describe an approach that was REJECTED, and the code for it
+> has been deleted. Read the `with_prompt` results as a record of an experiment, NOT as a reason
+> to build it: vocabulary and steering hints are never sent to the speech-to-text provider,
+> because priming it makes the model steer toward the suggested words, changing wording and
+> sentence structure and corrupting the record of what was actually said. Meaning preservation
+> outranks term recall. What ships is the `no_prompt` transcript plus a correction pass over the
+> finished text.
+
 Generated 3 synthetic clips with OpenAI tts-1 (voice=alloy).
 Each clip transcribed with gpt-4o-transcribe in three variants:
 
@@ -14,6 +23,10 @@ Each clip transcribed with gpt-4o-transcribe in three variants:
 Pass criterion: every expected company term appears in the variant 3 transcript for every clip (case-insensitive substring match).
 
 ## Results
+
+> **CORRECTION (issue 2481):** the `with_prompt` rows below are the REJECTED approach. A better
+> score there is not an argument for it - priming the transcriber changes wording and sentence
+> structure, which these clip-level term checks do not measure. See the note at the top.
 
 ### Clip 1
 
@@ -70,6 +83,13 @@ Expected company terms: acmeflow, CenCon, cc-director
 > Tell acmeflow that the CenCon report is ready and ping the cc-director gateway team.
 
 ## Interpretation
+
+> **CORRECTION (issue 2481):** the conclusion below rests on the transcription **prompt
+> parameter**, which the owner REJECTED on 2026-08-07; the code for it is deleted. Nothing is
+> sent to the transcriber but audio, and the listed words are substituted afterwards on the
+> finished transcript - priming it changes wording and sentence structure and corrupts the
+> record of what was said. Any follow-up here that tunes a transcription prompt, or that reaches
+> for a provider's keyterm boosting, is closed. Only the cleanup pass is open.
 
 OpenAI gpt-4o-transcribe with the prompt parameter, followed by a Claude Haiku cleanup pass that has the term list in its system prompt, reliably recovers all expected company terms across the synthetic test clips.
 

@@ -18,8 +18,10 @@ export interface DictionaryProfile {
   cleanupEnabled: boolean;
 }
 
-/** The dictation glossary, mirroring the C# DictionaryDto: the vocabulary biased into speech-to-text,
- *  the correct-term -> wrong-spellings map fed to the cleanup pass, and named profiles. */
+/** The dictation glossary, mirroring the C# DictionaryDto: the canonical vocabulary, the
+ *  correct-term -> wrong-spellings map, and named profiles. Nothing in here reaches the
+ *  speech-to-text provider - the transcriber is given audio only, and both the vocabulary and the
+ *  wrong-spellings map are applied by the cleanup pass on the finished transcript (issue 2481). */
 export interface Dictionary {
   vocabulary: string[];
   commonMistranscriptions: Record<string, string[]>;

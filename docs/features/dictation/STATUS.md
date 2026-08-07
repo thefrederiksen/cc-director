@@ -66,6 +66,14 @@ Expected end-to-end latencies on a typical sentence:
 
 ## Phase 0: PASS
 
+> CORRECTION, 2026-08-07 (owner ruling, issue 2481): the half of this experiment that used
+> the transcription **prompt parameter** was later REJECTED and the code deleted. Vocabulary
+> and steering hints are never sent to the speech-to-text provider - it gets audio only -
+> because priming the transcriber makes it steer toward the suggested words, changing wording
+> and sentence structure and corrupting the record of what was said. The listed words are
+> substituted afterwards by a separate pass over the finished transcript. The result below is
+> left as the dated record of what was tried.
+
 The proof-of-fact experiment in `docs/features/dictation/phase0/` validated
 that OpenAI `gpt-4o-transcribe` with the prompt parameter, followed by a
 Claude Haiku cleanup pass that has the vocabulary and known mistranscription
@@ -171,6 +179,9 @@ The browser-facing surface is in place:
   default of `%LOCALAPPDATA%/cc-director/dictation/dictionary.yaml`.
   Missing file means "no vocabulary bias, no cleanup glossary" without
   breaking the pipeline.
+  > CORRECTION, 2026-08-07 (owner ruling, issue 2481): there is no "vocabulary bias" and
+  > there never will be - nothing from this file reaches the transcriber. A missing file
+  > means no cleanup glossary, so transcripts come back uncorrected.
 - **Three integration tests** in
   `src/CcDirector.Gateway.Tests/DictationEndpointTests.cs`. Two pure
   protocol checks plus one full end-to-end roundtrip: client opens a

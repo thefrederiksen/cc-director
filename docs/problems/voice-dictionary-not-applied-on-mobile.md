@@ -5,6 +5,15 @@ Reporter: the maintainer (via assistant session in a private workspace)
 Component: CcDirector.Gateway recording/transcription pipeline + dictation dictionary
 Severity: medium (functional - corrections never take effect on the path the user actually uses)
 
+> HISTORICAL RECORD, 2026-05-25. Kept for the history; do not work from it. The class it
+> describes, `OpenAiRecordingTranscriber`, no longer exists, and the parts below that talk
+> about a speech-to-text bias prompt describe an approach the owner has since REJECTED
+> (issue 2481, 2026-08-07). Vocabulary and steering hints are never sent to the transcriber:
+> it gets audio only, and the listed words are substituted afterwards by a separate pass over
+> the finished transcript. `DictionaryLoader.BuildSttPrompt` and its `_sttPrompt` field are
+> deleted. Ignore suggested fix A's second bullet, and the "the correct lever is the STT
+> `vocabulary` bias" line - there is no such lever and there is not going to be one.
+
 ## Symptom (what the user experienced)
 
 The mobile voice unit keeps mishearing the company name "acmeflow" and the user
@@ -40,6 +49,10 @@ Evidence:
    construction and cached in a readonly field. A later vocabulary edit cannot
    change it for this instance.
 
+   > CORRECTION, 2026-08-07 (owner ruling, issue 2481): there is no speech-to-text bias
+   > prompt any more. `BuildSttPrompt` and this `_sttPrompt` field are DELETED, and the
+   > class itself no longer exists. Vocabulary is never sent to the transcriber.
+
 3. `OpenAiRecordingTranscriber.cs:72`
    ```csharp
    => _cleanup.CleanAsync(rawTranscript, _dictionary.Current, "default", ct);
@@ -55,6 +68,9 @@ Evidence:
 
 So the recording transcriber's vocabulary bias AND cleanup glossary are both
 fixed at the moment the Gateway started.
+
+> CORRECTION, 2026-08-07 (owner ruling, issue 2481): there is no "vocabulary bias" half of
+> this any more - only the cleanup glossary. Nothing is sent to the transcriber but audio.
 
 ## Why this contradicts the docs (the trap)
 
@@ -90,6 +106,11 @@ repos); a blanket mapping would wrongly rewrite real uses. The correct lever is
 the STT `vocabulary` bias (already contains "acmeflow") plus restarting/reloading
 so it actually applies - not a risky find-replace rule.
 
+> CORRECTION, 2026-08-07 (owner ruling, issue 2481): the lever named here DOES NOT EXIST and
+> is not coming back. There is no speech-to-text vocabulary bias. The reasoning about "my
+> repo" still stands - do not add it as a literal mistranscription mapping - but the remedy
+> is the cleanup pass over the finished transcript, not priming the transcriber.
+
 ## What was changed on disk during the session (does NOT fix the bug by itself)
 
 `%LOCALAPPDATA%\cc-director\dictation\dictionary.yaml` - added to the `acmeflow`
@@ -111,6 +132,13 @@ root cause above.
 6. Restart the Gateway, upload the same recording: now the edit applies.
 
 ## Suggested fix (pick one; option A preferred)
+
+> CORRECTION, 2026-08-07 (owner ruling, issue 2481): DO NOT IMPLEMENT the `_sttPrompt`
+> bullet in option A. Recomputing a speech-to-text prompt per transcription is exactly the
+> rejected approach - vocabulary and steering hints are never sent to the transcriber,
+> because priming it changes wording and sentence structure and corrupts the record of what
+> was said. `BuildSttPrompt` is deleted. The live-reload point itself is fine; it applies to
+> the cleanup glossary only.
 
 A. Make the recording transcriber reload the dictionary live, the same way
    desktop dictation does:
@@ -134,6 +162,12 @@ After the fix, correct the two stale docs:
 - `docs/plans/voice-dictionary-page.md:29-31` ("constructed per request" claim).
 
 ## Acceptance
+
+> CORRECTION, 2026-08-07 (owner ruling, issue 2481): the first criterion below names the
+> rejected behaviour as REQUIRED, which would make a tester sign off on the thing that is
+> banned. There is no "vocabulary bias" to confirm and there must never be one. The criterion
+> that applies is that the new CORRECTION is applied to the finished transcript; the
+> transcriber is given audio only.
 
 - Edit the dictionary, do NOT restart the Gateway, upload a phone recording with
   the affected term, and confirm the new correction/vocabulary bias is applied.

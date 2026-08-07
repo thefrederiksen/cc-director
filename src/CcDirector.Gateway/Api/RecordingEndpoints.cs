@@ -159,8 +159,9 @@ internal static class RecordingEndpoints
         // over its OWN root directory, so one account's recordings/transcripts and its glossary are physically
         // partitioned from another's - the recording directory is now keyed by (tenant, id), not the
         // caller-supplied id alone. Built lazily per tenant on first use; on self-host the single Local tenant
-        // maps to the existing flat root, so nothing moves there. The transcriber reads the SAME tenant's
-        // glossary, so a per-tenant glossary edit biases only that tenant's transcription.
+        // maps to the existing flat root, so nothing moves there. The cleanup pass reads the SAME tenant's
+        // glossary, so a per-tenant glossary edit changes only that tenant's transcripts. (The glossary is
+        // never sent to the speech-to-text provider - it is applied to the finished transcript; issue 2481.)
         var services = new System.Collections.Concurrent.ConcurrentDictionary<string, RecordingIngestService>(StringComparer.Ordinal);
         RecordingIngestService ServiceFor(TenantId tenant)
             => services.GetOrAdd(tenant.Value, _ => BuildService(tenant, keyVault, history, audioArchive));
@@ -749,11 +750,14 @@ internal static class RecordingEndpoints
         DELETE {base}/ingest/recording/{id}
                Delete the transient local transcript. A promoted vault copy is kept.
 
-        ## Dictionary (speech-to-text glossary)
+        ## Dictionary (transcript-correction glossary)
 
-        The shared glossary that biases transcription toward the user's terms.
-        Editing it affects both phone-recording transcription and desktop
-        dictation. Changes apply on the next recording (no restart).
+        The shared glossary used to correct FINISHED transcripts toward the
+        user's terms. It is never sent to the speech-to-text provider: the
+        audio is transcribed as spoken, with no vocabulary and no steering
+        hint, and only then are the listed words substituted. Editing it
+        affects both phone-recording transcription and desktop dictation.
+        Changes apply on the next recording (no restart).
 
         GET    {base}/ingest/dictionary
                The glossary as JSON:
@@ -812,9 +816,10 @@ internal static class RecordingEndpoints
 
     /// <summary>This tenant's dictation glossary file. Local keeps the existing shared file; every other
     /// tenant gets its own glossary. Read by BOTH the dictionary editor routes and this tenant's recording
-    /// transcriber, so a per-tenant edit biases only that tenant's transcription (issue #2060). Delegates to
-    /// <see cref="TenantGlossary.PathFor"/> so the editor routes, the transcriber, and the suggestion "apply"
-    /// path can never disagree on the glossary location (devthrottle #2075).</summary>
+    /// cleanup pass, so a per-tenant edit changes only that tenant's transcripts (issue #2060). It is never
+    /// sent to the speech-to-text provider - it is applied to the finished transcript (issue 2481).
+    /// Delegates to <see cref="TenantGlossary.PathFor"/> so the editor routes, the cleanup pass, and the
+    /// suggestion "apply" path can never disagree on the glossary location (devthrottle #2075).</summary>
     private static string GlossaryPathFor(TenantId tenant) => TenantGlossary.PathFor(tenant);
 
     private static RecordingIngestService BuildService(
@@ -828,7 +833,8 @@ internal static class RecordingEndpoints
         var root = RootForTenant(tenant);
         // Promotion target: the vault transcripts collection (permanent copy), per tenant.
         var collectionDir = CollectionForTenant(tenant);
-        // The glossary the transcriber reads to bias transcription - this tenant's own (issue #2060).
+        // The glossary the cleanup pass reads to correct the finished transcript - this tenant's own
+        // (issue #2060). It never reaches the speech-to-text provider (issue 2481).
         var glossaryPath = GlossaryPathFor(tenant);
         // This tenant's transcription-health history. The single Local tenant uses the host's shared log
         // (self-host, unchanged); every other tenant writes to its own partition so a recording's history
