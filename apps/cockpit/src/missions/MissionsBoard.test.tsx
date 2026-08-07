@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, waitFor, cleanup } from "@testing-library/react";
+import { useState } from "react";
+import { render, screen, waitFor, cleanup, fireEvent } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import type { SessionDto } from "@devthrottle/client-core/api/client";
 import type { MissionDto } from "@devthrottle/client-core/missions/missions";
@@ -126,6 +127,82 @@ describe("MissionsBoard", () => {
 
     expect(screen.getByText("BPM Studio QA cleanup")).toBeTruthy();
     expect(screen.getByText(/not in the mission list/i)).toBeTruthy();
+  });
+
+  it("hides empty missions when asked - and SAYS how many, with a way back", async () => {
+    const onShowEmpty = vi.fn();
+    renderBoard({
+      sessions: [ARCHITECT],
+      missions: [M_RELEASE, { missionId: "m-dead", missionName: "Remove the network port" }],
+      hideEmpty: true,
+      onShowEmpty,
+    });
+
+    // The staffed mission is drawn; the empty one is not.
+    expect(screen.getByText("Release 2.0.1")).toBeTruthy();
+    expect(screen.queryByText("Remove the network port")).toBeNull();
+
+    // ...but the board never hides silently: the count is on screen and it is the way back.
+    const note = screen.getByText(/1 mission with no sessions is hidden/i);
+    expect(note).toBeTruthy();
+    note.click();
+    expect(onShowEmpty).toHaveBeenCalled();
+  });
+
+  it("draws every mission when not hiding, and shows no hidden-count note", async () => {
+    renderBoard({
+      sessions: [ARCHITECT],
+      missions: [M_RELEASE, { missionId: "m-dead", missionName: "Remove the network port" }],
+      hideEmpty: false,
+    });
+
+    expect(screen.getByText("Release 2.0.1")).toBeTruthy();
+    expect(screen.getByText("Remove the network port")).toBeTruthy();
+    expect(screen.queryByText(/hidden/i)).toBeNull();
+  });
+
+  it("pluralises the hidden-count note", async () => {
+    renderBoard({
+      sessions: [],
+      missions: [
+        { missionId: "m1", missionName: "One" },
+        { missionId: "m2", missionName: "Two" },
+      ],
+      hideEmpty: true,
+      onShowEmpty: vi.fn(),
+    });
+
+    expect(screen.getByText(/2 missions with no sessions are hidden/i)).toBeTruthy();
+  });
+
+  // The callback firing is not the promise; the card COMING BACK is. This drives the real round trip
+  // through a stateful parent, so a wiring mistake between the notice and the board cannot pass.
+  it("brings the hidden missions back when the note is clicked", async () => {
+    function Harness() {
+      const [hide, setHide] = useState(true);
+      const props = hide
+        ? ({ hideEmpty: true, onShowEmpty: () => setHide(false) } as const)
+        : ({ hideEmpty: false } as const);
+      return (
+        <MissionsBoard
+          sessions={[ARCHITECT]}
+          missions={[M_RELEASE, { missionId: "m-dead", missionName: "Remove the network port" }]}
+          {...props}
+        />
+      );
+    }
+
+    render(
+      <MemoryRouter>
+        <Harness />
+      </MemoryRouter>,
+    );
+
+    expect(screen.queryByText("Remove the network port")).toBeNull();
+    fireEvent.click(screen.getByText(/1 mission with no sessions is hidden/i));
+
+    expect(screen.getByText("Remove the network port")).toBeTruthy();
+    expect(screen.queryByText(/hidden/i)).toBeNull();
   });
 
   it("says so loudly when the mission list could not be loaded", async () => {

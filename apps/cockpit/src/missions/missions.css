@@ -81,6 +81,28 @@
   color: var(--text-dim);
 }
 
+/* The in-board notice that empty missions are being hidden, and the control that brings them back. It
+   sits where those cards would have been, so the gap in the list is explained at the gap. */
+.msn-hidden-note {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 11px 16px;
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  background: none;
+  color: var(--text-dim);
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.msn-hidden-note:hover,
+.msn-hidden-note:focus-visible {
+  color: var(--text);
+  border-color: var(--text-dim);
+}
+
 /* A mission the roster knows about but the Gateway's mission list does not contain. Amber, not red: the
    sessions and their grouping are real and correct - it is the agreement between the two stores that is
    not, and that is worth showing without shouting. */

@@ -47,6 +47,25 @@
   color: var(--attention);
 }
 
+/* The empty-missions count in the header, which is also the control that flips it. It reads as one more
+   stat rather than a button, because it IS one - the number of missions that exist but are not being
+   drawn - and clicking it is the obvious thing to do with it. */
+.fmap-emptytoggle {
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  color: var(--text-dim);
+  cursor: pointer;
+  text-decoration: underline dotted;
+  text-underline-offset: 3px;
+}
+
+.fmap-emptytoggle:hover,
+.fmap-emptytoggle:focus-visible {
+  color: var(--text);
+}
+
 .fmap-controls {
   margin-left: auto;
   display: inline-flex;

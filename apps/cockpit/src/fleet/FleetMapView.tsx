@@ -102,6 +102,26 @@ const CANVAS_PIVOTS: ReadonlySet<Pivot> = new Set<Pivot>(["machine", "director",
 // they left off. Defaults to "By machine" the first time, or when storage is unavailable.
 const PIVOT_STORAGE_KEY = "cockpit.fleetMapPivot";
 
+// Whether the Missions pivot hides the missions nobody is on right now. Sticky per browser like the
+// pivot itself, and ON by default: a mission that has finished keeps its card forever until somebody ends
+// it, and four of those were enough to push the live work off the bottom of the screen.
+//
+// This is a VIEW preference and nothing more. It does not mean the hidden missions are over, and it is
+// not the way to end one - that is a state on the Mission record and a separate piece of work. Whenever
+// this hides anything the board says how many and offers them back, so it can never be confused with
+// there being none.
+const HIDE_EMPTY_MISSIONS_STORAGE_KEY = "cockpit.fleetMapHideEmptyMissions";
+
+function initialHideEmptyMissions(): boolean {
+  try {
+    // Only an explicit "0" turns it off, so a first-time user (null) gets the clean board.
+    return window.localStorage.getItem(HIDE_EMPTY_MISSIONS_STORAGE_KEY) !== "0";
+  } catch {
+    /* storage unavailable (private mode) - fall through to the default */
+  }
+  return true;
+}
+
 function initialPivot(): Pivot {
   try {
     const saved = window.localStorage.getItem(PIVOT_STORAGE_KEY);
@@ -225,6 +245,17 @@ export function FleetMapView() {
   // name cached on the session for a mission id it has no record for.
   const [missions, setMissions] = useState<MissionDto[]>([]);
   const [missionsError, setMissionsError] = useState<string | null>(null);
+
+  // The hide-empties preference, written through on every change exactly like the pivot above.
+  const [hideEmptyMissions, setHideEmptyMissionsState] = useState<boolean>(initialHideEmptyMissions);
+  const setHideEmptyMissions = useCallback((next: boolean) => {
+    setHideEmptyMissionsState(next);
+    try {
+      window.localStorage.setItem(HIDE_EMPTY_MISSIONS_STORAGE_KEY, next ? "1" : "0");
+    } catch {
+      /* storage unavailable (private mode) - the choice still applies this session */
+    }
+  }, []);
   useEffect(() => {
     if (pivot !== "mission") return;
     let cancelled = false;
@@ -271,6 +302,34 @@ export function FleetMapView() {
                 <>
                   <span className="fmap-sep" aria-hidden="true" />
                   <span>{missionStats.standalone} standalone</span>
+                </>
+              )}
+              {/* The hidden count is part of the tally, not a footnote: the header states what EXISTS,
+                  and says in the same breath how much of it is currently not being drawn. */}
+              {hideEmptyMissions && missionStats.empty > 0 && (
+                <>
+                  <span className="fmap-sep" aria-hidden="true" />
+                  <button
+                    type="button"
+                    className="fmap-emptytoggle"
+                    onClick={() => setHideEmptyMissions(false)}
+                    title="Show the missions that have no sessions on them right now"
+                  >
+                    {missionStats.empty} empty hidden
+                  </button>
+                </>
+              )}
+              {!hideEmptyMissions && missionStats.empty > 0 && (
+                <>
+                  <span className="fmap-sep" aria-hidden="true" />
+                  <button
+                    type="button"
+                    className="fmap-emptytoggle"
+                    onClick={() => setHideEmptyMissions(true)}
+                    title="Hide the missions that have no sessions on them right now"
+                  >
+                    hide {missionStats.empty} empty
+                  </button>
                 </>
               )}
             </>
@@ -369,7 +428,16 @@ export function FleetMapView() {
           // case where we know least - no sessions and no mission list - is the case that renders the most
           // confident answer, a silent "no missions at all".
           (list.length > 0 || missions.length > 0 || missionsError !== null) && (
-            <MissionsBoard sessions={list} missions={missions} error={missionsError} />
+            // Hiding and the way back are passed as ONE unit - MissionsBoardProps refuses hideEmpty
+            // without onShowEmpty, so a card can never be hidden with no affordance to bring it back.
+            <MissionsBoard
+              sessions={list}
+              missions={missions}
+              error={missionsError}
+              {...(hideEmptyMissions
+                ? ({ hideEmpty: true, onShowEmpty: () => setHideEmptyMissions(false) } as const)
+                : ({ hideEmpty: false } as const))}
+            />
           )
         : pivot === "list"
         ? flatSessions.length > 0 && (
