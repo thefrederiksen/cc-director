@@ -261,7 +261,7 @@ public sealed class GatewayTranscriptionServiceTests : IDisposable
 
         var service = new GatewayTranscriptionService(
             new KeyVault(_vaultPath),
-            dictionaryProvider: () => throw new InvalidDataException("dictionary file is malformed"),
+            dictionaryProvider: _ => throw new InvalidDataException("dictionary file is malformed"),
             http: new HttpClient(new StatusHandler(HttpStatusCode.OK, "{\"text\":\"the raw words\"}")),
             audioArchive: ScratchArchive());
 
@@ -279,10 +279,10 @@ public sealed class GatewayTranscriptionServiceTests : IDisposable
         // dictionary provider must yield the raw text there too, never an exception.
         var service = new GatewayTranscriptionService(
             new KeyVault(_vaultPath),
-            dictionaryProvider: () => throw new InvalidDataException("dictionary file is malformed"),
+            dictionaryProvider: _ => throw new InvalidDataException("dictionary file is malformed"),
             audioArchive: ScratchArchive());
 
-        var outcome = await service.CleanupAsync("the raw words", CancellationToken.None);
+        var outcome = await service.CleanupAsync("the raw words", ct: CancellationToken.None);
 
         Assert.Equal("the raw words", outcome.Text);
         Assert.False(outcome.Applied);
