@@ -101,7 +101,7 @@
                     <Grid ColumnDefinitions="*,Auto">
                         <StackPanel Grid.Column="0" Spacing="3" VerticalAlignment="Center">
                             <TextBlock Text="Root folders" Foreground="#CCCCCC" FontSize="14" FontWeight="SemiBold" />
-                            <TextBlock Text="The directories scanned for repositories. GitHub uses the gh login; Azure DevOps uses az."
+                            <TextBlock Text="The directories scanned locally for repositories. Each root records a provider (GitHub, Azure DevOps, Local Only), shown as a label on the root."
                                        Foreground="#888888" FontSize="11" TextWrapping="Wrap" MaxWidth="560" />
                         </StackPanel>
                         <Button Grid.Column="1" x:Name="AddRootButton" Content="+ Add root folder"
