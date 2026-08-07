@@ -229,6 +229,21 @@ public static class SessionKeyGuard
         // Rename a session (PATCH /sessions/{sid}).
         if (verb == "PATCH" && s.Length == 2 && s[0] == "sessions") return true;
 
+        // Change a mission a session key can already CREATE and READ: its name, its WHY, and whether it
+        // is still live (complete / removed / reopened). PATCH /missions/{mid}.
+        //
+        // This sits exactly alongside the session rename above, and for the same reason: a mission is the
+        // unit of work an agent is on, and an agent that can open one but can never rename it or END it
+        // leaves the mission list growing forever - which is the state the fleet was found in, eleven
+        // missions with several finished days earlier and no way out.
+        //
+        // No wider than what a session key already has. POST /missions (create) and GET /missions (read)
+        // are both allowed above; this is the third verb on the same record, resolved inside the caller's
+        // own tenant by the route itself, which answers 404 for another account's mission exactly as the
+        // read does. It is nowhere near the admission surface this guard exists to protect - device
+        // enrollment, account identity, Director registration.
+        if (verb == "PATCH" && s.Length == 2 && s[0] == "missions") return true;
+
         if (verb == "DELETE")
         {
             // Delete an automation browser.
