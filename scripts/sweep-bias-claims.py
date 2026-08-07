@@ -42,6 +42,28 @@ of being wrong is the most useful thing in its header.
    masked its own hits. It is excluded by path, deliberately and visibly: the exclusion is
    printed on every run. It is the only file excluded for this reason.
 
+WHAT THIS DOES NOT CATCH - READ THIS BEFORE TRUSTING A CLEAN RUN.
+
+THIS IS A NET, NOT A PROOF. It matches known wordings and known shapes. It cannot achieve
+perfect recall against natural language and does not try: the chase was CLOSED deliberately,
+by instruction, while each round was still finding something - not because the holes ran out.
+Known and accepted gaps:
+
+  * Paraphrase that uses neither the vocabulary nor the transfer shape. "The engine already
+    knows our product names because we tell it in advance" says the banned thing and matches
+    nothing here.
+  * A claim spread across two sentences or two lines. Every rule is single-line, so "The
+    glossary is loaded at startup. It goes out with each request." is invisible.
+  * An implication carried by a diagram, an image, a table layout, or a screenshot. Nothing
+    here reads pictures, and a table can imply the design purely by what its columns are.
+  * Any wording nobody has thought of yet. Five review rounds each found a real hole; the
+    sixth would have found one too.
+
+So: A CLEAN RUN MEANS NOTHING MATCHED. It does NOT mean nothing is there. Zero here measures
+the patterns, exactly as a zero-instance count measures the strings it searched for and not the
+world. A human reading the change remains the backstop, and this sweep is only there to stop
+the same wordings coming back unnoticed.
+
 Usage:
     python scripts/sweep-bias-claims.py              sweep the tree
     python scripts/sweep-bias-claims.py --self-test  prove the detector catches known-bad input
@@ -88,7 +110,27 @@ STRICT_CONTEXT = re.compile(
 TRANSFER_VERB = re.compile(
     r"\b(includ(e|es|ing)|send(s|ing)?|sent|pass(es|ing|ed)?|giv(e|es|ing)|gave|given"
     r"|receiv(e|es|ing|ed)|attach(es|ing|ed)?|suppl(y|ies|ying|ied)|upload(s|ing|ed)?"
-    r"|feed(s|ing)?|fed|provid(e|es|ing|ed)|add(s|ing|ed)?|inject(s|ing|ed)?)\b",
+    r"|feed(s|ing)?|fed|provid(e|es|ing|ed)|add(s|ing|ed)?|inject(s|ing|ed)?"
+    # a second sweep of my own detector slipped 12 of 15 attacks past it; these are the verbs
+    # those attacks used. Enumerating verbs will never be complete, which is why CODE_SHAPE
+    # below catches the thing by its structure instead.
+    r"|ship(s|ping|ped)?|bundl(e|es|ing|ed)|post(s|ing|ed)?|populat(e|es|ing|ed)"
+    r"|wir(e|es|ing|ed)|configur(e|es|ing|ed)|carr(y|ies|ying)|carried|travels? with"
+    r"|hand(s|ing|ed)?|embed(s|ding|ded)?|plac(e|es|ing|ed)|put)\b",
+    re.I,
+)
+# The code that would actually reintroduce this: a glossary expression bound to the provider's
+# prompt field. `form.Add(new StringContent(glossary), "prompt")` contains no prose at all and
+# slipped past every prose rule. "dictionary" alone is deliberately NOT a glossary token here -
+# C# is full of Dictionary<string, object>, and including it produced 31 false positives.
+GLOSSARY_TOKEN = re.compile(
+    r"vocabular\w*|glossar\w*|keyterms?|term list|word list|sttprompt|buildsttprompt"
+    r"|dictionary\.vocab\w*|dictation dictionary|dictionary terms",
+    re.I,
+)
+PROMPT_FIELD = re.compile(
+    r"\"prompt\"|'prompt'|\bprompt\s*[:=]|\bprompt (field|parameter|param)\b|initial_prompt"
+    r"|\.Prompt\b",
     re.I,
 )
 TRANSFER_OBJECT = re.compile(
@@ -104,6 +146,29 @@ CLAUSE_BREAK = re.compile(r"[;:,]|\b(but|and|while|whereas|however|though|althou
                           re.I)
 
 
+# A negation does not always prohibit. These two shapes ENDORSE the transfer while wearing a
+# negative, and they are how someone actually argues for rebuilding a rejected design:
+#   "Not sending the dictionary to the provider is a bug"   - negated gerund as the subject of
+#                                                             a sentence calling it a defect
+#   "Never fail to pass the term list to the ASR provider"  - negated failure-to-act
+# Both must be read as claims, never exempted.
+DOUBLE_NEGATIVE = re.compile(
+    r"\b(never|not|n't|no)\b[^.;]{0,40}?\b(fail(s|ing|ed)?|omit(s|ting|ted)?|neglect(s|ing|ed)?"
+    r"|forget(s|ting)?|skip(s|ping|ped)?)\b\s+to\b",
+    re.I,
+)
+ENDORSING_VERDICT = re.compile(
+    r"\b(is|was|would be|remains?)\s+(a\s+|an\s+)?(bug|mistake|error|defect|regression|wrong"
+    r"|broken|oversight|problem|failure|the issue)\b",
+    re.I,
+)
+
+
+def endorses_transfer(line):
+    """The line argues FOR the transfer despite carrying a negation."""
+    return bool(DOUBLE_NEGATIVE.search(line) or ENDORSING_VERDICT.search(line))
+
+
 def negated_transfer(line):
     """True only when EVERY transfer verb on the line is itself negated.
 
@@ -113,6 +178,8 @@ def negated_transfer(line):
     is looked for between the start of the verb's own clause and the verb itself. If even one
     transfer verb is positive, the line states the banned behaviour and is a claim.
     """
+    if endorses_transfer(line):
+        return False        # a negation that advocates the transfer exempts nothing
     verbs = list(TRANSFER_VERB.finditer(line))
     if not verbs:
         return False
@@ -125,7 +192,9 @@ def negated_transfer(line):
 TRANSFER_DEST = re.compile(
     r"\b(speech.to.text|stt|transcriber|transcription request|\bprovider\b|audio upload"
     r"|prompt field|prompt parameter|\basr\b|whisper|speech model|speech engine"
-    r"|transcription (call|api|endpoint|payload|body))\b",
+    r"|transcription (call|api|endpoint|payload|body)"
+    # named engines - "send the keyterms to Deepgram" names no generic destination at all
+    r"|deepgram|assembly ?ai|speechmatics|groq|gpt-4o-transcribe|azure speech|google speech)\b",
     re.I,
 )
 
@@ -142,6 +211,9 @@ def is_claim(line):
     # exemption is scoped twice over: to this tier only (an outright "biased into speech-to-text"
     # still counts whatever else is on the line), and to the transfer PREDICATE (a "not"
     # governing some other verb does not excuse a positive transfer sitting beside it).
+    # Code binding a glossary to the provider's prompt field - the literal regression.
+    if GLOSSARY_TOKEN.search(line) and PROMPT_FIELD.search(line):
+        return True
     if negated_transfer(line):
         return False
     return bool(TRANSFER_VERB.search(line)
@@ -173,7 +245,13 @@ UNRELATED = re.compile(
     r"|fix a known custom vocabulary"
     # lazy construction of the dictation transcriber: "a dictation is sent" is the user
     # speaking, not the dictionary being handed over
-    r"|built the first time a dictation is sent",
+    r"|built the first time a dictation is sent"
+    # naming the two pipeline stages in order - transcribe, THEN clean - which is the correct
+    # design, not the transfer
+    r"|transcribes \+ dictionary-cleans"
+    # sharing one path-resolution helper between the editor and the transcriber wiring; what
+    # is shared is where the file lives, not the file's contents going to a provider
+    r"|dictionary-path resolution with the transcriber wiring",
     re.I,
 )
 # A heading is a reader's entry point: markdown headings, HTML h1-h4, and setext rules.
@@ -239,6 +317,30 @@ DETECTOR_CASES = [
      True, "contrastive 'not just' after a positive transfer"),
     ("The dictionary is not only stored locally; it is sent to the provider",
      True, "'not only ... ; it is sent' - the transfer is positive"),
+    # --- a negation that ENDORSES the transfer: how someone argues FOR rebuilding this ---
+    ("Not sending the dictionary to the provider is a bug",
+     True, "negated gerund called a defect"),
+    ("Never fail to pass the term list to the ASR provider",
+     True, "negated failure-to-act"),
+    # --- verbs and shapes that slipped past a self-attack (12 of 15 got through) ---
+    ("ship the glossary alongside the audio to Whisper", True, "verb: ship"),
+    ("bundle the term list with the transcription request", True, "verb: bundle"),
+    ("post the vocabulary to the STT call", True, "verb: post"),
+    ("populate the prompt field with the dictionary terms", True, "prompt field bound to terms"),
+    ("wire the glossary into the transcription call", True, "verb: wire"),
+    ("configure the ASR request with our term list", True, "verb: configure"),
+    ("AssemblyAI gets the word list with each upload", True, "named engine as destination"),
+    ("send the keyterms to Deepgram on every request", True, "named engine as destination"),
+    ("the dictionary travels with the audio to the provider", True, "verb: travels with"),
+    ("the transcription payload carries our glossary", True, "verb: carries"),
+    # the literal regression, in code, with no prose at all
+    ('form.Add(new StringContent(glossary), "prompt");', True, "code: glossary into prompt field"),
+    ('form.Add(new StringContent(DictionaryLoader.BuildSttPrompt(d)), "prompt");',
+     True, "code: the deleted builder wired back in"),
+    ("prompt: dictionary.vocabulary.join(', ')", True, "code: vocabulary as the prompt"),
+    # ...and code that must NOT trip it
+    ('var map = new Dictionary<string, object> { ["provider"] = provider };',
+     False, "C# Dictionary<> beside a provider variable"),
 ]
 
 
@@ -328,6 +430,14 @@ def sweep(root):
     for rel, why in sorted(EXCLUDE.items()):
         print("excluded:       %s (%s)" % (rel, why))
     print("UNANNOTATED CLAIMS: %d" % total)
+    if not total:
+        # Printed on every clean run on purpose: the number is the easiest thing to quote and
+        # the easiest thing to over-read. It measures the patterns, not the repository.
+        print("\nNOTE: this is a NET, not a proof. A clean run means nothing MATCHED - not that")
+        print("nothing is there. It cannot see paraphrase without the known vocabulary or")
+        print("transfer shape, a claim spread across two lines, an implication carried by a")
+        print("diagram or a table, or wording nobody has thought of. A human reading the change")
+        print("is the backstop. See the limits section in this file's header.")
     return 1 if total else 0
 
 
