@@ -113,12 +113,33 @@ public sealed class MissionStore
             return LoadAll().FirstOrDefault(m => m.MissionId == missionId && OwnedBy(m, tenant));
     }
 
-    /// <summary>Return every Mission <paramref name="tenant"/> owns, oldest first.</summary>
-    public IReadOnlyList<Mission> List(TenantId tenant)
+    /// <summary>
+    /// Return the Missions <paramref name="tenant"/> owns, oldest first.
+    ///
+    /// ACTIVE ONLY BY DEFAULT. A mission that has been completed or removed is history, and every caller
+    /// that wants "what am I working on" wants it left out - which is all of them, until something asks for
+    /// the archive. Pass <paramref name="state"/> to ask for one specific state, or
+    /// <paramref name="includeEnded"/> to get everything.
+    ///
+    /// The default is the safe direction to be wrong in: a caller that has not been taught about states
+    /// shows a shorter, correct list rather than a longer one full of finished work.
+    /// </summary>
+    /// <param name="state">One of <see cref="MissionStates"/> to return only that state, or null.</param>
+    /// <param name="includeEnded">True to return every state. Ignored when <paramref name="state"/> is given.</param>
+    public IReadOnlyList<Mission> List(TenantId tenant, string? state = null, bool includeEnded = false)
     {
         RequireValid(tenant);
+        var wanted = MissionStates.Normalize(state);
         lock (_lock)
-            return LoadAll().Where(m => OwnedBy(m, tenant)).OrderBy(m => m.CreatedAt).ToList();
+        {
+            var mine = LoadAll().Where(m => OwnedBy(m, tenant));
+            if (wanted is not null)
+                mine = mine.Where(m => string.Equals(
+                    MissionStates.Normalize(m.State) ?? MissionStates.Active, wanted, StringComparison.Ordinal));
+            else if (!includeEnded)
+                mine = mine.Where(m => m.IsActive);
+            return mine.OrderBy(m => m.CreatedAt).ToList();
+        }
     }
 
     /// <summary>
@@ -143,6 +164,79 @@ public sealed class MissionStore
             mission.Why = trimmed;
             // A cleared WHY carries no "last set" time - the field is unset, not set-to-empty-at-a-moment.
             mission.WhyUpdatedAt = trimmed.Length == 0 ? null : nowUtc;
+            SaveAll(missions);
+            return mission;
+        }
+    }
+
+    /// <summary>
+    /// Rename <paramref name="tenant"/>'s Mission. Returns the updated Mission, or null when this tenant has
+    /// no such mission - indistinguishable from another tenant's, like every accessor here.
+    ///
+    /// Renaming is SAFE because nothing keys off the name: sessions attach by <see cref="Mission.MissionId"/>,
+    /// the Cockpit groups by it, and the WHY is a field on this record. That was not true until the WHY moved
+    /// here - it used to live in a table keyed by the lower-cased name, and this method would have silently
+    /// orphaned it. The name is display text, and this is the method that makes that literal.
+    /// </summary>
+    /// <exception cref="ArgumentException">The new name is null, empty, or whitespace.</exception>
+    public Mission? Rename(TenantId tenant, Guid missionId, string missionName)
+    {
+        RequireValid(tenant);
+        if (string.IsNullOrWhiteSpace(missionName))
+            throw new ArgumentException("missionName is required", nameof(missionName));
+
+        var trimmed = missionName.Trim();
+        FileLog.Write($"[MissionStore] Rename: tenant={tenant.ToLogString()} mission={missionId} " +
+                      $"name=\"{trimmed}\"");
+        lock (_lock)
+        {
+            var missions = LoadAll();
+            var mission = missions.FirstOrDefault(m => m.MissionId == missionId && OwnedBy(m, tenant));
+            if (mission is null)
+                return null;
+
+            mission.MissionName = trimmed;
+            SaveAll(missions);
+            return mission;
+        }
+    }
+
+    /// <summary>
+    /// End (or reopen) <paramref name="tenant"/>'s Mission by setting its <see cref="Mission.State"/> to one
+    /// of <see cref="MissionStates"/>. Returns the updated Mission, or null when this tenant has no such
+    /// mission.
+    ///
+    /// REMOVED IS A SOFT DELETE - the record stays on disk. Two concrete reasons, not squeamishness: a
+    /// mission number must never be reused, so the row has to keep holding its number; and sessions may
+    /// still carry this mission id, so a vanished record would leave clients showing an attachment they
+    /// cannot resolve. Actually erasing rows is a separate purge, not this verb.
+    ///
+    /// Setting the state it already has is a no-op that still returns the mission, so a caller repeating
+    /// itself gets a success rather than a confusing failure.
+    /// </summary>
+    /// <exception cref="ArgumentException">The state is not one of the three.</exception>
+    public Mission? SetState(TenantId tenant, Guid missionId, string state, DateTimeOffset nowUtc)
+    {
+        RequireValid(tenant);
+        var normalized = MissionStates.Normalize(state)
+            ?? throw new ArgumentException(
+                $"state must be one of: {MissionStates.Active}, {MissionStates.Complete}, {MissionStates.Removed}",
+                nameof(state));
+
+        FileLog.Write($"[MissionStore] SetState: tenant={tenant.ToLogString()} mission={missionId} " +
+                      $"state={normalized}");
+        lock (_lock)
+        {
+            var missions = LoadAll();
+            var mission = missions.FirstOrDefault(m => m.MissionId == missionId && OwnedBy(m, tenant));
+            if (mission is null)
+                return null;
+
+            if (string.Equals(mission.State, normalized, StringComparison.Ordinal))
+                return mission;
+
+            mission.State = normalized;
+            mission.StateChangedAt = nowUtc;
             SaveAll(missions);
             return mission;
         }

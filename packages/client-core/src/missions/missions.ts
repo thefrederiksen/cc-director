@@ -25,6 +25,12 @@ export interface MissionDto {
   why?: string | null;
   /** When the WHY was last set (ISO-8601 UTC), or null if never. */
   whyUpdatedAt?: string | null;
+  /** "active", "complete", or "removed". Absent from an older Gateway, which reads as active.
+   *  `listMissions` returns only active missions unless asked otherwise, so this is "active" on every
+   *  mission the default view draws - it matters when asking for the archive. */
+  state?: string | null;
+  /** When the state last changed (ISO-8601 UTC), or null while it has only ever been active. */
+  stateChangedAt?: string | null;
 }
 
 /**

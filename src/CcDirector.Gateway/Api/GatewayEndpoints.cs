@@ -330,14 +330,30 @@ internal static class GatewayEndpoints
             // #1039: the list is the caller's OWN missions. It used to be missions.List() - every account's
             // missions, served to every account, on one shared hosted store. A request that resolves to no
             // tenant is DENIED (403), never served the Local partition.
-            app.MapGet("/missions", (HttpContext ctx) =>
+            // ACTIVE ONLY by default. ?state=complete|removed|active returns exactly that state, and
+            // ?state=all returns every one. An existing caller that knows nothing about states gets a
+            // shorter, correct list rather than one padded with finished work - the safe direction to be
+            // wrong in, and what every current caller actually wants.
+            app.MapGet("/missions", (HttpContext ctx, string? state) =>
             {
                 var tenant = ResolveReadTenant(ctx, tenantBoundary);
                 if (tenant is null)
                     return Results.Json(new { error = "no tenant is bound to this request" },
                         statusCode: StatusCodes.Status403Forbidden);
 
-                return Results.Json(missions.List(tenant.Value).Select(ToMissionDto).ToList());
+                var wanted = (state ?? "").Trim().ToLowerInvariant();
+                var all = wanted == "all";
+                if (!all && wanted.Length > 0 && Core.Sessions.MissionStates.Normalize(wanted) is null)
+                    return Results.BadRequest(new
+                    {
+                        error = "state must be one of: active, complete, removed, all",
+                    });
+
+                var list = missions.List(
+                    tenant.Value,
+                    state: all || wanted.Length == 0 ? null : wanted,
+                    includeEnded: all);
+                return Results.Json(list.Select(ToMissionDto).ToList());
             });
 
             // #1039: resolve INSIDE the caller's own tenant. A mission id that belongs to another account
@@ -399,19 +415,74 @@ internal static class GatewayEndpoints
 
                 // Nothing to change is a client mistake worth naming, not a silent success that looks like
                 // the edit was applied.
-                if (req?.Why is null)
-                    return Results.BadRequest(new { error = "why is required" });
+                if (req is null || (req.Why is null && req.MissionName is null && req.State is null))
+                    return Results.BadRequest(new { error = "one of why, missionName or state is required" });
 
-                var updated = missions.SetWhy(tenant.Value, missionId, req.Why, DateTimeOffset.UtcNow);
+                // Reject a blank NAME up front rather than storing one: a mission nobody can refer to is
+                // not a rename, it is a broken record. (A blank WHY is different - that is the clear path.)
+                if (req.MissionName is not null && string.IsNullOrWhiteSpace(req.MissionName))
+                    return Results.BadRequest(new { error = "missionName cannot be blank" });
+
+                var wantedState = req.State is null ? null : Core.Sessions.MissionStates.Normalize(req.State);
+                if (req.State is not null && wantedState is null)
+                    return Results.BadRequest(new
+                    {
+                        error = "state must be one of: active, complete, removed",
+                    });
+
+                var now = DateTimeOffset.UtcNow;
+                Core.Sessions.Mission? updated = null;
+
+                if (req.Why is not null)
+                    updated = missions.SetWhy(tenant.Value, missionId, req.Why, now);
+
+                if (req.MissionName is not null)
+                    updated = missions.Rename(tenant.Value, missionId, req.MissionName) ?? updated;
+
+                if (wantedState is not null)
+                    updated = missions.SetState(tenant.Value, missionId, wantedState, now) ?? updated;
+
+                // Every accessor above answers null for BOTH an unknown mission and another tenant's, so a
+                // null here is a 404 - the same answer either way, and the id cannot be probed.
                 if (updated is null)
                 {
                     FileLog.Write($"[GatewayEndpoints] PATCH /missions/{mid}: unknown to this tenant");
                     return Results.NotFound(new { error = "mission not found" });
                 }
 
-                FileLog.Write($"[GatewayEndpoints] PATCH /missions/{mid}: why " +
-                              (updated.Why.Length == 0 ? "cleared" : "set"));
-                return Results.Json(ToMissionDto(updated));
+                var result = new MissionPatchResultDto { Mission = ToMissionDto(updated) };
+
+                // ===== ENDING A MISSION ALSO ENDS ITS WORKFLOW RUN =====
+                //
+                // A Mission is also a RUN of the built-in "mission" workflow. Leaving the run open while the
+                // mission is finished would leave the fleet governed by conduct for work that is over, and
+                // would keep it in every "what is still running" answer the run store gives.
+                //
+                // THE TRANSITION TABLE IS REAL AND HAS TO BE OBEYED. A run goes
+                // created -> active -> succeeded, so "complete" cannot be applied to a run still sitting at
+                // created in one move. Every mission run on this fleet IS still at created, because nothing
+                // has ever advanced one - so the common case is precisely the one that needs two steps. The
+                // intermediate move is not a fiction: sessions really were seated on that run and it really
+                // was in use; the transition was simply never recorded.
+                //
+                // A run that cannot be advanced does NOT block the ending. The mission's own state is the
+                // primary fact and it is already stored; the run is a second store. But the caller is TOLD,
+                // in the same shape MissionAttachResultDto reports a seat, because only the Gateway can see
+                // what happened here and a caller told nothing would report a clean ending it cannot vouch for.
+                if (wantedState is Core.Sessions.MissionStates.Complete or Core.Sessions.MissionStates.Removed
+                    && workflowRuns is not null)
+                {
+                    var terminal = wantedState == Core.Sessions.MissionStates.Complete
+                        ? WorkflowRunStatus.Succeeded
+                        : WorkflowRunStatus.Abandoned;
+                    result.Note = EndMissionRun(workflowRuns, missionId, terminal);
+                }
+
+                FileLog.Write($"[GatewayEndpoints] PATCH /missions/{mid}: " +
+                              $"why={(req.Why is null ? "unchanged" : updated.Why.Length == 0 ? "cleared" : "set")} " +
+                              $"name={(req.MissionName is null ? "unchanged" : "renamed")} " +
+                              $"state={updated.State}");
+                return Results.Json(result);
             });
 
             FileLog.Write("[GatewayEndpoints] mapped Gateway-native /missions routes");
@@ -3963,7 +4034,51 @@ internal static class GatewayEndpoints
         MissionName = m.MissionName,
         Why = m.Why,
         WhyUpdatedAt = m.WhyUpdatedAt,
+        State = Core.Sessions.MissionStates.Normalize(m.State) ?? Core.Sessions.MissionStates.Active,
+        StateChangedAt = m.StateChangedAt,
     };
+
+    /// <summary>
+    /// Drive a mission's workflow run to <paramref name="terminal"/> when its mission ends. Returns a
+    /// sentence for the caller when there is something to say, or null when the outcome speaks for itself.
+    ///
+    /// Walks created -> active -> terminal where needed, because the run store enforces its transition
+    /// table and refuses to jump straight from created to succeeded. That is the ordinary case here, not an
+    /// edge one: no mission run on this fleet has ever left created.
+    ///
+    /// Never throws. Ending the mission is the primary fact and is already persisted by the time this runs;
+    /// a run that will not advance is reported, not escalated into a failed request that would leave the
+    /// caller believing the ending did not happen when it did.
+    /// </summary>
+    private static string? EndMissionRun(Workflows.WorkflowRunStore workflowRuns, Guid missionId, string terminal)
+    {
+        try
+        {
+            var run = workflowRuns.List(missionId: missionId, limit: 1).FirstOrDefault();
+            if (run is null)
+                return "This mission has no workflow run of its own, so there was no run to end.";
+
+            if (WorkflowRunStatus.Terminal.Contains(run.Status, StringComparer.Ordinal))
+                return null;   // already ended; nothing to say
+
+            // The table allows created -> active and active -> succeeded/abandoned, but not created ->
+            // succeeded. Step through when we have to.
+            if (string.Equals(run.Status, WorkflowRunStatus.Created, StringComparison.Ordinal)
+                && !string.Equals(terminal, WorkflowRunStatus.Abandoned, StringComparison.Ordinal))
+            {
+                workflowRuns.Patch(run.Id, new PatchWorkflowRunRequest { Status = WorkflowRunStatus.Active });
+            }
+
+            workflowRuns.Patch(run.Id, new PatchWorkflowRunRequest { Status = terminal });
+            return null;
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[GatewayEndpoints] EndMissionRun({missionId} -> {terminal}) FAILED: {ex.Message}");
+            return "The mission was ended, but its workflow run could not be closed with it - "
+                 + "it will still appear among the running workflow runs.";
+        }
+    }
 
     /// <summary>
     /// The hosted refusal payload for POST /shutdown (production-readiness B2). Validated on construction, so a
