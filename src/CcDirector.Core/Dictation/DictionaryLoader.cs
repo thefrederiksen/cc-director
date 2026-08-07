@@ -68,18 +68,19 @@ public sealed class DictionaryLoader : IDisposable
         get { lock (_gate) return _current; }
     }
 
-    /// <summary>
-    /// Packs the vocabulary into a string suitable for the OpenAI
-    /// transcription <c>prompt</c> parameter. Stays under the practical
-    /// ~244 token budget by truncating long lists.
-    /// </summary>
-    public static string BuildSttPrompt(DictationDictionary dict)
-    {
-        if (dict.Vocabulary.Count == 0)
-            return "";
-        return "Glossary of names and terms used by the speaker: "
-               + string.Join(", ", dict.Vocabulary) + ".";
-    }
+    // DO NOT ADD A METHOD HERE THAT PACKS THE VOCABULARY INTO A SPEECH-TO-TEXT PROMPT.
+    //
+    // A dead BuildSttPrompt lived at this spot and was deleted deliberately (issue 2481).
+    // DevThrottle never sends vocabulary, glossaries, or any other steering hint to the
+    // speech-to-text provider. Dictation is two strict stages: transcribe the raw audio as
+    // faithfully as possible, audio only and no hints, and then run a separate code-driven
+    // correction pass that replaces the listed words on the finished transcript. Priming the
+    // transcriber makes it steer toward the suggested words, which changes wording and
+    // sentence structure and corrupts the record of what was actually said. Preserving the
+    // speaker's meaning is paramount, and this was learned from real problems.
+    //
+    // So this is a rejected approach, not a missing feature. The vocabulary is live and is
+    // read by the correction pass; it must never reach the transcriber.
 
     private void OnFileChanged(object _, FileSystemEventArgs __)
     {

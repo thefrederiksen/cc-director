@@ -5,6 +5,15 @@ Reporter: the maintainer (via assistant session in a private workspace)
 Component: CcDirector.Gateway recording/transcription pipeline + dictation dictionary
 Severity: medium (functional - corrections never take effect on the path the user actually uses)
 
+> HISTORICAL RECORD, 2026-05-25. Kept for the history; do not work from it. The class it
+> describes, `OpenAiRecordingTranscriber`, no longer exists, and the parts below that talk
+> about a speech-to-text bias prompt describe an approach the owner has since REJECTED
+> (issue 2481, 2026-08-07). Vocabulary and steering hints are never sent to the transcriber:
+> it gets audio only, and the listed words are substituted afterwards by a separate pass over
+> the finished transcript. `DictionaryLoader.BuildSttPrompt` and its `_sttPrompt` field are
+> deleted. Ignore suggested fix A's second bullet, and the "the correct lever is the STT
+> `vocabulary` bias" line - there is no such lever and there is not going to be one.
+
 ## Symptom (what the user experienced)
 
 The mobile voice unit keeps mishearing the company name "acmeflow" and the user

@@ -128,25 +128,10 @@ public sealed class DictionaryLoaderTests
         Assert.True(dict.CommonMistranscriptions.ContainsKey("acmeflow"));
     }
 
-    [Fact]
-    public void BuildSttPrompt_EmptyVocab_ReturnsEmpty()
-    {
-        Assert.Equal("", DictionaryLoader.BuildSttPrompt(DictationDictionary.Empty));
-    }
-
-    [Fact]
-    public void BuildSttPrompt_PacksTermsCommaSeparated()
-    {
-        var dict = new DictationDictionary(
-            new[] { "acmeflow", "CenCon", "ConPTY" },
-            new Dictionary<string, IReadOnlyList<string>>(),
-            new Dictionary<string, DictationProfile>());
-        var prompt = DictionaryLoader.BuildSttPrompt(dict);
-        Assert.Contains("acmeflow", prompt);
-        Assert.Contains("CenCon", prompt);
-        Assert.Contains("ConPTY", prompt);
-        Assert.Contains("Glossary", prompt);
-    }
+    // The two BuildSttPrompt tests that stood here were deleted with the method itself
+    // (issue 2481). Vocabulary is never packed into a speech-to-text prompt: the transcriber
+    // is given audio only, and the listed words are substituted afterwards by the correction
+    // pass. There is nothing here to test because there is nothing here to build.
 
     [Fact]
     public void Serialize_RoundTrips_Vocabulary_Patterns_AndProfiles()
