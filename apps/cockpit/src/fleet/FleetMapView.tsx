@@ -1,6 +1,7 @@
-import { createContext, useCallback, useContext, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { type SessionDto } from "@devthrottle/client-core/api/client";
+import { listMissions, type MissionDto } from "@devthrottle/client-core/missions/missions";
 import { dotColor, dotHex, effectiveColor, stateLabel } from "@devthrottle/client-core/sessions/ordering";
 import {
   reachabilityFor,
@@ -217,11 +218,42 @@ export function FleetMapView() {
   }, [list]);
   const redCount = list.filter((s) => effectiveColor(s) === "red").length;
   const workingCount = list.filter((s) => effectiveColor(s) === "blue").length;
+  // The Gateway's mission RECORDS, loaded when the Missions pivot is opened. They are what make a mission
+  // with nobody on it yet appear at all - the roster alone can only reveal missions that already have a
+  // session attached. Missions change rarely, so this is a one-shot read per pivot entry rather than a
+  // poll; a mission attached while the page is open still renders, because the grouping falls back to the
+  // name cached on the session for a mission id it has no record for.
+  const [missions, setMissions] = useState<MissionDto[]>([]);
+  const [missionsError, setMissionsError] = useState<string | null>(null);
+  useEffect(() => {
+    if (pivot !== "mission") return;
+    let cancelled = false;
+    // Drop any previous failure before re-reading, so a banner from an earlier visit cannot survive next to
+    // a list that has since loaded cleanly.
+    setMissionsError(null);
+    listMissions()
+      .then((m) => {
+        if (cancelled) return;
+        setMissions(m);
+        setMissionsError(null);
+      })
+      .catch((e: unknown) => {
+        // Loudly, not silently: without the records this board can still show every mission that has a
+        // session on it, but it CANNOT show the empty ones - and a short list that looks complete is
+        // exactly the kind of quiet wrong answer this screen was rebuilt to stop telling.
+        if (cancelled) return;
+        setMissionsError(e instanceof Error ? e.message : "The mission list could not be loaded.");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [pivot]);
+
   // Mission / standalone tally, shown in the header only while the Missions pivot is active so it
   // carries the count the standalone Missions page used to show. Grouped only when needed.
   const missionStats = useMemo(
-    () => (pivot === "mission" ? missionCounts(list) : null),
-    [pivot, list],
+    () => (pivot === "mission" ? missionCounts(list, missions) : null),
+    [pivot, list, missions],
   );
 
   return (
@@ -333,7 +365,12 @@ export function FleetMapView() {
         )}
 
       {pivot === "mission"
-        ? list.length > 0 && <MissionsBoard sessions={list} />
+        ? // The board also mounts on a mission-load FAILURE with nothing else to show: otherwise the one
+          // case where we know least - no sessions and no mission list - is the case that renders the most
+          // confident answer, a silent "no missions at all".
+          (list.length > 0 || missions.length > 0 || missionsError !== null) && (
+            <MissionsBoard sessions={list} missions={missions} error={missionsError} />
+          )
         : pivot === "list"
         ? flatSessions.length > 0 && (
             <FleetList

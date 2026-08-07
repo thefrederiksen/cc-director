@@ -1,141 +1,204 @@
 import { describe, expect, it } from "vitest";
 import type { SessionDto } from "@devthrottle/client-core/api/client";
-import { groupByMission, parseMissionName, stripBracketTag } from "./missionGrouping";
+import type { MissionDto } from "@devthrottle/client-core/missions/missions";
+import { displayRole, groupByMission } from "./missionGrouping";
 
-// Phase 1a of the Mission Screen (issue #1405) derives missions purely from the session name. These
-// lock the two rules the Architect pinned before it was built: strip a leading bracket tag, and match
-// on the LAST " - Role" - plus the non-role dash (#108 "mindzieWeb - remove Ask Mindzie") staying
-// Standalone rather than becoming a bogus "mindzieWeb" mission.
+// The Missions board groups by the mission a session is ATTACHED to (SessionDto.missionId), with the role
+// the Gateway resolved (SessionDto.sessionRole). These tests lock that, and in particular they lock the
+// regression that made the rewrite necessary: this module used to derive missions by pattern-matching the
+// session NAME for "<Mission> - <Role>", so an attached session whose name did not fit the convention fell
+// to Standalone and no amount of attaching could move it. See the first test in `groupByMission`.
 
-describe("stripBracketTag", () => {
-  it("removes one leading bracket tag and its trailing space", () => {
-    expect(stripBracketTag("[Moving Started] Gateway Cleanup - Manager")).toBe(
-      "Gateway Cleanup - Manager",
-    );
-    expect(stripBracketTag("[moving] Gateway Connection - Architect")).toBe(
-      "Gateway Connection - Architect",
-    );
-  });
+const M_RELEASE: MissionDto = { missionId: "m-release", missionName: "Release 2.0.1" };
+const M_EMPTY: MissionDto = { missionId: "m-empty", missionName: "Website truth report" };
 
-  it("leaves a name without a leading tag untouched", () => {
-    expect(stripBracketTag("Car Mode - Architect")).toBe("Car Mode - Architect");
-  });
-
-  it("only strips a LEADING bracket - brackets elsewhere are kept", () => {
-    expect(stripBracketTag("Car Mode [beta] - Manager")).toBe("Car Mode [beta] - Manager");
-  });
-});
-
-describe("parseMissionName", () => {
-  it("parses <Mission> - <Role> for each known role, case-insensitively", () => {
-    expect(parseMissionName("Gateway Cleanup - Manager")).toEqual({
-      mission: "Gateway Cleanup",
-      role: "Manager",
-    });
-    expect(parseMissionName("Car Mode - architect")).toEqual({
-      mission: "Car Mode",
-      role: "Architect",
-    });
-    expect(parseMissionName("Docs - WORKER")).toEqual({ mission: "Docs", role: "Worker" });
-  });
-
-  it("strips a leading bracket tag before parsing (the move markers)", () => {
-    expect(parseMissionName("[Moving Started] Gateway Cleanup - Manager")).toEqual({
-      mission: "Gateway Cleanup",
-      role: "Manager",
-    });
-    expect(parseMissionName("[moving] Gateway Connection - Architect")).toEqual({
-      mission: "Gateway Connection",
-      role: "Architect",
-    });
-  });
-
-  it("matches the LAST ' - Role', so the mission keeps its own inner dash", () => {
-    expect(parseMissionName("Foo - Bar - Manager")).toEqual({
-      mission: "Foo - Bar",
-      role: "Manager",
-    });
-  });
-
-  it("returns null for a trailing token that is not a known role (stays Standalone)", () => {
-    // The live #108 case: a dash, but the trailing text is not a role.
-    expect(parseMissionName("mindzieWeb - remove Ask Mindzie")).toBeNull();
-  });
-
-  it("returns null when there is no ' - ' separator at all", () => {
-    expect(parseMissionName("Mac Cleanup")).toBeNull();
-    expect(parseMissionName("Working Mac")).toBeNull();
-  });
-
-  it("returns null for empty, whitespace, or missing names", () => {
-    expect(parseMissionName("")).toBeNull();
-    expect(parseMissionName("   ")).toBeNull();
-    expect(parseMissionName(null)).toBeNull();
-    expect(parseMissionName(undefined)).toBeNull();
-  });
-
-  it("returns null when the mission part is empty (only a role after the dash)", () => {
-    expect(parseMissionName(" - Manager")).toBeNull();
-  });
-});
-
-// A minimal SessionDto factory for the grouping tests - only the fields the parser and sort read.
-function session(name: string, number: number, sessionId: string): SessionDto {
-  return { name, number, sessionId } as unknown as SessionDto;
+// A minimal SessionDto factory - only the fields the grouping and the sort read.
+function session(
+  fields: {
+    name: string;
+    number: number;
+    sessionId: string;
+    missionId?: string | null;
+    missionName?: string | null;
+    sessionRole?: string | null;
+  },
+): SessionDto {
+  return fields as unknown as SessionDto;
 }
 
+describe("displayRole", () => {
+  it("returns the Gateway's role in canonical casing", () => {
+    expect(displayRole(session({ name: "a", number: 1, sessionId: "a", sessionRole: "architect" })))
+      .toBe("Architect");
+    expect(displayRole(session({ name: "a", number: 1, sessionId: "a", sessionRole: "MANAGER" })))
+      .toBe("Manager");
+    expect(displayRole(session({ name: "a", number: 1, sessionId: "a", sessionRole: "Worker" })))
+      .toBe("Worker");
+  });
+
+  it("treats 'Standalone' as no role, not as a role", () => {
+    expect(displayRole(session({ name: "a", number: 1, sessionId: "a", sessionRole: "Standalone" })))
+      .toBeNull();
+  });
+
+  it("returns null when the Gateway sent no role", () => {
+    expect(displayRole(session({ name: "a", number: 1, sessionId: "a" }))).toBeNull();
+    expect(displayRole(session({ name: "a", number: 1, sessionId: "a", sessionRole: "  " }))).toBeNull();
+  });
+
+  it("passes an unknown role through rather than overruling the Gateway", () => {
+    expect(displayRole(session({ name: "a", number: 1, sessionId: "a", sessionRole: "Inspector" })))
+      .toBe("Inspector");
+  });
+});
+
 describe("groupByMission", () => {
-  it("groups members under their mission and puts non-members in Standalone", () => {
-    const { missions, standalone } = groupByMission([
-      session("Gateway Cleanup - Manager", 102, "a"),
-      session("Gateway Cleanup - Architect", 107, "b"),
-      session("mindzieWeb - remove Ask Mindzie", 108, "c"),
-      session("Working Mac", 101, "d"),
-    ]);
+  // THE REGRESSION. Every one of these sessions is attached to the same mission; only one is NAMED in the
+  // old "<Mission> - <Role>" convention. Under the name parser the other four fell to Standalone, which is
+  // exactly what the owner saw: a mission reading "1 session" with its other members listed below it as
+  // unrelated work.
+  it("groups every attached session, whatever it is called", () => {
+    const { missions, standalone } = groupByMission(
+      [
+        session({ name: "Release 2.0.1 - Architect", number: 124, sessionId: "a",
+          missionId: "m-release", sessionRole: "Architect" }),
+        session({ name: "fix: 2481 delete bias path", number: 113, sessionId: "b",
+          missionId: "m-release", sessionRole: "Worker" }),
+        session({ name: "fix: 2487 wingman card", number: 114, sessionId: "c",
+          missionId: "m-release", sessionRole: "Worker" }),
+        session({ name: "fix: 2483 dictionary fail-open", number: 117, sessionId: "d",
+          missionId: "m-release", sessionRole: "Worker" }),
+        session({ name: "fix: 2482 tenant glossary", number: 122, sessionId: "e",
+          missionId: "m-release", sessionRole: "Worker" }),
+      ],
+      [M_RELEASE],
+    );
 
     expect(missions).toHaveLength(1);
-    expect(missions[0].name).toBe("Gateway Cleanup");
-    expect(missions[0].members.map((m) => m.role)).toEqual(["Architect", "Manager"]);
-    expect(standalone.map((s) => s.number)).toEqual([101, 108]);
+    expect(missions[0].name).toBe("Release 2.0.1");
+    expect(missions[0].members).toHaveLength(5);
+    expect(standalone).toHaveLength(0);
   });
 
-  it("sorts missions alphabetically (case-insensitive) and groups case-insensitively", () => {
-    const { missions } = groupByMission([
-      session("Zebra - Manager", 3, "a"),
-      session("apple - Manager", 1, "b"),
-      session("APPLE - Architect", 2, "c"),
-    ]);
+  it("puts a session attached to no mission in Standalone", () => {
+    const { missions, standalone } = groupByMission(
+      [
+        session({ name: "Release 2.0.1 - Architect", number: 124, sessionId: "a",
+          missionId: "m-release", sessionRole: "Architect" }),
+        session({ name: "Working Mac", number: 101, sessionId: "b" }),
+        session({ name: "Tidy branches", number: 102, sessionId: "c", missionId: "   " }),
+      ],
+      [M_RELEASE],
+    );
 
-    expect(missions.map((m) => m.name)).toEqual(["apple", "Zebra"]);
-    // "apple" and "APPLE" collapse into one mission (display = first seen).
-    expect(missions[0].members).toHaveLength(2);
+    expect(missions).toHaveLength(1);
+    expect(missions[0].members).toHaveLength(1);
+    expect(standalone.map((s) => s.number)).toEqual([101, 102]);
   });
 
-  it("orders members Architect, Manager, Worker then by number", () => {
-    const { missions } = groupByMission([
-      session("Big - Worker", 50, "a"),
-      session("Big - Manager", 20, "b"),
-      session("Big - Architect", 30, "c"),
-      session("Big - Worker", 10, "d"),
-    ]);
+  // A name that LOOKS like the old convention must not create a mission - the attachment is the only thing
+  // that decides. This is the guard against the parser creeping back in.
+  it("never invents a mission from a session's name", () => {
+    const { missions, standalone } = groupByMission(
+      [session({ name: "Gateway Cleanup - Manager", number: 130, sessionId: "a" })],
+      [],
+    );
 
-    expect(missions[0].members.map((m) => `${m.role}:${m.session.number}`)).toEqual([
+    expect(missions).toHaveLength(0);
+    expect(standalone.map((s) => s.number)).toEqual([130]);
+  });
+
+  it("shows a mission with no sessions attached to it yet", () => {
+    const { missions } = groupByMission([], [M_RELEASE, M_EMPTY]);
+
+    expect(missions.map((m) => m.name)).toEqual(["Release 2.0.1", "Website truth report"]);
+    expect(missions[0].members).toHaveLength(0);
+  });
+
+  // The mission records and the session roster are two different reads, and the mission stores are already
+  // observed to disagree. An attachment we cannot resolve to a record is still an attachment.
+  it("keeps a session whose mission is not in the record list, using the cached name", () => {
+    const { missions, standalone } = groupByMission(
+      [
+        session({ name: "worker one", number: 140, sessionId: "a",
+          missionId: "m-ghost", missionName: "BPM Studio QA cleanup", sessionRole: "Worker" }),
+      ],
+      [M_RELEASE],
+    );
+
+    expect(standalone).toHaveLength(0);
+    const ghost = missions.find((m) => m.key === "m-ghost");
+    expect(ghost?.name).toBe("BPM Studio QA cleanup");
+    expect(ghost?.fromSessionOnly).toBe(true);
+    expect(missions.find((m) => m.key === "m-release")?.fromSessionOnly).toBe(false);
+  });
+
+  it("prefers the record's name over the copy cached on the session (which a rename would stale)", () => {
+    const { missions } = groupByMission(
+      [
+        session({ name: "w", number: 1, sessionId: "a",
+          missionId: "m-release", missionName: "Release 2.0.0 (old name)" }),
+      ],
+      [M_RELEASE],
+    );
+
+    expect(missions[0].name).toBe("Release 2.0.1");
+  });
+
+  it("joins the roster to the records regardless of id casing", () => {
+    const { missions } = groupByMission(
+      [session({ name: "w", number: 1, sessionId: "a", missionId: "M-RELEASE" })],
+      [M_RELEASE],
+    );
+
+    expect(missions).toHaveLength(1);
+    expect(missions[0].members).toHaveLength(1);
+  });
+
+  it("orders members Architect, Manager, Worker, then no-role, then by number", () => {
+    const { missions } = groupByMission(
+      [
+        session({ name: "d", number: 50, sessionId: "a", missionId: "m-release", sessionRole: "Worker" }),
+        session({ name: "b", number: 20, sessionId: "b", missionId: "m-release", sessionRole: "Manager" }),
+        session({ name: "c", number: 30, sessionId: "c", missionId: "m-release", sessionRole: "Architect" }),
+        session({ name: "a", number: 10, sessionId: "d", missionId: "m-release", sessionRole: "Worker" }),
+        session({ name: "e", number: 5, sessionId: "e", missionId: "m-release" }),
+      ],
+      [M_RELEASE],
+    );
+
+    expect(missions[0].members.map((m) => `${m.role ?? "-"}:${m.session.number}`)).toEqual([
       "Architect:30",
       "Manager:20",
       "Worker:10",
       "Worker:50",
+      "-:5",
     ]);
   });
 
-  it("groups mid-move sessions with their mission (bracket tag stripped)", () => {
-    const { missions, standalone } = groupByMission([
-      session("[Moving Started] Gateway Cleanup - Manager", 115, "a"),
-      session("Gateway Cleanup - Architect", 107, "b"),
-    ]);
+  it("sorts missions alphabetically by display name, case-insensitively", () => {
+    const { missions } = groupByMission(
+      [],
+      [
+        { missionId: "m3", missionName: "Zebra" },
+        { missionId: "m1", missionName: "apple" },
+        { missionId: "m2", missionName: "Banya" },
+      ],
+    );
 
-    expect(standalone).toHaveLength(0);
-    expect(missions).toHaveLength(1);
-    expect(missions[0].name).toBe("Gateway Cleanup");
-    expect(missions[0].members).toHaveLength(2);
+    expect(missions.map((m) => m.name)).toEqual(["apple", "Banya", "Zebra"]);
+  });
+
+  it("labels a mission whose name is unknown rather than rendering a blank card", () => {
+    const { missions } = groupByMission(
+      [session({ name: "w", number: 1, sessionId: "a", missionId: "m-x" })],
+      [],
+    );
+
+    expect(missions[0].name).toBe("(unnamed mission)");
+  });
+
+  it("returns an empty fleet unchanged", () => {
+    expect(groupByMission([], [])).toEqual({ missions: [], standalone: [] });
   });
 });
