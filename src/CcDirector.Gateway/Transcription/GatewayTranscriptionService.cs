@@ -34,7 +34,7 @@ namespace CcDirector.Gateway.Transcription;
 public sealed class GatewayTranscriptionService
 {
     private readonly KeyVault _vault;
-    private readonly Func<DictationDictionary> _dictionaryProvider;
+    private readonly Func<CcDirector.Core.Tenancy.TenantId, DictationDictionary> _dictionaryProvider;
     private readonly Func<TranscriptionMode> _modeProvider;
     private readonly HttpClient? _http;
     private readonly string _cleanupModel;
@@ -43,9 +43,12 @@ public sealed class GatewayTranscriptionService
     private readonly TranscriptStore? _transcripts;
 
     /// <param name="vault">The Gateway key vault - the single store for the transcription key.</param>
-    /// <param name="dictionaryProvider">Supplies the live dictation dictionary the corrector uses;
-    /// invoked fresh per cleanup so a glossary edit takes effect on the next transcription. Defaults
-    /// to loading the shared dictionary file from disk.</param>
+    /// <param name="dictionaryProvider">Supplies the live dictation dictionary the corrector uses FOR
+    /// A GIVEN TENANT; invoked fresh per cleanup so a glossary edit takes effect on the next
+    /// transcription. Defaults to <see cref="TenantGlossary.Load"/>, the single owner of where a
+    /// tenant's glossary lives - the Local tenant reads the shared flat file (self-host, unchanged)
+    /// and every other tenant reads its own per-tenant file, so a hosted user's dictionary edits bias
+    /// THEIR next dictation and nobody else's (issue #2482).</param>
     /// <param name="modeProvider">Supplies the current transcription mode; invoked fresh per resolve
     /// so a mode change in the Cockpit takes effect with no restart. Defaults to
     /// <see cref="TranscriptionModeConfig.Get"/>.</param>
@@ -66,7 +69,7 @@ public sealed class GatewayTranscriptionService
     /// diagnostic aid and never gates a turn.</param>
     public GatewayTranscriptionService(
         KeyVault vault,
-        Func<DictationDictionary>? dictionaryProvider = null,
+        Func<CcDirector.Core.Tenancy.TenantId, DictationDictionary>? dictionaryProvider = null,
         Func<TranscriptionMode>? modeProvider = null,
         HttpClient? http = null,
         string? cleanupModel = null,
@@ -75,7 +78,7 @@ public sealed class GatewayTranscriptionService
         TranscriptStore? transcripts = null)
     {
         _vault = vault ?? throw new ArgumentNullException(nameof(vault));
-        _dictionaryProvider = dictionaryProvider ?? (() => DictionaryLoader.LoadFromDisk(DictionaryPath()));
+        _dictionaryProvider = dictionaryProvider ?? TenantGlossary.Load;
         _modeProvider = modeProvider ?? TranscriptionModeConfig.Get;
         _http = http;
         _cleanupModel = string.IsNullOrWhiteSpace(cleanupModel) ? CleanupOrchestrator.DefaultModel : cleanupModel;
@@ -188,7 +191,7 @@ public sealed class GatewayTranscriptionService
         CleanupOutcome? cleanup = null;
         var swCleanup = Stopwatch.StartNew();
         if (applyCorrection)
-            cleanup = await CleanupCoreAsync(raw, ct);
+            cleanup = await CleanupCoreAsync(raw, tenant, ct);
         swCleanup.Stop();
         var text = cleanup?.Text ?? raw;
 
@@ -287,11 +290,17 @@ public sealed class GatewayTranscriptionService
     /// outcome. Fails open (CodingStyle section 16 / issue #190): on an empty dictionary or any cleanup
     /// error, the raw transcript comes back byte-identical. Deterministic and in-process - needs no key.
     /// </summary>
-    public async Task<CleanupOutcome> CleanupAsync(string rawTranscript, CancellationToken ct = default)
+    /// <param name="rawTranscript">The assembled raw transcript to correct.</param>
+    /// <param name="tenant">The tenant whose glossary biases the correction - the requesting tenant,
+    /// resolved by the calling endpoint (issue #2482). Null means the self-host single tenant (Local),
+    /// which reads the shared flat file exactly as before.</param>
+    /// <param name="ct">Cancellation token.</param>
+    public async Task<CleanupOutcome> CleanupAsync(
+        string rawTranscript, CcDirector.Core.Tenancy.TenantId? tenant = null, CancellationToken ct = default)
     {
         if (string.IsNullOrWhiteSpace(rawTranscript))
             return new CleanupOutcome(rawTranscript ?? "", Applied: false, Reason: "empty transcript");
-        return await CleanupCoreAsync(rawTranscript, ct);
+        return await CleanupCoreAsync(rawTranscript, tenant, ct);
     }
 
     /// <summary>
@@ -311,9 +320,14 @@ public sealed class GatewayTranscriptionService
 
     /// <summary>
     /// The validated dictionary correction core, shared by the optional <c>correct</c> flag and the
-    /// Notes assemble-then-clean path. Fails open to the raw transcript.
+    /// Notes assemble-then-clean path. Fails open to the raw transcript. The correction reads the
+    /// REQUESTING TENANT's glossary (issue #2482): the tenant the endpoint resolved for the request,
+    /// or the self-host single tenant (Local) when the caller carries none - the same null-means-Local
+    /// convention <see cref="RecordHistory"/> uses, never a hosted tenant silently reading the
+    /// global file.
     /// </summary>
-    private async Task<CleanupOutcome> CleanupCoreAsync(string raw, CancellationToken ct)
+    private async Task<CleanupOutcome> CleanupCoreAsync(
+        string raw, CcDirector.Core.Tenancy.TenantId? tenant, CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(raw))
             return new CleanupOutcome(raw ?? "", Applied: false, Reason: "empty transcript");
@@ -321,7 +335,7 @@ public sealed class GatewayTranscriptionService
         // Cleanup is deterministic and in-process now - no key or provider endpoint is needed, so it
         // runs even offline. CleanAsync short-circuits an empty dictionary to a verbatim passthrough;
         // the early check just avoids constructing the orchestrator for nothing.
-        var dictionary = _dictionaryProvider();
+        var dictionary = _dictionaryProvider(tenant ?? CcDirector.Core.Tenancy.TenantId.Local);
         if (dictionary.Vocabulary.Count == 0 && dictionary.CommonMistranscriptions.Count == 0)
             return new CleanupOutcome(raw, Applied: false, Reason: "empty dictionary");
 
@@ -332,8 +346,9 @@ public sealed class GatewayTranscriptionService
     }
 
     /// <summary>
-    /// The single shared dictation glossary file used by both the recording transcriber and the
-    /// dictionary editor endpoints, so the path is defined in exactly one place.
+    /// The shared flat dictation glossary file - the Local (self-host single) tenant's glossary, and
+    /// the base location <see cref="TenantGlossary.PathFor"/> derives every per-tenant glossary from,
+    /// so the path is defined in exactly one place.
     /// </summary>
     /// <remarks>The Director composes this same path via AgentOptions.ResolveDictationDictionaryPath;
     /// both now go through CcStorage so the two cannot drift apart.</remarks>

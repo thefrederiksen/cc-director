@@ -828,8 +828,6 @@ internal static class RecordingEndpoints
         var root = RootForTenant(tenant);
         // Promotion target: the vault transcripts collection (permanent copy), per tenant.
         var collectionDir = CollectionForTenant(tenant);
-        // The glossary the transcriber reads to bias transcription - this tenant's own (issue #2060).
-        var glossaryPath = GlossaryPathFor(tenant);
         // This tenant's transcription-health history. The single Local tenant uses the host's shared log
         // (self-host, unchanged); every other tenant writes to its own partition so a recording's history
         // contribution is never fleet-global. (The Transcription Health READ surface is issue #2059.)
@@ -852,14 +850,18 @@ internal static class RecordingEndpoints
         // provider-compatible batch endpoint for hosted mode. So switching the mode in the Cockpit
         // changes how the recording is transcribed with no Gateway restart, and on-device mode now
         // works for recordings too - the same single audio-to-text path every other batch caller uses.
+        //
+        // The transcriber carries THIS tenant into the cleanup call, so the corrector reads this
+        // tenant's own glossary (issue #2060) through the one TenantGlossary owner - the same
+        // mechanism every live-dictation caller uses (issue #2482), no hand-injected path here.
         return new RecordingIngestService(
             root,
             transcriberFactory: () => new GatewayServiceRecordingTranscriber(
                 new GatewayTranscriptionService(
                     keyVault ?? new KeyVault(),
                     history: tenantHistory,
-                    audioArchive: audioArchive,
-                    dictionaryProvider: () => DictionaryLoader.LoadFromDisk(glossaryPath))),
+                    audioArchive: audioArchive),
+                tenant),
             filer,
             collectionDir);
     }
