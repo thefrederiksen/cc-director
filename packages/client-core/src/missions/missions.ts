@@ -20,8 +20,11 @@ export interface MissionDto {
   missionId: string;
   /** Human-friendly name of the Mission. */
   missionName: string;
-  /** The parent Mission this one nests under, or null for a root Mission. */
-  parentMissionId?: string | null;
+  /** WHY this mission exists, in the owner's own words. Empty (or absent) means UNSET - the card shows its
+   *  loud "no why set" flag rather than a blank. Carried on the mission itself and keyed by its id. */
+  why?: string | null;
+  /** When the WHY was last set (ISO-8601 UTC), or null if never. */
+  whyUpdatedAt?: string | null;
 }
 
 /**
@@ -56,4 +59,34 @@ export async function listMissions(signal?: AbortSignal): Promise<MissionDto[]> 
     }
   }
   return body as MissionDto[];
+}
+
+/**
+ * Set (or clear) one mission's WHY, keyed by its ID.
+ *
+ * A blank `why` CLEARS it and the card returns to its "no why set" flag - the same "empty means unset" rule
+ * the screen has always had. Returns the updated mission so the caller renders what the Gateway stored
+ * rather than what it hoped it stored.
+ *
+ * This replaces `PUT /gateway/missions/notes`, which keyed the WHY by the mission's LOWER-CASED NAME. That
+ * meant two missions sharing a name shared one WHY, and renaming a mission would have silently orphaned it -
+ * the card just falling back to its flag with no error anywhere. Keying by id is what makes rename safe.
+ */
+export async function setMissionWhy(
+  missionId: string,
+  why: string,
+  signal?: AbortSignal,
+): Promise<MissionDto> {
+  const res = await gatewayFetch(`/missions/${encodeURIComponent(missionId)}`, {
+    method: "PATCH",
+    headers: {
+      "Content-Type": "application/json" as const,
+      Accept: "application/json" as const,
+      ...authHeaders(),
+    },
+    body: JSON.stringify({ why }),
+    signal,
+  });
+  if (!res.ok) throw await GatewayError.from(res, "save the mission's why");
+  return (await res.json()) as MissionDto;
 }

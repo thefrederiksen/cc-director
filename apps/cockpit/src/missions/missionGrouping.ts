@@ -53,10 +53,15 @@ export interface MissionMember {
 // One mission: its identity, its display name, and the sessions attached to it. A mission with no attached
 // session is still a mission and still appears - `members` is simply empty.
 export interface MissionGroup {
-  /** The mission id - the grouping identity, and the value a future drag-and-drop would attach by. */
+  /** The mission id - the grouping identity, the value the WHY is written against, and the value a future
+   *  drag-and-drop would attach by. */
   key: string;
   /** The mission's display name. */
   name: string;
+  /** The mission's WHY, straight off the record. Empty means UNSET and the card shows its loud flag. A
+   *  mission known only from a session (see `fromSessionOnly`) has no record to read it from, so it is
+   *  empty there - which is honest: we genuinely do not have it. */
+  why: string;
   members: MissionMember[];
   /** True when this mission came only from an attached session, not from the mission list (see below). */
   fromSessionOnly: boolean;
@@ -150,6 +155,7 @@ export function groupByMission(
     byKey.set(missionKey(id), {
       key: id,
       name: (m.missionName ?? "").trim(),
+      why: (m.why ?? "").trim(),
       members: [],
       fromSessionOnly: false,
     });
@@ -169,6 +175,7 @@ export function groupByMission(
       group = {
         key: id,
         name: (s.missionName ?? "").trim(),
+        why: "",
         members: [],
         fromSessionOnly: true,
       };

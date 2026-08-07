@@ -72,23 +72,20 @@ public sealed class MissionStore
     /// <summary>
     /// Create and persist a new Mission with a freshly minted id, OWNED BY <paramref name="tenant"/> -
     /// which the caller resolves from its own authenticated identity, never from client input.
-    /// <paramref name="missionName"/> is required (a blank name throws) and <paramref name="parentMissionId"/>
-    /// nests it under a parent when given. Returns the created record.
+    /// <paramref name="missionName"/> is required (a blank name throws). Returns the created record.
     /// </summary>
-    public Mission Create(TenantId tenant, string missionName, Guid? parentMissionId = null)
+    public Mission Create(TenantId tenant, string missionName)
     {
         RequireValid(tenant);
         if (string.IsNullOrWhiteSpace(missionName))
             throw new ArgumentException("missionName is required", nameof(missionName));
 
-        FileLog.Write($"[MissionStore] Create: tenant={tenant.ToLogString()} name=\"{missionName}\" " +
-                      $"parent={parentMissionId?.ToString() ?? "(none)"}");
+        FileLog.Write($"[MissionStore] Create: tenant={tenant.ToLogString()} name=\"{missionName}\"");
 
         var mission = new Mission
         {
             MissionId = Guid.NewGuid(),
             MissionName = missionName.Trim(),
-            ParentMissionId = parentMissionId,
             CreatedAt = DateTimeOffset.UtcNow,
             TenantId = tenant.Value,
         };
@@ -122,6 +119,89 @@ public sealed class MissionStore
         RequireValid(tenant);
         lock (_lock)
             return LoadAll().Where(m => OwnedBy(m, tenant)).OrderBy(m => m.CreatedAt).ToList();
+    }
+
+    /// <summary>
+    /// Set (or clear) the WHY on <paramref name="tenant"/>'s Mission. A null/blank <paramref name="why"/>
+    /// CLEARS it, returning the card to its "no why set" flag - there is no separate clear verb, exactly as
+    /// the old note store worked. Returns the updated Mission, or null when this tenant has no such mission
+    /// (indistinguishable from another tenant's, like every other accessor here).
+    /// </summary>
+    public Mission? SetWhy(TenantId tenant, Guid missionId, string? why, DateTimeOffset nowUtc)
+    {
+        RequireValid(tenant);
+        var trimmed = (why ?? string.Empty).Trim();
+        FileLog.Write($"[MissionStore] SetWhy: tenant={tenant.ToLogString()} mission={missionId} " +
+                      $"cleared={trimmed.Length == 0}");
+        lock (_lock)
+        {
+            var missions = LoadAll();
+            var mission = missions.FirstOrDefault(m => m.MissionId == missionId && OwnedBy(m, tenant));
+            if (mission is null)
+                return null;
+
+            mission.Why = trimmed;
+            // A cleared WHY carries no "last set" time - the field is unset, not set-to-empty-at-a-moment.
+            mission.WhyUpdatedAt = trimmed.Length == 0 ? null : nowUtc;
+            SaveAll(missions);
+            return mission;
+        }
+    }
+
+    /// <summary>
+    /// ONE-TIME MIGRATION: adopt WHYs that were written against the old name-keyed note store onto the
+    /// Missions they belong to. <paramref name="whysByNormalizedName"/> maps a normalized (trimmed,
+    /// lower-cased) mission name to its WHY. Returns how many Missions were filled in.
+    ///
+    /// TENANT-SCOPED BY CONSTRUCTION, and that is the whole reason this takes a tenant rather than a flat
+    /// map of every note on the box. The notes were keyed by NAME, and a mission name is free text a person
+    /// typed - customer names, project names. Matching notes to missions by name across the whole store
+    /// would hand one account's stated reason for its work to another account that happened to name a
+    /// mission the same thing. The caller groups notes by their owning tenant and calls this once per
+    /// tenant; there is deliberately no bulk overload that could skip that step.
+    ///
+    /// IDEMPOTENT, and it never overwrites: a Mission that already has a WHY is left exactly as it is, so
+    /// running this twice - or running it after somebody has set a WHY through the new path - cannot
+    /// resurrect a stale one over a current one.
+    ///
+    /// A name matching SEVERAL missions fills all of them. That is not a merge bug; it is the faithful
+    /// reproduction of what the old store did, because a single name-keyed note was already being shown on
+    /// every card sharing that name. The migration's job is to preserve what was on screen, not to invent a
+    /// resolution the old data never had.
+    /// </summary>
+    public int ImportWhys(TenantId tenant, IReadOnlyDictionary<string, string> whysByNormalizedName)
+    {
+        RequireValid(tenant);
+        ArgumentNullException.ThrowIfNull(whysByNormalizedName);
+        if (whysByNormalizedName.Count == 0)
+            return 0;
+
+        lock (_lock)
+        {
+            var missions = LoadAll();
+            var filled = 0;
+            foreach (var mission in missions)
+            {
+                if (!OwnedBy(mission, tenant))
+                    continue;
+                if (!string.IsNullOrWhiteSpace(mission.Why))
+                    continue;
+
+                var key = (mission.MissionName ?? string.Empty).Trim().ToLowerInvariant();
+                if (!whysByNormalizedName.TryGetValue(key, out var why) || string.IsNullOrWhiteSpace(why))
+                    continue;
+
+                mission.Why = why.Trim();
+                mission.WhyUpdatedAt = mission.CreatedAt;
+                filled++;
+            }
+
+            if (filled > 0)
+                SaveAll(missions);
+            FileLog.Write($"[MissionStore] ImportWhys: tenant={tenant.ToLogString()} " +
+                          $"candidates={whysByNormalizedName.Count} filled={filled}");
+            return filled;
+        }
     }
 
     /// <summary>

@@ -197,6 +197,11 @@ public sealed class HostedMissionPartitionWiringTests : IAsyncLifetime
     /// <summary>
     /// One row exactly as a pre-#1039 Gateway serialized it: PascalCase properties, no TenantId. Written
     /// with the same serializer settings the store reads with, so the seed cannot drift from the format.
+    ///
+    /// ParentMissionId is written on purpose even though Mission no longer HAS that property (nesting was
+    /// removed on 2026-08-07). Every missions.json already on disk carries the key, so this row is what a
+    /// real file looks like - and keeping it here proves those files still load rather than assuming it.
+    /// Do not "tidy" it away.
     /// </summary>
     private static void SeedUnattributedMission(string missionsPath)
     {
@@ -273,6 +278,9 @@ public sealed class SelfHostMissionAdoptionControlTests : IAsyncLifetime
 
         _missionsPath = Path.Combine(_instancesDir, "missions.json");
         Directory.CreateDirectory(_instancesDir);
+        // ParentMissionId is deliberate here - see SeedUnattributedMission. Mission no longer has that
+        // property, but every missions.json on disk still carries the key, and this row proves such a
+        // file still loads.
         File.WriteAllText(_missionsPath, JsonSerializer.Serialize(new[]
         {
             new

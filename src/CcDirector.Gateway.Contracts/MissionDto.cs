@@ -9,6 +9,10 @@ namespace CcDirector.Gateway.Contracts;
 ///
 /// Role cardinality (one Architect, one Manager, N Workers) is enforced by the derived role model
 /// (see <see cref="SessionRoles"/>); the Mission record deliberately does NOT store role seats.
+///
+/// MISSIONS ARE FLAT - there is no parent link and no tree. Nesting was specified, built and tested, then
+/// never used once; it was removed on 2026-08-07. See <see cref="Core.Sessions.Mission"/> and the design
+/// document for the reasoning.
 /// </summary>
 public sealed class MissionDto
 {
@@ -18,8 +22,14 @@ public sealed class MissionDto
     /// <summary>Human-friendly name of the Mission (e.g. "Session Lifecycle").</summary>
     public string MissionName { get; set; } = "";
 
-    /// <summary>The parent Mission this one nests under (a tree of Missions), or null for a root Mission.</summary>
-    public Guid? ParentMissionId { get; set; }
+    /// <summary>WHY this mission exists, in the owner's own words. Empty means UNSET, and the client shows
+    /// its "no why set" flag rather than a blank. Keyed to the mission by <see cref="MissionId"/> - it used
+    /// to live in a separate table keyed by the mission's lower-cased NAME, which a rename would have
+    /// silently orphaned.</summary>
+    public string Why { get; set; } = "";
+
+    /// <summary>When the WHY was last set (UTC), or null if it has never been set.</summary>
+    public DateTimeOffset? WhyUpdatedAt { get; set; }
 
     /// <summary>ADDITIVE (Workflows mission, phase 4, issue #1771): the workflow run opened beside
     /// this Mission when it was created through the Gateway - a mission is a run of the built-in
@@ -35,9 +45,21 @@ public sealed class NewMissionRequest
 {
     /// <summary>Required. The Mission's human-friendly name. A blank name is rejected with HTTP 400.</summary>
     public string? MissionName { get; set; }
+}
 
-    /// <summary>Optional parent Mission this one nests under; null (default) creates a root Mission.</summary>
-    public Guid? ParentMissionId { get; set; }
+/// <summary>
+/// Body of PATCH /missions/{mid}: change something about a Mission that already exists.
+///
+/// Only the fields present are changed. Today that is just the WHY; Phase 2 adds the display name and the
+/// mission's state (complete / removed) as further optional fields on this same body, which is why this is
+/// a PATCH rather than a route per verb.
+/// </summary>
+public sealed class MissionPatchRequest
+{
+    /// <summary>The mission's WHY. An empty or whitespace value CLEARS it, returning the card to its "no
+    /// why set" flag. Null means "do not change the why" - and, until other fields exist here, is rejected
+    /// as an empty request rather than treated as a silent no-op.</summary>
+    public string? Why { get; set; }
 }
 
 /// <summary>

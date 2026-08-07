@@ -108,61 +108,74 @@ public sealed class CensusRouteTenancyProbeTests : IAsyncLifetime
     /// (<c>e.Key == key</c>, unqualified by tenant) is exactly what makes the overwrite the live hazard.
     /// There is no per-mission GET, so each tenant's list is asserted as an EXACT one-element set.
     /// </summary>
+        // PORTED 2026-08-07 to the WHY's new home. This probe used to seed through
+    // PUT /gateway/missions/notes and read GET /gateway/missions/notes - the name-keyed note store, now
+    // retired. The PROPERTY it proves is unchanged and still matters: two tenants using the SAME mission
+    // name must not see or overwrite each other's WHY. It is now proved against the mission record, where
+    // the WHY lives, which is a stronger form of the same claim - the old routes keyed on the shared name,
+    // these key on each tenant's own mission id.
     [Fact]
-    public async Task MissionNotes_ContextLess_KeepEachTenantsNoteUnderTheSameMissionNameSeparate()
+    public async Task MissionWhy_KeepEachTenantsWhyUnderTheSameMissionNameSeparate()
     {
         const string mission = "shared-mission-name";
         const string whyA = "tenant-A-why-the-census-probe";
         const string whyB = "tenant-B-why-the-census-probe";
 
-        // SEED both, A first, under the identical mission name.
-        var seedA = await Json(await Send("PUT", "gateway/missions/notes", _keyA, Body(mission, whyA)),
-            HttpStatusCode.OK, "SEED    PUT /gateway/missions/notes (tenant A)");
-        Assert.Equal(whyA, Str(Obj(seedA, "note"), "why"));
+        // Each tenant creates its OWN mission, under the identical name.
+        var createdA = await Json(await Send("POST", "missions", _keyA, MissionBody(mission)),
+            HttpStatusCode.Created, "SEED    POST /missions (tenant A)");
+        var createdB = await Json(await Send("POST", "missions", _keyB, MissionBody(mission)),
+            HttpStatusCode.Created, "SEED    POST /missions (tenant B, SAME mission name)");
+        var idA = Str(createdA, "missionId");
+        var idB = Str(createdB, "missionId");
+        Assert.NotEqual(idA, idB);
 
-        var seedB = await Json(await Send("PUT", "gateway/missions/notes", _keyB, Body(mission, whyB)),
-            HttpStatusCode.OK, "SEED    PUT /gateway/missions/notes (tenant B, SAME mission name)");
-        Assert.Equal(whyB, Str(Obj(seedB, "note"), "why"));
+        var setA = await Json(await Send("PATCH", $"missions/{idA}", _keyA, WhyBody(whyA)),
+            HttpStatusCode.OK, "SEED    PATCH /missions/{A} (tenant A)");
+        Assert.Equal(whyA, Str(setA, "why"));
 
-        // A's list: EXACTLY its own note. Asserted as the full set with the exact seeded fingerprint, so
-        // neither an extra row (B's) nor a replaced why (B's write landing on A's row) can pass.
-        var listA = await Json(await Send("GET", "gateway/missions/notes", _keyA, null),
-            HttpStatusCode.OK, "READ    GET /gateway/missions/notes (tenant A)");
-        AssertExactlyOneNote(listA, mission, whyA);
+        var setB = await Json(await Send("PATCH", $"missions/{idB}", _keyB, WhyBody(whyB)),
+            HttpStatusCode.OK, "SEED    PATCH /missions/{B} (tenant B)");
+        Assert.Equal(whyB, Str(setB, "why"));
 
-        // B's list: EXACTLY its own note - the same mission name, its own why.
-        var listB = await Json(await Send("GET", "gateway/missions/notes", _keyB, null),
-            HttpStatusCode.OK, "READ    GET /gateway/missions/notes (tenant B)");
-        AssertExactlyOneNote(listB, mission, whyB);
+        // Each tenant reads back EXACTLY its own why - not the other's, and not overwritten by it.
+        var readA = await Json(await Send("GET", $"missions/{idA}", _keyA, null),
+            HttpStatusCode.OK, "READ    GET /missions/{A} (tenant A)");
+        Assert.Equal(whyA, Str(readA, "why"));
 
-        // DESTRUCTIBILITY CONTROL: an empty why CLEARS the note (the store's documented delete path). A
-        // clears its own - which must remove A's note and leave B's byte-for-byte. Without this, A's
-        // one-element list above could be an inert route rather than a partitioned one.
-        var clearA = await Json(await Send("PUT", "gateway/missions/notes", _keyA, Body(mission, "")),
-            HttpStatusCode.OK, "CONTROL PUT /gateway/missions/notes (tenant A clears its OWN note)");
-        Assert.True(Bool(clearA, "cleared"), "the owner's own clear reported nothing cleared");
+        var readB = await Json(await Send("GET", $"missions/{idB}", _keyB, null),
+            HttpStatusCode.OK, "READ    GET /missions/{B} (tenant B)");
+        Assert.Equal(whyB, Str(readB, "why"));
 
-        var emptiedA = await Json(await Send("GET", "gateway/missions/notes", _keyA, null),
-            HttpStatusCode.OK, "AFTER   GET /gateway/missions/notes (tenant A, after its OWN clear)");
-        Assert.Empty(Arr(emptiedA, "notes").EnumerateArray());
+        // CROSS-TENANT CONTROL: A cannot reach B's mission even holding its exact id, and the refusal is a
+        // 404 - the same answer as an id that does not exist, so the id cannot be probed for existence.
+        var crossRead = await Send("GET", $"missions/{idB}", _keyA, null);
+        Assert.Equal(HttpStatusCode.NotFound, crossRead.StatusCode);
 
-        // INDEPENDENT RE-READ: B's note survived A's clear of the same key untouched.
-        var survivingB = await Json(await Send("GET", "gateway/missions/notes", _keyB, null),
-            HttpStatusCode.OK, "AFTER   GET /gateway/missions/notes (tenant B, after A cleared the same key)");
-        AssertExactlyOneNote(survivingB, mission, whyB);
+        var crossWrite = await Send("PATCH", $"missions/{idB}", _keyA, WhyBody("overwritten-by-A"));
+        Assert.Equal(HttpStatusCode.NotFound, crossWrite.StatusCode);
+
+        // ...and the refused write changed nothing: B's why is byte-for-byte what B set.
+        var survivingB = await Json(await Send("GET", $"missions/{idB}", _keyB, null),
+            HttpStatusCode.OK, "AFTER   GET /missions/{B} (after A tried to overwrite it)");
+        Assert.Equal(whyB, Str(survivingB, "why"));
+
+        // DESTRUCTIBILITY CONTROL: a blank why CLEARS it. A clears its OWN, which must empty A's and leave
+        // B's untouched. Without this, the reads above could be an inert route rather than a partitioned one.
+        var clearA = await Json(await Send("PATCH", $"missions/{idA}", _keyA, WhyBody("")),
+            HttpStatusCode.OK, "CONTROL PATCH /missions/{A} (tenant A clears its OWN why)");
+        Assert.Equal("", Str(clearA, "why"));
+
+        var survivingBAgain = await Json(await Send("GET", $"missions/{idB}", _keyB, null),
+            HttpStatusCode.OK, "AFTER   GET /missions/{B} (after A cleared its own)");
+        Assert.Equal(whyB, Str(survivingBAgain, "why"));
     }
 
-    private static void AssertExactlyOneNote(JsonElement list, string expectedMission, string expectedWhy)
-    {
-        var notes = Arr(list, "notes");
-        Assert.Equal(1, notes.GetArrayLength());
-        var only = notes[0];
-        Assert.Equal(expectedMission, Str(only, "mission"));
-        Assert.Equal(expectedWhy, Str(only, "why"));
-    }
+    private static string MissionBody(string missionName) =>
+        System.Text.Json.JsonSerializer.Serialize(new { missionName });
 
-    private static string Body(string mission, string why)
-        => JsonSerializer.Serialize(new { mission, why });
+    private static string WhyBody(string why) =>
+        System.Text.Json.JsonSerializer.Serialize(new { why });
 
     // ================================================================= skills (skills/skill_versions/skill_files)
 

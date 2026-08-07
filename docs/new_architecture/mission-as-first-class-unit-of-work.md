@@ -236,7 +236,29 @@ Worked example (this project): "fix the session lifecycle" is ONE Mission. The p
 schema, auto-naming) and the visible features (role badge, the spawn command, the role flag,
 attaching a session to a Mission) are TASKS inside it - even though different sessions build them.
 
-## Nesting: a tree of Missions
+## Nesting: REMOVED 2026-08-07. Missions are flat.
+
+> **This section describes a feature that no longer exists.** Nesting was specified here, built
+> (`Mission.ParentMissionId`, a parent argument on `MissionStore.Create`, parent validation on
+> `POST /missions`, and a tenant-scoping test for it), and then **never used once** - every Mission
+> the fleet ever created had a null parent. Soren decided to drop it on 2026-08-07.
+>
+> **Why remove it rather than leave it lying there.** An unused field is not free. It has to be
+> understood by everyone who reads the type, kept correct in every store and route that touches it,
+> carried through every migration, and reasoned about by every feature built afterwards - and mission
+> state, rename, and numbering were all about to be built on top of it. It also widened the create
+> route's attack surface for nothing: a parent is a caller-supplied reference INTO the mission set, so
+> it needed its own tenant guard and its own test to prove another account's mission could not be
+> named as one. Deleting the field deleted that whole class of question.
+>
+> **What this does NOT change:** the rule above about what sizes a Mission still holds - a large goal
+> is still ONE Mission with more Tasks and more Workers, and labor size is still not a reason to
+> declare a second Mission. What is gone is only the modelled parent/child LINK. Two related missions
+> today are simply two missions.
+>
+> **The original design is kept below rather than deleted**, so that if a real case for sub-Missions
+> turns up, the reasoning is here to restart from instead of being re-derived. If it comes back, the
+> tenant-scoping test comes back with it.
 
 A Worker may itself spawn Workers. Under "one Manager per Mission," that Worker does not become a
 second manager of the parent Mission - it becomes the **Manager of a child Mission**. A large effort
@@ -415,8 +437,9 @@ Decisions as they settle (started 2026-07-09, Architect + Soren):
   crown / gear / triangle pictorial proposal was over-design and is dropped.
 - MAP layout = Mission as a CONTAINER (Soren): the Mission is a box / card, and being INSIDE the box
   is what "attached to the Mission" means. Inside, the Architect (A) and the Manager (M)
-  sit side by side at the TOP as peers; the Workers (W) hang BENEATH the Manager. A nested
-  sub-Mission is a smaller box inside, spawned off a Worker (boxes within boxes). Status / attention
+  sit side by side at the TOP as peers; the Workers (W) hang BENEATH the Manager. (The "nested
+  sub-Mission is a smaller box inside" part of this layout is MOOT - nesting was removed on
+  2026-08-07, see the Nesting section above; boxes never contain boxes.) Status / attention
   COLOR still applies to each session node inside the box. Mission-to-Mission dependency edges draw
   as arrows between boxes. The rail stays flat (Option A); the map is the ONLY place the pod
   relationships are drawn - rail = "which session do I click", map = "how do these fit together".

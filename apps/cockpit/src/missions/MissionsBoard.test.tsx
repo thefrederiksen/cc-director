@@ -6,19 +6,17 @@ import { MemoryRouter } from "react-router-dom";
 import type { SessionDto } from "@devthrottle/client-core/api/client";
 import type { MissionDto } from "@devthrottle/client-core/missions/missions";
 
-// The WHY store is keyed by the mission's lower-cased NAME; the board now groups by mission ID. Those two
-// keys are not the same string, and the gap between them is invisible to the pure grouping tests - the
-// board renders, the cards are right, and the WHY text is just silently gone.
-//
-// That is exactly what happened when the grouping moved to ids: the card looked its WHY up by the group's
-// key, which had become an id, and every WHY the owner had written disappeared without any error. These
-// tests render the real board so a repeat cannot pass.
-vi.mock("@devthrottle/client-core/missions/missionNotes", () => ({
-  getMissionNotes: vi.fn(),
-  setMissionNote: vi.fn(),
+// The WHY now travels ON the mission record, keyed by its id, and is written back through
+// setMissionWhy (PATCH /missions/{id}). It used to live in a separate store keyed by the mission's
+// lower-cased NAME - and when the grouping moved to ids, the card kept looking the WHY up by the group's
+// key, which had become an id, so every WHY the owner had written silently vanished from the board.
+// Nothing threw; the text was simply gone. These tests render the real board so that cannot recur.
+vi.mock("@devthrottle/client-core/missions/missions", async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  setMissionWhy: vi.fn(),
 }));
 
-import { getMissionNotes } from "@devthrottle/client-core/missions/missionNotes";
+import { setMissionWhy } from "@devthrottle/client-core/missions/missions";
 import { MissionsBoard } from "./MissionsBoard";
 
 const M_RELEASE: MissionDto = { missionId: "45e28f0c", missionName: "Release 2.0.1" };
@@ -59,7 +57,7 @@ function renderBoard(props: Parameters<typeof MissionsBoard>[0]) {
 }
 
 beforeEach(() => {
-  vi.mocked(getMissionNotes).mockResolvedValue([]);
+  vi.mocked(setMissionWhy).mockReset();
 });
 
 afterEach(() => {
@@ -67,22 +65,26 @@ afterEach(() => {
 });
 
 describe("MissionsBoard", () => {
-  it("shows the mission's WHY - the store is keyed by NAME, the grouping by ID", async () => {
-    vi.mocked(getMissionNotes).mockResolvedValue([
-      {
-        key: "release 2.0.1",
-        mission: "Release 2.0.1",
-        why: "So we can get the Video Competition started",
-        updatedAt: "2026-08-07T00:00:00Z",
-      },
-    ]);
+  it("shows the mission's WHY, read off the mission record", async () => {
+    renderBoard({
+      sessions: [ARCHITECT],
+      missions: [{ ...M_RELEASE, why: "So we can get the Video Competition started" }],
+    });
 
-    renderBoard({ sessions: [ARCHITECT], missions: [M_RELEASE] });
-
-    await waitFor(() =>
-      expect(screen.getByText("So we can get the Video Competition started")).toBeTruthy(),
-    );
+    expect(screen.getByText("So we can get the Video Competition started")).toBeTruthy();
     // ...and therefore NOT the "no why set" flag.
+    expect(screen.queryByText(/No why set/i)).toBeNull();
+  });
+
+  // The regression this file exists for: the WHY must be keyed to the mission by ID, so a mission whose
+  // NAME has changed still shows it. Under the old name-keyed store this silently rendered the flag.
+  it("keeps the WHY when the mission's name is nothing like its old one", async () => {
+    renderBoard({
+      sessions: [],
+      missions: [{ missionId: "45e28f0c", missionName: "Renamed To Something Else", why: "the reason" }],
+    });
+
+    expect(screen.getByText("the reason")).toBeTruthy();
     expect(screen.queryByText(/No why set/i)).toBeNull();
   });
 

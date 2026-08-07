@@ -1,9 +1,8 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { type SessionDto } from "@devthrottle/client-core/api/client";
 import { dotColor, dotHex, effectiveColor, stateLabel } from "@devthrottle/client-core/sessions/ordering";
-import { getMissionNotes, setMissionNote } from "@devthrottle/client-core/missions/missionNotes";
-import type { MissionDto } from "@devthrottle/client-core/missions/missions";
+import { setMissionWhy, type MissionDto } from "@devthrottle/client-core/missions/missions";
 import { repoBasename, relativeTime } from "../fleet/format";
 import { groupByMission, splitEmptyMissions, type MissionGroup } from "./missionGrouping";
 
@@ -19,31 +18,20 @@ import { groupByMission, splitEmptyMissions, type MissionGroup } from "./mission
 // It reuses the ONE shared effective-color + state-label rule so a status dot here matches every other
 // Cockpit surface. Clicking a session row opens that session (/session/:id) - the "linking".
 //
-// The WHY (Phase 1b): every card carries its mission's WHY, front and center, from the durable + shared
-// Gateway mission-notes store (getMissionNotes / setMissionNote in client-core). A mission with no WHY
+// The WHY: every card carries its mission's WHY, front and center, read straight off the Mission record
+// the board already has and written back with setMissionWhy (PATCH /missions/{id}). A mission with no WHY
 // shows a loud flag (the mission's founding rule), never a silent blank; the flag is the button that adds
-// one, and the WHY is editable inline. The only writes here go through the WHY store.
+// one, and the WHY is editable inline.
 //
-// KNOWN, and deliberately not fixed in this change: the WHY store is keyed by the mission's lower-cased
-// NAME, not its id, so it is attached to a string rather than to the mission. Two missions sharing a name
-// share one WHY, and renaming a mission would orphan it. Folding the WHY onto the Mission record is the
-// next piece of work; it needs a Gateway migration, and it is not a reason to hold back the grouping fix.
+// It used to come from a SEPARATE Gateway store keyed by the mission's lower-cased NAME, which meant there
+// was no second fetch to keep in step and, worse, no way to rename a mission without silently orphaning its
+// WHY. Both problems went with the key: the WHY is now a field on the mission, so it arrives with it and
+// travels with it.
 
 // The loud flag shown when a mission has no WHY set - a mission with no stated WHY is a red flag the
 // screen makes obvious (the mission's founding rule), never a silent blank. It is also the button that
 // opens the inline editor to add one.
 const NO_WHY_TEXT = "No why set - add one";
-
-// The key the WHY store uses: the mission's TRIMMED, LOWER-CASED NAME. It is deliberately not the mission
-// id, because the store predates the grouping being keyed by id and has not been migrated yet.
-//
-// This function exists so the mismatch is stated once, in the open. When the grouping moved from name to
-// id, the card briefly looked the WHY up by the group's key - which was now an id - and every existing WHY
-// silently vanished from the board. Nothing failed; the text was simply gone. Keep every WHY lookup going
-// through here, and delete it in the same change that moves the WHY onto the Mission record.
-function whyKeyFor(missionName: string): string {
-  return missionName.trim().toLowerCase();
-}
 
 interface MissionsBoardBaseProps {
   sessions: SessionDto[];
@@ -87,34 +75,17 @@ export function MissionsBoard({
 }: MissionsBoardProps) {
   const navigate = useNavigate();
 
-  // The mission WHYs, keyed by the normalized mission key (the same key groupByMission produces). Read
-  // once on mount from the durable, shared Gateway store; refreshed in place after an inline edit. A
-  // failed read is non-fatal - the board still renders the fleet, every card just shows its flag.
-  const [whyByKey, setWhyByKey] = useState<Map<string, string>>(new Map());
+  // WHYs the owner has edited since this board loaded, by mission id. The WHY arrives ON the mission, so
+  // this is only an overlay for edits made HERE - it stops a card flicking back to its old text while the
+  // parent's mission list catches up. Anything not in here renders the mission's own why.
+  const [editedWhy, setEditedWhy] = useState<Map<string, string>>(new Map());
 
-  const refreshNotes = useCallback(() => {
-    getMissionNotes()
-      .then((notes) => setWhyByKey(new Map(notes.map((n) => [n.key, n.why]))))
-      .catch(() => {
-        /* non-fatal: the WHYs are unavailable this load; the cards fall back to the flag */
-      });
-  }, []);
-
-  useEffect(() => {
-    refreshNotes();
-  }, [refreshNotes]);
-
-  // Save (or clear) one mission's WHY through the shared store, then reflect it locally. The store
-  // treats an empty why as "unset", so clearing returns the card to its flag.
-  const saveWhy = useCallback(async (missionName: string, why: string) => {
-    const note = await setMissionNote(missionName, why);
-    setWhyByKey((prev) => {
-      const next = new Map(prev);
-      const key = whyKeyFor(missionName);
-      if (note === null) next.delete(key);
-      else next.set(note.key, note.why);
-      return next;
-    });
+  // Save (or clear) one mission's WHY by ID. A blank why clears it and the card returns to its flag. The
+  // Gateway's answer is what gets shown - not the text that was typed - so the screen reflects what was
+  // actually stored.
+  const saveWhy = useCallback(async (missionId: string, why: string) => {
+    const updated = await setMissionWhy(missionId, why);
+    setEditedWhy((prev) => new Map(prev).set(missionId, updated.why ?? ""));
   }, []);
 
   const grouped = useMemo(() => groupByMission(sessions, missions), [sessions, missions]);
@@ -157,7 +128,9 @@ export function MissionsBoard({
         <MissionCard
           key={m.key}
           mission={m}
-          why={whyByKey.get(whyKeyFor(m.name)) ?? ""}
+          // An edit made on this board wins until the parent's mission list catches up; otherwise the
+          // mission's own why is the truth.
+          why={editedWhy.get(m.key) ?? m.why}
           onSaveWhy={saveWhy}
           onOpen={openSession}
         />
@@ -215,7 +188,7 @@ export function missionCounts(
 interface MissionCardProps {
   mission: MissionGroup;
   why: string;
-  onSaveWhy: (missionName: string, why: string) => Promise<void>;
+  onSaveWhy: (missionId: string, why: string) => Promise<void>;
   onOpen: (sessionId: string | null | undefined) => void;
 }
 
@@ -266,7 +239,7 @@ function MissionCard({ mission, why, onSaveWhy, onOpen }: MissionCardProps) {
 
       {/* The WHY slot (issue #1405): first-class on every card, front and center. The WHY comes from the
           durable, shared Gateway store and is editable inline; a missing WHY shows the loud flag. */}
-      <WhySlot missionName={mission.name} why={why} onSave={onSaveWhy} />
+      <WhySlot missionId={mission.key} why={why} onSave={onSaveWhy} />
 
       <div className="msn-sessions">
         {/* The row's primary label is the session's NAME, with its role as a badge beside it. The role
@@ -292,16 +265,18 @@ function MissionCard({ mission, why, onSaveWhy, onOpen }: MissionCardProps) {
 }
 
 interface WhySlotProps {
-  missionName: string;
+  /** The mission the WHY is written against. The id, never the name - a name-keyed WHY was orphaned by
+   *  any rename, which is exactly why this moved onto the record. */
+  missionId: string;
   why: string;
-  onSave: (missionName: string, why: string) => Promise<void>;
+  onSave: (missionId: string, why: string) => Promise<void>;
 }
 
 // The WHY slot on a mission card: shows the mission's WHY front and center, or a loud flag when none is
 // set. Either the flag or an "Edit" affordance opens an inline editor; saving writes through the shared
 // store (an empty value clears the WHY back to the flag). Save errors are shown loudly and keep the
 // editor open rather than silently dropping the edit.
-function WhySlot({ missionName, why, onSave }: WhySlotProps) {
+function WhySlot({ missionId, why, onSave }: WhySlotProps) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(why);
   const [saving, setSaving] = useState(false);
@@ -322,7 +297,7 @@ function WhySlot({ missionName, why, onSave }: WhySlotProps) {
     setSaving(true);
     setError(null);
     try {
-      await onSave(missionName, draft);
+      await onSave(missionId, draft);
       setEditing(false);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Could not save the why");
