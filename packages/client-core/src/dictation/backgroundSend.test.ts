@@ -130,6 +130,65 @@ describe("backgroundTranscribeAndSend", () => {
     expect(vi.mocked(savePending).mock.calls[0][0].blob).toBe(captured.blob);
   });
 
+  it("WAITS for the Speak-press baseline snapshot before persisting, so a quick Send cannot outrun it (issue #2478)", async () => {
+    // The exact race the review found: the Speak press starts the roster read and Send arrives before
+    // it resolves. The pipeline must await the handed-over promise - nothing may be persisted or
+    // uploaded until the record-time position is in hand.
+    vi.mocked(uploadDictationToSession).mockResolvedValue(SUBMITTED);
+    let releaseBaseline: (bytes: number | undefined) => void = () => {};
+    const pending = new Promise<number | undefined>((resolve) => { releaseBaseline = resolve; });
+
+    const send = backgroundTranscribeAndSend("sid", captured, { baselineBufferBytes: pending });
+    await flush();
+    // The snapshot has not answered yet: the pipeline is holding, not guessing.
+    expect(savePending).not.toHaveBeenCalled();
+    expect(uploadDictationToSession).not.toHaveBeenCalled();
+
+    releaseBaseline(48213);
+    await send;
+    expect(vi.mocked(savePending).mock.calls[0][0].baselineBufferBytes).toBe(48213);
+    expect(vi.mocked(uploadDictationToSession).mock.calls[0][0].baselineBufferBytes).toBe(48213);
+  });
+
+  it("persists an UNKNOWN baseline as unknown - never as a fabricated zero (issue #2478)", async () => {
+    // Unknown (the roster could not answer) and zero (a terminal that had produced nothing yet) are
+    // different facts. Collapsing unknown into zero at persist time was how the moved-on guard
+    // silently stayed unarmed; unknown must stay absent all the way to the wire, where JSON omits the
+    // field and the server's documented absent-field handling skips the guard for this one clip.
+    vi.mocked(uploadDictationToSession).mockResolvedValue(SUBMITTED);
+
+    await backgroundTranscribeAndSend("sid", captured, {
+      baselineBufferBytes: Promise.resolve(undefined),
+    });
+
+    expect(vi.mocked(savePending).mock.calls[0][0].baselineBufferBytes).toBeUndefined();
+    expect(vi.mocked(uploadDictationToSession).mock.calls[0][0].baselineBufferBytes).toBeUndefined();
+  });
+
+  it("passes a GENUINE zero baseline through as a real reading, distinct from unknown (issue #2478)", async () => {
+    vi.mocked(uploadDictationToSession).mockResolvedValue(SUBMITTED);
+
+    await backgroundTranscribeAndSend("sid", captured, { baselineBufferBytes: Promise.resolve(0) });
+
+    expect(vi.mocked(savePending).mock.calls[0][0].baselineBufferBytes).toBe(0);
+    expect(vi.mocked(uploadDictationToSession).mock.calls[0][0].baselineBufferBytes).toBe(0);
+  });
+
+  it("a foreign baseline promise that REJECTS costs the guard, never the words", async () => {
+    // The shared snapshot never rejects, but the hooks contract cannot force that on every caller. A
+    // rejection must not escape and strand the clip unsaved - the words always deliver, unguarded.
+    vi.mocked(uploadDictationToSession).mockResolvedValue(SUBMITTED);
+
+    await backgroundTranscribeAndSend("sid", captured, {
+      baselineBufferBytes: Promise.reject(new Error("roster exploded")),
+    });
+
+    expect(vi.mocked(savePending).mock.calls[0][0].baselineBufferBytes).toBeUndefined();
+    // The clip still delivered: persisted durably and driven through one upload attempt.
+    expect(savePending).toHaveBeenCalledTimes(1);
+    expect(uploadDictationToSession).toHaveBeenCalledTimes(1);
+  });
+
   it("a delivered send that dropped audio carries a capture-loss warning on done (never silent)", async () => {
     // The send succeeds, but the record was flagged with a capture-loss warning at Send time. The delivered
     // `done` status must carry that warning so the strip shows a non-clearing caution instead of a silent
@@ -605,8 +664,9 @@ describe("recovering a dropped dictation (#1590)", () => {
     expect(fresh?.blob).toBe(old.blob); // the SAME recording, under a new id - the audio is what we are retrying
     expect(fresh?.staleDropped).toBeUndefined();
     // The record-time baseline describes a terminal that has long since moved on; re-sending it would just
-    // invite the same drop. The user asked for this send now.
-    expect(fresh?.baselineBufferBytes).toBe(0);
+    // invite the same drop. The user asked for this send now. Cleared to UNKNOWN (field omitted on the
+    // wire, guard skipped) - never a fabricated zero, which is a real reading (issue #2478).
+    expect(fresh?.baselineBufferBytes).toBeUndefined();
     // The fresh clip really was driven, and the old id is retired.
     expect(vi.mocked(uploadDictationToSession).mock.calls[0][0].uploadId).toBe(fresh?.id);
     expect(deletePending).toHaveBeenCalledWith("id-old");

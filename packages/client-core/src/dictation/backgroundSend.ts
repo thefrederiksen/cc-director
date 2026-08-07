@@ -119,8 +119,13 @@ export interface BackgroundSendHooks {
    *  case omits this and the transcript is submitted alone. */
   composeParts?: { before: string; after: string };
   /** The session's TotalBufferBytes at record time, for the Gateway's "session moved on" guard when a
-   *  clip is resumed later. Omit when unknown (the guard is then skipped for safety). */
-  baselineBufferBytes?: number;
+   *  clip is resumed later. A promise is AWAITED before the durable record is persisted (issue #2478):
+   *  the Speak press starts the roster read and hands the promise here, so a quick Send cannot outrun
+   *  it and persist "unknown" for a session whose position was knowable - the wait is bounded by the
+   *  roster read's own timeout. Omit when genuinely unknown; unknown is persisted as unknown and the
+   *  wire request omits the field (the guard is then skipped for safety) - it is NEVER collapsed into
+   *  zero, which is a real reading (a terminal that had produced nothing yet). */
+  baselineBufferBytes?: number | Promise<number | undefined>;
 }
 
 // ---- driver state ----------------------------------------------------------------------------------
@@ -194,6 +199,18 @@ export async function backgroundTranscribeAndSend(
     );
   }
 
+  // The moved-on baseline: WAIT for the snapshot the Speak press started before persisting, so the
+  // durable record carries the real record-time reading even when Send was pressed quickly (issue
+  // #2478). The wait is bounded (the roster read carries the poll timeout and the shared snapshot
+  // never rejects); the defensive catch is for a foreign caller's promise only, because a baseline -
+  // a guard input - must never cost the user's words, exactly like the decode above.
+  let baselineBufferBytes: number | undefined;
+  try {
+    baselineBufferBytes = await hooks.baselineBufferBytes;
+  } catch {
+    baselineBufferBytes = undefined;
+  }
+
   const rec: PendingDictation = {
     id: crypto.randomUUID(),
     sessionId,
@@ -206,7 +223,7 @@ export async function backgroundTranscribeAndSend(
     before: hooks.composeParts?.before ?? "",
     after: hooks.composeParts?.after ?? "",
     prefix: captured.prefixText ?? "",
-    baselineBufferBytes: hooks.baselineBufferBytes ?? 0,
+    baselineBufferBytes,
     createdAt: Date.now(),
   };
 
@@ -389,8 +406,9 @@ export async function sendDroppedDictationAnyway(uploadId: string): Promise<void
 // Retry a dropped dictation whose words we never got (the rare drop before transcription, issue #1590).
 // The audio is still on the device, but its upload id is tombstoned moved-on for good (#1183), so it is
 // re-driven under a FRESH upload id - a genuinely new dictation carrying the same recording. The baseline
-// is cleared to zero: the recorded-at baseline describes a terminal that has long since moved on, and
-// re-sending it would simply invite the same drop. The user asked for this send now, deliberately.
+// is cleared to UNKNOWN (the field is omitted on the wire, so the server skips the guard): the
+// recorded-at baseline describes a terminal that has long since moved on, and re-sending it would simply
+// invite the same drop. The user asked for this send now, deliberately.
 // Guarded on the OLD id by the same in-flight set: each tap mints a NEW upload id, so without this two rapid
 // taps would stage two fresh clips and inject the same recording twice - and being different ids, nothing
 // downstream would de-duplicate them.
@@ -415,7 +433,7 @@ export async function retryDroppedDictation(uploadId: string): Promise<void> {
       id: crypto.randomUUID(),
       staleDropped: undefined,
       droppedTranscript: undefined,
-      baselineBufferBytes: 0,
+      baselineBufferBytes: undefined,
       createdAt: Date.now(),
     };
     try {

@@ -124,17 +124,18 @@ describe("Mobile Speak Send-direct (recording-stage)", () => {
     const [sid, captured, opts] = backgroundTranscribeAndSend.mock.calls[0] as unknown as [
       string,
       { blob: Blob; recordedMs: number },
-      { composeParts?: { before: string; after: string }; baselineBufferBytes?: number },
+      { composeParts?: { before: string; after: string }; baselineBufferBytes?: Promise<number | undefined> },
     ];
     expect(sid).toBe("sess-42");
     expect(captured.blob).toBeInstanceOf(Blob);
     expect(captured.recordedMs).toBe(1000);
     expect(opts.composeParts).toEqual({ before: "A", after: "B" });
-    // The moved-on guard's baseline (issue #2478): the session's terminal-byte position, snapshotted
-    // from the roster when Speak was pressed. Above zero, so the Gateway's guard actually ARMS for a
-    // clip resumed later - this flow used to omit the field, it defaulted to zero, and the guard was
-    // unreachable from the shipped Speak Send.
-    expect(opts.baselineBufferBytes).toBe(4321);
+    // The moved-on guard's baseline (issue #2478): the session's terminal-byte position, whose roster
+    // read the Speak press STARTED - handed to the pipeline as a promise it awaits, so a quick Send
+    // waits for the answer instead of racing it. Resolves above zero, so the Gateway's guard actually
+    // ARMS for a clip resumed later - this flow used to omit the field, it defaulted to zero, and the
+    // guard was unreachable from the shipped Speak Send.
+    await expect(opts.baselineBufferBytes).resolves.toBe(4321);
     expect(listSessions).toHaveBeenCalledTimes(1);
 
     // The screen is released immediately and nothing on this path blocks on the synchronous
@@ -144,21 +145,50 @@ describe("Mobile Speak Send-direct (recording-stage)", () => {
     expect(sendPrompt).not.toHaveBeenCalled();
   });
 
-  it("delivers the clip unguarded (baseline unknown) when the roster read fails, never blocking the send", async () => {
-    listSessions.mockRejectedValueOnce(new Error("gateway unreachable"));
+  it("a quick Send WAITS for the Speak-press roster read instead of racing it (issue #2478 review defect)", async () => {
+    // The roster deliberately does not answer until AFTER Send is pressed - the exact quick-Send race.
+    // The component must hand the pipeline the still-pending promise, which resolves to the real
+    // record-time position once the roster answers; a peek at Send time would have read undefined.
+    let releaseRoster: (roster: { sessionId: string; totalBufferBytes: number }[]) => void = () => {};
+    listSessions.mockImplementationOnce(
+      () => new Promise<{ sessionId: string; totalBufferBytes: number }[]>((resolve) => { releaseRoster = resolve; }),
+    );
+    render(<SessionControls sessionId="sess-42" onFlash={() => {}} onError={() => {}} showKeyRows />);
+    const dialog = await typeAndOpenRecordingDialog();
+
+    fireEvent.click(within(dialog).getByText("Send")); // the roster read is still in flight
+
+    await waitFor(() => expect(backgroundTranscribeAndSend).toHaveBeenCalledTimes(1));
+    const [, , opts] = backgroundTranscribeAndSend.mock.calls[0] as unknown as [
+      string,
+      unknown,
+      { baselineBufferBytes?: Promise<number | undefined> },
+    ];
+    releaseRoster([{ sessionId: "sess-42", totalBufferBytes: 777 }]); // the roster answers afterwards
+    await expect(opts.baselineBufferBytes).resolves.toBe(777);
+  });
+
+  it("delivers the clip unguarded (baseline unknown, never zero) when the roster fails even after the retry", async () => {
+    // Two rejections: the snapshot retries a transient roster failure once, so a single rejection
+    // would succeed on the retry and hide what this test is about.
+    listSessions
+      .mockRejectedValueOnce(new Error("gateway unreachable"))
+      .mockRejectedValueOnce(new Error("gateway unreachable"));
     render(<SessionControls sessionId="sess-42" onFlash={() => {}} onError={() => {}} showKeyRows />);
     const dialog = await typeAndOpenRecordingDialog();
 
     fireEvent.click(within(dialog).getByText("Send"));
 
     // The words still go: a failed roster read yields an UNKNOWN baseline (the pipeline's documented
-    // omit-when-unknown contract, guard skipped for safety) - never a blocked or lost dictation.
+    // omit-when-unknown contract, guard skipped for safety) - never a blocked or lost dictation, and
+    // never a fabricated zero.
     await waitFor(() => expect(backgroundTranscribeAndSend).toHaveBeenCalledTimes(1));
     const [, , opts] = backgroundTranscribeAndSend.mock.calls[0] as unknown as [
       string,
       unknown,
-      { baselineBufferBytes?: number },
+      { baselineBufferBytes?: Promise<number | undefined> },
     ];
-    expect(opts.baselineBufferBytes).toBeUndefined();
+    await expect(opts.baselineBufferBytes).resolves.toBeUndefined();
+    expect(listSessions).toHaveBeenCalledTimes(2);
   });
 });

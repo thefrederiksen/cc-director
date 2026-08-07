@@ -233,7 +233,9 @@ export function SessionControls({ sessionId, onFlash, onError, showKeyRows }: Se
         // Insert the dictated words at the snapshotted caret inside the typed text: the Gateway submits
         // before + dictation + after. The caret splits the typed text into the two halves.
         composeParts: { before: composerText.slice(0, caret), after: composerText.slice(caret) },
-        // The terminal-byte position snapshotted at Speak press, for the moved-on guard (issue #2478).
+        // The terminal-byte position snapshot the Speak press started, for the moved-on guard
+        // (issue #2478). A promise: the pipeline awaits it before persisting, so a quick Send
+        // cannot outrun the roster read.
         baselineBufferBytes: baseline.read(),
         // On a send that does not complete the audio is kept durably for resume, but the typed text is
         // client-only: put it back (ahead of anything typed since) so Send never silently loses it. If

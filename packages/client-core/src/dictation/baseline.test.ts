@@ -5,8 +5,9 @@ import { act, renderHook } from "@testing-library/react";
 // Regression coverage for issue #2478: the Gateway's "session moved on" guard requires a
 // baselineBufferBytes above zero, and both taught Speak flows omitted it - so the guard never armed.
 // This file pins the shared snapshot the flows now take: the roster's terminal-byte position for the
-// selected session, read when Speak is pressed, and "unknown" (undefined, guard skipped for safety)
-// whenever the roster cannot answer - never a blocked or lost dictation.
+// selected session, STARTED when Speak is pressed and handed to the send pipeline AS A PROMISE (so a
+// quick Send waits for the answer instead of racing it), retried once on a transient roster failure,
+// and "unknown" (undefined - never a fabricated zero) only when the position is genuinely unknowable.
 
 const { listSessions } = vi.hoisted(() => ({
   listSessions: vi.fn(async (): Promise<{ sessionId?: string; totalBufferBytes?: number | string }[]> => []),
@@ -26,6 +27,7 @@ describe("snapshotBaselineBufferBytes", () => {
       { sessionId: "sess-42", totalBufferBytes: 48213 },
     ]);
     await expect(snapshotBaselineBufferBytes("sess-42")).resolves.toBe(48213);
+    expect(listSessions).toHaveBeenCalledTimes(1);
   });
 
   it("converts the wire's string form of the 64-bit integer", async () => {
@@ -33,66 +35,96 @@ describe("snapshotBaselineBufferBytes", () => {
     await expect(snapshotBaselineBufferBytes("sess-42")).resolves.toBe(Number("9007199254740993"));
   });
 
-  it("returns unknown when the session is not on the roster", async () => {
+  it("passes a genuine zero through as a real reading, distinct from unknown", async () => {
+    // A session whose terminal has produced nothing yet reads zero. That is an answer, not an absence:
+    // it must reach the record as 0, never be blurred into the unknown (undefined) state.
+    listSessions.mockResolvedValueOnce([{ sessionId: "sess-42", totalBufferBytes: 0 }]);
+    await expect(snapshotBaselineBufferBytes("sess-42")).resolves.toBe(0);
+  });
+
+  it("retries ONCE on a transient roster failure and returns the second answer", async () => {
+    listSessions
+      .mockRejectedValueOnce(new Error("request timed out"))
+      .mockResolvedValueOnce([{ sessionId: "sess-42", totalBufferBytes: 555 }]);
+    await expect(snapshotBaselineBufferBytes("sess-42")).resolves.toBe(555);
+    expect(listSessions).toHaveBeenCalledTimes(2);
+  });
+
+  it("returns unknown when the roster fails twice - and never rejects", async () => {
+    listSessions
+      .mockRejectedValueOnce(new Error("gateway unreachable"))
+      .mockRejectedValueOnce(new Error("gateway unreachable"));
+    await expect(snapshotBaselineBufferBytes("sess-42")).resolves.toBeUndefined();
+    expect(listSessions).toHaveBeenCalledTimes(2);
+  });
+
+  it("does NOT retry when the roster answered but does not know the session", async () => {
+    // The retry exists for the transient network failure only: a roster that answered without the
+    // session (or without its byte position) gave its answer, and asking again cannot change it.
     listSessions.mockResolvedValueOnce([{ sessionId: "other", totalBufferBytes: 5 }]);
     await expect(snapshotBaselineBufferBytes("sess-42")).resolves.toBeUndefined();
+    expect(listSessions).toHaveBeenCalledTimes(1);
   });
 
   it("returns unknown when the session carries no terminal-byte position", async () => {
     listSessions.mockResolvedValueOnce([{ sessionId: "sess-42" }]);
     await expect(snapshotBaselineBufferBytes("sess-42")).resolves.toBeUndefined();
   });
-
-  it("returns unknown when the roster read fails, so the dictation still delivers unguarded", async () => {
-    listSessions.mockRejectedValueOnce(new Error("gateway unreachable"));
-    await expect(snapshotBaselineBufferBytes("sess-42")).resolves.toBeUndefined();
-  });
 });
 
 describe("useDictationBaseline", () => {
-  it("is unknown before Speak is pressed, then reads the snapshot taken at Speak press", async () => {
+  it("resolves unknown before Speak is pressed, and to the Speak-press snapshot after", async () => {
     listSessions.mockResolvedValue([{ sessionId: "sess-42", totalBufferBytes: 4321 }]);
     const { result } = renderHook(() => useDictationBaseline("sess-42"));
 
-    expect(result.current.read()).toBeUndefined();
+    await expect(result.current.read()).resolves.toBeUndefined();
 
-    await act(async () => {
+    act(() => {
       result.current.snapshot();
     });
-    expect(result.current.read()).toBe(4321);
+    await expect(result.current.read()).resolves.toBe(4321);
   });
 
-  it("forgets the previous recording's snapshot the moment Speak is pressed again", async () => {
-    // The first press's roster answer is held back until AFTER the second press has answered, to
-    // prove a late first answer can never stamp the second recording (the token guard).
-    let releaseFirst: (roster: { sessionId: string; totalBufferBytes: number }[]) => void = () => {};
+  it("hands Send the promise of a roster read still in flight, so a quick Send WAITS instead of racing", async () => {
+    // The exact race the review found: Speak starts the read, Send arrives before it resolves. The
+    // hook must hand over the pending promise (which later resolves to the real position) - never a
+    // peek at whatever had resolved by Send time.
+    let releaseRoster: (roster: { sessionId: string; totalBufferBytes: number }[]) => void = () => {};
+    listSessions.mockImplementationOnce(() => new Promise((resolve) => { releaseRoster = resolve; }));
+    const { result } = renderHook(() => useDictationBaseline("sess-42"));
+
+    act(() => {
+      result.current.snapshot(); // Speak press: roster read deliberately still in flight
+    });
+    const handedToSend = result.current.read(); // the quick Send takes the promise now
+
+    releaseRoster([{ sessionId: "sess-42", totalBufferBytes: 777 }]); // the roster answers afterwards
+    await expect(handedToSend).resolves.toBe(777);
+  });
+
+  it("replaces the previous recording's snapshot on every Speak press", async () => {
+    // The first press's roster answer is held back forever; the second press answers immediately. The
+    // second recording's Send must get the second answer - a late first answer must be irrelevant.
     listSessions
-      .mockImplementationOnce(() => new Promise((resolve) => { releaseFirst = resolve; }))
+      .mockImplementationOnce(() => new Promise(() => { /* never answers */ }))
       .mockResolvedValueOnce([{ sessionId: "sess-42", totalBufferBytes: 200 }]);
     const { result } = renderHook(() => useDictationBaseline("sess-42"));
 
-    await act(async () => {
-      result.current.snapshot(); // first Speak press: roster answer deliberately in flight
+    act(() => {
+      result.current.snapshot(); // first Speak press
     });
-    expect(result.current.read()).toBeUndefined(); // forgotten/unknown while pending
-
-    await act(async () => {
-      result.current.snapshot(); // second Speak press: answers 200 immediately
+    act(() => {
+      result.current.snapshot(); // second Speak press replaces the stored promise
     });
-    expect(result.current.read()).toBe(200);
-
-    await act(async () => {
-      releaseFirst([{ sessionId: "sess-42", totalBufferBytes: 100 }]); // the late first answer arrives
-    });
-    expect(result.current.read()).toBe(200); // and is discarded, never stamping the second recording
+    await expect(result.current.read()).resolves.toBe(200);
   });
 
-  it("stays unknown with no session selected, without calling the roster", async () => {
+  it("resolves unknown with no session selected, without calling the roster", async () => {
     const { result } = renderHook(() => useDictationBaseline(undefined));
-    await act(async () => {
+    act(() => {
       result.current.snapshot();
     });
-    expect(result.current.read()).toBeUndefined();
+    await expect(result.current.read()).resolves.toBeUndefined();
     expect(listSessions).not.toHaveBeenCalled();
   });
 });

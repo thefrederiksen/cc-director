@@ -162,17 +162,18 @@ describe("Cockpit Speak Send-direct (recording-stage)", () => {
     const [sid, captured, opts] = backgroundTranscribeAndSend.mock.calls[0] as unknown as [
       string,
       { blob: Blob; recordedMs: number },
-      { composeParts?: { before: string; after: string }; baselineBufferBytes?: number },
+      { composeParts?: { before: string; after: string }; baselineBufferBytes?: Promise<number | undefined> },
     ];
     expect(sid).toBe("sess-42");
     expect(captured.blob).toBeInstanceOf(Blob);
     expect(captured.recordedMs).toBe(1000);
     expect(opts.composeParts).toEqual({ before: "A", after: "B" });
-    // The moved-on guard's baseline (issue #2478): the session's terminal-byte position, snapshotted
-    // from the roster when Speak was pressed. Above zero, so the Gateway's guard actually ARMS for a
-    // clip resumed later - this flow used to omit the field, it defaulted to zero, and the guard was
-    // unreachable from the shipped Speak Send.
-    expect(opts.baselineBufferBytes).toBe(4321);
+    // The moved-on guard's baseline (issue #2478): the session's terminal-byte position, whose roster
+    // read the Speak press STARTED - handed to the pipeline as a promise it awaits, so a quick Send
+    // waits for the answer instead of racing it. Resolves above zero, so the Gateway's guard actually
+    // ARMS for a clip resumed later - this flow used to omit the field, it defaulted to zero, and the
+    // guard was unreachable from the shipped Speak Send.
+    await expect(opts.baselineBufferBytes).resolves.toBe(4321);
 
     // The screen is released immediately: the dialog is gone without waiting for any transcription.
     await waitFor(() => expect(screen.queryByRole("dialog", { name: "Dictate" })).toBeNull());
