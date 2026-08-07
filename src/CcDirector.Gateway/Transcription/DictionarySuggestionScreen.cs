@@ -65,8 +65,10 @@ public static class DictionarySuggestionScreen
     {
         var sb = new StringBuilder();
         sb.AppendLine("You are screening candidate terms for a speech-to-text personal dictionary.");
-        sb.AppendLine("The dictionary biases a speech model toward distinctive terms it keeps misspelling:");
-        sb.AppendLine("product names, company names, people's names, and technical jargon.");
+        sb.AppendLine("The dictionary is applied AFTER transcription - it corrects the finished transcript,");
+        sb.AppendLine("and nothing in it is ever sent to the speech model. The terms it holds are the");
+        sb.AppendLine("distinctive ones the speech model keeps misspelling: product names, company names,");
+        sb.AppendLine("people's names, and technical jargon.");
         sb.AppendLine();
         sb.AppendLine("A clustering pass over the user's dictation transcripts produced the candidates below.");
         sb.AppendLine("The clustering is naive: it groups near-identical spellings, so many candidates are");

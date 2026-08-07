@@ -273,6 +273,15 @@
   <header class="doc-head">
     <p class="eyebrow">Design review - round 1</p>
     <h1>Dictation dictionary suggestions: all five screens</h1>
+    <blockquote style="border-left:4px solid #c0392b; margin:16px 0; padding:8px 14px;">
+      <strong>CORRECTION, 2026-08-07 (owner ruling, issue 2481).</strong>
+      The mockups below show the Vocabulary hint as "Terms biased into speech-to-text."
+      That is wrong and the shipped page no longer says it. Nothing in the dictionary is
+      ever sent to the speech-to-text provider - it is given audio only - because priming
+      the transcriber changes wording and sentence structure and corrupts the record of
+      what was said. The terms are corrected on the finished transcript afterwards. These
+      mockups are left as the dated record of the 2026-07-24 review.
+    </blockquote>
     <p>
       The feature in one sentence: the gateway keeps your dictation transcripts for 30 days,
       notices the words the speech model keeps getting wrong, and offers them as one-press
@@ -395,6 +404,14 @@
               <section class="section">
                 <h2>Vocabulary</h2>
                 <p class="hint">Terms biased into speech-to-text.</p>
+                <!-- CORRECTION, 2026-08-07 (owner ruling, issue 2481): this copy is WRONG and the
+                     shipped page no longer says it. It now reads "Terms corrected to this spelling
+                     after transcription." Nothing in the dictionary is ever sent to the
+                     speech-to-text provider; priming the transcriber changes wording and sentence
+                     structure and corrupts the record of what was said. Do NOT copy this line. -->
+                <p class="hint" style="color:#c0392b;"><strong>CORRECTION (issue 2481):</strong>
+                  wrong copy - the shipped page reads "Terms corrected to this spelling after
+                  transcription." Nothing here is sent to the speech-to-text provider.</p>
                 <div class="chips">
                   <span class="chip">Soren <span class="x">x</span></span>
                   <span class="chip">DevThrottle <span class="x">x</span></span>
@@ -490,6 +507,14 @@
               <section class="section">
                 <h2>Vocabulary</h2>
                 <p class="hint">Terms biased into speech-to-text.</p>
+                <!-- CORRECTION, 2026-08-07 (owner ruling, issue 2481): this copy is WRONG and the
+                     shipped page no longer says it. It now reads "Terms corrected to this spelling
+                     after transcription." Nothing in the dictionary is ever sent to the
+                     speech-to-text provider; priming the transcriber changes wording and sentence
+                     structure and corrupts the record of what was said. Do NOT copy this line. -->
+                <p class="hint" style="color:#c0392b;"><strong>CORRECTION (issue 2481):</strong>
+                  wrong copy - the shipped page reads "Terms corrected to this spelling after
+                  transcription." Nothing here is sent to the speech-to-text provider.</p>
                 <div class="chips">
                   <span class="chip chip-new">mindzie <span class="x">x</span></span>
                   <span class="chip chip-new">ConPty <span class="x">x</span></span>

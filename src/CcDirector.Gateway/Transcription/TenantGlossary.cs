@@ -7,9 +7,10 @@ namespace CcDirector.Gateway.Transcription;
 /// <summary>
 /// The single source of truth for WHERE a tenant's dictation glossary lives and how it is loaded and
 /// additively edited on the Gateway. The dictionary editor routes (<c>GET/PUT/POST /ingest/dictionary</c>),
-/// the recording transcriber, and the suggestion "apply" path all resolve the same per-tenant
-/// <c>dictionary.yaml</c> through here, so a term added on one path biases every other path for that tenant -
-/// and one tenant's glossary is physically partitioned from another's.
+/// the recording cleanup pass, and the suggestion "apply" path all resolve the same per-tenant
+/// <c>dictionary.yaml</c> through here, so a term added on one path is seen by every other path for that
+/// tenant - and one tenant's glossary is physically partitioned from another's. The glossary corrects
+/// FINISHED transcripts and is never sent to the speech-to-text provider (issue 2481).
 ///
 /// PER-TENANT PATH: the single Local tenant keeps the existing shared flat file (so a self-host install's
 /// glossary does not move); every other tenant gets its own <c>&lt;tenantFolder&gt;/dictionary.yaml</c> under the
