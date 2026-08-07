@@ -422,6 +422,56 @@ public sealed class AgentDictionaryAddTests : IAsyncLifetime
         Assert.DoesNotContain("Mangled", body);
     }
 
+    // ---------- A CONCURRENT HUMAN EDIT SURVIVES AN AGENT ADD, THROUGH THE REAL ENDPOINTS ----------
+
+    /// <summary>
+    /// The invariant the whole grant rests on, raced over HTTP rather than at the writer.
+    /// <see cref="TenantGlossaryWriterRaceTests"/> proves the lock itself and runs in the fast suite; this
+    /// proves the two ENDPOINTS actually go through it, which is the part a later edit could quietly undo
+    /// by writing the file directly in a handler again.
+    ///
+    /// Asserts a serial ordering, not a fixed winner: the person's save may legitimately overwrite the
+    /// agent's word and vice versa, but the agent's word must never survive while the person's
+    /// wrong-spellings list is dropped - that is half of each write and no ordering at all.
+    /// </summary>
+    [Fact]
+    public async Task A_persons_save_racing_an_agent_add_over_http_never_loses_the_persons_corrections()
+    {
+        const string curated =
+            "{\"vocabulary\":[\"Frederiksen\"]," +
+            "\"commonMistranscriptions\":{\"Frederiksen\":[\"Fredrickson\",\"Fredriksson\"]}," +
+            "\"profiles\":{}}";
+
+        for (var round = 0; round < 12; round++)
+        {
+            // A fresh account per round, so one round's file cannot carry another's state and turn a lost
+            // update into a pass.
+            var (tenant, person) = Enrolled($"dev-race-{round}", $"sub-race-{round}", $"race{round}@example.com");
+            using var personClient = person;
+            var (_, agent) = LiveSessionIn(tenant, "director-race");
+            using var agentClient = agent;
+
+            var saveTask = personClient.PutAsync("ingest/dictionary", Body(curated));
+            var addTask = agentClient.PostAsync("ingest/dictionary/terms", Body("{\"terms\":[\"Kubernetes\"]}"));
+            var save = await saveTask;
+            var add = await addTask;
+
+            Assert.Equal(HttpStatusCode.OK, save.StatusCode);
+            Assert.Equal(HttpStatusCode.OK, add.StatusCode);
+
+            var vocabulary = await Vocabulary(personClient);
+            var wrongSpellings = await WrongSpellingsFor(personClient, "Frederiksen");
+
+            Assert.Contains("Frederiksen", vocabulary);
+            Assert.Equal(new[] { "Fredrickson", "Fredriksson" }, wrongSpellings);
+
+            var agentWordSurvived = vocabulary.Contains("Kubernetes");
+            Assert.True(
+                agentWordSurvived ? vocabulary.Length == 2 : vocabulary.Length == 1,
+                $"round {round}: no serial ordering produces [{string.Join(", ", vocabulary)}]");
+        }
+    }
+
     /// <summary>Finding is not acting. The trail read offers no way to act on what it finds - removal stays
     /// the person's, in the Cockpit editor.</summary>
     [Theory]

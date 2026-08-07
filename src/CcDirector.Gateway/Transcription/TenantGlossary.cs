@@ -48,9 +48,25 @@ public static class TenantGlossary
         IReadOnlyList<string> vocabulary,
         IReadOnlyDictionary<string, IReadOnlyList<string>> mistranscriptions)
     {
-        var path = PathFor(tenant);
-        var current = DictionaryLoader.LoadFromDisk(path);
+        // Through TenantGlossaryWriter, so the read and the write are ONE step no other writer can
+        // interleave with. Unguarded, this could load the document, be overtaken by the person's Cockpit
+        // save, and write its now-stale copy back over it - erasing a wrong-spellings list they had just
+        // edited (found reviewing #2484).
+        return TenantGlossaryWriter.Mutate(tenant, current => Merge(current, vocabulary, mistranscriptions));
+    }
 
+    /// <summary>
+    /// The pure merge - existing document in, updated document out. Split from the write so the additive
+    /// rule can be read and tested without a file system, and so the ONLY thing left around the file access
+    /// is the lock. It must derive everything from <paramref name="current"/>: it runs inside the lock and
+    /// possibly after a wait, so a value captured before the wait is exactly the stale copy that caused the
+    /// defect.
+    /// </summary>
+    internal static DictationDictionary Merge(
+        DictationDictionary current,
+        IReadOnlyList<string> vocabulary,
+        IReadOnlyDictionary<string, IReadOnlyList<string>> mistranscriptions)
+    {
         var vocab = current.Vocabulary.ToList();
         foreach (var term in vocabulary)
         {
@@ -79,9 +95,7 @@ public static class TenantGlossary
                 patterns[term] = variants;
         }
 
-        var updated = new DictationDictionary(vocab, patterns, current.Profiles);
-        DictionaryLoader.WriteToDisk(path, updated);
-        return DictionaryLoader.LoadFromDisk(path);
+        return new DictationDictionary(vocab, patterns, current.Profiles);
     }
 
     /// <summary>A filesystem-safe folder name for a tenant partition - identical to the sanitiser

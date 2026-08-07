@@ -302,9 +302,11 @@ internal static class RecordingEndpoints
                 if (dto is null)
                     return Results.BadRequest(new { error = "dictionary body required" });
 
-                var path = GlossaryPathFor(t.Value);
-                DictionaryLoader.WriteToDisk(path, FromDto(dto));
-                var reread = DictionaryLoader.LoadFromDisk(path);
+                // Through TenantGlossaryWriter, taking the SAME per-tenant lock the additive path takes.
+                // A whole-document save needs no read of its own, but if it can land in the MIDDLE of
+                // somebody else's read-modify-write then their stale copy is written back over it and this
+                // person's save vanishes - which was the human-edit-lost case found reviewing #2484.
+                var reread = TenantGlossaryWriter.Replace(t.Value, FromDto(dto));
                 return Results.Json(ToDto(reread));
             }
             catch (JsonException ex)
@@ -362,46 +364,57 @@ internal static class RecordingEndpoints
                     }, statusCode: StatusCodes.Status403Forbidden);
                 }
 
-                var path = GlossaryPathFor(t.Value);
-                var current = ToDto(DictionaryLoader.LoadFromDisk(path));
-
-                // The terms that are ACTUALLY new, so the trail below names a session that changed
-                // something. Matched case-insensitively for the same reason TenantGlossary.AddTerms does:
-                // "kubernetes" beside "Kubernetes" is two entries for one word, and the existing one wins.
+                // The terms that were ACTUALLY new, so the trail below names a session that changed
+                // something. Filled INSIDE the lock, from the document the writer hands over - deciding
+                // "is this term already there?" against a copy read outside the lock is the stale read
+                // that made a concurrent human edit losable in the first place.
                 var added = new List<string>();
-                foreach (var term in add.Terms ?? new())
-                {
-                    var trimmed = term?.Trim();
-                    if (!string.IsNullOrWhiteSpace(trimmed) &&
-                        !current.Vocabulary.Any(v => string.Equals(v, trimmed, StringComparison.OrdinalIgnoreCase)))
-                    {
-                        current.Vocabulary.Add(trimmed);
-                        added.Add(trimmed);
-                    }
-                }
 
-                foreach (var kv in add.Mistranscriptions ?? new())
+                var reread = TenantGlossaryWriter.Mutate(t.Value, current =>
                 {
-                    var term = kv.Key?.Trim();
-                    if (string.IsNullOrWhiteSpace(term) || kv.Value is null)
-                        continue;
-                    if (!current.CommonMistranscriptions.TryGetValue(term, out var variants))
-                    {
-                        variants = new List<string>();
-                        current.CommonMistranscriptions[term] = variants;
-                    }
-                    foreach (var v in kv.Value)
-                    {
-                        var vv = v?.Trim();
-                        if (!string.IsNullOrWhiteSpace(vv) && !variants.Contains(vv))
-                            variants.Add(vv);
-                    }
-                }
+                    // The writer calls this once inside the lock; cleared anyway so that if it ever gains a
+                    // retry, a second pass cannot report a term twice.
+                    added.Clear();
+                    var document = ToDto(current);
 
-                DictionaryLoader.WriteToDisk(path, FromDto(current));
+                    // Matched case-insensitively for the same reason TenantGlossary.Merge does:
+                    // "kubernetes" beside "Kubernetes" is two entries for one word, and the existing wins.
+                    foreach (var term in add.Terms ?? new())
+                    {
+                        var trimmed = term?.Trim();
+                        if (!string.IsNullOrWhiteSpace(trimmed) &&
+                            !document.Vocabulary.Any(v => string.Equals(v, trimmed, StringComparison.OrdinalIgnoreCase)))
+                        {
+                            document.Vocabulary.Add(trimmed);
+                            added.Add(trimmed);
+                        }
+                    }
+
+                    foreach (var kv in add.Mistranscriptions ?? new())
+                    {
+                        var term = kv.Key?.Trim();
+                        if (string.IsNullOrWhiteSpace(term) || kv.Value is null)
+                            continue;
+                        if (!document.CommonMistranscriptions.TryGetValue(term, out var variants))
+                        {
+                            variants = new List<string>();
+                            document.CommonMistranscriptions[term] = variants;
+                        }
+                        foreach (var v in kv.Value)
+                        {
+                            var vv = v?.Trim();
+                            if (!string.IsNullOrWhiteSpace(vv) && !variants.Contains(vv))
+                                variants.Add(vv);
+                        }
+                    }
+
+                    return FromDto(document);
+                });
 
                 // Record WHICH SESSION added the word. There is no confirmation step by the owner's ruling,
-                // so this trail is the only thing that lets a bad entry be traced and swept later.
+                // so this trail is the only thing that lets a bad entry be traced and swept later. Outside
+                // the glossary lock on purpose: it writes a different file, and holding a lock across two
+                // files is how two writers that each want both end up deadlocked.
                 if (callingSession is not null)
                     GlossaryAdditionLog.Record(
                         t.Value,
@@ -410,7 +423,7 @@ internal static class RecordingEndpoints
                         added,
                         DateTime.UtcNow);
 
-                return Results.Json(ToDto(DictionaryLoader.LoadFromDisk(path)));
+                return Results.Json(ToDto(reread));
             }
             catch (JsonException ex)
             {
