@@ -228,46 +228,62 @@ export async function backgroundTranscribeAndSend(
   // pressed and the screen is never quiet.
   publishDictationStatus({ sessionId, uploadId: rec.id, phase: "saving" });
 
+  // RESERVE the upload id from the kick machinery for the whole save-and-enrich window. The first
+  // durable write makes the record VISIBLE to every automatic trigger (app load, the online event,
+  // foreground), and a kick landing before enrichment would list the record and drive it with the
+  // baseline still unknown - uploading unguarded and racing both the enrichment write and this flow's
+  // own first drive. The reservation is the same in-flight set every drive honors, so a kick no-ops
+  // on exactly this id until enrichment has finished and THIS flow drives it. It lives only in
+  // memory, deliberately: a crash or reload drops it with the process, and the resume path then
+  // drives the durable unknown record - unguarded, which is exactly what the durable copy honestly
+  // knows.
+  _inFlight.add(rec.id);
   try {
-    await savePending(rec);
-  } catch {
-    // Durable storage genuinely unavailable (rare, e.g. a private-mode tab with IndexedDB disabled): the
-    // clip cannot be queued, so say so loudly and restore the typed text. We do NOT silently one-shot it.
-    publishDictationStatus({
-      sessionId,
-      uploadId: rec.id,
-      phase: "failed",
-      retryable: false,
-      error: NO_DURABLE_STORE_MESSAGE,
-    });
-    hooks.onError?.(NO_DURABLE_STORE_MESSAGE);
-    hooks.onFailed?.();
-    return;
-  }
-
-  // The clip is durable. Now - and only now - wait for the press-time baseline snapshot and enrich
-  // the pending record with it before the first upload. When the ORIGINAL press-time promise cannot
-  // answer, unknown is FINAL: never a fresh roster read here, because a reading taken now can include
-  // bytes the session produced during or after the recording, over-stating the baseline and masking
-  // exactly the movement the guard exists to detect. The wait is bounded (the shared snapshot rides
-  // the roster read's own timeout and never rejects); the defensive catch is for a foreign caller's
-  // promise only, because a guard input must never cost the user's words.
-  if (pressTimeBaseline !== undefined && typeof pressTimeBaseline !== "number") {
-    let bytes: number | undefined;
     try {
-      bytes = await pressTimeBaseline;
+      await savePending(rec);
     } catch {
-      bytes = undefined;
+      // Durable storage genuinely unavailable (rare, e.g. a private-mode tab with IndexedDB disabled): the
+      // clip cannot be queued, so say so loudly and restore the typed text. We do NOT silently one-shot it.
+      publishDictationStatus({
+        sessionId,
+        uploadId: rec.id,
+        phase: "failed",
+        retryable: false,
+        error: NO_DURABLE_STORE_MESSAGE,
+      });
+      hooks.onError?.(NO_DURABLE_STORE_MESSAGE);
+      hooks.onFailed?.();
+      return;
     }
-    if (bytes !== undefined) {
-      rec = { ...rec, baselineBufferBytes: bytes };
+
+    // The clip is durable. Now - and only now - wait for the press-time baseline snapshot and enrich
+    // the pending record with it before the first upload. When the ORIGINAL press-time promise cannot
+    // answer, unknown is FINAL: never a fresh roster read here, because a reading taken now can include
+    // bytes the session produced during or after the recording, over-stating the baseline and masking
+    // exactly the movement the guard exists to detect. The wait is bounded (the shared snapshot rides
+    // the roster read's own timeout and never rejects); the defensive catch is for a foreign caller's
+    // promise only, because a guard input must never cost the user's words.
+    if (pressTimeBaseline !== undefined && typeof pressTimeBaseline !== "number") {
+      let bytes: number | undefined;
       try {
-        await savePending(rec);
+        bytes = await pressTimeBaseline;
       } catch {
-        // The durable copy keeps unknown (a resume would go unguarded); this attempt still carries
-        // the press-time reading in memory. Never a reason to hold the words.
+        bytes = undefined;
+      }
+      if (bytes !== undefined) {
+        rec = { ...rec, baselineBufferBytes: bytes };
+        try {
+          await savePending(rec);
+        } catch {
+          // The durable copy keeps unknown (a resume would go unguarded); this attempt still carries
+          // the press-time reading in memory. Never a reason to hold the words.
+        }
       }
     }
+  } finally {
+    // Release, and hand off to the drive below with NO await in between: driveRecord re-takes the
+    // in-flight entry synchronously on entry, so no kick can slip into the gap.
+    _inFlight.delete(rec.id);
   }
 
   // Drive the first delivery attempt now. resumed:false so an immediate send injects without the

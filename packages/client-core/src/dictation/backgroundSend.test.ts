@@ -156,6 +156,52 @@ describe("backgroundTranscribeAndSend", () => {
     expect(vi.mocked(uploadDictationToSession).mock.calls[0][0].baselineBufferBytes).toBe(48213);
   });
 
+  it("a kick landing between the first save and enrichment cannot drive the unknown record (issue #2478 round three)", async () => {
+    // The first durable write makes the record visible to every automatic trigger, and the
+    // enrichment window is as long as a roster read. A kick (online, foreground, app load) that
+    // listed and drove the record inside that window would upload with the baseline still unknown
+    // and race the enrichment write and the original drive. The upload id is reserved from the kick
+    // machinery for the whole window, so the kick must no-op.
+    vi.mocked(uploadDictationToSession).mockResolvedValue(SUBMITTED);
+    let releaseBaseline: (bytes: number | undefined) => void = () => {};
+    const pending = new Promise<number | undefined>((resolve) => { releaseBaseline = resolve; });
+
+    const send = backgroundTranscribeAndSend("sid", captured, { baselineBufferBytes: pending });
+    await flush();
+    expect(savePending).toHaveBeenCalledTimes(1);
+    const saved = vi.mocked(savePending).mock.calls[0][0];
+    expect(saved.baselineBufferBytes).toBeUndefined();
+
+    // The kick lands mid-window: the durable store lists the unknown record and the kick machinery
+    // tries to drive it, exactly as the online/visibility listeners would.
+    vi.mocked(listPending).mockResolvedValue([saved]);
+    await resumePendingDictations();
+    expect(uploadDictationToSession).not.toHaveBeenCalled(); // the reservation held: no unguarded upload
+
+    releaseBaseline(48213);
+    await send;
+    // Exactly ONE upload happened, from the original flow: enriched with the press-time reading and
+    // an immediate (not resumed) send - never the kick's resumed, unknown-baseline drive.
+    expect(uploadDictationToSession).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(uploadDictationToSession).mock.calls[0][0].baselineBufferBytes).toBe(48213);
+    expect(vi.mocked(uploadDictationToSession).mock.calls[0][0].resumed).toBe(false);
+  });
+
+  it("a crash or reload still resumes the durable unknown record - the reservation dies with the process", async () => {
+    // The reservation lives only in memory, deliberately. After a crash mid-enrichment a fresh
+    // process holds no reservation, and the resume path drives the durable unknown record from the
+    // on-device copy - unguarded, which is exactly what that copy honestly knows.
+    vi.mocked(uploadDictationToSession).mockResolvedValue(SUBMITTED);
+    const rec: PendingDictation = { ...makeRecord("id-unknown-crash"), baselineBufferBytes: undefined };
+    vi.mocked(listPending).mockResolvedValue([rec]);
+
+    await resumePendingDictations();
+
+    expect(uploadDictationToSession).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(uploadDictationToSession).mock.calls[0][0].baselineBufferBytes).toBeUndefined();
+    expect(vi.mocked(uploadDictationToSession).mock.calls[0][0].resumed).toBe(true);
+  });
+
   it("an UNKNOWN press-time baseline is FINAL - persisted as unknown, no later re-read, never a fabricated zero (issue #2478)", async () => {
     // Unknown (the press-time read could not answer) and zero (a terminal that had produced nothing
     // yet) are different facts. Collapsing unknown into zero at persist time was how the moved-on
