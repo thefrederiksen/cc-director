@@ -93,9 +93,15 @@ public sealed class CrossProcessGlossaryLockTests : IDisposable
 
         // The child must actually have written, or this proves nothing at all - a silently-failed child
         // would leave the parent racing itself and passing.
+        var diagnosticsPath = Path.Combine(_root, "child-diagnostics.txt");
+        var childDiagnostics = File.Exists(diagnosticsPath)
+            ? File.ReadAllText(diagnosticsPath)
+            : "(the child wrote no diagnostics at all)";
         Assert.True(
             trail.Any(e => e.SessionId == "child"),
-            $"the second process wrote nothing, so no cross-process race happened. Child output:\n{ReadOutput(child)}");
+            $"the second process wrote nothing, so no cross-process race happened.\n" +
+            $"Parent glossary path: {TenantGlossary.PathFor(new TenantId(tenant))}\n" +
+            $"Child said:\n{childDiagnostics}\nChild output:\n{ReadOutput(child)}");
         Assert.True(trail.Any(e => e.SessionId == "parent"), "the parent wrote nothing");
 
         // THE ASSERTION. Every word that survives is attributable. Unlocked, two processes tear the shared
@@ -200,6 +206,27 @@ public sealed class CrossProcessGlossaryWriterHelper
         if (string.IsNullOrEmpty(tenant) || string.IsNullOrEmpty(readyPath) || string.IsNullOrEmpty(goPath))
             return;
 
+        // A diagnostic the PARENT can read, so a child that silently does the wrong thing is debuggable.
+        // A child process that fails invisibly is worse than no child: the parent races itself and passes.
+        var diagnostics = Path.Combine(Path.GetDirectoryName(readyPath)!, "child-diagnostics.txt");
+        void Note(string line) { try { File.AppendAllText(diagnostics, line + "\n"); } catch { } }
+
+        // POINT THE CHILD AT THE PARENT'S ROOT, and note why this line is not redundant. Something in this
+        // assembly's start-up redirects CC_DIRECTOR_ROOT to a per-run isolated directory, so the value the
+        // parent passed in the environment is overwritten before any test runs. The first version of this
+        // test looked like a child that "wrote nothing" - it had in fact written all forty terms, into its
+        // own private root, where the parent could never see them. That is precisely the shape of a
+        // cross-process test that passes while proving nothing, so the root is re-asserted here, from the
+        // separate variable the redirect does not touch, and CcStorage reads it live.
+        var parentRoot = Environment.GetEnvironmentVariable(CrossProcessGlossaryLockTests.ChildRootVar);
+        if (!string.IsNullOrEmpty(parentRoot))
+            Environment.SetEnvironmentVariable("CC_DIRECTOR_ROOT", parentRoot);
+
+        Note($"root={Environment.GetEnvironmentVariable("CC_DIRECTOR_ROOT")}");
+        Note($"tenant={tenant}");
+        Note($"glossaryPath={TenantGlossary.PathFor(new TenantId(tenant))}");
+        Note($"trailPath={GlossaryAdditionLog.PathFor(new TenantId(tenant))}");
+
         File.WriteAllText(readyPath, "ready");
 
         var deadline = DateTime.UtcNow.AddMinutes(3);
@@ -207,7 +234,16 @@ public sealed class CrossProcessGlossaryWriterHelper
             Thread.Sleep(10);
         Assert.True(File.Exists(goPath), "the parent never released the race");
 
-        CrossProcessGlossaryLockTests.WriteMany(
-            new TenantId(tenant), "child", CrossProcessGlossaryLockTests.WritesPerSide);
+        try
+        {
+            CrossProcessGlossaryLockTests.WriteMany(
+                new TenantId(tenant), "child", CrossProcessGlossaryLockTests.WritesPerSide);
+            Note("wrote " + CrossProcessGlossaryLockTests.WritesPerSide + " terms");
+        }
+        catch (Exception ex)
+        {
+            Note("WRITE FAILED: " + ex);
+            throw;
+        }
     }
 }
