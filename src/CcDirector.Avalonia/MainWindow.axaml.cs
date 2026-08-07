@@ -1420,12 +1420,14 @@ public partial class MainWindow : Window
             //
             // Not the no-Gateway verdict either: that is the benign accepted trade, and dressing a
             // live refusal in it would be worse than silence.
-            FileLog.Write($"[MainWindow] the Gateway REFUSED this Director's session key: {ex.Message}");
+            FileLog.Write($"[MainWindow] the Gateway did NOT accept this Director's session key: {ex.Message}");
             _lastFleetToolCheck = new FleetToolCheck(
                 FleetToolVerdict.GatewayRefusedKey, null, OwnToolBinDir(),
-                "The Gateway is connected but refuses this Director's session keys, so every "
-                + "session's command line is answered 401. The Gateway is older than this Director "
-                + "and needs deploying; nothing on this machine can repair it.");
+                "The Gateway is connected but did not accept this Director's session key, so every "
+                + "session's command line is answered 401. The most common cause is a Gateway older "
+                + "than this Director, which needs deploying - but the registration only reports that "
+                + "it did not land, not why, so a transport failure looks the same from here. Nothing "
+                + "on this machine can repair either one.");
         }
         catch (Exception ex)
         {

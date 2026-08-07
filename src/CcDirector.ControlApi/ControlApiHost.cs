@@ -545,26 +545,42 @@ public sealed class ControlApiHost : IAsyncDisposable
     private static void ObserveSessionKeyRegistration(
         GatewayStreamClient stream, SessionKeyRegistration registration, Guid sessionId)
     {
-        _ = Task.Run(async () =>
+        // STARTED HERE, SYNCHRONOUSLY, AND ONLY THEN OBSERVED. The call runs on this thread to its
+        // first await, which is what puts the registration on the tunnel before the agent process is
+        // launched - let alone booted - exactly as the call site promises.
+        //
+        // Task.Run would look equivalent and is NOT. It defers the whole call until the thread pool
+        // gets to it, so a session could present its key before the registration had even begun and be
+        // answered 401, and a short-lived session could be revoked before the queued work started and
+        // then have its dead credential re-registered behind it. Observing a result must not change
+        // WHEN the work happens.
+        var pending = stream.RegisterSessionKeyAsync(registration);
+        _ = ObserveAsync(pending, sessionId);
+
+        // Parameters named apart from the locals above on purpose: a local function parameter that
+        // shadows an enclosing local is a compile error in some scopes, and this is not the place to
+        // find that out.
+        static async Task ObserveAsync(Task<bool> registrationTask, Guid id)
         {
             // A task root is an entry point, so the catch belongs here: there is no caller left to
             // throw to, and an escape would be an unobserved exception rather than a reported one.
             try
             {
-                var registered = await stream.RegisterSessionKeyAsync(registration).ConfigureAwait(false);
+                var registered = await registrationTask.ConfigureAwait(false);
                 if (!registered)
                     FileLog.Write(
-                        $"[ControlApiHost] session {sessionId} was launched with a Gateway key the Gateway did NOT "
-                        + "accept: its fleet commands will answer 401 until a reseed registers it. When this repeats "
-                        + "for EVERY session, the Gateway is older than this Director and needs deploying - the keys "
-                        + "are not the fault.");
+                        $"[ControlApiHost] session {id} was launched with a Gateway key the Gateway did NOT "
+                        + "accept, so its fleet commands will answer 401 until a reseed registers it. The reason is "
+                        + "NOT known here: RegisterSessionKeyAsync returns the same false for a hub-side refusal, a "
+                        + "tunnel that was not connected, and a transport failure. If this repeats for EVERY session, "
+                        + "check whether the Gateway is older than this Director.");
             }
             catch (Exception ex)
             {
                 FileLog.Write(
-                    $"[ControlApiHost] session key registration for {sessionId} FAULTED: {ex.Message}");
+                    $"[ControlApiHost] session key registration for {id} FAULTED: {ex.Message}");
             }
-        });
+        }
     }
 
     /// <summary>

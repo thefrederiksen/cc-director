@@ -684,14 +684,23 @@ jobs:
           other=$(awk -v t="$TARGET" -v need="$OTHER_RUN_REQUIRED" '
             !armed && $2=="200" && $3==t { run++; if (run >= 3) armed=1; next }
             !armed { run=0; next }
-            # Armed. Count only CONSECUTIVE 200s carrying something other than the target; anything
-            # else (a 200 back on the target, an outage sample) breaks the run and resets it.
-            armed && $2=="200" && $3!=t {
+            # Armed. Count 200s carrying something other than the target. Only a 200 back ON the
+            # target resets the count - an outage sample does NOT.
+            #
+            # That asymmetry is deliberate and was a review finding. Resetting on any non-200 sounds
+            # equivalent and is not: a genuinely rolled-back instance that is also unhealthy serves the
+            # old commit in runs of 200s separated by 503s, and under a reset-on-anything rule it could
+            # do that for the entire watch without ever reaching the threshold - so the worst kind of
+            # rollback, one that is both wrong AND failing, would be the one we stayed silent about.
+            # The question this scan asks is "has production stopped serving what we deployed", and an
+            # outage is not evidence that it resumed.
+            armed && $2=="200" && $3==t { seen=0; next }
+            armed && $2=="200" {
               seen++; last=($3=="" ? "none" : $3)
               if (seen >= need) { print last; exit }
               next
             }
-            armed { seen=0; next }
+            armed { next }
           ' "$LOG")
           serving=$(printf '%s' "$(curl -s -m 10 "${GATEWAY_URL}/healthz" 2>/dev/null)" | jq -r '.commit // empty' 2>/dev/null || echo "")
           echo "serving_commit_at_end=${serving}" >> "$GITHUB_OUTPUT"

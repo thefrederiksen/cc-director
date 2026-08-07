@@ -602,6 +602,14 @@ public sealed class Session : IDisposable
         // slightly stale id costs one turn of narration, while taking a malformed one costs the session
         // its voice for good, with no error to notice. So a value that does not parse as a GUID is
         // refused and said out loud, and the previous good value stands.
+        //
+        // WHAT THIS DOES NOT DO, stated plainly because the shape of the check invites the wrong
+        // assumption: it validates SHAPE, not identity. A well-formed GUID naming a transcript that
+        // does not exist is still accepted, and would silence narration in exactly the same way. So
+        // this closes the incident and the whole class of malformed-value writers; it does not close
+        // the class of well-formed-but-wrong ones. Closing that needs the pointer checked against a
+        // transcript that actually exists, which is a larger change and is deliberately not attempted
+        // here.
         if (!string.IsNullOrWhiteSpace(claudeSessionId))
         {
             if (Guid.TryParse(claudeSessionId, out _))

@@ -219,6 +219,34 @@ public sealed class SessionPointerWatcher : IDisposable
             return false;
         }
 
+        // A drop naming an id that is not a session id is REFUSED WHOLE, here, before either writer
+        // below runs. This is the chokepoint and it has to be: the id reaches the session by TWO
+        // routes - UpdateClaudeSessionPointer, and RelinkClaudeSession, which assigns
+        // Session.ClaudeSessionId directly through its internal setter. Guarding only the first leaves
+        // the second to re-apply exactly what was just refused, which is not a hypothetical: it is what
+        // the 2026-08-05 log shows happening, "RelinkClaudeSession: Linked ... to Claude session x"
+        // one line after the pointer update (#2456).
+        //
+        // The cost of accepting one is the whole point. A session whose id no longer resolves to a
+        // transcript cannot be narrated: the voice path reads no reply, records "nothing to narrate"
+        // and returns without generating anything, so the session goes silent for good with no error
+        // raised anywhere. Three sessions were lost that way, one while running a release gate.
+        //
+        // Refused drops are DELETED rather than left. A malformed body will never become valid, so
+        // leaving it would have the two-second sweep retry and re-log it forever. That is unlike the
+        // token-mismatch refusal above, which is left in place deliberately because it is evidence of
+        // a write by something other than that session's own hook.
+        if (!string.IsNullOrWhiteSpace(evt.ClaudeSessionId) && !Guid.TryParse(evt.ClaudeSessionId, out _))
+        {
+            FileLog.Write($"[SessionPointerWatcher] REFUSED the whole drop for {sessionId}: claudeId " +
+                          $"'{evt.ClaudeSessionId}' is not a GUID (event={evt.HookEvent} source={evt.Source}). " +
+                          "A pointer drop carrying a non-GUID id is a bug in whatever wrote it; the session " +
+                          "keeps the pointer it had - see issue #2456.");
+            try { File.Delete(path); }
+            catch (Exception ex) { FileLog.Write($"[SessionPointerWatcher] could not remove refused {path}: {ex.Message}"); }
+            return false;
+        }
+
         FileLog.Write($"[SessionPointerWatcher] drop for {sessionId}: event={evt.HookEvent} source={evt.Source} " +
                       $"claudeId={evt.ClaudeSessionId} transcript={evt.TranscriptPath}");
         session.UpdateClaudeSessionPointer(evt.ClaudeSessionId, evt.TranscriptPath, evt.Source);

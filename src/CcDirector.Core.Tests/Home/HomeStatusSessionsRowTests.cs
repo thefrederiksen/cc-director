@@ -167,7 +167,23 @@ public class HomeStatusSessionsRowTests
 
         Assert.Contains("Gateway", detail, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("EVERY session", detail, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("out of date", detail, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("older than this Director", detail, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void GatewayRefusedTheKey_OffersTheCauseWithoutAssertingIt()
+    {
+        // The evidence underneath this row is a single false from RegisterSessionKeyAsync, which
+        // returns the same value for a hub-side refusal, an unconnected tunnel and a transport
+        // failure. Stating "the Gateway is out of date" as fact would be a confident diagnosis drawn
+        // from evidence that cannot support it - the very failure mode this row exists to end, which
+        // makes it the worst possible place to reintroduce it.
+        var detail = SessionsRow(BuildWith(new FleetToolCheck(
+            FleetToolVerdict.GatewayRefusedKey, null, @"C:\x\bin", "refused")))!.Detail;
+
+        Assert.Contains("did not accept", detail, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("most often", detail, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("is out of date", detail, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

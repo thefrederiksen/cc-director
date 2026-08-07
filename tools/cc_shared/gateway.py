@@ -102,11 +102,12 @@ def session_id() -> Optional[str]:
 # tells the two apart. It is deliberately not a guess about which cause applies - the tool cannot
 # tell from here, and inventing a verdict is how the wrong one gets chased next time.
 _REFUSED_KEY_CAUSES = (
-    "A session key is refused for two very different reasons, and this answer cannot tell them "
-    "apart.\n"
+    "A 401 here has more than one cause and this answer cannot tell them apart.\n"
     "  1. The Gateway is OLDER than the Director that minted the key. It then has no session key "
     "registry at all, and refuses EVERY session on EVERY machine - the key is fine.\n"
     "  2. This session's key really is unknown or expired.\n"
+    "  3. Something IN FRONT of the Gateway refused the request before it ever arrived - a proxy or "
+    "an edge rule. Then no session key was ever examined and neither of the above applies.\n"
     "Check the Director log for \"session key re-registration incomplete (older Gateway?)\" - if it "
     "is there, the Gateway needs deploying and nothing is wrong with this session. Compare the "
     "Gateway's /healthz commit with the Director's version before suspecting the credential."

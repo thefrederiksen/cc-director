@@ -175,12 +175,20 @@ public static class HomeStatusBuilder
             //
             // The sentence names the Gateway because the failure the user has in front of them is an
             // agent saying DevThrottle is broken, on a machine where nothing is. It also says EVERY
-            // session, because that is the fact that turns this from "my session is odd" into "the
-            // Gateway needs deploying" - one refused session looks like bad luck, all of them do not.
+            // session, because that is what turns this from "my session is odd" into something to act
+            // on - one refused session looks like bad luck, all of them do not.
+            //
+            // It says the key was NOT ACCEPTED, and offers an out-of-date Gateway as the likely cause
+            // rather than asserting it. The evidence underneath is a single false from
+            // RegisterSessionKeyAsync, which returns the same value for a hub-side refusal, an
+            // unconnected tunnel and a transport failure - so a row that stated "the Gateway is out of
+            // date" would be a confident diagnosis drawn from evidence that cannot tell those apart.
+            // That is the exact failure this whole change exists to stop, and it would be poor to
+            // reintroduce it in the row meant to fix it.
             Setup.FleetToolVerdict.GatewayRefusedKey =>
                 new HomeCheck(SessionsRowTitle, HomeCheckLevel.Bad,
-                    "the Gateway is refusing this Director's session keys, so EVERY session's "
-                    + "command line answers 401 - the Gateway is out of date and needs deploying",
+                    "the Gateway did not accept this Director's session keys, so EVERY session's "
+                    + "command line answers 401 - most often a Gateway older than this Director",
                     HomeCheckAction.OpenSettings),
 
             // No Gateway means no agent tooling - the accepted trade, not a fault in the install.
