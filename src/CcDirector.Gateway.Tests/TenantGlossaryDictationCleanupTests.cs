@@ -3,6 +3,7 @@ using System.Net.Http;
 using System.Text;
 using CcDirector.Core;
 using CcDirector.Core.Configuration;
+using CcDirector.Core.Recording;
 using CcDirector.Core.Tenancy;
 using CcDirector.Gateway.Transcription;
 using Xunit;
@@ -201,6 +202,31 @@ public sealed class TenantGlossaryDictationCleanupTests : IDisposable
         Assert.Equal(TranscriptionOutcome.Ok, result.Outcome);
         Assert.Equal(RawTranscript, result.Text);
         Assert.DoesNotContain("GlobalCanonical", result.Text);
+    }
+
+    [Fact]
+    public async Task RecordingTranscriber_CarriesItsOwnTenantIntoCleanup_NotTheGlobalFile()
+    {
+        // The wiring #2482 changed but nothing guarded. RecordingEndpoints builds ONE
+        // GatewayServiceRecordingTranscriber per tenant and that adapter is the only thing that knows
+        // which tenant the phone Notes assemble-then-clean path belongs to - it holds the tenant and
+        // supplies it to CleanupAsync, because IRecordingTranscriber.CleanupAsync carries no tenant of
+        // its own. Drop the tenant at that one call site and every hosted recording silently corrects
+        // against the global file again, with no other test noticing.
+        //
+        // So this drives the ADAPTER, through its IRecordingTranscriber contract, rather than calling
+        // the service directly - calling the service directly is what the test above already does, and
+        // it is exactly the check that cannot see this regression.
+        WriteGlobalFlatFile();
+        WriteTenantGlossary(HostedTenant);
+
+        IRecordingTranscriber transcriber = new GatewayServiceRecordingTranscriber(Service(), HostedTenant);
+
+        var outcome = await transcriber.CleanupAsync(RawTranscript, CancellationToken.None);
+
+        Assert.True(outcome.Applied);
+        Assert.Equal("please spell TenantCanonical now", outcome.Text);
+        Assert.DoesNotContain("GlobalCanonical", outcome.Text);
     }
 
     [Fact]
