@@ -4,6 +4,11 @@ Scientific evaluation of the deterministic dictionary-cleanup step, using establ
 ASR-customization / contextual-biasing methodology (not invented metrics). See
 `docs/architecture/transcription-quality-loop.md` for the design rationale.
 
+Only the MEASUREMENT is borrowed from that literature, not the technique: DevThrottle does no
+contextual biasing and sends nothing but audio to the transcriber (issue 2481). The "biased"
+tokens named below are the standard B-WER term for the target terms being scored - nothing is
+being biased.
+
 ## What it measures
 
 Transcription is held CONSTANT. Each fixture is text-in / text-out: a frozen `raw_transcript`, a
