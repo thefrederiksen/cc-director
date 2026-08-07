@@ -312,6 +312,74 @@ class TestRunShortIdResolution:
         assert OTHER_RUN_ID in combined
         client.get_run.assert_not_called()
 
+    def test_resolution_asks_for_the_completeness_proving_page(self):
+        client = MagicMock()
+        client.list_runs.return_value = [dict(RUN)]
+        client.get_run.return_value = dict(RUN)
+        with patch.object(workflow_ops, "_client", return_value=client):
+            runner.invoke(app, ["workflow", "run", "3990e87c"])
+        client.list_runs.assert_called_once_with(
+            None, None, workflow_ops.RUN_LIST_PROOF_LIMIT
+        )
+
+    # Runs are retained forever and one list read is capped at the server's ceiling, so a page of
+    # exactly that many rows may hide older runs beyond it. A lone match there may have an
+    # invisible twin, and a miss may hide an older hit - resolution must refuse both rather than
+    # pick, and only a plainly ambiguous prefix keeps its more specific error.
+
+    @staticmethod
+    def _full_page(*extra_runs):
+        filler_count = workflow_ops.RUN_LIST_PROOF_LIMIT - len(extra_runs)
+        page = [
+            {"id": f"{i:08x}-0000-0000-0000-000000000000"} for i in range(filler_count)
+        ]
+        page.extend(extra_runs)
+        return page
+
+    def test_a_lone_match_on_a_possibly_truncated_page_is_refused(self, plain, capsys):
+        client = MagicMock()
+        client.list_runs.return_value = self._full_page(dict(RUN))
+        with patch.object(workflow_ops, "_client", return_value=client):
+            result = runner.invoke(app, ["workflow", "run", "3990e87c"])
+        assert result.exit_code == 1
+        combined = self._readable(plain, result.output + capsys.readouterr().err)
+        assert "cannot be proven unique or absent" in combined
+        client.get_run.assert_not_called()
+
+    def test_a_miss_on_a_possibly_truncated_page_is_not_called_unknown(self, plain, capsys):
+        client = MagicMock()
+        client.list_runs.return_value = self._full_page()
+        with patch.object(workflow_ops, "_client", return_value=client):
+            result = runner.invoke(app, ["workflow", "run", "deadbeef"])
+        assert result.exit_code == 1
+        combined = self._readable(plain, result.output + capsys.readouterr().err)
+        assert "cannot be proven unique or absent" in combined
+        assert "No workflow run matches" not in combined
+        client.get_run.assert_not_called()
+
+    def test_an_ambiguous_prefix_stays_ambiguous_on_a_truncated_page(self, plain, capsys):
+        client = MagicMock()
+        client.list_runs.return_value = self._full_page(dict(RUN), {"id": OTHER_RUN_ID})
+        with patch.object(workflow_ops, "_client", return_value=client):
+            result = runner.invoke(app, ["workflow", "run", "39"])
+        assert result.exit_code == 1
+        combined = self._readable(plain, result.output + capsys.readouterr().err)
+        assert "matches 2 workflow runs" in combined
+        client.get_run.assert_not_called()
+
+
+class TestRunListLimitRidesTheQuery:
+    def test_list_runs_passes_the_limit_to_the_gateway(self):
+        """The completeness proof stands on the requested page size actually reaching the
+        Gateway - a limit that silently stayed client-side would turn 'fewer rows than asked
+        for' back into a guess."""
+        with patch.object(workflow_ops.WorkflowClient, "_request") as request:
+            request.return_value = _fake_response(200, {"runs": []})
+            client = workflow_ops.WorkflowClient()
+            client.list_runs(None, None, workflow_ops.RUN_LIST_PROOF_LIMIT)
+        path = request.call_args.args[1]
+        assert f"limit={workflow_ops.RUN_LIST_PROOF_LIMIT}" in path
+
 
 class TestWebAppFallthroughAnswer:
     """The transport half of issue #2486: a request no Gateway endpoint matches falls through to

@@ -251,13 +251,15 @@ class WorkflowClient:
     # ---- runs (the governance outcome spine, issue #1771) -------------------------------------
 
     def list_runs(
-        self, workflow_id: Optional[str], status: Optional[str]
+        self, workflow_id: Optional[str], status: Optional[str], limit: Optional[int] = None
     ) -> List[Dict[str, Any]]:
         params = []
         if workflow_id:
             params.append(f"workflowId={workflow_id}")
         if status:
             params.append(f"status={status}")
+        if limit is not None:
+            params.append(f"limit={limit}")
         path = "/gateway/workflow-runs" + (("?" + "&".join(params)) if params else "")
         data = self._json_or_raise(self._request("GET", path))
         return list(data.get("runs", []))
@@ -684,6 +686,13 @@ def list_runs(workflow_id: Optional[str], status: Optional[str], json_output: bo
     console.print("Details with: cc-devthrottle workflow run <run id>")
 
 
+#: One list read returns at most this many runs - the server's own hard ceiling
+#: (WorkflowRunStore.MaxListLimit), in place since the runs endpoint was born. Requesting exactly
+#: this many makes the answer PROVE its own completeness: fewer rows back means the whole history
+#: was seen, exactly this many means there may be more beyond the page.
+RUN_LIST_PROOF_LIMIT = 1000
+
+
 def _resolve_run_id(client: WorkflowClient, run_id: str) -> str:
     """The full run id for what the user typed, resolved the way session ids are.
 
@@ -692,24 +701,26 @@ def _resolve_run_id(client: WorkflowClient, run_id: str) -> str:
     raw: the run route only matches a full id ('/gateway/workflow-runs/{id:guid}'), and an
     unmatched path falls through to the Gateway's web app with HTTP 200 (issue #2486). Unknown
     and ambiguous prefixes are refused in one sentence, like every other lookup on this tool.
+
+    Runs are retained forever and one list read is capped, so resolution only trusts a list
+    that PROVED itself complete (came back smaller than RUN_LIST_PROOF_LIMIT). Against a
+    possibly-truncated page, a lone match may have an invisible older twin and a miss may hide
+    an older hit - both are refused rather than guessed. More than one match is ambiguous no
+    matter what lies beyond the page, so that keeps its more specific error.
     """
     candidate = run_id.strip().lower()
     if not candidate:
         raise GatewayError("A run id, or a unique prefix of one, is required.")
     if len(candidate) == 36:
         return candidate
+    runs = client.list_runs(None, None, RUN_LIST_PROOF_LIMIT)
     matches = sorted(
         {
             (run.get("id") or "")
-            for run in client.list_runs(None, None)
+            for run in runs
             if (run.get("id") or "").lower().startswith(candidate)
         }
     )
-    if not matches:
-        raise GatewayError(
-            f"No workflow run matches '{run_id}'. "
-            "List them with: cc-devthrottle workflow runs"
-        )
     if len(matches) > 1:
         shown = ", ".join(matches[:5]) + (
             f", and {len(matches) - 5} more" if len(matches) > 5 else ""
@@ -717,6 +728,18 @@ def _resolve_run_id(client: WorkflowClient, run_id: str) -> str:
         raise GatewayError(
             f"'{run_id}' matches {len(matches)} workflow runs: {shown}. "
             "Give more of the id."
+        )
+    if len(runs) >= RUN_LIST_PROOF_LIMIT:
+        raise GatewayError(
+            f"The Gateway holds at least {RUN_LIST_PROOF_LIMIT} workflow runs - more than one "
+            "list read returns - so a short prefix cannot be proven unique or absent against "
+            "the whole history. Give the full run id "
+            "('cc-devthrottle workflow runs --json' prints full ids)."
+        )
+    if not matches:
+        raise GatewayError(
+            f"No workflow run matches '{run_id}'. "
+            "List them with: cc-devthrottle workflow runs"
         )
     return matches[0]
 
