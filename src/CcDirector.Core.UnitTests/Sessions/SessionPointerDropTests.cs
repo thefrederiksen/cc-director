@@ -58,6 +58,14 @@ public sealed class SessionPointerDropTests : IDisposable
     private string PathFor(Session session)
         => SessionHookFiles.PointerPathFor(session.Id, session.PointerDropToken, _dir);
 
+    // GUIDs, because real Claude session ids are. Since #2456 a drop whose id is not a GUID is
+    // refused whole, so a readable label here would fail against a guard that is working.
+    private const string RotatedId = "cccccccc-7777-4777-8777-cccccccccccc";
+    private const string RotatedAId = "dddddddd-8888-4888-8888-dddddddddddd";
+    private const string RotatedBId = "eeeeeeee-9999-4999-8999-eeeeeeeeeeee";
+    private const string MappedId = "aaaaaaaa-5555-4555-8555-aaaaaaaaaaaa";
+    private const string HijackId = "bbbbbbbb-6666-4666-8666-bbbbbbbbbbbb";
+
     private static string Body(string claudeId, string transcript, string source = "clear")
         => $$"""{"session_id":"{{claudeId}}","transcript_path":"{{transcript}}","hook_event_name":"SessionStart","source":"{{source}}","cwd":"/tmp"}""";
 
@@ -105,7 +113,7 @@ public sealed class SessionPointerDropTests : IDisposable
     public void An_applied_drop_is_removed()
     {
         var session = Adopt();
-        Drop(session, "rotated", "/tmp/rotated.jsonl");
+        Drop(session, RotatedId, "/tmp/rotated.jsonl");
         var path = PathFor(session);
 
         Assert.True(Watcher().Apply(path));
@@ -183,11 +191,11 @@ public sealed class SessionPointerDropTests : IDisposable
 
         // A body that names the OTHER session in every field a body could carry.
         File.WriteAllText(PathFor(mine),
-            $$"""{"session_id":"hijack","transcript_path":"/tmp/hijack.jsonl","sessionId":"{{other.Id}}","cc_session_id":"{{other.Id}}"}""");
+            $$"""{"session_id":"{{HijackId}}","transcript_path":"/tmp/hijack.jsonl","sessionId":"{{other.Id}}","cc_session_id":"{{other.Id}}"}""");
 
         Watcher().Apply(PathFor(mine));
 
-        Assert.Equal("hijack", mine.ClaudeSessionId);
+        Assert.Equal(HijackId, mine.ClaudeSessionId);
         Assert.Equal("the-id-from-launch", other.ClaudeSessionId);
     }
 
@@ -275,8 +283,8 @@ public sealed class SessionPointerDropTests : IDisposable
     {
         var a = Adopt();
         var b = Adopt();
-        Drop(a, "rotated-a", "/tmp/a.jsonl");
-        Drop(b, "rotated-b", "/tmp/b.jsonl");
+        Drop(a, RotatedAId, "/tmp/a.jsonl");
+        Drop(b, RotatedBId, "/tmp/b.jsonl");
         File.WriteAllText(
             SessionHookFiles.PointerPathFor(Guid.NewGuid(), SessionHookFiles.NewDropToken(), _dir),
             Body("rotated-stranger", "/tmp/stranger.jsonl"));
@@ -284,8 +292,8 @@ public sealed class SessionPointerDropTests : IDisposable
 
         Assert.Equal(2, Watcher().Sweep());
 
-        Assert.Equal("rotated-a", a.ClaudeSessionId);
-        Assert.Equal("rotated-b", b.ClaudeSessionId);
+        Assert.Equal(RotatedAId, a.ClaudeSessionId);
+        Assert.Equal(RotatedBId, b.ClaudeSessionId);
 
         // The two that were applied are gone; the two that were not stay put. A sweep that deleted what
         // it could not apply would throw away a drop for a session that is merely still starting up.
@@ -304,11 +312,67 @@ public sealed class SessionPointerDropTests : IDisposable
     {
         var session = Adopt();
         File.WriteAllText(PathFor(session),
-            """{"claudeSessionId":"mapped-id","transcriptPath":"/tmp/mapped.jsonl","hookEvent":"SessionStart","source":"compact"}""");
+            $$"""{"claudeSessionId":"{{MappedId}}","transcriptPath":"/tmp/mapped.jsonl","hookEvent":"SessionStart","source":"compact"}""");
 
         Assert.True(Watcher().Apply(PathFor(session)));
-        Assert.Equal("mapped-id", session.ClaudeSessionId);
+        Assert.Equal(MappedId, session.ClaudeSessionId);
         Assert.Equal("/tmp/mapped.jsonl", session.ClaudeTranscriptPath);
+    }
+
+    // Issue #2456: the drop that destroyed three sessions. A body carrying the literal id "x" - no
+    // event, no source, no transcript - was accepted over a verified GUID and persisted, after which
+    // the session could never resolve its transcript and silently never narrated again.
+
+    [Theory]
+    [InlineData("x")]                        // the exact value from the incident
+    [InlineData("hijack")]
+    [InlineData("mapped-id")]
+    [InlineData("57409e62-bd96-42f1-9fd8")]  // truncated GUID: the near miss
+    public void A_drop_naming_a_non_guid_is_refused_whole(string malformed)
+    {
+        var session = Adopt();
+        Drop(session, malformed, "/tmp/malformed.jsonl");
+
+        Assert.False(Watcher().Apply(PathFor(session)));
+
+        // BOTH writers must have been skipped. Guarding only UpdateClaudeSessionPointer is not enough:
+        // RelinkClaudeSession assigns Session.ClaudeSessionId directly through its internal setter, and
+        // in the original incident it is the line that actually persisted "x". A version of this fix
+        // that guarded only the first passed every other test in this file while leaving the session
+        // corrupted exactly as before.
+        Assert.Equal("the-id-from-launch", session.ClaudeSessionId);
+        Assert.Null(session.ClaudeTranscriptPath);
+    }
+
+    [Fact]
+    public void A_refused_drop_is_deleted_so_the_sweep_does_not_retry_it_forever()
+    {
+        // A malformed body will never become valid. Left in the box, the two-second sweep would
+        // re-read and re-log it for the life of the session.
+        var session = Adopt();
+        Drop(session, "x", "/tmp/malformed.jsonl");
+
+        Assert.False(Watcher().Apply(PathFor(session)));
+
+        Assert.False(File.Exists(PathFor(session)));
+    }
+
+    [Fact]
+    public void A_refused_drop_does_not_break_the_routing_map_for_the_id_it_already_had()
+    {
+        // RelinkClaudeSession removes the OLD mapping before installing the new one, so a refusal that
+        // reached it would unhook a working session from its own transcript even if the assignment
+        // were somehow blocked. Refusing before that call is what keeps the old link intact.
+        var session = Adopt();
+        var good = Guid.NewGuid().ToString();
+        Drop(session, good, "/tmp/good.jsonl");
+        Assert.True(Watcher().Apply(PathFor(session)));
+
+        Drop(session, "x", "/tmp/bad.jsonl");
+        Assert.False(Watcher().Apply(PathFor(session)));
+
+        Assert.Equal(good, session.ClaudeSessionId);
+        Assert.Equal("/tmp/good.jsonl", session.ClaudeTranscriptPath);
     }
 
     /// <summary>
@@ -319,7 +383,7 @@ public sealed class SessionPointerDropTests : IDisposable
     public void Forgetting_a_session_removes_its_drop()
     {
         var session = Adopt();
-        Drop(session, "rotated", "/tmp/rotated.jsonl");
+        Drop(session, RotatedId, "/tmp/rotated.jsonl");
         var path = PathFor(session);
 
         Watcher().Forget(session.Id);

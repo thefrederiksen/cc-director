@@ -107,6 +107,24 @@ public sealed class HookScriptRoundTripTests : IDisposable
             RedirectStandardError = true,
             UseShellExecute = false,
         };
+        // REMOVE BOTH FIRST, ALWAYS. psi.Environment starts as a copy of THIS process's environment, and
+        // these tests used only to ADD to it - so a case that passes null for either path was not testing
+        // "the variable is not set", it was inheriting whatever the caller had. Run from inside a live
+        // DevThrottle session (which is how the release gate runs), both variables ARE set, and the
+        // hook then did exactly its job against the REAL session.
+        //
+        // That was not merely a false red. `With_no_variables_set_the_hook_is_inert` feeds the hook
+        // {"session_id":"x"}, so the drop landed in the live session's own pointer file and overwrote its
+        // Claude transcript id with the literal "x" - permanently, and persisted. That session could never
+        // resolve its transcript again, so it never narrated another turn: no error, no retry, just a rail
+        // stuck on "Preparing voice" forever. It hit three sessions, one of them while it was running the
+        // v1.9.11 release gate (#2456).
+        //
+        // So the premise is now ESTABLISHED rather than assumed. A test that says "neither variable is
+        // set" must make that true; inheriting the answer is how it came to be false in exactly the
+        // environment that mattered most.
+        psi.Environment.Remove(SessionHookFiles.PreambleFileEnvVar);
+        psi.Environment.Remove(SessionHookFiles.PointerFileEnvVar);
         if (preambleFile is not null) psi.Environment[SessionHookFiles.PreambleFileEnvVar] = preambleFile;
         if (pointerFile is not null) psi.Environment[SessionHookFiles.PointerFileEnvVar] = pointerFile;
 
@@ -205,8 +223,13 @@ public sealed class HookScriptRoundTripTests : IDisposable
 
         foreach (var source in new[] { "clear", "compact" })
         {
-            var id = $"{source}-{Guid.NewGuid()}";
-            var transcript = $"/tmp/{id}.jsonl";
+            // A PLAIN GUID, because that is what Claude actually mints. This used to be
+            // $"{source}-{Guid.NewGuid()}" - readable in a failure message, and a shape the product never
+            // produces. Since #2456 the pointer setter refuses an id that is not a GUID, so an
+            // unrealistic id here would fail against a guard that is behaving correctly. The source label
+            // still distinguishes the two iterations; it just lives in the transcript name now.
+            var id = Guid.NewGuid().ToString();
+            var transcript = $"/tmp/{source}-{id}.jsonl";
             var (exitCode, stdout, _) = RunHook(interpreter, arguments,
                 $$"""{"session_id":"{{id}}","transcript_path":"{{transcript}}","hook_event_name":"SessionStart","source":"{{source}}"}""",
                 preambleFile, pointerFile);

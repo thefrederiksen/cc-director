@@ -34,6 +34,25 @@ public enum FleetToolVerdict
     /// whose install has nothing wrong with it.
     /// </summary>
     NoGateway,
+
+    /// <summary>
+    /// The Gateway is connected and REFUSED the session key, so the probe never got as far as
+    /// running a tool. Every session on this machine is refused the same way, and so is every
+    /// session on every other machine pointed at that Gateway.
+    ///
+    /// This is a THIRD state, and it had to be, because it belongs to neither of its neighbours.
+    /// It is not <see cref="NoGateway"/> - the Gateway is right there, answering. It is not
+    /// <see cref="CannotReachGateway"/> either, and that distinction is the one that decides
+    /// whether the user is sent somewhere useful: CannotReachGateway means the toolbelt is at
+    /// fault, usually a stale install on PATH, and it offers install and PATH repairs. Those
+    /// repairs cannot fix this. Nothing on this machine can. The Gateway is out of date and the
+    /// remedy is to deploy it.
+    ///
+    /// Before this verdict existed the refusal produced no verdict at all, and no verdict renders
+    /// as no row - which is how a fleet-wide outage sat on the Home page as blank space for five
+    /// hours while the Director's own log named the cause every ten seconds (#2457, #2459).
+    /// </summary>
+    GatewayRefusedKey,
 }
 
 /// <summary>

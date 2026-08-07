@@ -137,4 +137,93 @@ public class HomeStatusSessionsRowTests
             Assert.Equal(HomeCheckAction.OpenTools, row!.Action);
         }
     }
+
+    // The Gateway refuses this Director's session keys (#2457, #2459). On 2026-08-05 this exact
+    // state - every session in the fleet locked out by a Gateway older than the Directors talking
+    // to it - produced NO VERDICT, and no verdict renders as no row. The Home page was blank while
+    // the Director's own log named the cause every ten seconds.
+
+    [Fact]
+    public void GatewayRefusedTheKey_IsARedRow_NotSilence()
+    {
+        var status = BuildWith(new FleetToolCheck(
+            FleetToolVerdict.GatewayRefusedKey, null, @"C:\x\bin",
+            "The Gateway is connected but refuses this Director's session keys."));
+
+        var row = SessionsRow(status);
+        Assert.NotNull(row);
+        Assert.Equal(HomeCheckLevel.Bad, row!.Level);
+        Assert.False(status.AllReady);
+    }
+
+    [Fact]
+    public void GatewayRefusedTheKey_TheRowBlamesTheGatewayAndSaysItIsEverySession()
+    {
+        // The user arrives here having been told by an agent that DevThrottle is broken. The row has
+        // to move them off this machine - nothing on it is at fault - and "every session" is what
+        // turns one odd session into a Gateway that needs deploying.
+        var detail = SessionsRow(BuildWith(new FleetToolCheck(
+            FleetToolVerdict.GatewayRefusedKey, null, @"C:\x\bin", "refused")))!.Detail;
+
+        Assert.Contains("Gateway", detail, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("EVERY session", detail, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("older than this Director", detail, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void GatewayRefusedTheKey_OffersTheCauseWithoutAssertingIt()
+    {
+        // The evidence underneath this row is a single false from RegisterSessionKeyAsync, which
+        // returns the same value for a hub-side refusal, an unconnected tunnel and a transport
+        // failure. Stating "the Gateway is out of date" as fact would be a confident diagnosis drawn
+        // from evidence that cannot support it - the very failure mode this row exists to end, which
+        // makes it the worst possible place to reintroduce it.
+        var detail = SessionsRow(BuildWith(new FleetToolCheck(
+            FleetToolVerdict.GatewayRefusedKey, null, @"C:\x\bin", "refused")))!.Detail;
+
+        Assert.Contains("did not accept", detail, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("most often", detail, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("is out of date", detail, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void GatewayRefusedTheKey_DoesNotRouteToAToolRepair()
+    {
+        // The install is fine. Offering to repair it would spend the user's attempt on a guaranteed
+        // no-op and land them back on the same red row - the shape issue #1045 fixed for the
+        // stale-install case, which must not be reintroduced by a new verdict.
+        var row = SessionsRow(BuildWith(new FleetToolCheck(
+            FleetToolVerdict.GatewayRefusedKey, null, @"C:\x\bin", "refused")));
+
+        Assert.NotEqual(HomeCheckAction.OpenTools, row!.Action);
+        Assert.NotEqual(HomeCheckAction.RepairTools, row.Action);
+        Assert.Equal(HomeCheckAction.OpenSettings, row.Action);
+    }
+
+    [Fact]
+    public void EveryVerdictInTheEnumHasBeenDecided_NoneFallsThroughToSilence()
+    {
+        // The defect this whole row exists to prevent is a real state rendering as nothing. It came
+        // back anyway, through a state that had no verdict rather than no row - so pin the decision
+        // itself: every verdict must have been CONSIDERED here, and the two that legitimately show
+        // no row must be named rather than reached by falling off the end of the switch.
+        //
+        // A verdict added later fails this test until someone decides what it renders. That is the
+        // point: silence must be a choice, never a default.
+        var showNoRowOnPurpose = new[] { FleetToolVerdict.Unchecked, FleetToolVerdict.NoGateway };
+
+        foreach (FleetToolVerdict verdict in Enum.GetValues<FleetToolVerdict>())
+        {
+            var row = SessionsRow(BuildWith(new FleetToolCheck(verdict, null, @"C:\x\bin", "detail")));
+            if (Array.IndexOf(showNoRowOnPurpose, verdict) >= 0)
+            {
+                Assert.Null(row);
+                continue;
+            }
+
+            Assert.True(row is not null,
+                $"{verdict} renders no Sessions row at all. If that is intended, add it to the list "
+                + "above with the reason; if it is not, this is the blank-page defect returning.");
+        }
+    }
 }

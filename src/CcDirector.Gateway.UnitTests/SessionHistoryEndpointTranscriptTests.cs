@@ -32,7 +32,7 @@ public class SessionHistoryEndpointTranscriptTests
     {
         var missingPath = Path.Combine(Path.GetTempPath(), "cc-history-test-" + Guid.NewGuid().ToString("N") + ".jsonl");
         var session = MakeClaudeSession(claudeSessionId: "stale-id");
-        session.UpdateClaudeSessionPointer("current-id", missingPath, "clear");
+        session.UpdateClaudeSessionPointer("cccccccc-3333-4333-8333-cccccccccccc", missingPath, "clear");
 
         var dto = SessionHistoryEndpoint.BuildHistory(session, session.Id.ToString());
 
@@ -52,7 +52,7 @@ public class SessionHistoryEndpointTranscriptTests
         try
         {
             var session = MakeClaudeSession(claudeSessionId: "some-id");
-            session.UpdateClaudeSessionPointer("some-id", path, "startup");
+            session.UpdateClaudeSessionPointer("dddddddd-4444-4444-8444-dddddddddddd", path, "startup");
 
             var dto = SessionHistoryEndpoint.BuildHistory(session, session.Id.ToString());
 

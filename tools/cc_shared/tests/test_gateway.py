@@ -198,6 +198,51 @@ def test_error_message_blames_the_machine_when_the_gateway_says_the_machine_fail
     assert "the Gateway answered" in message
 
 
+# A refused session key (issues #2457, #2459). The Gateway's own sentence asserts the credential is
+# the fault; on 2026-08-05 that was wrong for every session in the fleet at once, because the hosted
+# Gateway predated the session key registry entirely.
+
+def test_a_401_keeps_the_servers_sentence_and_admits_an_out_of_date_gateway():
+    body = json.dumps({"error": "missing or invalid token"})
+    message = gateway._error_message(body, 401)
+
+    # The server's own words survive - this must ADD to the answer, never replace it.
+    assert message.startswith("missing or invalid token")
+    # ...and the cause the server cannot know about is named, with the line that tells them apart.
+    assert "OLDER than the Director" in message
+    assert "session key re-registration incomplete (older Gateway?)" in message
+
+
+def test_a_401_does_not_assert_which_of_the_two_causes_it_is():
+    """The tool cannot tell from here, and a confident wrong verdict is what cost the morning.
+
+    Both causes must be offered as possibilities. A message that concluded "your key expired" would
+    reproduce the original defect with different words.
+    """
+    message = gateway._error_message(json.dumps({"error": "missing or invalid token"}), 401)
+    assert "unknown or expired" in message   # cause 2 is still on the table
+    assert "the key is fine" in message      # cause 1 is too
+
+
+def test_a_401_with_no_body_still_carries_the_causes():
+    # An edge proxy can refuse before the Gateway is reached, so there may be no sentence at all.
+    message = gateway._error_message("", 401)
+    assert message.startswith("HTTP 401 from the Gateway")
+    assert "OLDER than the Director" in message
+
+
+@pytest.mark.parametrize("code", [400, 403, 404, 500, 502])
+def test_only_a_401_carries_the_refused_key_causes(code):
+    """Scoped to the one status it explains.
+
+    403 is the near miss that makes this worth a test: a session key presented to a route outside
+    its scope is refused with 403, and it is NOT this problem. Pasting the session-key story onto
+    every failure would bury the sentence that does apply.
+    """
+    message = gateway._error_message(json.dumps({"error": "nope"}), code)
+    assert "OLDER than the Director" not in message
+
+
 def _http_error(code: int, body: str, headers=None) -> urllib.error.HTTPError:
     return urllib.error.HTTPError(
         url="http://gw.example/sessions", code=code, msg="Internal Server Error",

@@ -97,7 +97,7 @@ public sealed class ConversationIngestorTests : IDisposable
     {
         var path = Path.Combine(_root, $"transcript-{Guid.NewGuid():N}.jsonl");
         File.WriteAllLines(path, jsonlLines);
-        session.UpdateClaudeSessionPointer("claude-session-id", path, "test");
+        session.UpdateClaudeSessionPointer("bbbbbbbb-2222-4222-8222-bbbbbbbbbbbb", path, "test");
         return path;
     }
 
@@ -233,7 +233,7 @@ public sealed class ConversationIngestorTests : IDisposable
         var path = WriteTranscript(sessionA, UserLine("shared conversation", ts));
 
         var sessionB = NewSession();
-        sessionB.UpdateClaudeSessionPointer("claude-session-id", path, "test");
+        sessionB.UpdateClaudeSessionPointer("bbbbbbbb-2222-4222-8222-bbbbbbbbbbbb", path, "test");
 
         using var ingestor = NewIngestor();
         await ingestor.IngestAsync(sessionA);
@@ -460,7 +460,7 @@ public sealed class ConversationIngestorTests : IDisposable
         var path = WriteTranscript(sessionA, UserLine("one shared conversation", ts));
 
         var sessionB = NewSession();
-        sessionB.UpdateClaudeSessionPointer("claude-session-id", path, "test");
+        sessionB.UpdateClaudeSessionPointer("bbbbbbbb-2222-4222-8222-bbbbbbbbbbbb", path, "test");
 
         using var ingestor = NewIngestor();
         _sink.HoldFirstPush = true;

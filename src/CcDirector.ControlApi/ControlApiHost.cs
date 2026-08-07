@@ -408,7 +408,7 @@ public sealed class ControlApiHost : IAsyncDisposable
             var key = _sessionGatewayKeys.Mint(sessionId);
             var registration = _sessionGatewayKeys.RegistrationFor(sessionId);
             if (registration is not null)
-                _ = _streamClient.RegisterSessionKeyAsync(registration);
+                ObserveSessionKeyRegistration(_streamClient, registration, sessionId);
             return key;
         };
 
@@ -520,6 +520,70 @@ public sealed class ControlApiHost : IAsyncDisposable
     }
 
     /// <summary>
+    /// Send a session key registration WITHOUT waiting for it, but observe how it turns out.
+    ///
+    /// The send is still not awaited by the caller, and must not be: session creation cannot block on
+    /// the network (see the note at the call site). What changed is that the result is no longer
+    /// thrown away. The call site used to read `_ = _streamClient.RegisterSessionKeyAsync(...)`, and
+    /// that discard cost two things.
+    ///
+    /// First, this is the only place that knows WHICH session the key belongs to and that it was
+    /// minted for a real launch rather than for the health probe. The stream client logs its own
+    /// failure, but it logs it as one more transport-level line; the fact that a session was just
+    /// handed a credential the Gateway will refuse belongs here, in the launch path, said in those
+    /// terms.
+    ///
+    /// Second, a discarded task is an UNOBSERVED task. Everything RegisterSessionKeyAsync does today
+    /// is inside its own try, so nothing escapes - but that is a property of the callee that the call
+    /// site was silently depending on, and the day it stops being true the exception disappears into
+    /// the runtime instead of the log.
+    ///
+    /// Issues #2457 and #2459: on 2026-08-05 every registration in the fleet was refused at once
+    /// because the hosted Gateway predated the RegisterSessionKey hub method. The sessions that came
+    /// up in that window went looking for a fault in their own credential, which was fine.
+    /// </summary>
+    private static void ObserveSessionKeyRegistration(
+        GatewayStreamClient stream, SessionKeyRegistration registration, Guid sessionId)
+    {
+        // STARTED HERE, SYNCHRONOUSLY, AND ONLY THEN OBSERVED. The call runs on this thread to its
+        // first await, which is what puts the registration on the tunnel before the agent process is
+        // launched - let alone booted - exactly as the call site promises.
+        //
+        // Task.Run would look equivalent and is NOT. It defers the whole call until the thread pool
+        // gets to it, so a session could present its key before the registration had even begun and be
+        // answered 401, and a short-lived session could be revoked before the queued work started and
+        // then have its dead credential re-registered behind it. Observing a result must not change
+        // WHEN the work happens.
+        var pending = stream.RegisterSessionKeyAsync(registration);
+        _ = ObserveAsync(pending, sessionId);
+
+        // Parameters named apart from the locals above on purpose: a local function parameter that
+        // shadows an enclosing local is a compile error in some scopes, and this is not the place to
+        // find that out.
+        static async Task ObserveAsync(Task<bool> registrationTask, Guid id)
+        {
+            // A task root is an entry point, so the catch belongs here: there is no caller left to
+            // throw to, and an escape would be an unobserved exception rather than a reported one.
+            try
+            {
+                var registered = await registrationTask.ConfigureAwait(false);
+                if (!registered)
+                    FileLog.Write(
+                        $"[ControlApiHost] session {id} was launched with a Gateway key the Gateway did NOT "
+                        + "accept, so its fleet commands will answer 401 until a reseed registers it. The reason is "
+                        + "NOT known here: RegisterSessionKeyAsync returns the same false for a hub-side refusal, a "
+                        + "tunnel that was not connected, and a transport failure. If this repeats for EVERY session, "
+                        + "check whether the Gateway is older than this Director.");
+            }
+            catch (Exception ex)
+            {
+                FileLog.Write(
+                    $"[ControlApiHost] session key registration for {id} FAULTED: {ex.Message}");
+            }
+        }
+    }
+
+    /// <summary>
     /// Mint, register, and hand out a short-lived Gateway session key for the desktop's fleet-tool
     /// health probe - the same kind of credential a real session launch stamps, taken through the
     /// same mint-and-register path, so the probe proves exactly what a spawned session would
@@ -530,12 +594,17 @@ public sealed class ControlApiHost : IAsyncDisposable
     /// no tunnel). That is a fact about this machine's connection and the caller renders it as the
     /// mission's accepted no-Gateway trade.
     ///
-    /// A Gateway that is connected and REFUSES the registration THROWS instead, and the difference
-    /// matters more than it looks. Returning null there would report "no Gateway" - a benign,
-    /// expected state - for a Gateway that is right there and rejecting us, which is a real fault
-    /// wearing a harmless label, and precisely the kind of plausible-but-wrong state this mission
-    /// keeps finding. The caller turns the exception into NO VERDICT plus a loud log, never a pass
-    /// and never a false calm.
+    /// A Gateway that is connected and REFUSES the registration throws
+    /// <see cref="GatewayRefusedSessionKeyException"/> instead, and the difference matters more than
+    /// it looks. Returning null there would report "no Gateway" - a benign, expected state - for a
+    /// Gateway that is right there and rejecting us, which is a real fault wearing a harmless label,
+    /// and precisely the kind of plausible-but-wrong state this mission keeps finding.
+    ///
+    /// The caller turns that specific exception into a RED Sessions row naming an out-of-date
+    /// Gateway. It used to turn it into no verdict, which renders as no row at all - so the one
+    /// screen built to surface this failure stayed blank through a fleet-wide outage (#2457, #2459).
+    /// Any OTHER exception is still no verdict, and that is still right: an unexplained failure must
+    /// never be handed a confident label.
     ///
     /// This is not hypothetical. The registration is keyed by session id and the hub does not check
     /// that the id belongs to a live session of the calling Director - the mission's own inspection
@@ -568,7 +637,7 @@ public sealed class ControlApiHost : IAsyncDisposable
         {
             if (_sessionGatewayKeys.Forget(probeId))
                 _streamClient?.RevokeSessionKey(probeId.ToString());
-            throw new InvalidOperationException(
+            throw new GatewayRefusedSessionKeyException(
                 "the Gateway is connected but refused to register the fleet-tool probe key, so the "
                 + "tools cannot be checked - this is a Gateway-side refusal, not a missing Gateway");
         }

@@ -88,6 +88,32 @@ def session_id() -> Optional[str]:
     return sid or None
 
 
+# What a 401 gets added to it, ALWAYS, on top of whatever sentence the server wrote.
+#
+# The Gateway's own words for a refused session key are "missing or invalid token", and read alone
+# they ASSERT the credential is the fault. On 2026-08-05 that assertion was wrong for every session
+# on every machine at once: the keys were minted correctly and were not expired, and the hosted
+# Gateway was simply OLDER than the Directors talking to it - built before `RegisterSessionKey`
+# existed, so it had no registry to register a key against and refused all of them (issues #2457,
+# #2459). Two sessions spent the morning hunting a token that was never wrong, and #2457 was filed
+# against the credential, because this is the only sentence they were given.
+#
+# So the addendum names the cause the server CANNOT know about, and points at the one line that
+# tells the two apart. It is deliberately not a guess about which cause applies - the tool cannot
+# tell from here, and inventing a verdict is how the wrong one gets chased next time.
+_REFUSED_KEY_CAUSES = (
+    "A 401 here has more than one cause and this answer cannot tell them apart.\n"
+    "  1. The Gateway is OLDER than the Director that minted the key. It then has no session key "
+    "registry at all, and refuses EVERY session on EVERY machine - the key is fine.\n"
+    "  2. This session's key really is unknown or expired.\n"
+    "  3. Something IN FRONT of the Gateway refused the request before it ever arrived - a proxy or "
+    "an edge rule. Then no session key was ever examined and neither of the above applies.\n"
+    "Check the Director log for \"session key re-registration incomplete (older Gateway?)\" - if it "
+    "is there, the Gateway needs deploying and nothing is wrong with this session. Compare the "
+    "Gateway's /healthz commit with the Director's version before suspecting the credential."
+)
+
+
 def _error_message(body: str, code: int, fault_is_director: bool = False) -> str:
     """What the user reads when a Gateway call fails.
 
@@ -104,24 +130,34 @@ def _error_message(body: str, code: int, fault_is_director: bool = False) -> str
     `fault_is_director` names the machine, not the Gateway, when the Gateway stamped the answer as a
     Director-side failure. Same status code, different truth - and an agent told "the Gateway is
     down" when one machine went quiet will go and debug the wrong thing.
+
+    A 401 additionally carries `_REFUSED_KEY_CAUSES`. See that constant for why the server's own
+    sentence is not enough on its own.
     """
     who = "the machine that owns it (the Gateway answered)" if fault_is_director else "the Gateway"
     status = f"HTTP {code} from {who}"
+    sentence = None
     try:
         obj = json.loads(body)
     except (ValueError, TypeError):
-        return status
-    if not isinstance(obj, dict):
-        return status
-    for key in ("error", "Error", "detail", "Detail"):
-        value = obj.get(key)
-        if isinstance(value, str) and value.strip():
-            return value.strip()
-    for key in ("title", "Title"):
-        value = obj.get(key)
-        if isinstance(value, str) and value.strip():
-            return f"{status}: {value.strip()}"
-    return status
+        obj = None
+    if isinstance(obj, dict):
+        for key in ("error", "Error", "detail", "Detail"):
+            value = obj.get(key)
+            if isinstance(value, str) and value.strip():
+                sentence = value.strip()
+                break
+        else:
+            for key in ("title", "Title"):
+                value = obj.get(key)
+                if isinstance(value, str) and value.strip():
+                    sentence = f"{status}: {value.strip()}"
+                    break
+    if sentence is None:
+        sentence = status
+    if code == 401:
+        return f"{sentence}\n\n{_REFUSED_KEY_CAUSES}"
+    return sentence
 
 
 def _origin(url: str) -> tuple:

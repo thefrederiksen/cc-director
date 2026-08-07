@@ -35,6 +35,18 @@ public, permanent record. Get them right.
 - **Never claim a design document is a shipped feature.** Step 4 exists because it
   is easy to read an architecture document and write "we added X" when the code
   is not merged, or is merged but turned off by default. Verify against the code.
+- **A release that adds or changes a Gateway hub method deploys the hosted Gateway
+  BEFORE the tag is pushed.** The desktop Director auto-updates; the hosted Gateway
+  does not - it ships only when someone runs the deploy workflow. So a release that
+  teaches the Director to call something the live Gateway has never heard of puts
+  every machine in the fleet on a version the Gateway cannot serve, the moment they
+  update. That is not hypothetical: v1.9.9 made the per-session Gateway key the only
+  door an agent has to the fleet, the hosted Gateway had not been deployed since
+  before `RegisterSessionKey` existed, and every session on every machine had its key
+  refused with 401 until the Gateway was deployed hours later (#2457, #2459).
+  Check with `git diff <last-tag>..origin/main -- src/CcDirector.Gateway/Streaming/`;
+  if anything there changed, deploy first (see the `deploy-hosted-gateway` skill),
+  confirm `/healthz` reports the new commit, and only then cut the tag.
 - **The human publishes the release, never the agent.** Cutting the tag is an
   outward-facing, hard-to-reverse action. Prepare everything; the human clicks
   publish.

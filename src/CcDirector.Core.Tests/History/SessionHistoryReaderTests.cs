@@ -20,7 +20,7 @@ public sealed class SessionHistoryReaderTests
         });
 
         var session = NewSession(AgentKind.ClaudeCode);
-        session.UpdateClaudeSessionPointer("claude-id", path, "startup"); // sets the live pointer
+        session.UpdateClaudeSessionPointer("aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa", path, "startup"); // sets the live pointer
 
         try
         {
