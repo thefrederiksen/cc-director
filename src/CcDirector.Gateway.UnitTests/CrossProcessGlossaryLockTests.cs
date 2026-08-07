@@ -43,6 +43,7 @@ namespace CcDirector.Gateway.Tests;
 /// variable the redirect does not touch, it writes a diagnostics file, and the parent asserts BOTH sides
 /// wrote before judging anything.
 /// </summary>
+[Collection("DirectorRoot")]
 public sealed class CrossProcessGlossaryLockTests : IDisposable
 {
     /// <summary>Set for the child process only. Its presence is what wakes the helper up.</summary>

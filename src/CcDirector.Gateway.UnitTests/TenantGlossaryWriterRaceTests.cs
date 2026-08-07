@@ -27,7 +27,15 @@ namespace CcDirector.Gateway.Tests;
 /// person is FOR), and the agent's term may legitimately land on top of the save. What may never happen is
 /// the torn middle, where the agent's word is kept and the person's curation is dropped, because that is
 /// half of each write and no ordering at all. Asserting one fixed winner would be asserting a race.
+///
+/// IN THE "DirectorRoot" COLLECTION because this class redirects the process-wide <c>CC_DIRECTOR_ROOT</c>,
+/// which every test in the process shares. Left out of it, this class ran in parallel with tests that
+/// resolve their storage from that variable, redirected them mid-run, and then deleted the directory from
+/// under them on dispose - surfacing as four UNRELATED tests failing with "unable to open database file".
+/// A test that exercises concurrency is not exempt from the rule about process-global state; it is the
+/// likeliest to break it.
 /// </summary>
+[Collection("DirectorRoot")]
 public sealed class TenantGlossaryWriterRaceTests : IDisposable
 {
     private const int Rounds = 60;
