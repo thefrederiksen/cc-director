@@ -5,10 +5,12 @@ namespace CcDirectorClient;
 
 /// <summary>
 /// The phone port of the Gateway's Dictionary page (dictionary.html). Edits the one
-/// shared STT dictation glossary used by both phone-recording transcription and
-/// desktop voice-to-type: the vocabulary biased into speech-to-text, the known
-/// mistranscription corrections (correct term -> wrong spellings), and the cleanup
-/// profiles. Loads GET /ingest/dictionary into an in-memory working copy, marks the
+/// shared dictation glossary used by both phone-recording transcription and
+/// desktop voice-to-type: the canonical vocabulary, the known mistranscription
+/// corrections (correct term -> wrong spellings), and the cleanup profiles. None of
+/// it is sent to the speech-to-text provider - the transcriber gets audio only, and
+/// every term here is applied afterwards by the cleanup pass on the finished
+/// transcript (issue 2481). Loads GET /ingest/dictionary into an in-memory working copy, marks the
 /// page dirty on any change, and writes the whole thing back with PUT
 /// /ingest/dictionary on Save. Same surface as dictionary.html.
 /// </summary>

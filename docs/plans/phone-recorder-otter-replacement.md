@@ -54,7 +54,7 @@ that feeds existing code.
 | `DictationSession` facade | `src/CcDirector.Core/Dictation/DictationSession.cs` | Drive transcription of each uploaded chunk |
 | `OpenAiTranscriptionProvider` (batch) | `src/CcDirector.Core/Dictation/Providers/OpenAiTranscriptionProvider.cs` | Transcribe a finalized audio file via `/v1/audio/transcriptions`. This is the right provider for file ingest (NOT the realtime one). |
 | `CleanupOrchestrator` | `src/CcDirector.Core/Dictation/CleanupOrchestrator.cs` | gpt-4o-mini cleanup pass with vocabulary + known-mistranscription glossary |
-| `DictionaryLoader` + dictionary YAML | `src/CcDirector.Core/Dictation/` | Company-term vocabulary bias (ConPTY, Avalonia, acmeflow, etc.) |
+| `DictionaryLoader` + dictionary YAML | `src/CcDirector.Core/Dictation/` | Company-term vocabulary bias (ConPTY, Avalonia, acmeflow, etc.) - CORRECTION 2026-08-07 (issue 2481): not a bias. These terms are never sent to the transcriber; they are corrected on the finished transcript. |
 | `AudioBuffer` (disk spill) | `src/CcDirector.Core/Dictation/AudioBuffer.cs` | Reference for the crash-safe / chunked philosophy; the phone mirrors this on-device |
 | Gateway endpoint pattern | `src/CcDirector.Gateway/Api/GatewayEndpoints.cs` | Where the new `/ingest/*` routes are mapped |
 | Gateway auth (token) + Tailscale Serve | `src/CcDirector.Gateway/Tailscale/` | The HTTPS-only remote path the phone uploads over |
@@ -238,6 +238,13 @@ Server-side storage of received chunks + manifest:
 existing dictation buffer convention).
 
 ### D. Server pipeline (reuses existing code)
+
+> CORRECTION, 2026-08-07 (owner ruling, issue 2481): step 1 below is wrong about how the
+> dictionary is used, and always was. The dictionary is NOT passed to the transcriber as
+> "vocabulary bias" - no vocabulary and no steering hint is ever sent to the speech-to-text
+> provider, because priming it changes wording and sentence structure and corrupts the
+> record of what was said. The transcriber gets audio only; the dictionary is applied
+> afterwards, in the cleanup step. The plan is left as written as a dated record.
 
 1. Each received chunk -> `OpenAiTranscriptionProvider` (batch) with the
    loaded dictionary as vocabulary bias -> per-chunk raw transcript stored

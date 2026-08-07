@@ -1,22 +1,59 @@
 """
-Phase 0 proof of fact for the cc-director dictation library.
+TOMBSTONE - THIS SCRIPT IS RETIRED AND WILL NOT RUN. DO NOT REVIVE IT.
 
-Verifies that OpenAI gpt-4o-transcribe with the prompt parameter, plus a
-Claude Haiku cleanup pass, correctly transcribes company-specific terms.
+It is kept as the dated record of the Phase 0 experiment (2026-05), not as a
+tool. It verified OpenAI gpt-4o-transcribe WITH THE PROMPT PARAMETER, plus a
+Claude Haiku cleanup pass - and the prompt-parameter half of that design was
+REJECTED by the owner on 2026-08-07 (issue 2481).
 
-PASS if all expected company terms appear correctly in the cleaned
-transcript for every test clip. FAIL otherwise.
+DevThrottle never sends vocabulary, glossaries, or any other steering hint to
+the speech-to-text provider. Dictation is two strict stages: transcribe the raw
+audio as faithfully as possible, audio only, then run a separate code-driven
+correction pass that replaces the listed words on the finished transcript.
+Priming the transcriber makes it steer toward the suggested words, which changes
+wording and sentence structure and corrupts the record of what was actually
+said. Meaning preservation is paramount; this was learned from real problems.
 
-Outputs to docs/features/dictation/phase0/:
+So the STT_PROMPT below is a rejected approach, not a missing feature. The
+matching C# code (DictionaryLoader.BuildSttPrompt) has been deleted. Being off
+the build path is not safety while the file is still executable and its own
+docstring claims it verifies the design - hence the hard exit below.
+
+The original outputs it produced are beside it and are still the record:
   clip{N}.mp3       generated TTS audio
   transcripts.json  raw and cleaned transcripts for all variants
   REPORT.md         human-readable summary with verdict
 """
 
+import sys
+
+print(
+    "run_phase0.py is a TOMBSTONE and does not run.\n"
+    "\n"
+    "It exercised the speech-to-text prompt/bias parameter, which the owner\n"
+    "rejected on 2026-08-07 (issue 2481). Vocabulary and steering hints are\n"
+    "never sent to the transcriber: transcribe the raw audio faithfully, then\n"
+    "substitute the listed words on the finished transcript in a separate pass.\n"
+    "Priming the transcriber changes wording and sentence structure and\n"
+    "corrupts the record of what was said.\n"
+    "\n"
+    "The code below is kept only as the dated record of the experiment.\n"
+    "Do not re-enable it. If you need transcription quality work, it belongs\n"
+    "in the cleanup pass - see docs/architecture/transcription-quality-loop.md.",
+    file=sys.stderr,
+)
+sys.exit(2)
+
+
+# ===========================================================================
+# EVERYTHING BELOW THIS LINE IS THE ORIGINAL EXPERIMENT, RETAINED AS THE
+# RECORD OF WHAT WAS RUN IN MAY 2026. IT IS UNREACHABLE - the sys.exit above
+# stops the module before any of it executes. Do not "fix" that.
+# ===========================================================================
+
 import json
 import os
 import subprocess
-import sys
 from pathlib import Path
 
 from openai import OpenAI

@@ -66,6 +66,15 @@ Avoid DeepInfra for the latency-critical path (the 4-45s variability already exp
 Both research threads converge on the SAME architecture: **no LLM in the hot path.**
 
 ### 3a. Bias the transcriber (nearly free)
+
+> CORRECTION, 2026-08-07 (owner ruling, issue 2481): this recommendation was REJECTED and the
+> code written for it has been deleted. The vocabulary is never passed to the transcriber in
+> any form, and the engine-comparison table above must not be read as making keyword-biasing
+> strength a selection criterion. Priming the transcriber makes it steer toward the suggested
+> words, changing wording and sentence structure and corrupting the record of what was said.
+> Section 3b - the deterministic matcher on the finished transcript - is the whole approach.
+> The research is left as written, as the dated record of what was considered.
+
 Pass the known vocabulary as a short glossary in the transcription `prompt` parameter so most
 terms come out right at the source. Caveats (OpenAI cookbook): the Whisper/gpt-4o prompt hint
 fixes SOME rare terms but not all, and does not reliably enforce casing (lowercase `mindzie`).

@@ -17,6 +17,12 @@ GitHub repo, no separate package, no multi-vendor abstraction.
    ways. As a soft prior via the OpenAI prompt parameter, and as a strong
    corrector via the Haiku cleanup pass with the term list in the system
    prompt.
+   > CORRECTION, 2026-08-07 (owner ruling, issue 2481): the first of those two ways was
+   > REJECTED and its code deleted. The dictionary is applied ONE way only - as a
+   > correction pass over the finished transcript. Nothing is ever sent to the
+   > speech-to-text provider as a prior, a prompt, or any other steering hint, because
+   > priming the transcriber changes wording and sentence structure and corrupts the
+   > record of what was said.
 3. Post-process cleanup. A small Claude model runs on the final transcript
    with the dictionary as context to repair mistakes and apply style.
 4. Cross-platform consumers. Same library serves Windows desktop today,
@@ -75,6 +81,9 @@ GitHub repo, no separate package, no multi-vendor abstraction.
 - **DictionaryLoader.** Parses the YAML. Watches the file for changes.
   Packs the keyterm list for OpenAI prompts and for the Haiku cleanup
   system prompt.
+  > CORRECTION, 2026-08-07 (owner ruling, issue 2481): the packing-for-OpenAI-prompts half
+  > was `BuildSttPrompt`, and it is DELETED. DictionaryLoader today only loads, watches and
+  > writes the dictionary; nothing in it builds a prompt for the transcriber.
 - **ProviderClient.** Speaks the OpenAI Realtime API over WebSocket.
   Streams audio chunks. Surfaces partial and final transcripts.
 - **AudioBuffer.** Ring buffer with disk spill, used during offline

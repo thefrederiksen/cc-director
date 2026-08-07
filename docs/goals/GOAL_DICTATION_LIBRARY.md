@@ -41,6 +41,15 @@ result.
      cleanup pass whose system prompt contains the term list as
      "known company terms, fix any obvious mistranscriptions."
 
+   > CORRECTION, 2026-08-07 (owner ruling, issue 2481): of the three variants above, the
+   > two that put the term list in the **prompt parameter** describe an approach that was
+   > REJECTED, and the code for it has been deleted. The term list is never sent to the
+   > speech-to-text provider in any form: the transcriber gets audio only, and the listed
+   > words are substituted afterwards on the finished transcript. Priming the transcriber
+   > makes it steer toward the suggested words, changing wording and sentence structure and
+   > corrupting the record of what was said. This experiment plan is left as written,
+   > because it is the dated record of what was tried.
+
 3. For each clip and each variant, record the raw output. Save the audio
    files and the JSON of all transcripts under
    `docs/features/dictation/phase0/`.

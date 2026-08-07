@@ -117,6 +117,12 @@ definition of the path (extract a small helper, e.g.
 
 ## Dictionary page layout (target)
 
+> CORRECTION, 2026-08-07 (owner ruling, issue 2481): the mockup below labels the vocabulary
+> "terms biased into speech-to-text". That was never how it should have read and the shipped
+> page no longer says it. Nothing in the glossary is sent to the speech-to-text provider; the
+> terms are corrected on the finished transcript after it comes back. The mockup is left as
+> the dated record of the design.
+
 ```
 +=======================================================================+
 |  Voice Recorder                                       <- Dashboard     |

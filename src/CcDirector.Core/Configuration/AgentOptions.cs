@@ -154,8 +154,10 @@ public class AgentOptions
     /// <summary>
     /// Path to the user-editable dictation dictionary YAML. If null, resolves
     /// to <c>%LOCALAPPDATA%/cc-director/dictation/dictionary.yaml</c>. Missing
-    /// file means no vocabulary bias and no cleanup glossary; the rest of the
-    /// dictation pipeline still works.
+    /// file means no cleanup glossary at all - no vocabulary and no known
+    /// mistranscriptions - so transcripts come back uncorrected; the rest of the
+    /// dictation pipeline still works. Nothing in this file is ever sent to the
+    /// speech-to-text provider (issue 2481).
     /// </summary>
     public string? DictationDictionaryPath { get; set; }
 

@@ -81,10 +81,12 @@ public sealed class RecordingItem
 }
 
 /// <summary>
-/// The shared STT dictation glossary, as edited on the Dictionary page. Mirrors
-/// the shape returned by GET /ingest/dictionary: the vocabulary biased into
-/// speech-to-text, the known mistranscription corrections (correct term -> list
-/// of wrong spellings), and the cleanup profiles (name -> cleanupEnabled).
+/// The shared dictation glossary, as edited on the Dictionary page. Mirrors
+/// the shape returned by GET /ingest/dictionary: the canonical vocabulary, the
+/// known mistranscription corrections (correct term -> list of wrong spellings),
+/// and the cleanup profiles (name -> cleanupEnabled). None of it is sent to the
+/// speech-to-text provider; it is all applied by the cleanup pass on the finished
+/// transcript (issue 2481).
 /// </summary>
 public sealed class DictionaryModel
 {
