@@ -80,14 +80,53 @@ STRICT_CONTEXT = re.compile(
     re.I,
 )
 
+# TRANSFER - the banned behaviour stated plainly, with no bias jargon at all: an OBJECT (the
+# dictionary) moving to a DESTINATION (the transcriber) via a VERB. "Include the dictionary in
+# the speech-to-text request" is squarely the ruling and contains not one word the tiers above
+# look for. All three parts must appear on the line, which is what keeps "sends the terms to the
+# cleanup pass" out.
+TRANSFER_VERB = re.compile(
+    r"\b(includ(e|es|ing)|send(s|ing)?|sent|pass(es|ing|ed)?|giv(e|es|ing)|gave|given"
+    r"|receiv(e|es|ing|ed)|attach(es|ing|ed)?|suppl(y|ies|ying|ied)|upload(s|ing|ed)?"
+    r"|feed(s|ing)?|fed|provid(e|es|ing|ed)|add(s|ing|ed)?|inject(s|ing|ed)?)\b",
+    re.I,
+)
+TRANSFER_OBJECT = re.compile(
+    r"\b(dictionar\w*|glossar\w*|vocabular\w*|term list|word list|known terms|keyterms?"
+    r"|spelling hints?|term set|our terms|the terms)\b",
+    re.I,
+)
+NEGATION = re.compile(r"\b(never|nothing|not|n't|no)\b", re.I)
+TRANSFER_DEST = re.compile(
+    r"\b(speech.to.text|stt|transcriber|transcription request|\bprovider\b|audio upload"
+    r"|prompt field|prompt parameter|\basr\b|whisper|speech model|speech engine"
+    r"|transcription (call|api|endpoint|payload|body))\b",
+    re.I,
+)
+
 
 def is_claim(line):
-    """A claim is an unmistakable phrase, or an ordinary verb in transcription context."""
-    return bool(STRONG.search(line) or (WEAK.search(line) and STRICT_CONTEXT.search(line)))
+    """A claim is an unmistakable phrase, an ordinary verb in transcription context, or a
+    plain statement that the dictionary is handed to the transcriber."""
+    if STRONG.search(line):
+        return True
+    if WEAK.search(line) and STRICT_CONTEXT.search(line):
+        return True
+    # A line stating the CORRECT behaviour - "nothing in it is ever sent to the speech model" -
+    # is the transfer shape negated, and must not be reported as the thing it forbids. Applied
+    # to this tier only: an explicit "biased into speech-to-text" still counts even if the line
+    # happens to contain "not", because the strong and weak tiers name the behaviour outright.
+    if NEGATION.search(line):
+        return False
+    return bool(TRANSFER_VERB.search(line)
+                and TRANSFER_OBJECT.search(line)
+                and TRANSFER_DEST.search(line))
 
 
-# Kept so --self-test and callers can seed a file search from one pattern.
-CLAIM = re.compile("%s|%s" % (STRONG.pattern, WEAK.pattern), re.I)
+# Seeds the file search. Wider than is_claim() on purpose: it decides which files to OPEN, and
+# a file skipped here is never examined at all, so it errs toward including too many.
+CLAIM = re.compile(
+    "%s|%s|%s" % (STRONG.pattern, WEAK.pattern, TRANSFER_OBJECT.pattern), re.I)
 # An annotation that discharges a claim. NARROW ON PURPOSE - see failure 3. Every note written
 # for this ruling names the issue; nothing else in ordinary prose does.
 CORRECTION = re.compile(r"\b2481\b|RULED OUT|TOMBSTONE", re.I)
@@ -105,7 +144,10 @@ UNRELATED = re.compile(
     # nudging a WAV cut point to a quiet spot so a word is not sliced
     r"|bounded parts, nudging"
     # naming the cleanup task the deterministic matcher replaces - correction, not biasing
-    r"|fix a known custom vocabulary",
+    r"|fix a known custom vocabulary"
+    # lazy construction of the dictation transcriber: "a dictation is sent" is the user
+    # speaking, not the dictionary being handed over
+    r"|built the first time a dictation is sent",
     re.I,
 )
 # A heading is a reader's entry point: markdown headings, HTML h1-h4, and setext rules.
@@ -128,6 +170,34 @@ EXCLUDE = {
 # Test fixtures holding this work's own session NAME ("fix: 2481 delete bias path"), not a
 # claim about behaviour.
 EXCLUDE_DIRS = ("apps/cockpit/src/missions/",)
+
+
+# Named lines the detector must and must not match, run by --self-test. Every "must match" here
+# is a real line from this repository or a sentence a reviewer showed would sail through.
+DETECTOR_CASES = [
+    # --- transfer language: the ruling stated plainly, with no bias jargon at all ---
+    ("include the dictionary in the speech-to-text request", True, "transfer: include/dictionary/stt"),
+    ("the transcriber receives the glossary with every audio upload", True, "transfer: receives/glossary/transcriber"),
+    ("give the provider the term list as spelling hints", True, "transfer: give/term list/provider"),
+    ("pass known terms in the prompt field", True, "transfer: pass/known terms/prompt field"),
+    # --- real lines that were found in this repository ---
+    ("Terms that steer speech-to-text toward your vocabulary.", True, "v2 mockup subhead"),
+    ("Terms biased into speech-to-text.", True, "shipped Cockpit and phone copy"),
+    ("confirm the new correction/vocabulary bias is applied.", True, "the acceptance criterion"),
+    ("Proper nouns the model is nudged toward. Safe - it only biases.", True, "the safety-argument line"),
+    ("The dictionary biases a speech model toward distinctive terms", True, "the screening model prompt"),
+    ("Bias transcription with the vocabulary glossary via the prompt parameter", True, "findings step 3"),
+    # --- must NOT match: same words, nothing to do with steering a transcriber ---
+    ("// Nudge with Enter. The nudge is safe while the prompt is", False, "terminal submit watchdog"),
+    ('streamingBehavior: "steer"', False, "agent SDK option"),
+    ("car mode end phrase set: length=", False, "log line"),
+    ("norm = win * win / (win * win - 1.0)  # unbiased covariance", False, "statistics"),
+    ("the cleanup pass receives the dictionary and fixes the transcript", False, "cleanup, the CORRECT path"),
+    ("sends the terms to the cleanup pass", False, "cleanup destination, not the provider"),
+    ("nothing in it is ever sent to the speech model", False, "the correct behaviour, stated"),
+    ("the dictionary is never passed to the transcriber", False, "the correct behaviour, stated"),
+    ("we do not send the glossary to the provider", False, "the correct behaviour, stated"),
+]
 
 
 class SweepError(RuntimeError):
@@ -219,40 +289,112 @@ def sweep(root):
     return 1 if total else 0
 
 
-def self_test(root):
-    """Prove the detector catches known-bad input. A check that cannot fail is not a check.
+# The ORIGINAL claim text each file must yield once its annotations are removed. Asserting
+# these exact strings is the point: an earlier self-test only asserted that SOME hit appeared,
+# and passed on the leftover prose of the annotations it had half-stripped - a check passing on
+# the wrong evidence, which is the very defect this sweep exists to find.
+EXPECTED_CLAIMS = {
+    "docs/reviews/dictation-dictionary-suggestions-mockup-v2-2026-07-24.html": [
+        "Terms biased into speech-to-text.",
+        "Terms that steer speech-to-text toward your vocabulary",
+    ],
+    "docs/reviews/dictation-dictionary-suggestions-mockup-2026-07-23.html": [
+        "Terms that bias transcription",
+        "Proper nouns the model is nudged toward",
+    ],
+    "docs/problems/voice-dictionary-not-applied-on-mobile.md": [
+        "confirm the new correction/vocabulary bias is applied",
+        "The speech-to-text bias prompt",
+    ],
+    "docs/research/transcription-speed/FINDINGS.md": [
+        "with the vocabulary glossary via the `prompt` parameter",
+        "Bias the transcriber",
+    ],
+}
 
-    Takes a real annotated file, strips its annotations, and asserts the claims reappear.
+
+def strip_annotation_blocks(text):
+    """Remove WHOLE annotation blocks, not just the lines carrying the marker.
+
+    Stripping only marker lines left the rest of each annotation's prose in place - and that
+    prose is full of claim words, so the detector "caught" annotation remnants and the test
+    passed without ever seeing the original claim. Blocks here are the shapes the annotations
+    actually take: markdown blockquote runs, HTML comments, and the red correction paragraphs.
     """
+    lines = text.split("\n")
+    out, i = [], 0
+    while i < len(lines):
+        line = lines[i]
+        block, end = None, i
+
+        if line.lstrip().startswith(">"):                       # markdown blockquote run
+            end = i
+            while end < len(lines) and lines[end].lstrip().startswith(">"):
+                end += 1
+            block = lines[i:end]
+        elif "<!--" in line:                                    # HTML comment, may span lines
+            end = i
+            while end < len(lines) and "-->" not in lines[end]:
+                end += 1
+            end = min(end + 1, len(lines))
+            block = lines[i:end]
+        elif re.search(r"<p[ >]", line):                        # HTML paragraph, may span lines
+            end = i
+            while end < len(lines) and "</p>" not in lines[end]:
+                end += 1
+            end = min(end + 1, len(lines))
+            block = lines[i:end]
+
+        if block is not None and any(CORRECTION.search(l) for l in block):
+            i = end                                             # drop the whole annotation
+            continue
+        out.append(line)
+        i += 1
+    return "\n".join(out)
+
+
+def self_test(root):
+    """Prove the detector catches known-bad input. A check that cannot fail is not a check."""
     print("SELF-TEST - the detector must FAIL on known-bad input.\n")
-    targets = [
-        "docs/reviews/dictation-dictionary-suggestions-mockup-v2-2026-07-24.html",
-        "docs/problems/voice-dictionary-not-applied-on-mobile.md",
-        "docs/research/transcription-speed/FINDINGS.md",
-    ]
-    tmp = os.path.join(root, ".sweep-selftest.tmp")
     failures = 0
-    for rel in targets:
+
+    print("  [1] named lines the detector must and must not match")
+    for text, want, why in DETECTOR_CASES:
+        got = bool(is_claim(text) and not UNRELATED.search(text))
+        ok = got == want
+        failures += 0 if ok else 1
+        print("      %-5s want=%-5s got=%-5s  %s" % ("ok" if ok else "WRONG", want, got, why))
+
+    print("\n  [2] real files with their annotation BLOCKS removed must yield the ORIGINAL claims")
+    tmp = os.path.join(root, ".sweep-selftest.tmp")
+    for rel, expected in sorted(EXPECTED_CLAIMS.items()):
         path = os.path.join(root, rel)
         if not os.path.exists(path):
-            print("  SKIP %s (missing)" % rel)
+            print("      SKIP %s (missing)" % rel)
+            failures += 1
             continue
         clean = unannotated(path)
         with open(path, encoding="utf-8", errors="replace") as fh:
-            stripped = [l for l in fh.read().split("\n") if not CORRECTION.search(l)]
+            broken_text = strip_annotation_blocks(fh.read())
         with open(tmp, "w", encoding="utf-8", newline="") as fh:
-            fh.write("\n".join(stripped))
+            fh.write(broken_text)
         try:
-            broken = unannotated(tmp)
+            hits = unannotated(tmp)
         finally:
             os.remove(tmp)
-        ok = (not clean) and bool(broken)
+        found = [t for t in hits]
+        missing = [e for e in expected
+                   if not any(e.lower() in text.lower() for _, text in found)]
+        ok = (not clean) and not missing
         failures += 0 if ok else 1
-        print("  %s %s" % ("PASS" if ok else "FAIL", rel))
-        print("      as committed: %d unannotated | annotations removed: %d unannotated"
-              % (len(clean), len(broken)))
-        if broken:
-            print("      example caught: line %d: %s" % (broken[0][0], broken[0][1][:70]))
+        print("      %-5s %s" % ("ok" if ok else "WRONG", rel))
+        print("            as committed: %d unannotated | blocks removed: %d"
+              % (len(clean), len(found)))
+        for e in expected:
+            hit = next((n for n, t in found if e.lower() in t.lower()), None)
+            print("            %s expected claim at line %s: %s"
+                  % ("found" if hit else "MISSING", hit if hit else "-", e[:60]))
+
     print("\nSELF-TEST: %s" % ("PASS" if not failures else "FAIL (%d)" % failures))
     return 0 if not failures else 2
 
