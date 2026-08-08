@@ -1,8 +1,10 @@
+using System.Linq;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text.Json;
 using CcDirector.Gateway;
+using Microsoft.AspNetCore.Routing;
 using Xunit;
 
 namespace CcDirector.Gateway.Tests;
@@ -89,16 +91,84 @@ public sealed class MissionWhyEndpointTests : IAsyncLifetime
         // Asserted against the RUNNING Gateway. A second way to write the WHY - under a weaker boundary and
         // a key that a rename orphans - is exactly the kind of leftover this whole area needed untangling
         // for, so its absence is checked rather than assumed.
-        using var get = await Authed(HttpMethod.Get, "/gateway/missions/notes");
-        Assert.Equal(HttpStatusCode.NotFound, get.StatusCode);
+        //
+        // NOT asserted by status code (issue #2516). This test used to expect 404 on both verbs, and that
+        // expectation was really a statement about something else entirely: the Cockpit single-page app is
+        // registered as MapFallback("{*path}"), and a fallback answers any path no other endpoint matched -
+        // the shell with 200 when the Cockpit is built into the host, 404 only when it is not. So a 404 here
+        // meant "this build has no Cockpit", and the moment a Release build staged one the test flipped to
+        // failing while nothing about the retirement had changed. It then failed on main for a day, in the
+        // release gate and on continuous integration, saying a retired route was alive when it was not.
+        //
+        // Three checks replace it, each proving a different thing, and each is narrower than "nothing can
+        // ever serve this WHY again" - state what they do prove:
+        //
+        //  1. NO ROUTE IS REGISTERED AT THAT EXACT PATTERN, read off the running Gateway's finalised route
+        //     table. This is the one that catches the retirement being undone by re-registering the endpoint;
+        //     it does NOT prove nothing MATCHES the path - the fallback matches it by design, and so would a
+        //     parameterised route such as /gateway/missions/{x}.
+        //  2. NEITHER VERB RETURNS THE RETIRED PAYLOAD over real HTTP. This fingerprints the shape the old
+        //     endpoint served; a re-implementation answering some other shape would pass it.
+        //  3. THE WRITE DOES NOT LAND on a mission that already exists, which is the consequence that would
+        //     actually hurt: the retired writer keyed by the mission's lower-cased NAME, so the mission is
+        //     created FIRST, with a WHY set, and the retired PUT is aimed at that name.
+        const string RetiredPath = "/gateway/missions/notes";
 
-        using var req = new HttpRequestMessage(HttpMethod.Put, "/gateway/missions/notes")
+        var registered = _gateway.MappedEndpoints.OfType<RouteEndpoint>()
+            .Select(e => "/" + (e.RoutePattern.RawText ?? "").TrimStart('/'))
+            .Where(p => p.Equals(RetiredPath, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+        Assert.Empty(registered);
+
+        using var get = await Authed(HttpMethod.Get, RetiredPath);
+        Assert.False(IsNotesPayload(await get.Content.ReadAsStringAsync()),
+            "GET " + RetiredPath + " served the retired notes payload");
+
+        // The mission exists BEFORE the retired write is attempted, and carries a WHY of its own. Attempting
+        // the write first would let an implementation that resolves an existing mission by name pass simply
+        // because there was nothing to resolve.
+        var mission = await CreateMission("Release 2.0.1");
+        await PatchWhy(mission, "set through the route that is not retired");
+        Assert.Equal("set through the route that is not retired", await GetWhy(mission));
+
+        using var req = new HttpRequestMessage(HttpMethod.Put, RetiredPath)
         {
             Content = JsonContent.Create(new { mission = "Release 2.0.1", why = "via the old route" }),
         };
         req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", Token);
         using var put = await _http.SendAsync(req);
-        Assert.Equal(HttpStatusCode.NotFound, put.StatusCode);
+        Assert.False(IsNotesPayload(await put.Content.ReadAsStringAsync()),
+            "PUT " + RetiredPath + " served the retired note payload");
+
+        // Unchanged - asserted against the value that was deliberately put there, so this cannot pass by
+        // reading an absent field as an empty string.
+        Assert.Equal("set through the route that is not retired", await GetWhy(mission));
+    }
+
+    /// <summary>
+    /// Whether a response body is the retired notes surface answering, rather than the Cockpit shell or a
+    /// refusal. The retired reader served <c>{"notes":[...]}</c> and the writer served <c>{"note":...}</c>,
+    /// so the JSON shape is what identifies it - a body that is not JSON at all cannot be it.
+    ///
+    /// This fingerprints THAT implementation, not the capability: a different surface answering some other
+    /// shape would not be recognised here. The registration check above and the unchanged-WHY check below
+    /// are what cover the ways this one cannot.
+    /// </summary>
+    private static bool IsNotesPayload(string body)
+    {
+        if (string.IsNullOrWhiteSpace(body))
+            return false;
+        try
+        {
+            using var doc = JsonDocument.Parse(body);
+            return doc.RootElement.ValueKind == JsonValueKind.Object
+                   && (doc.RootElement.TryGetProperty("notes", out _)
+                       || doc.RootElement.TryGetProperty("note", out _));
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
     }
 
     // ---- 3 + 4. ROUND TRIP, KEYED BY ID, DURABLE -----------------------------------------------------
