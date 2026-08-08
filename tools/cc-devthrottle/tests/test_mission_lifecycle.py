@@ -16,6 +16,7 @@ The cases assert the decisions, because each was settled deliberately:
 No HTTP happens: the Gateway calls are stubbed.
 """
 
+import re
 import sys
 from pathlib import Path
 
@@ -27,10 +28,21 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from src import mission_ops  # noqa: E402
 
+# Rich emits colour when its console decides the destination can take it, and that decision differs
+# between a developer's machine and continuous integration. The escapes land INSIDE the sentences
+# asserted on here, so a substring a reader plainly sees on screen is absent from the captured
+# string. That is what made these three tests pass locally and fail in continuous integration.
+ANSI = re.compile(r"\x1b\[[0-9;]*m")
+
 
 def flowed(text: str) -> str:
-    """Collapse Rich's wrapping so an assertion is about WORDS, not column width."""
-    return " ".join(text.split())
+    """Strip Rich's colour and collapse its wrapping, so an assertion is about WORDS.
+
+    Two pieces of presentation come out, for one reason: neither is the message. Colour varies with
+    where the output is going and the wrap column varies with console width, so an assertion that
+    fails on either is testing the terminal rather than what was said.
+    """
+    return " ".join(ANSI.sub("", text).split())
 
 
 ACTIVE_ID = "aaaaaaaa-1111-2222-3333-444444444444"
