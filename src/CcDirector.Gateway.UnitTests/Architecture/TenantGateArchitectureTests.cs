@@ -60,6 +60,13 @@ public sealed class TenantGateArchitectureTests
         nameof(TenantEntity),             // the account-subject -> tenant mapping (the tenant census itself)
         nameof(EntitlementEntity),        // paid entitlements owned/written by the payment side; Gateway only READs
         nameof(AccountTrialEntity),       // free-trial ledger, keyed by account subject and read pre-tenant (#2117)
+        // The administrator trial-extension audit trail - the ledger OF account_trials directly above, and
+        // global for the same reason it is: keyed by the account subject, an identity that exists before any
+        // tenant does, so scoping it would be circular in exactly the same way. It is written only in the same
+        // transaction as the trial row it describes, only for the one subject the caller named, and only by a
+        // service-token-authorized administrator surface - never by a tenant, so there is no tenant whose rows
+        // another tenant could reach through it.
+        nameof(TrialExtensionEntity),
         nameof(DeviceCredentialEntity),   // per-device key records; a presented key is resolved by hash pre-tenant
         nameof(DeviceImportMarkerEntity), // one-time devices.json import idempotency markers (global, like above)
         // Per-SESSION Gateway credentials (Remove-the-network-port phase 1b). Global for exactly the same

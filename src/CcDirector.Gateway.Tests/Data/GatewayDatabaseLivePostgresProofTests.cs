@@ -3,6 +3,7 @@ using CcDirector.Gateway.Data;
 using CcDirector.Gateway.Data.Entities;
 using CcDirector.Gateway.Contracts;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Infrastructure;
 using Xunit;
 
 namespace CcDirector.Gateway.Tests.Data;
@@ -71,9 +72,14 @@ public sealed class GatewayDatabaseLivePostgresProofTests
 
     /// <summary>
     /// The real startup path: constructing GatewayDatabase runs Database.Migrate() against the configured
-    /// Postgres, which must create the gateway schema, all 16 mapped tables, and the migrations history table
-    /// under that schema (and nothing under public). This is read-only after the migrate, so it deliberately
-    /// leaves the applied - empty - schema in place, which is the desired deploy-ready state.
+    /// Postgres, which must create the gateway schema, EVERY table the model maps and this Gateway owns, and
+    /// the migrations history table under that schema (and nothing under public). This is read-only after the
+    /// migrate, so it deliberately leaves the applied - empty - schema in place, which is the desired
+    /// deploy-ready state.
+    ///
+    /// "Every" is meant literally and is derived from the model below. It used to say "all 16 mapped tables"
+    /// while iterating a hand-kept list of 16 out of the 38 the model maps - a census in the summary and a
+    /// sample in the code, which is green in precisely the case it exists for.
     /// </summary>
     [RequiresConfiguredPostgresFact]
     public void Startup_AppliesGatewaySchemaAndTables_OnConfiguredPostgres()
@@ -84,7 +90,33 @@ public sealed class GatewayDatabaseLivePostgresProofTests
         Assert.Equal(1, ScalarInt(ctx,
             "SELECT count(*) FROM information_schema.schemata WHERE schema_name = 'gateway'"));
 
-        foreach (var table in MappedTables)
+        // EVERY mapped table, asked of the MODEL - not of the hand-kept list below, which named 16 of the
+        // 38 the model actually maps while the assertion around it read as a schema-isolation census. A
+        // sample presenting itself as a census is green in exactly the case it exists for: a table added
+        // today, whose schema placement nobody has checked yet, is not in a list written months ago.
+        // THE DESIGN-TIME MODEL, not ctx.Model: the runtime model is read-optimized and has dropped the
+        // migrations metadata, so it throws rather than answering "is this excluded from migrations?".
+        var mapped = ctx.GetService<Microsoft.EntityFrameworkCore.Metadata.IDesignTimeModel>().Model.GetEntityTypes()
+            .Where(e => !e.IsOwned())
+            // EXCLUDED FROM MIGRATIONS MEANS WE DO NOT CREATE IT. `entitlements` belongs to the payment
+            // side and this Gateway only READS it, so its absence from a Gateway-applied schema is the
+            // correct outcome, not a defect. Mapped is not the same question as ours-to-create.
+            .Where(e => !e.IsTableExcludedFromMigrations())
+            .Select(e => e.GetTableName())
+            .Where(t => !string.IsNullOrEmpty(t))
+            .Select(t => t!)
+            .Distinct(StringComparer.Ordinal)
+            .OrderBy(t => t, StringComparer.Ordinal)
+            .ToList();
+
+        // The scan found the model - otherwise the loop below is vacuous and this passes proving nothing.
+        Assert.True(mapped.Count >= MappedTables.Length,
+            $"the model mapped only {mapped.Count} tables, fewer than the {MappedTables.Length} known-good " +
+            "names - the model scan is broken, not the schema");
+        foreach (var known in MappedTables)
+            Assert.Contains(known, mapped, StringComparer.Ordinal);
+
+        foreach (var table in mapped)
         {
             Assert.Equal(1, ScalarInt(ctx,
                 $"SELECT count(*) FROM information_schema.tables WHERE table_schema = 'gateway' AND table_name = '{table}'"));
@@ -291,7 +323,12 @@ public sealed class GatewayDatabaseLivePostgresProofTests
         }
     }
 
-    /// <summary>The 16 mapped tables, for the schema-isolation assertion.</summary>
+    /// <summary>
+    /// A FLOOR of known-good table names, NOT the set the isolation assertion iterates - that is derived
+    /// from the model, because this array said "the 16 mapped tables" while the model mapped 38. It is kept
+    /// because it asserts something the derived check cannot: that these particular tables have not
+    /// silently stopped being mapped at all.
+    /// </summary>
     private static readonly string[] MappedTables =
     {
         "cron_jobs", "cron_runs", "worklists", "worklist_items", "workflows", "workflow_versions",

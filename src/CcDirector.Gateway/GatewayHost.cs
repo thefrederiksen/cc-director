@@ -3149,6 +3149,16 @@ public sealed class GatewayHost : IAsyncDisposable
         // what a missing answer means. Inherits the host-wide token middleware like the other /account routes.
         AccountTrialEndpoint.Map(_app, TrialRegistry, tenantBoundary: _tenantBoundary, tenants: TenantRegistry);
 
+        // The administrator trial EXTENSION: POST /gateway/admin/trials/extend. The write twin of the read
+        // above, and the only way a trial's end date moves. It lives here rather than as a database grant to
+        // the website because the row belongs to this Gateway's role: handing that role's UPDATE to another
+        // system would have put the capability where the data is not, split one rule across two codebases,
+        // and left the permission outside either system's migrations, where a rebuild of this schema silently
+        // removes it. Does NOT inherit the host-wide token middleware - the caller is a SERVER holding no
+        // device key - and carries its own bearer service token (ADMIN_SERVICE_TOKEN), deliberately a
+        // different secret from the read-only report token.
+        AdminTrialEndpoint.Map(_app, TrialRegistry);
+
         // "DevThrottle emails me" relay (issue #1318 consumer): POST /account/email. A session or scheduled
         // run passes a subject + body (+ optional attachments); the Gateway injects its own stored account
         // token and forwards to the cloud primitive (POST /api/v1/account/notify-owner, devthrottle_internal

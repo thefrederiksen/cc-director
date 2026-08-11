@@ -52,6 +52,31 @@ az ad app federated-credential create \
 After that, every merge to `main` that passes CI redeploys the Gateway. Trigger a manual redeploy of
 current `main` any time from the Actions tab (**Deploy hosted Gateway -> Run workflow**).
 
+## App settings this workflow does NOT set
+
+The deploy repins an image; it never writes app settings. Any route that needs a credential therefore
+needs that setting present on the slots BEFORE the code that reads it arrives, or the route ships and
+refuses to serve. Each of these fails CLOSED when unset - a `503` naming the variable, never an open
+door - so a missed setting is visible rather than dangerous, but it is still an outage of that route.
+
+| Setting | Guards | Behaviour when unset |
+|---|---|---|
+| `REPORT_SERVICE_TOKEN` | `GET /gateway/reports/morning`, `/gateway/reports/recipients` | `503`; the daily email stops |
+| `ADMIN_SERVICE_TOKEN`  | `POST /gateway/admin/trials/extend` | `503`; the website's admin screen answers "could not confirm" |
+
+`ADMIN_SERVICE_TOKEN` is deliberately a **different secret** from `REPORT_SERVICE_TOKEN`. The report
+token guards a read-only report; the admin token can hand a member a year of paid product. A single
+shared credential would mean a leak from a reporting cron could give product away, so the two are
+separate values checked by separate code paths.
+
+Set it on the **stopped staging slot before** the deploy so the warmed swap carries it into production
+with no extra restart, and re-set it on staging **after** the swap - app settings swap WITH the slot, so
+a post-swap staging left without it loses the token on any swap-back. The values live in
+`credentials.env` and in the website's Vercel project. **Never in this repository** - it is public.
+
+The website side needs the matching pair in Vercel: `ADMIN_SERVICE_TOKEN` (the same value) and
+`GATEWAY_ADMIN_URL` (this Gateway's base URL).
+
 ## Verifying
 
 The workflow polls `GET https://devthrottle-gw.azurewebsites.net/healthz` for a `200` after restart

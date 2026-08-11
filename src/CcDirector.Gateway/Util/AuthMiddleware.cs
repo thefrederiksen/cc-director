@@ -180,6 +180,15 @@ internal static class AuthMiddleware
         // report, scoped to that account's tenant.
         Api.MorningReportEndpoint.Path,
         Api.ReportRecipientsEndpoint.Path,
+        // The administrator trial extension: the website's admin API is a SERVER too - it holds no
+        // Director/phone device key and no shared machine token, so like the morning report above it cannot
+        // pass this gate. The route carries its OWN authorization instead: a bearer service token from
+        // ADMIN_SERVICE_TOKEN, compared in fixed time, required before anything is read or written (an unset
+        // variable is a 503, never an open door), and a DIFFERENT secret from the report token because this
+        // one hands out paid product rather than reading a report. Exact-match like every front door above:
+        // only /gateway/admin/trials/extend is exempt, it names exactly one account, and the only direction
+        // it can move that account's date is LATER.
+        Api.AdminTrialEndpoint.Path,
     };
 
     /// <summary>

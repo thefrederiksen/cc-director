@@ -187,6 +187,15 @@ public sealed class GatewayDbContext : DbContext
     /// </summary>
     public DbSet<AccountTrialEntity> AccountTrials => Set<AccountTrialEntity>();
 
+    /// <summary>
+    /// The administrator trial-extension ledger (<c>trial_extensions</c>) - one append-only row per human
+    /// decision to move a trial's end date later, recording who, for whom, from what to what, and why. GLOBAL
+    /// like <see cref="AccountTrials"/>, and deliberately kept in the SAME schema as the table it describes:
+    /// the extension and its audit row are written in one transaction by the one role that owns both, so
+    /// neither can exist without the other.
+    /// </summary>
+    public DbSet<TrialExtensionEntity> TrialExtensions => Set<TrialExtensionEntity>();
+
     /// <summary>The durable per-device-key credential records (<c>device_credentials</c>, MTR-14) - the per-row
     /// replacement for the shared <c>devices.json</c> file. A GLOBAL table (no <c>tenant_id</c> query filter):
     /// a presented key is resolved by its hash before any tenant is known, and the tenant is read off the
@@ -702,6 +711,26 @@ public sealed class GatewayDbContext : DbContext
             b.HasIndex(e => e.ExpiresAtUtc);
         });
 
+        modelBuilder.Entity<TrialExtensionEntity>(b =>
+        {
+            b.ToTable("trial_extensions");
+            // The minted Guid, not the subject: one account may be extended more than once and each decision
+            // is its own record, so the subject is an INDEX here rather than a key. GLOBAL for the same reason
+            // account_trials is - keyed by account subject, which exists before any tenant does.
+            b.HasKey(e => e.Id);
+            b.Property(e => e.Id).HasColumnName("id").ValueGeneratedNever();
+            b.Property(e => e.Subject).HasColumnName("subject").IsRequired();
+            b.Property(e => e.MemberEmail).HasColumnName("member_email");
+            b.Property(e => e.StartedAtUtc).HasColumnName("started_at_utc").IsRequired();
+            b.Property(e => e.PreviousExpiresAtUtc).HasColumnName("previous_expires_at_utc").IsRequired();
+            b.Property(e => e.NewExpiresAtUtc).HasColumnName("new_expires_at_utc").IsRequired();
+            b.Property(e => e.Actor).HasColumnName("actor").IsRequired();
+            b.Property(e => e.Reason).HasColumnName("reason").IsRequired();
+            b.Property(e => e.RecordedUtc).HasColumnName("recorded_utc").IsRequired();
+            // "What was done to this account?" is the question the ledger is read by.
+            b.HasIndex(e => e.Subject);
+        });
+
         modelBuilder.Entity<DeviceCredentialEntity>(b =>
         {
             b.ToTable("device_credentials");
@@ -856,6 +885,12 @@ public sealed class GatewayDbContext : DbContext
             // uuid because the website's schema owns that column) - this table is ours, and its column type
             // matches tenants.account_subject, the other subject-keyed table the Gateway itself creates.
             modelBuilder.Entity<AccountTrialEntity>().Property(e => e.Subject).UseCollation("C");
+
+            // trial_extensions.subject holds the SAME verified account subject and is indexed for the "what
+            // was done to this account?" read. Pinned to "C" for the same reason: the ledger must group by
+            // exactly the identity the trial row is keyed on, or an extension could be recorded against a
+            // subject that Postgres considers equal and SQLite does not.
+            modelBuilder.Entity<TrialExtensionEntity>().Property(e => e.Subject).UseCollation("C");
 
             // The device_credentials natural-key columns (MTR-14): the DeviceId primary key and the
             // DeviceKeyHash lookup index both rely on byte-ordinal equality/ordering, same as the keys above -
