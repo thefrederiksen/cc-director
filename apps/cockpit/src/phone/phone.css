@@ -1,0 +1,105 @@
+/* The Phone page (devthrottle_internal #1508). Narrow measure on purpose: the whole page is three short
+   instructions and a code to scan, and stretching that across a wide monitor would make it look like
+   more work than it is. */
+
+.phone-page {
+  max-width: 620px;
+}
+
+.phone-card {
+  margin-top: 1rem;
+  padding: 1.1rem 1.25rem;
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.14));
+  border-radius: 12px;
+  background: var(--surface, rgba(255, 255, 255, 0.03));
+}
+
+.phone-card h2 {
+  margin: 0 0 0.85rem;
+  font-size: 0.95rem;
+  font-weight: 600;
+}
+
+/* White plate behind the code, always - a QR is read as dark-on-light, and a dark theme painting the
+   transparent PNG onto a dark surface produces a code that will not scan. */
+.phone-qr {
+  display: block;
+  width: 200px;
+  height: 200px;
+  padding: 10px;
+  border-radius: 8px;
+  background: #ffffff;
+  image-rendering: pixelated;
+}
+
+.phone-qr-pending {
+  width: 200px;
+  height: 200px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px dashed var(--border, rgba(255, 255, 255, 0.2));
+  border-radius: 8px;
+  opacity: 0.6;
+  font-size: 0.85rem;
+}
+
+.phone-qr-problem {
+  margin: 0;
+  padding: 0.75rem 0.9rem;
+  border: 1px solid rgba(234, 179, 8, 0.5);
+  border-radius: 8px;
+  background: rgba(234, 179, 8, 0.1);
+  font-size: 0.85rem;
+  line-height: 1.5;
+}
+
+.phone-note {
+  margin: 0.85rem 0 0;
+  font-size: 0.85rem;
+  line-height: 1.55;
+  opacity: 0.75;
+}
+
+.phone-url-row {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+}
+
+.phone-url {
+  flex: 1 1 14rem;
+  min-width: 0;
+  padding: 0.6rem 0.75rem;
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.14));
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.25);
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 0.85rem;
+  overflow-x: auto;
+  white-space: nowrap;
+}
+
+.phone-btn {
+  padding: 0.6rem 0.9rem;
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.2));
+  border-radius: 8px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 0.85rem;
+  font-weight: 600;
+  text-decoration: none;
+  text-align: center;
+  cursor: pointer;
+}
+
+.phone-btn:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.phone-btn-wide {
+  display: block;
+  margin-top: 0.75rem;
+}

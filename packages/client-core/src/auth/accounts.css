@@ -1,0 +1,174 @@
+/* The shared account switcher and Accounts panel (devthrottle_internal #1507, #1509). One stylesheet
+   for both shells, in the same shape the settings tabs use: the CONTENT is identical on the desktop and
+   the phone, and each shell re-tunes only spacing and hit-target size around it. */
+
+.accts {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.accts-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+/* One account. A button, not a row with a button in it: the whole card is the switch target, which is
+   what a thumb expects on the phone and what a pointer expects on the desktop. */
+.accts-item {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  width: 100%;
+  padding: 0.75rem 0.9rem;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.03);
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.accts-item:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.07);
+}
+
+/* The ACTIVE account is not a hover state and must not read like one - it is where you are. */
+.accts-item.is-active {
+  border-color: #3b82f6;
+  background: rgba(59, 130, 246, 0.12);
+  cursor: default;
+}
+
+.accts-mark {
+  flex: 0 0 auto;
+  width: 1.1rem;
+  text-align: center;
+  font-weight: 700;
+  color: #3b82f6;
+}
+
+.accts-body {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.accts-label {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.accts-sub {
+  font-size: 0.8rem;
+  opacity: 0.7;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.accts-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin-top: 0.25rem;
+}
+
+.accts-btn {
+  display: block;
+  width: 100%;
+  padding: 0.75rem 1rem;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.accts-btn:hover {
+  background: rgba(255, 255, 255, 0.07);
+}
+
+.accts-btn.primary {
+  border-color: #3b82f6;
+  background: rgba(59, 130, 246, 0.15);
+}
+
+/* Signing out is destructive enough to name itself, but it is an everyday action - warning red, not
+   alarm red, and never the first thing the eye lands on. */
+.accts-btn.danger {
+  border-color: rgba(239, 68, 68, 0.55);
+  color: #fca5a5;
+}
+
+.accts-btn.danger:hover {
+  background: rgba(239, 68, 68, 0.12);
+}
+
+.accts-note {
+  font-size: 0.8rem;
+  opacity: 0.65;
+  line-height: 1.45;
+  margin: 0;
+}
+
+.accts-confirm {
+  padding: 0.75rem 0.9rem;
+  border: 1px solid rgba(239, 68, 68, 0.5);
+  border-radius: 10px;
+  background: rgba(239, 68, 68, 0.08);
+}
+
+.accts-confirm p {
+  margin: 0 0 0.75rem;
+  font-size: 0.9rem;
+  line-height: 1.45;
+}
+
+.accts-confirm-row {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.accts-confirm-row .accts-btn {
+  margin: 0;
+}
+
+/* The compact identity chip (AccountSwitcher). Sized to sit inside an app bar or a menu header without
+   changing its height, and truncating rather than wrapping - an email is long and the bar is not. */
+.accts-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  max-width: 11rem;
+  padding: 0.2rem 0.55rem;
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.06);
+  color: inherit;
+  font: inherit;
+  font-size: 0.8rem;
+  line-height: 1.4;
+  cursor: pointer;
+}
+
+.accts-chip:hover {
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.accts-chip-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.accts-chip-caret {
+  flex: 0 0 auto;
+  opacity: 0.7;
+  font-size: 0.7rem;
+}

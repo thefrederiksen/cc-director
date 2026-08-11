@@ -16,12 +16,12 @@
 // effects (store the key, mirror the cookie, land on the route, surface errors).
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { getInstallId, setDeviceKey } from "./deviceKey";
+import { addAccount, clearPendingInstallId, pendingInstallId } from "./accountStore";
 import { enrollmentProfile, takeEnrollNext } from "./enrollRequest";
 import { runEnrollmentCallback } from "./enrollCallback";
 import { isGatewayNotSignedIn } from "../api/enroll";
 import { ensureGatewayCookie } from "../api/client";
-import { beginSignIn } from "../account/accountClient";
+import { beginSignIn, getAccountStatusForKey } from "../account/accountClient";
 
 // "gatewaySignedOut" is the Gateway itself not being signed in to a DevThrottle account (HTTP 409 from
 // /mobile/enroll). It is deliberately NOT an error phase: on a fresh install it is the EXPECTED state - the
@@ -55,7 +55,11 @@ export function DeviceCallback() {
         // The whole dispatch - anti-forgery verification (fail closed), credential classification, and
         // which enroll request is sent - lives in runEnrollmentCallback so it is exercised by tests.
         // This screen only maps the outcome to a phase and the shared side effects.
-        const outcome = await runEnrollmentCallback(params, profile, getInstallId());
+        // The install id minted when this sign-in STARTED, not the active account's - this leg is
+        // enrolling a device for whichever account the person just signed in as, which may not be the
+        // account currently active on this browser (devthrottle_internal #1509).
+        const installId = pendingInstallId();
+        const outcome = await runEnrollmentCallback(params, profile, installId);
         if (cancelled) return;
         switch (outcome.kind) {
           case "denied":
@@ -71,7 +75,19 @@ export function DeviceCallback() {
             setMessage("Sign-in did not return a device key. Please try again.");
             return;
           case "enrolled": {
-            setDeviceKey(outcome.localKey);
+            // Ask the Gateway who this brand-new key belongs to, so the account is labeled with the
+            // person's email rather than a position in a list. It is asked with THAT key, because the
+            // key is not the active one until addAccount stores it. Null is ordinary (a self-host
+            // Gateway with no resolvable identity, or a fresh tenant row that carries no email yet) and
+            // never blocks a sign-in that has already succeeded.
+            const identity = await getAccountStatusForKey(outcome.localKey);
+            if (cancelled) return;
+            addAccount({
+              deviceKey: outcome.localKey,
+              installId,
+              email: identity?.email ?? null,
+            });
+            clearPendingInstallId();
             // Mirror the fresh key into the cc-gateway-token cookie right away, so the terminal
             // WebSocket and any hard navigation authenticate without waiting for the next full page load.
             ensureGatewayCookie();

@@ -27,6 +27,7 @@ export type NavIconName =
   | "transcription"
   | "network"
   | "account"
+  | "phone"
   | "throttle"
   | "settings"
   | "injected-text"
@@ -140,6 +141,15 @@ const PAINT: Record<NavIconName, JSX.Element> = {
     <>
       <circle cx="12" cy="7" r="4" />
       <path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2" />
+    </>
+  ),
+  // A handset: getting DevThrottle onto your phone. A tall rounded rectangle with a home bar, which is
+  // the one silhouette in this set that is taller than it is wide - so it is found by outline alone,
+  // even sitting between the person-shape of Account and the gauge of Your Throttle.
+  phone: (
+    <>
+      <rect x="7" y="2" width="10" height="20" rx="2" />
+      <path d="M10.5 18h3" />
     </>
   ),
   // A gauge: your throttle.

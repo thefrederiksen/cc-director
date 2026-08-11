@@ -16,6 +16,7 @@ import { playClip, playingSid, rowVoiceInputs, stopPlayback, syncVoiceSessions, 
 import { voiceRowState } from "@devthrottle/client-core/voice/voiceRowState";
 import { voiceQueueFor } from "@devthrottle/client-core/voice/voiceQueue";
 import { NavDrawer } from "../components/NavDrawer";
+import { AccountSwitcher } from "@devthrottle/client-core/auth/AccountSwitcher";
 import { SessionFilterPanel } from "../components/SessionFilterPanel";
 import { useSessionFilter } from "../hooks/useSessionFilter";
 import {
@@ -251,6 +252,11 @@ export function Home() {
       <header className="app-bar">
         <NavDrawer />
         <h1>DevThrottle</h1>
+        {/* Which account's fleet this roster belongs to (devthrottle_internal #1509). Renders NOTHING
+            until a second account is enrolled, so a single-login phone sees the bar it always had. It
+            is on the roster specifically: this is the screen that shows a list of sessions, and a list
+            of the wrong account's sessions is indistinguishable from a list of yours. */}
+        <AccountSwitcher onOpen={() => navigate("/account")} />
         {/* The spacer pushes the filter button to the right end of the bar. It used to be two spacers
             with the network status pill centred between them; the pill is gone (see ConnectionBanner). */}
         <div className="app-bar-spacer" />

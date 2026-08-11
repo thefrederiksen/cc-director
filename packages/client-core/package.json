@@ -7,6 +7,8 @@
   "exports": {
     "./auth/SignIn": "./src/auth/SignIn.tsx",
     "./auth/DeviceCallback": "./src/auth/DeviceCallback.tsx",
+    "./auth/AccountsPanel": "./src/auth/AccountsPanel.tsx",
+    "./auth/AccountSwitcher": "./src/auth/AccountSwitcher.tsx",
     "./dictation/DictationDialog": "./src/dictation/DictationDialog.tsx",
     "./dictation/DictationStatusStrip": "./src/dictation/DictationStatusStrip.tsx",
     "./dictation/MicTestPanel": "./src/dictation/MicTestPanel.tsx",

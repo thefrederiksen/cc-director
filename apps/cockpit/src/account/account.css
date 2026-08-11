@@ -324,3 +324,24 @@
   border-radius: 6px;
   font-size: 13px;
 }
+
+/* This browser's own signed-in accounts (devthrottle_internal #1507/#1509). Its cards come from the
+   shared stylesheet (client-core/auth/accounts.css); this is only the Cockpit's frame around them, and
+   the heading that separates them from the Gateway credential below - two different things that both
+   answer to the word "account", so the page names each one. */
+.acct-browser {
+  margin-top: 18px;
+  max-width: 520px;
+}
+.acct-browser h2 {
+  margin: 0 0 10px;
+  font-size: 15px;
+  font-weight: 600;
+}
+.acct-gateway-head {
+  margin: 26px 0 12px;
+  padding-top: 18px;
+  border-top: 1px solid var(--border, #2a3242);
+  font-size: 15px;
+  font-weight: 600;
+}
