@@ -130,6 +130,13 @@ public sealed class TenantScopeGuardTests : IDisposable
         //    Unlike EntitlementEntity this one IS written here, but only ever for the subject the caller has
         //    already been verified as, so a tenant cannot reach another tenant's row through it.
         //
+        //  - TrialExtensionEntity is the administrator trial-extension ledger - the audit trail of
+        //    AccountTrialEntity, and global for exactly the same reason it is: keyed by the account subject,
+        //    which is an identity that exists before any tenant does, so scoping it would be circular in the
+        //    same way. It is written only in the same transaction as the trial row it describes, only ever for
+        //    the one subject the caller named, and only by an administrator surface that holds a service token
+        //    - never by a tenant, so there is no tenant whose rows another tenant could reach through it.
+        //
         //  - SessionKeyEntity is the per-SESSION credential registry (Remove-the-network-port phase 1b), and
         //    it is global for precisely the reason DeviceCredentialEntity is: an AUTH-RESOLUTION lookup, not
         //    tenant data. A presented session key is resolved to its session by its SHA-256 hash BEFORE any
@@ -143,6 +150,7 @@ public sealed class TenantScopeGuardTests : IDisposable
             typeof(TenantEntity),
             typeof(EntitlementEntity),
             typeof(AccountTrialEntity),
+            typeof(TrialExtensionEntity),
             typeof(DeviceCredentialEntity),
             typeof(DeviceImportMarkerEntity),
             typeof(SessionKeyEntity),

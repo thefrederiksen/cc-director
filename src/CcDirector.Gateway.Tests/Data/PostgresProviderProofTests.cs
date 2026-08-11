@@ -3,6 +3,7 @@ using CcDirector.Gateway.Data;
 using CcDirector.Gateway.Data.Entities;
 using CcDirector.Gateway.Contracts;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Infrastructure;
 using Npgsql;
 using Xunit;
 
@@ -59,7 +60,15 @@ public sealed class PostgresProviderProofTests
     /// were created. Dropping first (EnsureDeleted) makes the migrate a genuine from-nothing run so the schema
     /// creation is really exercised, not just found already present.
     /// </summary>
-    /// <summary>The 22 mapped tables, all expected under the gateway schema and NONE under public.</summary>
+    /// <summary>
+    /// A FLOOR of known-good table names, NOT the definition of "every mapped table" - the exhaustive set
+    /// is derived from the model in <see cref="MappedTablesFromModel"/>, because this array previously said
+    /// "the 22 mapped tables" while the model mapped 38, and a sample that calls itself a census passes
+    /// green precisely when a newly added table is the one in question.
+    ///
+    /// It is kept because it still earns its place: it asserts that these particular tables have not
+    /// silently stopped being mapped at all, which a purely derived check cannot notice.
+    /// </summary>
     private static readonly string[] MappedTables =
     {
         "cron_jobs", "cron_runs", "worklists", "worklist_items", "workflows", "workflow_versions",
@@ -67,7 +76,43 @@ public sealed class PostgresProviderProofTests
         "wingman_instructions", "session_spend", "account_hosted_ai_spend", "mission_notes",
         "governance_audit_events", "device_credentials", "device_import_markers",
         "dictation_transcripts", "tenant_settings", "workflow_tenant_overrides", "activity_events",
+        // The administrator trial-extension ledger. It matters that this one is asserted to land in
+        // `gateway` and not in `public`: it is the audit trail of a write the WEBSITE's role was
+        // deliberately never given, and a copy of it sitting in the website's own schema would put the
+        // record of that decision on the wrong side of the boundary the whole design turns on.
+        "trial_extensions",
     };
+
+    /// <summary>
+    /// EVERY mapped table, asked of the MODEL rather than of a list somebody maintains.
+    ///
+    /// The hand-written array above claimed to be "every mapped table" while naming 23 of the 38 the model
+    /// actually maps. That is the failure mode this whole file exists to catch, committed by the file
+    /// itself: a check whose claim is exhaustive and whose behaviour is a sample passes green while the
+    /// table it should have caught is one of the fifteen nobody listed. A NEW table - which is exactly when
+    /// "did it land in the right schema?" is a live question - was the case it could never answer.
+    ///
+    /// Asking the model instead makes the check exhaustive by construction: a table added tomorrow is
+    /// checked tomorrow, with nobody remembering anything. Owned types are excluded because they are JSON
+    /// sub-documents riding inside their owner's row, not tables.
+    /// </summary>
+    private static IReadOnlyList<string> MappedTablesFromModel(GatewayDbContext ctx) =>
+        // THE DESIGN-TIME MODEL, not ctx.Model. The runtime model is read-optimized and has dropped the
+        // migrations metadata, so asking it whether a table is excluded from migrations throws rather than
+        // answering - which is the better failure of the two, but it is still the wrong model to ask.
+        ctx.GetService<Microsoft.EntityFrameworkCore.Metadata.IDesignTimeModel>().Model.GetEntityTypes()
+            .Where(e => !e.IsOwned())
+            // EXCLUDED FROM MIGRATIONS MEANS WE DO NOT CREATE IT. `entitlements` is the payment side's
+            // table, which this Gateway only READS - so a from-nothing migrate correctly leaves it absent,
+            // and asserting it landed would fail on a truth rather than on a defect. Mapped is not the same
+            // question as ours-to-create, and this check is about the second.
+            .Where(e => !e.IsTableExcludedFromMigrations())
+            .Select(e => e.GetTableName())
+            .Where(t => !string.IsNullOrEmpty(t))
+            .Select(t => t!)
+            .Distinct(StringComparer.Ordinal)
+            .OrderBy(t => t, StringComparer.Ordinal)
+            .ToList();
 
     [RequiresPostgresFact]
     public void Migrate_CreatesGatewaySchemaAndTables_OnRealPostgres()
@@ -81,8 +126,21 @@ public sealed class PostgresProviderProofTests
         Assert.Equal(1, ScalarInt(ctx,
             "SELECT count(*) FROM information_schema.schemata WHERE schema_name = 'gateway'"));
 
+        var mapped = MappedTablesFromModel(ctx);
+
+        // The scan really found the model's tables - a reflection no-op returning nothing would otherwise
+        // make the loop below vacuous and this test green while proving nothing at all.
+        Assert.True(mapped.Count >= MappedTables.Length,
+            $"the model mapped only {mapped.Count} tables, fewer than the {MappedTables.Length} known-good " +
+            "names - the model scan is broken, not the schema");
+
+        // The known-good names are a FLOOR, not the definition: if any of them ever stops being mapped that
+        // is a real change to notice, and the derived set above is what makes the check exhaustive.
+        foreach (var known in MappedTables)
+            Assert.Contains(known, mapped, StringComparer.Ordinal);
+
         // Every mapped table landed under the gateway schema - and NONE of them under public.
-        foreach (var table in MappedTables)
+        foreach (var table in mapped)
         {
             Assert.Equal(1, ScalarInt(ctx,
                 $"SELECT count(*) FROM information_schema.tables WHERE table_schema = 'gateway' AND table_name = '{table}'"));
@@ -129,7 +187,7 @@ public sealed class PostgresProviderProofTests
             "ORDER BY c.relname, a.attname");
 
         // One entry per UseCollation("C") declaration in GatewayDbContext, read back from the live catalog.
-        // 20 declarations, 20 columns - verified one-to-one against the model on 2026-08-08.
+        // 21 declarations, 21 columns - verified one-to-one against the model on 2026-08-11.
         // It went stale a second time between 2026-07-31 and now: the two session_keys columns arrived with
         // the remove-the-network-port change (#2450) and this list was not updated, so the suite was red on
         // main from 2026-08-05 and stayed red through the v2.0.0 and v2.0.1 tags. Being environment-gated is
@@ -157,6 +215,10 @@ public sealed class PostgresProviderProofTests
             ("tenant_settings", "Key"),
             ("tenants", "AccountSubject"),
             ("tenants", "Id"),
+            // The administrator trial-extension ledger's subject, pinned to "C" for the same reason
+            // account_trials.subject at the top of this list is: they are the SAME identity, and the ledger
+            // has to group by exactly the value the trial row is keyed on.
+            ("trial_extensions", "subject"),
             ("workflow_tenant_overrides", "WorkflowId"),
         };
         Assert.Equal(expected, withExplicitC.ToArray());

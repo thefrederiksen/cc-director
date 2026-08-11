@@ -77,6 +77,55 @@ public sealed record TrialStatus(TrialStatusKind Kind, DateTime? StartedAtUtc = 
 public sealed record TrialDecision(TrialOutcome Outcome, DateTime? ExpiresAtUtc = null);
 
 /// <summary>
+/// What an administrator's attempt to extend a trial did. FIVE values, kept apart for the same reason
+/// <see cref="TrialStatusKind"/> keeps four: the person on the other end has to be told a DIFFERENT sentence
+/// for each, and a caller handed a single boolean would have to say "that did not work" to four different
+/// situations, three of which are not failures at all.
+/// </summary>
+public enum TrialExtensionOutcome
+{
+    /// <summary>Applied. The trial now ends later and the ledger has a row saying who did it and why.</summary>
+    Extended,
+
+    /// <summary>The read succeeded and this account has no trial row, so there is nothing to extend. NOT a
+    /// failure and NOT something to retry - a trial cannot be created from here.</summary>
+    NoTrial,
+
+    /// <summary>The proposed end is at or before the trial's current end. Refused rather than applied: a tool
+    /// that can quietly cut somebody's free window short is worse than no tool, because the person it happens
+    /// to has no way to see it and no reason to look. Equal is refused too - re-applying the same date is not
+    /// an extension, and letting it through would write a ledger row claiming a change that did not happen.
+    /// </summary>
+    NotLater,
+
+    /// <summary>The proposed end is beyond the ceiling, so a mistyped year cannot hand somebody a decade of
+    /// paid product.</summary>
+    TooFar,
+
+    /// <summary>The read or the write FAILED. We do not know which side of it we are on, so this must never be
+    /// reported as a refusal - the caller has to say "I could not confirm this, go and look".</summary>
+    Unknown,
+}
+
+/// <summary>The result of one extension attempt: the outcome and, whenever a row was read, the instants that
+/// let the caller say what the trial now does.</summary>
+/// <param name="Outcome">The five-way outcome. Never fold <see cref="TrialExtensionOutcome.Unknown"/> into any
+/// of the others.</param>
+/// <param name="StartedAtUtc">When the trial began; present whenever a row was read.</param>
+/// <param name="PreviousExpiresAtUtc">The end instant before this attempt; present whenever a row was read.</param>
+/// <param name="ExpiresAtUtc">The end instant the trial carries now. On
+/// <see cref="TrialExtensionOutcome.Extended"/> this is the new one; on the refusals it is the unchanged one,
+/// so the caller can state what is actually true rather than only what was refused.</param>
+/// <param name="MaxExpiryUtc">The ceiling, present only on <see cref="TrialExtensionOutcome.TooFar"/> so the
+/// caller can name the limit that was hit rather than merely reporting a limit.</param>
+public sealed record TrialExtension(
+    TrialExtensionOutcome Outcome,
+    DateTime? StartedAtUtc = null,
+    DateTime? PreviousExpiresAtUtc = null,
+    DateTime? ExpiresAtUtc = null,
+    DateTime? MaxExpiryUtc = null);
+
+/// <summary>
 /// The free-trial ledger: the Gateway's own record of which accounts were granted the 14-day Pro trial the
 /// public pricing page promises, and when each trial ends.
 ///
@@ -100,6 +149,12 @@ public sealed record TrialDecision(TrialOutcome Outcome, DateTime? ExpiresAtUtc 
 /// ONE TRIAL PER ACCOUNT, EVER. <see cref="GrantIfFirstArrival"/> is idempotent: an existing row is returned
 /// as it stands and is NEVER extended or re-stamped, so an expired trial row is what stops a member from
 /// restarting the free window by re-enrolling.
+///
+/// THE ONE EXCEPTION IS A HUMAN, AND IT IS NOT AN EXCEPTION TO THAT RULE. <see cref="ExtendIfLater"/> moves an
+/// existing trial's end date later because an administrator decided to, and writes a ledger row saying who
+/// and why. It creates no trial and re-grants none, so the rule above is untouched: what stops a member
+/// restarting their free window is that no automatic path can produce a second row, and none can. Nothing
+/// scheduled, inferred, or self-triggering may ever call it.
 ///
 /// THE READ IS NEVER A VERDICT WHEN IT FAILS. Every failure path returns <see cref="TrialOutcome.Unknown"/>,
 /// and the caller turns that into a retry rather than a refusal or a grant. This type deliberately does not
@@ -309,4 +364,168 @@ public sealed class TrialRegistry
             }
         }
     }
+
+    /// <summary>
+    /// How far ahead of NOW an administrator may set a trial's end. A CEILING, so a mistyped year cannot hand
+    /// somebody a decade of paid product: one year is far beyond any goodwill window we would actually give
+    /// and far short of a typo. Measured from the moment of the decision rather than from the trial's start,
+    /// so it means the same thing regardless of how old the trial is.
+    /// </summary>
+    public static readonly TimeSpan MaxExtensionAhead = TimeSpan.FromDays(365);
+
+    /// <summary>
+    /// Move ONE account's trial end date LATER, because a human decided to, and record that decision.
+    ///
+    /// THIS IS THE DELIBERATE, AUDITED, HUMAN-INITIATED WRITE THIS TYPE'S OWN COMMENTS ANTICIPATED ("a
+    /// goodwill window ... is a later, deliberate, one-time write - never something that happens by itself").
+    /// It does not weaken the never-extend rule that matters: <see cref="GrantIfFirstArrival"/> is untouched
+    /// and still returns an existing row exactly as it stands, so an expired trial still stops a member
+    /// restarting their free window by re-enrolling. NO AUTOMATIC PATH MAY CALL THIS.
+    ///
+    /// WHY IT LIVES IN THE GATEWAY AT ALL. We promise things about trials - a customer blocked for days by
+    /// our own bugs was offered four weeks instead of fourteen days - and nothing in the product could
+    /// deliver any of it. The trial is a row in this Gateway's own table, which only this Gateway's database
+    /// role may write, so every promise previously ended at somebody hand-editing production. Handing the
+    /// website a direct grant on the table would have put the capability where the data is not, and the
+    /// permission to use it outside either system's migrations, where a rebuild of this schema would silently
+    /// take it away. The capability belongs with the data.
+    ///
+    /// WHAT IT DELIBERATELY DOES NOT DO. It cannot SHORTEN a trial, it cannot CREATE one (an account with no
+    /// row is reported as having none - granting a trial to someone who never had one is a different decision
+    /// with different consequences), and it cannot reach any account but the one named: the only input is a
+    /// subject, matched for equality against the primary key, with no wildcard and no value meaning "all".
+    ///
+    /// It does NOT decide who may call it. That is the calling surface's administrator check. This is the
+    /// capability; it is not the gate.
+    /// </summary>
+    /// <param name="accountSubject">The account whose trial moves. Matched byte-exactly against the primary
+    /// key - no trimming beyond the outer whitespace the caller may have left, no case folding.</param>
+    /// <param name="newExpiryUtc">The end instant the trial should now carry. Must be strictly later than the
+    /// current one and no further ahead than <see cref="MaxExtensionAhead"/>.</param>
+    /// <param name="actor">Who decided. Required - "who did this" is the question the ledger exists for.</param>
+    /// <param name="reason">Why. Required by the CAPABILITY, not merely by a screen: a rule enforced only in
+    /// a user interface is enforced only until the next caller.</param>
+    /// <param name="memberEmail">The member's address for human eyes in the ledger. Optional, and never used
+    /// to find anything.</param>
+    /// <param name="nowUtc">The moment of the decision. Injected so the ceiling and the ledger's timestamp are
+    /// testable at an exact instant.</param>
+    /// <exception cref="ArgumentException">A blank subject, actor or reason. These are CALLER ERRORS, not
+    /// outcomes: there is no account to report on and no state of the world that produced them, so returning
+    /// a tidy result would let a broken caller read "no trial" and tell an administrator this member has
+    /// none.</exception>
+    public TrialExtension ExtendIfLater(
+        string accountSubject, DateTime newExpiryUtc, string actor, string reason,
+        string? memberEmail, DateTime nowUtc)
+    {
+        if (string.IsNullOrWhiteSpace(accountSubject))
+            throw new ArgumentException("a subject is required to extend a trial", nameof(accountSubject));
+        if (string.IsNullOrWhiteSpace(actor))
+            throw new ArgumentException("an actor is required: a trial extension must record who made it", nameof(actor));
+        if (string.IsNullOrWhiteSpace(reason))
+            throw new ArgumentException("a reason is required: a trial extension must record why it was made", nameof(reason));
+
+        var subject = accountSubject.Trim();
+        // Both providers store these as UTC instants and Npgsql REFUSES a non-UTC DateTime against
+        // `timestamp with time zone`. Normalising here rather than trusting the caller means a local-kind
+        // instant arriving from a future caller is a converted value, not a runtime failure at the write.
+        var newExpiry = ToUtc(newExpiryUtc);
+        var now = ToUtc(nowUtc);
+        var ceiling = now + MaxExtensionAhead;
+
+        lock (_writeLock)
+        {
+            try
+            {
+                using var ctx = _db.CreateUnscopedContext();
+                using var tx = ctx.Database.BeginTransaction();
+
+                var row = ctx.AccountTrials.AsNoTracking().FirstOrDefault(t => t.Subject == subject);
+
+                if (row is null)
+                {
+                    // KNOWLEDGE: the read succeeded and there is no trial row. This is not an extension that
+                    // failed; it is a member who has nothing to extend, and the caller must say so rather
+                    // than offering to try again.
+                    FileLog.Write("[TrialRegistry] ExtendIfLater: NO TRIAL - this account has no trial row to extend (no subject logged)");
+                    return new TrialExtension(TrialExtensionOutcome.NoTrial);
+                }
+
+                // STRICTLY LATER, checked before the ceiling so the more specific refusal wins: an
+                // administrator who typed a date in the past is told that, not that it is too far ahead.
+                if (newExpiry <= row.ExpiresAtUtc)
+                {
+                    FileLog.Write("[TrialRegistry] ExtendIfLater: REFUSED - the proposed end is not later than the trial's current end (a trial is never shortened)");
+                    return new TrialExtension(TrialExtensionOutcome.NotLater,
+                        row.StartedAtUtc, row.ExpiresAtUtc, row.ExpiresAtUtc);
+                }
+
+                if (newExpiry > ceiling)
+                {
+                    FileLog.Write($"[TrialRegistry] ExtendIfLater: REFUSED - the proposed end is beyond the {MaxExtensionAhead.TotalDays:0}-day ceiling");
+                    return new TrialExtension(TrialExtensionOutcome.TooFar,
+                        row.StartedAtUtc, row.ExpiresAtUtc, row.ExpiresAtUtc, ceiling);
+                }
+
+                // COMPARE AND SET. The update carries the expiry we just READ in its predicate, so a
+                // competing writer that moved the row between the read and the write cannot have its change
+                // silently discarded - the update matches nothing instead. The in-process lock above does not
+                // cover a second instance, and a lost update here would leave the ledger recording an
+                // extension that no longer exists on the row: an audit that lies.
+                var observed = row.ExpiresAtUtc;
+                var affected = ctx.AccountTrials
+                    .Where(t => t.Subject == subject && t.ExpiresAtUtc == observed)
+                    .ExecuteUpdate(s => s.SetProperty(t => t.ExpiresAtUtc, newExpiry));
+
+                if (affected != 1)
+                {
+                    // We do not know what the row now says, and we did not apply our change. Ignorance, so it
+                    // resolves to Unknown rather than to a refusal - the caller re-reads rather than telling
+                    // an administrator the extension was rejected.
+                    tx.Rollback();
+                    FileLog.Write($"[TrialRegistry] ExtendIfLater: the trial row changed under us (matched {affected} rows, expected 1) - answering UNKNOWN, which must be re-read and never reported as a refusal");
+                    return new TrialExtension(TrialExtensionOutcome.Unknown);
+                }
+
+                // ONE TRANSACTION. The ledger row is written here rather than by the caller so that an
+                // extension without a record of it is not a thing that can exist: a caller that crashed
+                // between the two would otherwise leave free product handed out and nothing saying who did it.
+                ctx.TrialExtensions.Add(new Data.Entities.TrialExtensionEntity
+                {
+                    Subject = subject,
+                    MemberEmail = string.IsNullOrWhiteSpace(memberEmail) ? null : memberEmail.Trim(),
+                    StartedAtUtc = row.StartedAtUtc,
+                    PreviousExpiresAtUtc = observed,
+                    NewExpiresAtUtc = newExpiry,
+                    Actor = actor.Trim(),
+                    Reason = reason.Trim(),
+                    RecordedUtc = now,
+                });
+                ctx.SaveChanges();
+                tx.Commit();
+
+                FileLog.Write($"[TrialRegistry] ExtendIfLater: EXTENDED a trial (no subject logged) from {observed:O} to {newExpiry:O}");
+                return new TrialExtension(TrialExtensionOutcome.Extended,
+                    row.StartedAtUtc, observed, newExpiry);
+            }
+            catch (Exception ex)
+            {
+                // We do not know whether the change landed - a failure after the update but before the commit
+                // looks the same from here as one before it. Answering anything definite would be a guess in
+                // the expensive direction: told it failed, an administrator tries again, and the second
+                // attempt is refused as NotLater by an extension that had in fact already succeeded. They then
+                // believe the customer has nothing.
+                FileLog.Write($"[TrialRegistry] ExtendIfLater: FAILED ({ex.GetType().Name}) - answering UNKNOWN, which must be re-read and never reported as a refusal");
+                return new TrialExtension(TrialExtensionOutcome.Unknown);
+            }
+        }
+    }
+
+    /// <summary>The instant as UTC. Unspecified kind is TREATED as UTC (every instant in this type already is);
+    /// a local one is converted rather than reinterpreted, so a wrong-kind caller loses no time.</summary>
+    private static DateTime ToUtc(DateTime instant) => instant.Kind switch
+    {
+        DateTimeKind.Utc => instant,
+        DateTimeKind.Local => instant.ToUniversalTime(),
+        _ => DateTime.SpecifyKind(instant, DateTimeKind.Utc),
+    };
 }

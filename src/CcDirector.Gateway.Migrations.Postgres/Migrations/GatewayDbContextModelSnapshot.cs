@@ -918,6 +918,9 @@ namespace CcDirector.Gateway.Migrations.Postgres.Migrations
 
             modelBuilder.Entity("CcDirector.Gateway.Data.Entities.SessionKeyEntity", b =>
                 {
+                    b.Property<string>("TenantId")
+                        .HasColumnType("text");
+
                     b.Property<string>("SessionId")
                         .HasColumnType("text")
                         .UseCollation("C");
@@ -941,10 +944,6 @@ namespace CcDirector.Gateway.Migrations.Postgres.Migrations
                         .HasColumnType("timestamp with time zone");
 
                     b.Property<string>("RevokedReason")
-                        .HasColumnType("text");
-
-                    b.Property<string>("TenantId")
-                        .IsRequired()
                         .HasColumnType("text");
 
                     b.HasKey("TenantId", "SessionId");
@@ -1326,6 +1325,55 @@ namespace CcDirector.Gateway.Migrations.Postgres.Migrations
                     b.HasIndex("TenantId");
 
                     b.ToTable("tenant_settings", "gateway");
+                });
+
+            modelBuilder.Entity("CcDirector.Gateway.Data.Entities.TrialExtensionEntity", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<string>("Actor")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("actor");
+
+                    b.Property<string>("MemberEmail")
+                        .HasColumnType("text")
+                        .HasColumnName("member_email");
+
+                    b.Property<DateTime>("NewExpiresAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("new_expires_at_utc");
+
+                    b.Property<DateTime>("PreviousExpiresAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("previous_expires_at_utc");
+
+                    b.Property<string>("Reason")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("reason");
+
+                    b.Property<DateTime>("RecordedUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("recorded_utc");
+
+                    b.Property<DateTime>("StartedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("started_at_utc");
+
+                    b.Property<string>("Subject")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("subject")
+                        .UseCollation("C");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("Subject");
+
+                    b.ToTable("trial_extensions", "gateway");
                 });
 
             modelBuilder.Entity("CcDirector.Gateway.Data.Entities.WingmanInstructionEntity", b =>
