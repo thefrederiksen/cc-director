@@ -1,12 +1,23 @@
 # Hosted Gateway CI deploy
 
 `.github/workflows/deploy-hosted-gateway.yml` redeploys the hosted Gateway container to Azure App
-Service (`devthrottle-gw`) automatically after **CI** goes green on `main` - the Gateway equivalent
-of the website's Vercel auto-deploy. It only ever **redeploys** (rebuild image in ACR, repin the App
-Service to the new immutable digest, restart, verify `/healthz`); it never provisions resources or
-sets app settings. Full provisioning stays in `devthrottle_internal`
-`docs/architecture/step3-azure-deploy/deploy.sh`, and the resource group, ACR, plan, storage mount and
-`CC_GATEWAY_DB_CONNECTION` persist across deploys - so **this workflow stores no secrets**.
+Service (`devthrottle-gw`).
+
+**IT IS MANUAL. MERGING TO `main` DOES NOT DEPLOY.** The workflow's only trigger is
+`workflow_dispatch`, so a release is started deliberately - from the Actions tab, or with
+`gh workflow run "Deploy hosted Gateway" --ref main`. This is NOT the website's Vercel auto-deploy
+and must not be assumed to behave like it: a merged pull request is not a shipped Gateway, and
+believing otherwise means waiting for a deploy that is never going to start.
+
+> This paragraph previously said the opposite - that it deployed automatically once CI went green on
+> `main`. That was wrong, and it cost a wait on 2026-08-11 while somebody watched for a run that
+> could not exist. If you change the trigger, change this sentence in the same commit.
+
+It only ever **redeploys** (rebuild image in ACR, pin it on the staging slot, warm it, swap into
+production, verify `/healthz`); it never provisions resources or sets app settings. Full provisioning
+stays in `devthrottle_internal` `docs/architecture/step3-azure-deploy/deploy.sh`, and the resource
+group, ACR, plan, storage mount and `CC_GATEWAY_DB_CONNECTION` persist across deploys - so **this
+workflow stores no secrets**.
 
 ## Auth: OIDC, no stored secret
 
