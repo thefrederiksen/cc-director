@@ -2993,6 +2993,55 @@ a.banner-btn {
   background: var(--border);
   margin: 6px 0;
 }
+/* The signed-in identity at the top of the menu (devthrottle_internal #1509). Set apart from the
+   navigation rows beneath it - it answers "who am I", not "where do I go" - and given its own surface
+   so a thumb heading for Sessions does not land on it. */
+.drawer-account {
+  display: block;
+  margin: 4px 12px 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface-2);
+  color: var(--text);
+  text-decoration: none;
+}
+.drawer-account:active {
+  background: var(--surface);
+}
+.drawer-account-label {
+  display: block;
+  font-size: 14px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.drawer-account-sub {
+  display: block;
+  font-size: 12px;
+  color: var(--text-dim);
+  margin-top: 1px;
+}
+/* Sign out is the one menu row that ends something. Dimmed rather than red: it is an everyday action
+   sitting under three ordinary ones, and a red row at the foot of a menu reads as an error state. */
+.drawer-item-signout {
+  color: var(--text-dim);
+}
+
+/* ===== Account screen =====
+   The account CARDS are shared with the Cockpit and carry their own stylesheet
+   (client-core/auth/accounts.css). This is only the phone's frame and touch re-tuning. */
+.account-screen {
+  padding: 14px;
+}
+.account-screen .accts-item {
+  padding: 14px 16px;
+}
+.account-screen .accts-btn {
+  padding: 14px 16px;
+  font-size: 15px;
+}
 
 /* ===== Settings screen =====
    The Settings CARDS are shared with the Cockpit and carry their own stylesheet

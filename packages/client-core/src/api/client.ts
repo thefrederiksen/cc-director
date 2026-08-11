@@ -172,6 +172,19 @@ export function ensureGatewayCookie(): void {
   document.cookie = `cc-gateway-token=${encodeURIComponent(token)}; path=/; SameSite=Lax; Max-Age=${oneYearSeconds}`;
 }
 
+// Drop the mirrored cookie when the last account signs out (devthrottle_internal #1507). The cookie is
+// PERSISTENT (Max-Age one year), so without this a signed-out browser keeps a working credential on
+// disk for the cookie-authenticated resource loads - the terminal stream and the bare <img>/<iframe>
+// sources - long after the key it mirrors has been forgotten from storage. Signing out has to take the
+// credential with it everywhere it was put, not just where it was read from.
+//
+// Switching accounts does NOT call this: ensureGatewayCookie overwrites the same name and path with the
+// newly active account's key.
+export function clearGatewayCookie(): void {
+  if (typeof document === "undefined") return;
+  document.cookie = "cc-gateway-token=; path=/; SameSite=Lax; Max-Age=0";
+}
+
 // The redirect target when a credentialed call is rejected (401) mid-session is SHELL-AWARE, because
 // the two shells that share this client re-gate through sign-in entries at different paths: the
 // mobile PWA's enrollment screen lives at /mobile/signin, the desktop Cockpit's at /signin. Shared
@@ -223,6 +236,19 @@ export function resolveSignInTarget(current: SignInLocation): string {
 function onUnauthorized(): void {
   clearDeviceKey();
   if (typeof window === "undefined") return;
+
+  // A revoke takes out ONE account, not the browser (devthrottle_internal #1509). When another account
+  // is still enrolled here, clearDeviceKey has already made it the active one, so the honest landing is
+  // that account's app - re-mirror its key into the cookie and reload in place. Sending a person who
+  // still holds a working login to the sign-in screen would read as "you have been signed out" when
+  // they have not been.
+  if (getDeviceKey()) {
+    ensureGatewayCookie();
+    window.location.reload();
+    return;
+  }
+
+  clearGatewayCookie();
   const target = resolveSignInTarget({
     pathname: window.location.pathname,
     search: window.location.search,

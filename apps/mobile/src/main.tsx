@@ -14,6 +14,7 @@ import { About } from "./pages/About";
 import { Diagnostics } from "./pages/Diagnostics";
 import { YourThrottle } from "./pages/YourThrottle";
 import { Repos } from "./pages/Repos";
+import { Account } from "./pages/Account";
 import { SignIn } from "@devthrottle/client-core/auth/SignIn";
 import { DeviceCallback } from "@devthrottle/client-core/auth/DeviceCallback";
 import { hasDeviceKey } from "@devthrottle/client-core/auth/deviceKey";
@@ -184,6 +185,10 @@ const router = createBrowserRouter(
             { path: "/recorder", element: <Recorder /> },
             { path: "/notes", element: <Navigate to="/recorder" replace /> },
             { path: "/record", element: <Navigate to="/recorder" replace /> },
+            // Account (devthrottle_internal #1507/#1509): who is signed in on this phone, switching
+            // between logins, adding one, and signing out. Mirrors the Cockpit's Account destination -
+            // the phone had none, which is why it had no way to sign out either.
+            { path: "/account", element: <Account /> },
             { path: "/about", element: <About /> },
             // Diagnostics (auto-network-switching mission): a phone-side connection tester - route
             // (direct LAN vs Tailscale relay), latency, and download/upload throughput, with a verdict.

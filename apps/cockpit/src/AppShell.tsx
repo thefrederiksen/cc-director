@@ -97,6 +97,11 @@ const DOCS_URL = "https://devthrottle.com/docs";
 // /injected-text route still resolves, as a redirect into that tab, so existing bookmarks keep working.
 const NAV_FOOT: ReadonlyArray<NavItem> = [
   { to: "/account", label: "Account", icon: "account" },
+  // Phone (devthrottle_internal #1508): how to get DevThrottle onto a phone. It sits beside Account
+  // because it is about THIS PERSON'S devices rather than about the fleet. A ROUTE, not an external
+  // link: the job is reaching a DIFFERENT device, and a link would only open the narrow layout in this
+  // desktop browser - the one thing that does not help.
+  { to: "/phone", label: "Phone", icon: "phone" },
   { to: "/your-throttle", label: "Your Throttle", icon: "throttle" },
   { to: "/settings", label: "Settings", icon: "settings" },
   { to: "/about", label: "About", icon: "about" },

@@ -49,6 +49,7 @@ public sealed class NoCrossMachineLoopbackGuardTests
         ["src/CcDirector.Gateway/GatewayService.cs"] = "Probes THIS process's own Gateway port on loopback to diagnose a failed start (is the port taken by our own gateway, another app, or nothing?). Same machine by definition - it is asking about its own bind - and it moved here unchanged from GatewayTrayController when the lifecycle left the tray app.",
         ["src/CcDirector.Gateway/Tailscale/TailscaleServeProvisioner.cs"] = "Maps the tailnet front door to local loopback backends.",
         ["src/CcDirector.Gateway/Api/RecordingEndpoints.cs"] = "Local recording paths.",
+        ["src/CcDirector.Gateway/Api/MobileQrEndpoint.cs"] = "devthrottle_internal #1508: RECOGNIZES a loopback host in order to REFUSE it, which is the inverse of this policy's concern - nothing here dials one. The Phone panel's scannable code encodes the address the Cockpit was reached on, so a Cockpit opened on localhost would produce a code that scans perfectly and then times out on the phone; the endpoint answers 409 with the reason instead. Only the NAME is a literal - the address families are left to IPAddress.IsLoopback.",
         // Remove-the-network-port mission, phase 6: FOUR more entries left this list at once, because
         // the LAUNCHER's listener was deleted. LauncherHost.cs is gone entirely (the Kestrel bind it
         // was listed for WAS the launcher's listener); LauncherLifecycleRelay.cs no longer dials

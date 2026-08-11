@@ -29,6 +29,7 @@ import { YourThrottleView } from "./throttle/YourThrottleView";
 import { TranscriptionHealthView } from "./transcription/TranscriptionHealthView";
 import { NetworkDiagnosticsView } from "./network/NetworkDiagnosticsView";
 import { AccountView } from "./account/AccountView";
+import { PhoneView } from "./phone/PhoneView";
 import { AboutView } from "./about/AboutView";
 import { SettingsView } from "./settings/SettingsView";
 import "./styles.css";
@@ -207,6 +208,9 @@ const router = createBrowserRouter(
             { path: "/transcription", element: <TranscriptionHealthView /> },
             { path: "/network", element: <NetworkDiagnosticsView /> },
             { path: "/account", element: <AccountView /> },
+            // Phone (devthrottle_internal #1508): the scannable code, the address, and how to install the
+            // mobile app - the entry point the Cockpit did not have.
+            { path: "/phone", element: <PhoneView /> },
             { path: "/about", element: <AboutView /> },
             // The Settings page (issue #1025): a real React port of the retired Blazor
             // wwwroot/pages/settings.html (the "This machine" gateway-connection tab + the "AI"

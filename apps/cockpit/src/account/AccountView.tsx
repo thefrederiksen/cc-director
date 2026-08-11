@@ -10,6 +10,8 @@ import {
   type AccountDevicesResponse,
 } from "@devthrottle/client-core/account/accountClient";
 import { gatewayErrorMessage } from "@devthrottle/client-core/api/client";
+import { AccountsPanel } from "@devthrottle/client-core/auth/AccountsPanel";
+import { useNavigate } from "react-router-dom";
 import { ErrorBanner, LoadingState, PageHeader } from "../components";
 
 // The Account page (issue #978, epic #967) - the React port of the Blazor Cockpit Account.razor
@@ -171,6 +173,11 @@ export function AccountView() {
     beginSignIn();
   };
 
+  // Adding an account to THIS BROWSER is the shared enrollment flow at the Cockpit's own /signin route,
+  // which is a different journey from signing the GATEWAY in above (beginSignIn). client-core must not
+  // hardcode either shell's route, so the shell supplies its own.
+  const navigate = useNavigate();
+
   return (
     <div className="page acct">
       <PageHeader
@@ -180,6 +187,19 @@ export function AccountView() {
           "account. The credential lives on the Gateway; this page never sees the raw token."
         }
       />
+
+      {/* THIS BROWSER's signed-in accounts (devthrottle_internal #1507/#1509) - the same shared panel
+          the phone's Account screen mounts, so the two surfaces cannot drift (rule 8).
+          It sits ABOVE the Gateway credential because the two are easy to confuse and only one of them
+          is about the machine you are sitting at: signing out HERE means this browser forgets its key,
+          while "Log out" further down clears the GATEWAY's own link to a DevThrottle account. Two
+          different actions on two different things, so they are kept apart and worded apart. */}
+      <section className="acct-browser" aria-label="Accounts signed in on this browser">
+        <h2>Signed in on this browser</h2>
+        <AccountsPanel onAddAccount={() => navigate("/signin")} />
+      </section>
+
+      <h2 className="acct-gateway-head">This Gateway's account</h2>
 
       {error !== null ? (
         <ErrorBanner

@@ -3098,6 +3098,12 @@ public sealed class GatewayHost : IAsyncDisposable
             nickname: new Core.Account.AccountNicknameClient(new HttpClient { Timeout = TimeSpan.FromSeconds(10) }),
             tenants: TenantRegistry);
 
+        // devthrottle_internal #1508: GET /account/mobile-qr.png renders the scannable code for the mobile
+        // app's address on THIS Gateway, which is what the Cockpit's Phone panel shows. It carries only a
+        // plain address, never a credential, and it refuses rather than encoding a loopback address no
+        // phone could reach. Inherits the host-wide token middleware exactly like /account/status.
+        MobileQrEndpoint.Map(_app);
+
         // Gateway Centralization Phase 3 (issue #648): POST /account/logout CLEARS the Gateway-hosted
         // DevThrottle credential through the same reused DevThrottleAccountService (Account). The account
         // lives on the gateway, so the logout action lives here too: the Cockpit account surface calls

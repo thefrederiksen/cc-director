@@ -9,14 +9,26 @@
 // callback path, the platform, the device label - comes from the installed EnrollmentShellProfile.
 // The desktop gate carries the originally-requested route in ?next=; it is remembered here so the
 // callback can land the browser back on that exact route after the round trip.
-import { getInstallId } from "./deviceKey";
+//
+// This screen is ALSO the "add another account" entry (devthrottle_internal #1509): a browser that
+// already holds an account reaches it from the account switcher, and the only difference is the words -
+// the round trip is identical, and the account that comes back is APPENDED rather than replacing the
+// one already here.
+import { listAccounts, newPendingInstallId } from "./accountStore";
 import { SITE_BASE, enrollmentProfile, newEnrollState, rememberEnrollNext } from "./enrollRequest";
 
 export function SignIn() {
   const profile = enrollmentProfile();
+  // Adding to an existing browser rather than enrolling an empty one. Read at render: the only way to
+  // arrive here holding an account is the switcher's "Add account", and the only way to arrive holding
+  // none is the auth gate.
+  const adding = listAccounts().length > 0;
 
   function start() {
-    const installId = getInstallId();
+    // A FRESH install id for every sign-in, minted here and consumed by the callback leg. This is what
+    // makes a second account a second DEVICE on the cloud roster instead of a collision with the
+    // account already on this browser - see accountStore.
+    const installId = newPendingInstallId();
     const state = newEnrollState();
 
     // Preserve the originally-requested route (?next=) across the round trip (issue #1088). The
@@ -41,10 +53,11 @@ export function SignIn() {
 
   return (
     <div className="signin-screen" style={{ maxWidth: 420, margin: "0 auto", padding: "2rem 1.25rem", textAlign: "center" }}>
-      <h1 style={{ marginBottom: "0.5rem" }}>DevThrottle</h1>
+      <h1 style={{ marginBottom: "0.5rem" }}>{adding ? "Add an account" : "DevThrottle"}</h1>
       <p style={{ opacity: 0.8, marginBottom: "1.5rem" }}>
-        Sign in to connect this {profile.deviceLabel} to your account. You will sign in on devthrottle.com and approve
-        this device; it stays signed in until you remove it from your account.
+        {adding
+          ? `Sign in to the account you want to add. It joins the accounts already on this ${profile.deviceLabel} - nothing signs out, and you can switch between them without signing in again.`
+          : `Sign in to connect this ${profile.deviceLabel} to your account. You will sign in on devthrottle.com and approve this device; it stays signed in until you remove it from your account.`}
       </p>
       <button
         type="button"
@@ -60,7 +73,7 @@ export function SignIn() {
           cursor: "pointer",
         }}
       >
-        Sign in
+        {adding ? "Sign in to another account" : "Sign in"}
       </button>
       <p style={{ opacity: 0.6, fontSize: "0.85rem", marginTop: "1.25rem" }}>
         You will be taken to devthrottle.com to sign in, then returned here.

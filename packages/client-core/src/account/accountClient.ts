@@ -82,6 +82,40 @@ export async function getAccountStatus(signal?: AbortSignal): Promise<AccountSta
   };
 }
 
+/**
+ * GET /account/status authenticated with a SPECIFIC device key instead of the active one
+ * (devthrottle_internal #1509). Used at the end of enrollment to learn which account the key that was
+ * just minted belongs to, so the account switcher labels it with the person's email rather than
+ * "Account 2" - at that moment the new key is not the active one yet, so authHeaders() would ask about
+ * the wrong account.
+ *
+ * On a HOSTED Gateway this answers about the CALLER, folded from the tenant that device key is bound to
+ * (AccountStatusEndpoint.HostedStatus), which is precisely the identity wanted here. On a self-host
+ * Gateway it answers about the Gateway's own single account - the same account by definition there.
+ *
+ * Returns null rather than throwing. A label is a nicety and the enrollment has ALREADY SUCCEEDED by
+ * the time this runs, so a Gateway that cannot resolve an identity must not turn a completed sign-in
+ * into a failure; the account is stored under its positional name and can be renamed.
+ */
+export async function getAccountStatusForKey(deviceKey: string, signal?: AbortSignal): Promise<AccountStatus | null> {
+  try {
+    const res = await fetch("/account/status", {
+      method: "GET",
+      headers: { Accept: "application/json", Authorization: `Bearer ${deviceKey}` },
+      signal,
+    });
+    if (!res.ok) return null;
+    const body = (await res.json()) as Partial<AccountStatus> | null;
+    return {
+      signedIn: Boolean(body?.signedIn),
+      email: body?.email ?? null,
+      provider: body?.provider ?? null,
+    };
+  } catch {
+    return null;
+  }
+}
+
 // POST /account/logout - clear the Gateway credential. Returns the post-logout status the Gateway
 // echoes back (signed-out) so the page confirms without a second round-trip. Throws with the server
 // error on failure.
