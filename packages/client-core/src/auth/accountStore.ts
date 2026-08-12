@@ -57,7 +57,7 @@ function announce(): void {
   for (const listener of listeners) listener();
 }
 
-// ANOTHER TAB CAN CHANGE WHO YOU ARE (devthrottle_internal #1513). localStorage is shared across every
+// ANOTHER TAB CAN CHANGE WHO YOU ARE (devthrottle_internal #1509). localStorage is shared across every
 // tab on this origin, but only the tab that ran the switch reloads - so a second tab went on showing
 // account A's name and A's roster while its very next call read the shared pointer and authenticated as
 // B. That is the work-versus-personal mis-send the hard reload was supposed to make impossible,
@@ -314,7 +314,7 @@ export function addAccount(entry: { deviceKey: string; installId: string; email:
 }
 
 /**
- * Attach an identity that arrived AFTER the account was stored (devthrottle_internal #1513).
+ * Attach an identity that arrived AFTER the account was stored (devthrottle_internal #1509).
  *
  * Enrollment writes the key immediately and looks up who it belongs to afterwards, so the account
  * exists for a moment with no email. This fills that in. The label is only overwritten while it is

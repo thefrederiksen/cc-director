@@ -3127,7 +3127,7 @@ public sealed class GatewayHost : IAsyncDisposable
         // phone could reach. Inherits the host-wide token middleware exactly like /account/status.
         MobileQrEndpoint.Map(_app);
 
-        // devthrottle_internal #1513: POST/DELETE /account/device-cookie move the HttpOnly cc-gateway-token
+        // devthrottle_internal #1509: POST/DELETE /account/device-cookie move the HttpOnly cc-gateway-token
         // cookie onto the calling account, or clear it. A browser can do NEITHER from JavaScript, which is
         // why the multi-account switch and the new sign-out both needed a server route: without it the
         // cookie channel silently stayed on the previous account, so the WebSockets and bare image/iframe

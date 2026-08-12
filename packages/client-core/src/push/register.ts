@@ -257,7 +257,7 @@ export async function disablePush(): Promise<void> {
 
 /**
  * Hand the browser's push subscription BACK from the account that is active right now
- * (devthrottle_internal #1513), without unsubscribing the browser itself.
+ * (devthrottle_internal #1509), without unsubscribing the browser itself.
  *
  * A browser has exactly ONE push subscription for the origin, but the Gateway stores it per account.
  * Startup registers whatever subscription exists under whichever account is active, so with two

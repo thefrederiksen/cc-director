@@ -287,7 +287,7 @@ async function drivePass(recordingId: string, onProgress?: () => void): Promise<
  */
 export async function resumePendingRecordingUploads(onProgress?: () => void): Promise<void> {
   const all = await listRecordings();
-  // A RECORDING BELONGS TO THE ACCOUNT THAT MADE IT (devthrottle_internal #1512). This store is one
+  // A RECORDING BELONGS TO THE ACCOUNT THAT MADE IT (devthrottle_internal #1509). This store is one
   // IndexedDB database per ORIGIN, so two accounts on one browser share it, while the upload
   // authenticates as whichever account is ACTIVE. Without this filter, recording something with no
   // connection on one account and then switching would upload that audio into the OTHER account's

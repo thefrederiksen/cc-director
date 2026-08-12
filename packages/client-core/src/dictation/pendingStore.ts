@@ -37,7 +37,7 @@ export interface PendingDictation {
    *  the shell that actually recorded it. Absent on records written before this field existed - the
    *  Gateway then falls back to the tag that path has always used. */
   surface?: string;
-  /** The id of the account that RECORDED this clip (devthrottle_internal #1512). This database is one
+  /** The id of the account that RECORDED this clip (devthrottle_internal #1509). This database is one
    *  per ORIGIN, so two accounts on one browser share it, while the upload authenticates as whichever
    *  account is active when it finally runs - so a clip recorded with no connection on one account would
    *  otherwise be driven with the other account's credential after a switch. Absent on records written
