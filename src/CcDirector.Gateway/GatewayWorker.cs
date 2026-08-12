@@ -115,8 +115,14 @@ public sealed class GatewayWorker : BackgroundService
             // window bounded every case, then claiming the slow case was reachability. Whether App Service
             // itself throttles repeated container restarts has NOT been checked, so nothing here relies on
             // it. In both cases the site is already down; what termination changes is that the platform can
-            // recover it automatically
-            // instead of waiting out a live process and killing its healthy neighbour.
+            // recover it automatically instead of waiting out a live process.
+            //
+            // A THIRD THING THIS COMMENT USED TO GET WRONG, corrected here rather than left to be found a
+            // fourth time: it ended "...and killing its healthy neighbour", implying that terminating SAVES
+            // the healthy container. It does not. During SITE STARTUP the platform stops the site either
+            // way - #2585's platform log shows an exiting container and a non-binding one both reaching
+            // "Failed to start site. Revert by stopping site.", and that stop tears the healthy container
+            // down. Terminating is FASTER, not safer. See MustTerminate above.
             FileLog.Write($"[GatewayWorker] Gateway FAILED to start ({_service.StatusText}); ending the process "
                 + $"with exit code {StartFailureExitCode} so the platform restarts this container instead of "
                 + "waiting out a live process that will never bind a port.");

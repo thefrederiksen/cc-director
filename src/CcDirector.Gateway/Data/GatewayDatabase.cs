@@ -83,9 +83,23 @@ public sealed class GatewayDatabase : IDisposable
     //
     // The window is therefore sized against the budget it actually has to fit inside, with headroom for
     // the rest of boot and for binding the port afterwards: the healthy boot that day bound and answered
-    // the platform probe 21 seconds after the container started, database open included. There is no
-    // downside case. A database that is genuinely gone still fails - it just fails later, and the site was
-    // going to be stopped in that case regardless.
+    // the platform probe 21 seconds after the container started, database open included.
+    //
+    // THE COST, stated because an earlier version of this comment claimed there was none and that was
+    // simply false (found in review). GatewayDatabase's catch takes EVERY exception once the connection
+    // string has parsed, so a wrong password, an unreachable host, a missing or failed migration and a
+    // provider fault all traverse this window too - not just the transient contention it was written for.
+    // Every one of those now takes about eighty seconds longer to report and to restart. An operator who
+    // has mistyped a connection string waits nearly three minutes for the error instead of ninety seconds.
+    //
+    // That is a real cost and it is accepted deliberately, because the two sides are not comparable: the
+    // slow side costs an operator eighty seconds while they are already debugging a broken configuration,
+    // and the fast side costs every user a live outage on an ordinary deploy. A misconfiguration is
+    // noticed and fixed once; the deploy path runs every time we ship.
+    //
+    // What is NOT a cost: a database that is genuinely gone still fails, just later, and the site was
+    // going to be stopped in that case regardless. And a Migrate that HANGS is unaffected either way - the
+    // deadline is only tested after an attempt returns, so a blocked attempt never reaches it (see #2395).
     //
     // THIS IS A MITIGATION, NOT THE FIX. The fix is to bind the port BEFORE the database work so that
     // site startup never depends on PostgreSQL at all, which is #2383's first recommendation and is still
