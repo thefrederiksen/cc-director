@@ -421,6 +421,121 @@ public sealed class WingmanVoiceServiceTests : IDisposable
         Assert.False(svc.NothingToNarrateFor(TenantId.Local, "s"));
     }
 
+    // ---------- A FAILED turns read is not "nothing to say" (issue #2561) ----------
+
+    /// <summary>
+    /// The turns verb reports a failed read as a SUCCESSFUL command result carrying an empty widget list and
+    /// a Status naming the real outcome. Before this fix nothing read that Status, so a missing transcript,
+    /// an unreadable transcript, a parse exception and an agent with no history provider were all recorded as
+    /// "nothing to narrate" - a NON-failure that is never retried and raises nothing anywhere. A Pi session
+    /// observed on 12 August sat silent for 48 minutes that way.
+    ///
+    /// Each of these statuses must record Retrying (so the voice sweep picks it up again and the screen says
+    /// something) and must NOT record nothing-to-narrate.
+    /// </summary>
+    [Theory]
+    [InlineData("no_transcript")]
+    [InlineData("no_jsonl")]
+    [InlineData("parse_error")]
+    [InlineData("unsupported")]
+    [InlineData("no_session_id")]
+    public async Task GenerateAsync_WhenTurnsReadFailed_RecordsRetrying_NotNothingToNarrate(string status)
+    {
+        // A failed read: the transport succeeded, so this is a success carrying no widgets - exactly the
+        // shape that used to be indistinguishable from a session waiting on a prompt.
+        var director = new TunnelReadStub($"{{\"status\":\"{status}\",\"error\":\"the read failed\",\"widgets\":[]}}");
+        var dir = Path.Combine(Path.GetTempPath(), "wmvs-readfail-" + Guid.NewGuid().ToString("N"));
+        var persistPath = Path.Combine(dir, "voice-sessions.json");
+        try
+        {
+            var brain = new RecordingBrain();
+            var svc = ServiceWithBrainAndTts(brain, new byte[] { 1 }, persistPath);
+
+            await svc.GenerateAsync(TenantId.Local, "sid-1", RouteFor(director), CancellationToken.None, showReadingWindow: true);
+
+            Assert.Equal(HostedAiState.Retrying, svc.VoiceUnavailableFor(TenantId.Local, "sid-1"));
+            Assert.False(svc.NothingToNarrateFor(TenantId.Local, "sid-1"));   // the lie this fix removes
+            Assert.False(svc.HasVoice(TenantId.Local, "sid-1"));
+            Assert.Equal(0, brain.AskCount);                                  // nothing was read, so nothing to translate
+        }
+        finally { try { Directory.Delete(dir, recursive: true); } catch { /* best-effort */ } }
+    }
+
+    /// <summary>A tunnel read that does not answer at all (the owning Director is not connected) is the same
+    /// class of non-evidence and takes the same Retrying treatment - never "nothing to narrate".</summary>
+    [Fact]
+    public async Task GenerateAsync_WhenTurnsReadDoesNotAnswer_RecordsRetrying_NotNothingToNarrate()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "wmvs-readnull-" + Guid.NewGuid().ToString("N"));
+        var persistPath = Path.Combine(dir, "voice-sessions.json");
+        try
+        {
+            var brain = new RecordingBrain();
+            var svc = ServiceWithBrainAndTts(brain, new byte[] { 1 }, persistPath);
+            // A null command result is what DirectorCommandRouter yields for an unreachable Director.
+            CcDirector.Gateway.Api.DirectorCommandRouter.SendDirectorCommandAsync unreachable =
+                (_, _, _) => Task.FromResult<CcDirector.Gateway.Contracts.DirectorCommandResult?>(null);
+            var route = new CcDirector.Gateway.Api.SessionVerbClient(
+                new CcDirector.Gateway.Contracts.DirectorDto { DirectorId = "d1", ControlEndpoint = "http://tunnel-only" },
+                unreachable);
+
+            await svc.GenerateAsync(TenantId.Local, "sid-1", route, CancellationToken.None, showReadingWindow: true);
+
+            Assert.Equal(HostedAiState.Retrying, svc.VoiceUnavailableFor(TenantId.Local, "sid-1"));
+            Assert.False(svc.NothingToNarrateFor(TenantId.Local, "sid-1"));
+            Assert.Equal(0, brain.AskCount);
+        }
+        finally { try { Directory.Delete(dir, recursive: true); } catch { /* best-effort */ } }
+    }
+
+    /// <summary>
+    /// The other direction, so the fix cannot be "record Retrying for everything": a read that SUCCEEDS and
+    /// genuinely contains no text reply is still the honest "nothing to narrate", and still raises no failure.
+    /// This is the state a session waiting on a prompt is actually in, and it must survive the change.
+    /// </summary>
+    [Fact]
+    public async Task GenerateAsync_WhenReadSucceedsWithNoText_StillRecordsNothingToNarrate()
+    {
+        var director = new TunnelReadStub("{\"status\":\"ok\",\"widgets\":[{\"kind\":\"ToolUse\",\"content\":\"running a tool\"}]}");
+        var dir = Path.Combine(Path.GetTempPath(), "wmvs-oknotext-" + Guid.NewGuid().ToString("N"));
+        var persistPath = Path.Combine(dir, "voice-sessions.json");
+        try
+        {
+            var brain = new RecordingBrain();
+            var svc = ServiceWithBrainAndTts(brain, new byte[] { 1 }, persistPath);
+
+            await svc.GenerateAsync(TenantId.Local, "sid-1", RouteFor(director), CancellationToken.None, showReadingWindow: true);
+
+            Assert.True(svc.NothingToNarrateFor(TenantId.Local, "sid-1"));
+            Assert.Null(svc.VoiceUnavailableFor(TenantId.Local, "sid-1"));   // still NOT a failure
+        }
+        finally { try { Directory.Delete(dir, recursive: true); } catch { /* best-effort */ } }
+    }
+
+    /// <summary>
+    /// A read that answers ends the read-failure Retrying it caused, so the session does not carry a stale
+    /// "voice on its way" forever once the transcript appears. Cleared BEFORE the reply check, because the
+    /// display fold consults the unavailable state ahead of nothing-to-narrate and would otherwise mask it.
+    /// </summary>
+    [Fact]
+    public async Task GenerateAsync_WhenReadRecovers_ClearsTheReadFailureRetrying()
+    {
+        var director = new TunnelReadStub("{\"status\":\"ok\",\"widgets\":[{\"kind\":\"ToolUse\",\"content\":\"running a tool\"}]}");
+        var dir = Path.Combine(Path.GetTempPath(), "wmvs-recover-" + Guid.NewGuid().ToString("N"));
+        var persistPath = Path.Combine(dir, "voice-sessions.json");
+        try
+        {
+            var svc = ServiceWithBrainAndTts(new RecordingBrain(), new byte[] { 1 }, persistPath);
+            svc.NoteRetrying(TenantId.Local, "sid-1");   // left behind by an earlier failed read
+
+            await svc.GenerateAsync(TenantId.Local, "sid-1", RouteFor(director), CancellationToken.None, showReadingWindow: true);
+
+            Assert.Null(svc.VoiceUnavailableFor(TenantId.Local, "sid-1"));
+            Assert.True(svc.NothingToNarrateFor(TenantId.Local, "sid-1"));   // and the honest verdict is not masked
+        }
+        finally { try { Directory.Delete(dir, recursive: true); } catch { /* best-effort */ } }
+    }
+
     /// <summary>A voice service wired to a recording brain and a text-to-speech stub that returns
     /// <paramref name="audio"/>, so the full turn-end path (fetch -> translate -> synthesize -> store)
     /// runs without a live model or provider.</summary>

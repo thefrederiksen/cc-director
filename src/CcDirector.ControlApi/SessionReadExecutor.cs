@@ -107,8 +107,34 @@ internal sealed class SessionReadExecutor : ISessionCommandArea
                 return DirectorCommandResult.Success(SessionCommandExecutor.Serialize(resp));
             }
 
+            // AN UNRESOLVED TRANSCRIPT IS A FAILED READ, NOT AN EMPTY CONVERSATION.
+            //
+            // This branch used to stamp "ok" unconditionally. But SessionHistoryReader.ReadAll returns
+            // ConversationHistory.Empty whenever ResolveTranscriptPath returns null - which is exactly what
+            // the per-agent locators (PiSessionLocator, CodexRolloutLocator, GrokSessionLocator) do when they
+            // cannot find the session's transcript. So a Codex / Pi / Grok session whose transcript had not
+            // been located reported a SUCCESSFUL read of an EMPTY conversation, and the one field that could
+            // have told the caller otherwise said "ok".
+            //
+            // What that cost: voice narration reads this verb, sees no text widget, and records "there is
+            // nothing to read aloud" - a NON-failure that is never retried. A Pi session on worktrees/oc-8403
+            // sat silent for 48 minutes on 12 August with no error raised anywhere, and the roster showed it
+            // "Preparing voice" the whole time. See issue #2561.
+            //
+            // Gemini is the deliberate exception and must NOT be caught by this: it persists no transcript at
+            // all, so a null path is its normal state and its conversation is read from the session's own
+            // terminal buffer (see SessionHistoryReader.ReadAll). A null path for Gemini is honest; for every
+            // other agent here it means the transcript has not been found yet.
+            var transcriptPath = SessionHistoryReader.ResolveTranscriptPath(session);
+            if (transcriptPath is null && session.AgentKind != AgentKind.Gemini)
+            {
+                resp.Status = "no_transcript";
+                resp.Error = $"No transcript has been located yet for this {session.AgentKind} session.";
+                return DirectorCommandResult.Success(SessionCommandExecutor.Serialize(resp));
+            }
+
             var history = SessionHistoryReader.Read(session);
-            resp.JsonlPath = SessionHistoryReader.ResolveTranscriptPath(session);
+            resp.JsonlPath = transcriptPath;
             resp.LineCount = history.Messages.Count;
             resp.Widgets = ControlEndpoints.BuildTurnWidgetsFromHistory(history);
             resp.Status = "ok";

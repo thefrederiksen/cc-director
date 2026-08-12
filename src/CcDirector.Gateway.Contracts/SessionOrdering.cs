@@ -364,7 +364,7 @@ public static class SessionOrdering
         // generation. The Gateway's old BriefingState overwrite made a voice-generating session take the
         // first arm and read "Wingman reading" - the wrong words, on top of a destroyed fact (gap 5).
         if (IsBriefing(s)) return "Wingman reading";
-        if (IsVoicePreparing(s)) return "Preparing voice";
+        if (IsVoicePreparing(s)) return VoiceHoldLabel(s);
         return BaseColor(s) switch
         {
             // "supporting" now means ONLY a Worker whose red was suppressed (see BaseColor). A working
@@ -378,6 +378,43 @@ public static class SessionOrdering
             "grey" => "Exited",              // Phase 2.3: an exited session's grey base (see RawActivityColor)
             "error" => "Crashed",            // issue #959: died, not finished - never reads as a clean "Exited"
             _ => "Idle",
+        };
+    }
+
+    /// <summary>
+    /// The WORDS for a session the voice hold is keeping yellow - "Preparing voice" only when something is
+    /// genuinely being prepared, and the honest reason otherwise.
+    ///
+    /// WHY THIS IS NOT A SECOND RULE. <see cref="IsVoicePreparing"/> - the COLOR - reads two booleans, and
+    /// deliberately so: yellow is held across the gaps between attempts and must never flash red (owner's
+    /// ruling, 2026-07-19, see that method). But those two booleans are also the ONLY thing the label had,
+    /// so every reason a session has no audio came out as one sentence claiming work was in flight. On
+    /// 11 August a session sat on "Preparing voice" for 48 minutes while the Gateway's OWN verdict for it,
+    /// on the same row, was "Nothing to read aloud" - a state that would never become audio. Another row
+    /// carried the label "Preparing voice" beside a "No voice" chip, because the chip reads a fact the label
+    /// could not see. See issue #2576.
+    ///
+    /// The verdict already exists and is already on the row: <see cref="SessionDto.VoiceDisplay"/>, folded
+    /// by the Gateway's VoiceDisplayFold from all six voice facts. So this does not compute anything - it
+    /// RENDERS the words that fold already chose, which is what keeps this from becoming a second answer to
+    /// the same question. The dot is unchanged; only the words are.
+    ///
+    /// Deliberately narrow: it defers ONLY for the verdicts that mean "no audio, and here is why", and
+    /// falls back to "Preparing voice" for everything else - including a row carrying no verdict at all
+    /// (the display-push seam does not stamp one, and an older client may not send one either).
+    /// </summary>
+    private static string VoiceHoldLabel(SessionDto s)
+    {
+        var display = s.VoiceDisplay;
+        if (display is null || string.IsNullOrWhiteSpace(display.Label)) return "Preparing voice";
+        return display.Kind switch
+        {
+            // Nothing is being prepared, and for the first three nothing ever will be without a change of
+            // state - which is exactly what the reader needs to know and could not previously be told.
+            "nothingToNarrate" or "serviceDown" or "blocked" or "retrying" or "notReady" => display.Label,
+            // "preparing" (genuinely in flight), "ready", "off", or anything added later: the existing
+            // words stand. A new voice state does NOT silently change this label until it is listed here.
+            _ => "Preparing voice",
         };
     }
 

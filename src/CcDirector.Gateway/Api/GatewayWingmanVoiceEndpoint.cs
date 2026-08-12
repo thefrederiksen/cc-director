@@ -721,12 +721,40 @@ internal static class GatewayWingmanVoiceEndpoint
                 return Results.Json(new { error = "session not found on any director" }, statusCode: StatusCodes.Status404NotFound);
 
             var turns = await route.GetTurnsAsync(sid, ct);
-            var widgets = turns?.Widgets ?? new List<TurnWidgetDto>();
+
+            voice.Mark(reqTenant.Value, sid);   // opening voice on a session makes it a voice session (kept fresh on turn-end)
+
+            // A FAILED READ IS NOT "NOTHING TO SUMMARIZE" (issue #2561). GetTurnsAsync answers null when the
+            // tunnel call failed, and otherwise carries the real outcome in Status - a failed read arrives as
+            // a SUCCESS with an empty widget list, because the transport worked even though the read did not.
+            //
+            // Reading only the widgets makes this route tell the person "this session has not produced
+            // anything to summarize yet" - a confident, wrong sentence about their own session - and record
+            // the never-retried "nothing to narrate" fact behind it. It is the same mistake the automatic
+            // path made, and on THIS route it is the one the owner presses a button to see. The honest answer
+            // is the one the model-leg timeout below already gives: say it is still coming, record Retrying so
+            // the screen says so, and let the voice sweep try again.
+            if (turns is null || !string.Equals(turns.Status, "ok", StringComparison.OrdinalIgnoreCase))
+            {
+                voice.NoteRetrying(reqTenant.Value, sid);
+                FileLog.Write(
+                    $"[GatewayWingmanVoice] explain sid={sid}: turns read FAILED "
+                    + $"(status={turns?.Status ?? "(no answer)"} error={turns?.Error ?? "(none)"}) "
+                    + "- Retrying; NOT reported as nothing-to-summarize (issue #2561).");
+                return Results.Json(new
+                {
+                    reply = "",
+                    spoken = "I could not read this session's conversation just now - it will keep trying.",
+                    replySeconds = 0.0,
+                    retrying = true,
+                });
+            }
+
+            var widgets = turns.Widgets ?? new List<TurnWidgetDto>();
             var lastReply = widgets.LastOrDefault(w => w.Kind == "Text")?.Content;
             // Recent conversation so the wingman can give context to a short/terse reply.
             var recentContext = WingmanTranslator.BuildRecentContext(widgets);
 
-            voice.Mark(reqTenant.Value, sid);   // opening voice on a session makes it a voice session (kept fresh on turn-end)
             if (string.IsNullOrWhiteSpace(lastReply))
             {
                 // No text reply to read aloud (waiting on a prompt / menu). Record the honest "nothing to

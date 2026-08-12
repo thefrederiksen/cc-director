@@ -1366,7 +1366,16 @@ public sealed class GatewayHost : IAsyncDisposable
                 // owning tenant so a session id shared across accounts keeps a per-tenant "waiting since".
                 tenant: _tenantPass.Current ?? TenantId.Local,
                 needsYouStampFor: (tenant, sid, isRed) => _needsYouClock.Stamp(tenant, sid, isRed),
-                snoozeRegistry: _snoozeRegistry),
+                snoozeRegistry: _snoozeRegistry,
+                // Same tenant guard as the two booleans above: an ambient tenant that cannot name a voice
+                // partition answers "no voice state at all" rather than throwing out of PushSnapshot.
+                voiceUnavailableFor: sid => _tenantPass.Current is { } t
+                    && Wingman.WingmanVoiceService.CanNameVoicePartition(t)
+                        ? _voiceService?.VoiceUnavailableFor(t, sid)
+                        : null,
+                nothingToNarrateFor: sid => _tenantPass.Current is { } t
+                    && Wingman.WingmanVoiceService.CanNameVoicePartition(t)
+                    && _voiceService?.NothingToNarrateFor(t, sid) == true),
             SendCommandAsync,
             currentScopeKey: () => _tenantPass.Current?.Value);
         // Mission Screen mission (Phase 1b, issue #1405): the mission-WHY store, at a Gateway-side file
@@ -3776,12 +3785,32 @@ public sealed class GatewayHost : IAsyncDisposable
         Func<string, bool> voiceAudioReadyFor,
         TenantId tenant,
         Func<TenantId, string, bool, DateTime?>? needsYouStampFor,
-        Snooze.SnoozeRegistry? snoozeRegistry)
+        Snooze.SnoozeRegistry? snoozeRegistry,
+        Func<string, Core.HostedAi.HostedAiState?>? voiceUnavailableFor = null,
+        Func<string, bool>? nothingToNarrateFor = null)
     {
         foreach (var s in sessions)
         {
             s.VoiceGenerating = voiceGeneratingFor(s.SessionId);
             s.VoiceAudioReady = voiceAudioReadyFor(s.SessionId);
+            // The REASON there is no voice, carried on the push exactly as the roster carries it. Without
+            // these two the pushed row holds only the two readiness booleans, so the desktop can be told
+            // "no audio" but never WHY - and SessionOrdering.VoiceHoldLabel, which renders the reason the
+            // Gateway already folded, has nothing to render and falls back to "Preparing voice" forever.
+            // The roster path stamps both (GatewayEndpoints); this is the same stamp so the two surfaces
+            // cannot say different things about one session. Null delegates leave the fields unset, which
+            // is the pre-existing behaviour and keeps every non-production caller compiling unchanged.
+            var unavailable = voiceUnavailableFor?.Invoke(s.SessionId);
+            if (unavailable is Core.HostedAi.HostedAiState reason)
+                s.VoiceUnavailable = HostedAi.HostedAiHttp.Dto(reason);
+            s.VoiceDisplay = Wingman.VoiceDisplayFold.Fold(
+                voiceMode: s.VoiceMode,
+                agentWorking: string.Equals(s.ActivityState, "Working", StringComparison.OrdinalIgnoreCase)
+                           || string.Equals(s.ActivityState, "Starting", StringComparison.OrdinalIgnoreCase),
+                hasAudio: s.VoiceAudioReady,
+                generating: s.VoiceGenerating,
+                unavailable: unavailable,
+                nothingToNarrate: nothingToNarrateFor?.Invoke(s.SessionId) ?? false);
         }
         Api.GatewayEndpoints.StampFleetRolesAndFold(sessions, sessions, needsYouStampFor, snoozeRegistry, tenant);
     }

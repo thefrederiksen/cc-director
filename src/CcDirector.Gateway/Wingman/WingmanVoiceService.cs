@@ -859,13 +859,61 @@ public sealed class WingmanVoiceService
     {
         var state = StateFor(tenant);
         var turns = await route.GetTurnsAsync(sid, ct);
-        var widgets = turns?.Widgets ?? new List<TurnWidgetDto>();
+        // A FAILED READ IS NOT "NOTHING TO SAY". This is the whole of issue #2561, and it is why sessions
+        // went permanently silent with no error raised anywhere.
+        //
+        // GetTurnsAsync answers null when the tunnel call failed (the owning Director is not connected), and
+        // otherwise hands back a TurnsResponse whose Status carries the REAL outcome - "ok", or one of
+        // "unsupported" / "no_session_id" / "no_jsonl" / "no_transcript" / "parse_error". Every one of those
+        // failures arrives as a SUCCESSFUL command result with an EMPTY widget list, because the transport
+        // worked even though the read did not.
+        //
+        // This method used to read the widgets and nothing else. So a missing transcript, an unreadable
+        // transcript, a parse exception and an agent with no history provider all looked identical to a
+        // session that was simply waiting on a prompt - and were recorded as NothingToNarrate, which is a
+        // NON-failure that is never retried and produces no log line, no Retrying state, and no error on any
+        // screen. Observed 12 August: a Pi session sat silent for 48 minutes while the roster showed it
+        // "Preparing voice".
+        //
+        // The correct treatment is the one the MODEL leg already applies a few dozen lines below (see
+        // IsModelDidNotAnswer): a read that did not answer is evidence about the READ, not about the
+        // conversation, so it records Retrying and is picked up again by the voice sweep. Retrying is the
+        // right state rather than a hard failure because these conditions are genuinely transient - a
+        // transcript that has not been located yet appears once the agent writes its first turn.
+        if (turns is null)
+        {
+            state.Unavailable[sid] = HostedAiState.Retrying;
+            FileLog.Write(
+                $"[WingmanVoiceService] turns read did not answer for sid={sid} (owning Director not connected) "
+                + "- Retrying; the voice sweep picks it up again. NOT recorded as nothing-to-narrate (issue #2561).");
+            return false;
+        }
+        if (!string.Equals(turns.Status, "ok", StringComparison.OrdinalIgnoreCase))
+        {
+            state.Unavailable[sid] = HostedAiState.Retrying;
+            FileLog.Write(
+                $"[WingmanVoiceService] turns read FAILED for sid={sid}: status={turns.Status} "
+                + $"error={turns.Error ?? "(none)"} - Retrying; the voice sweep picks it up again. "
+                + "NOT recorded as nothing-to-narrate (issue #2561).");
+            return false;
+        }
+        // The read answered, so a Retrying left behind by an EARLIER failed read is over. Cleared HERE,
+        // before the reply check, because VoiceDisplayFold consults `unavailable` BEFORE `nothingToNarrate`
+        // - a stale Retrying would mask the honest "nothing to read aloud" verdict on the very next pass.
+        // Only Retrying is cleared: a recorded NeedsCredits / CapReached / NeedsKey is a real, standing
+        // condition that a successful turns read says nothing about, and clearing it here would make the
+        // "add credit" message flap on and off with every sweep. Those still clear on a successful
+        // synthesis (StoreSpokenAsync) and on the Working transition, exactly as before.
+        if (state.Unavailable.TryGetValue(sid, out var prior) && prior == HostedAiState.Retrying)
+            state.Unavailable.TryRemove(sid, out _);
+        var widgets = turns.Widgets ?? new List<TurnWidgetDto>();
         var lastReply = widgets.LastOrDefault(w => w.Kind == "Text")?.Content;
         if (string.IsNullOrWhiteSpace(lastReply))
         {
-            // No text reply to read aloud - the session is waiting on a prompt / menu. Record the honest
-            // "nothing to narrate" fact so the Voice screen (via VoiceDisplayFold) says so, instead of
-            // offering a Generate button that would re-run this same empty read and never produce audio.
+            // The read SUCCEEDED and there is no text reply in it - the session is waiting on a prompt /
+            // menu. Only now are these words true. Record the honest "nothing to narrate" fact so the Voice
+            // screen (via VoiceDisplayFold) says so, instead of offering a Generate button that would re-run
+            // this same empty read and never produce audio.
             state.NothingToNarrate[sid] = 1;
             return false;  // nothing to say yet - the provider was not called
         }
