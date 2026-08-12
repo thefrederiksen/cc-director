@@ -1,4 +1,4 @@
-using System.Collections.Concurrent;
+﻿using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
@@ -68,6 +68,24 @@ public sealed class WingmanVoiceService
         public readonly ConcurrentDictionary<string, byte> NothingToNarrate = new();       // sid -> the last turn has no text reply to read aloud (waiting on a prompt)
         public readonly ConcurrentDictionary<string, DateTime> PreferBackupUntil = new();  // sid -> UTC deadline while this session routes past a silent primary (issue devthrottle_internal#405)
         public readonly ConcurrentDictionary<string, byte> InFlight = new();               // sid -> a generation is running now
+
+        /// <summary>
+        /// Why the TRANSCRIPT READ for this session did not produce a conversation, or absent when the last
+        /// read answered (issue #2561). Its OWN dictionary, deliberately not a value written into
+        /// <see cref="Unavailable"/>, because a retry state has to carry its provenance.
+        ///
+        /// Writing it into Unavailable was wrong in both directions, and both were found in review. Setting
+        /// it OVERWROTE a standing NeedsCredits / CapReached / NeedsKey - an actionable account condition
+        /// replaced by a weaker "on its way", on the evidence of a failed read that says nothing about the
+        /// account. And clearing it on a successful read ERASED a Retrying that the MODEL or SPEECH leg had
+        /// set, which a transcript read has equally no evidence about; the row would flip to "no narration
+        /// yet" for the length of another slow attempt and back again.
+        ///
+        /// Separate storage makes both correct by construction: the read writes and clears only its own
+        /// fact, the account and provider states keep theirs, and <see cref="VoiceUnavailableFor"/> decides
+        /// precedence in ONE place.
+        /// </summary>
+        public readonly ConcurrentDictionary<string, HostedAiState> ReadFailed = new();
     }
 
     private readonly WingmanTranslator _translator;
@@ -629,8 +647,38 @@ public sealed class WingmanVoiceService
     /// <c>/sessions</c> aggregation stamps the shared message onto <c>SessionDto.VoiceUnavailable</c>
     /// from this so the owning UI shows the consistent state.
     /// </summary>
+    /// <remarks>
+    /// THE ONE PLACE the two sources are ranked (issue #2561). An account / provider condition
+    /// (<c>Unavailable</c>) OUTRANKS a transcript-read failure (<c>ReadFailed</c>), because it is the more
+    /// actionable of the two and the more certain: "add credit" tells the owner something to do, while a
+    /// failed read is a condition the sweep is already chasing on its own. Ranking here rather than by
+    /// overwriting one dictionary with the other is what lets each writer clear only what it established.
+    /// </remarks>
     public HostedAiState? VoiceUnavailableFor(TenantId tenant, string sid)
-        => StateFor(tenant).Unavailable.TryGetValue(sid, out var s) ? s : (HostedAiState?)null;
+    {
+        var state = StateFor(tenant);
+        if (state.Unavailable.TryGetValue(sid, out var s)) return s;
+        return state.ReadFailed.TryGetValue(sid, out var r) ? r : (HostedAiState?)null;
+    }
+
+    /// <summary>
+    /// Record why this session's TRANSCRIPT READ did not produce a conversation - <see cref="HostedAiState.Retrying"/>
+    /// for a condition that can become readable (the tunnel did not answer, the transcript has not appeared
+    /// yet, a parse failed), or <see cref="HostedAiState.Unavailable"/> for one that cannot without a change
+    /// of agent (this agent exposes no conversation history at all). Kept apart from the account / provider
+    /// state so neither overwrites the other - see <c>TenantVoiceState.ReadFailed</c>.
+    /// </summary>
+    public void NoteReadFailed(TenantId tenant, string sid, HostedAiState state) => StateFor(tenant).ReadFailed[sid] = state;
+
+    /// <summary>The transcript read answered, so whatever the last failed read recorded is over. Clears ONLY
+    /// the read's own fact: a model timeout, a rate limit, or a standing account condition are all things a
+    /// successful transcript read has no evidence about.</summary>
+    public void ClearReadFailed(TenantId tenant, string sid) => StateFor(tenant).ReadFailed.TryRemove(sid, out _);
+
+    /// <summary>What the last transcript read recorded, or null when it answered. Exposed so the voice sweep
+    /// can leave a session whose agent will NEVER have a conversation out of its per-cycle budget.</summary>
+    public HostedAiState? ReadFailedFor(TenantId tenant, string sid)
+        => StateFor(tenant).ReadFailed.TryGetValue(sid, out var s) ? s : (HostedAiState?)null;
 
     /// <summary>
     /// True when this session's latest turn has NO assistant text reply to read aloud - it is waiting for
@@ -661,6 +709,11 @@ public sealed class WingmanVoiceService
     /// speech-leg unavailable state.
     /// </summary>
     public void NoteRetrying(TenantId tenant, string sid) => StateFor(tenant).Unavailable[sid] = HostedAiState.Retrying;
+
+    /// <summary>Test seam: seed a standing ACCOUNT / provider condition (the state a failed synthesis
+    /// records) so a test can prove a later read failure does not overwrite it.</summary>
+    internal void NoteUnavailableForTest(TenantId tenant, string sid, HostedAiState state)
+        => StateFor(tenant).Unavailable[sid] = state;
 
     /// <summary>
     /// True when an exception from the model (translation) leg means it DID NOT ANSWER - a bounded
@@ -702,6 +755,7 @@ public sealed class WingmanVoiceService
         if (wasVoice) SaveVoiceSessions(tenant);
         state.Generating.TryRemove(sid, out _);
         state.Unavailable.TryRemove(sid, out _);        // voice is off, so its unavailable-state is moot (issue #939)
+        state.ReadFailed.TryRemove(sid, out _);         // ...and so is whatever the last transcript read recorded
         state.NothingToNarrate.TryRemove(sid, out _);   // voice is off, so "nothing to narrate" is moot too
         state.PreferBackupUntil.TryRemove(sid, out _);  // voice is off, so the backup-routing window is moot too (issue devthrottle_internal#405)
         if (state.Ready.TryRemove(sid, out _))
@@ -723,6 +777,7 @@ public sealed class WingmanVoiceService
         // yellow "wingman running" marker too - raw activity wins while the agent works.
         state.Generating.TryRemove(sid, out _);
         state.Unavailable.TryRemove(sid, out _);        // a fresh turn clears the old unavailable-state (dismissible, issue #939)
+        state.ReadFailed.TryRemove(sid, out _);         // ...and re-opens the read: a new turn is a new transcript to try
         state.NothingToNarrate.TryRemove(sid, out _);   // a fresh turn supersedes "nothing to narrate" - re-evaluated on its turn-end
         if (state.Ready.TryRemove(sid, out _))
         {
@@ -877,12 +932,22 @@ public sealed class WingmanVoiceService
         //
         // The correct treatment is the one the MODEL leg already applies a few dozen lines below (see
         // IsModelDidNotAnswer): a read that did not answer is evidence about the READ, not about the
-        // conversation, so it records Retrying and is picked up again by the voice sweep. Retrying is the
-        // right state rather than a hard failure because these conditions are genuinely transient - a
-        // transcript that has not been located yet appears once the agent writes its first turn.
+        // conversation, so it is recorded as a read failure and picked up again by the voice sweep.
+        //
+        // NOT EVERY FAILED READ IS RETRYABLE, and the difference is recorded rather than flattened (found in
+        // review). "unsupported" means this agent exposes no conversation history AT ALL - retrying cannot
+        // change that, and telling the owner "voice on its way" forever would be the same lie in a new
+        // costume. It takes the terminal HostedAiState.Unavailable, which folds to a plain "Voice
+        // unavailable". Everything else here CAN become readable on a later pass - the tunnel comes back, the
+        // transcript appears once the agent writes its first turn, a half-written line finishes - so those
+        // stay Retrying.
+        //
+        // The state is recorded through NoteReadFailed, into the read's OWN store, never over the account /
+        // provider state - see TenantVoiceState.ReadFailed for why writing it into Unavailable was wrong in
+        // both directions.
         if (turns is null)
         {
-            state.Unavailable[sid] = HostedAiState.Retrying;
+            NoteReadFailed(tenant, sid, HostedAiState.Retrying);
             FileLog.Write(
                 $"[WingmanVoiceService] turns read did not answer for sid={sid} (owning Director not connected) "
                 + "- Retrying; the voice sweep picks it up again. NOT recorded as nothing-to-narrate (issue #2561).");
@@ -890,22 +955,23 @@ public sealed class WingmanVoiceService
         }
         if (!string.Equals(turns.Status, "ok", StringComparison.OrdinalIgnoreCase))
         {
-            state.Unavailable[sid] = HostedAiState.Retrying;
+            var terminal = string.Equals(turns.Status, "unsupported", StringComparison.OrdinalIgnoreCase);
+            NoteReadFailed(tenant, sid, terminal ? HostedAiState.Unavailable : HostedAiState.Retrying);
             FileLog.Write(
                 $"[WingmanVoiceService] turns read FAILED for sid={sid}: status={turns.Status} "
-                + $"error={turns.Error ?? "(none)"} - Retrying; the voice sweep picks it up again. "
+                + $"error={turns.Error ?? "(none)"} - {(terminal ? "TERMINAL (this agent exposes no conversation history)" : "Retrying; the voice sweep picks it up again")}. "
                 + "NOT recorded as nothing-to-narrate (issue #2561).");
             return false;
         }
-        // The read answered, so a Retrying left behind by an EARLIER failed read is over. Cleared HERE,
-        // before the reply check, because VoiceDisplayFold consults `unavailable` BEFORE `nothingToNarrate`
-        // - a stale Retrying would mask the honest "nothing to read aloud" verdict on the very next pass.
-        // Only Retrying is cleared: a recorded NeedsCredits / CapReached / NeedsKey is a real, standing
-        // condition that a successful turns read says nothing about, and clearing it here would make the
-        // "add credit" message flap on and off with every sweep. Those still clear on a successful
-        // synthesis (StoreSpokenAsync) and on the Working transition, exactly as before.
-        if (state.Unavailable.TryGetValue(sid, out var prior) && prior == HostedAiState.Retrying)
-            state.Unavailable.TryRemove(sid, out _);
+        // The read answered, so whatever the last failed read recorded is over. Cleared HERE, before the
+        // reply check, because VoiceDisplayFold consults the unavailable state BEFORE nothingToNarrate - a
+        // stale read failure would mask the honest "nothing to read aloud" verdict on the very next pass.
+        // This clears ONLY the read's own fact: a model timeout, a rate limit, and a standing NeedsCredits /
+        // CapReached / NeedsKey are all things a successful transcript read has no evidence about, and each
+        // still clears where it was set (StoreSpokenAsync on a successful synthesis, OnSessionWorking on a
+        // new turn). An earlier version of this line cleared any Retrying in the shared Unavailable map and
+        // therefore erased model-leg and speech-leg states it had not established.
+        ClearReadFailed(tenant, sid);
         var widgets = turns.Widgets ?? new List<TurnWidgetDto>();
         var lastReply = widgets.LastOrDefault(w => w.Kind == "Text")?.Content;
         if (string.IsNullOrWhiteSpace(lastReply))

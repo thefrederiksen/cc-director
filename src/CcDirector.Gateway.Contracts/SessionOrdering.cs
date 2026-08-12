@@ -1,4 +1,4 @@
-namespace CcDirector.Gateway.Contracts;
+﻿namespace CcDirector.Gateway.Contracts;
 
 /// <summary>
 /// Shared client-side policy for how a roster of <see cref="SessionDto"/> is ordered and
@@ -409,12 +409,18 @@ public static class SessionOrdering
         if (display is null || string.IsNullOrWhiteSpace(display.Label)) return "Preparing voice";
         return display.Kind switch
         {
-            // Nothing is being prepared, and for the first three nothing ever will be without a change of
-            // state - which is exactly what the reader needs to know and could not previously be told.
-            "nothingToNarrate" or "serviceDown" or "blocked" or "retrying" or "notReady" => display.Label,
-            // "preparing" (genuinely in flight), "ready", "off", or anything added later: the existing
-            // words stand. A new voice state does NOT silently change this label until it is listed here.
-            _ => "Preparing voice",
+            // The THREE verdicts whose own words would be wrong ON THE RAIL, named explicitly:
+            //  - "preparing" is the case the existing words are already right about.
+            //  - "ready" and "off" cannot honestly reach here at all (this arm runs only for a session the
+            //    voice hold is keeping yellow), so if one ever does, the safe answer is the old behaviour
+            //    rather than a rail reading "Voice ready" beside a yellow dot.
+            "preparing" or "ready" or "off" => "Preparing voice",
+            // EVERYTHING ELSE renders the fold's own words - including a verdict added later. The list runs
+            // this way round deliberately: an allow-list of known-good kinds would mean adding a state to
+            // VoiceDisplayFold and having the rail quietly keep saying "Preparing voice" about it, which is
+            // a second rule wearing the shape of a default (found in review). A new state now reaches the
+            // rail by being added ONCE, in the fold.
+            _ => display.Label,
         };
     }
 

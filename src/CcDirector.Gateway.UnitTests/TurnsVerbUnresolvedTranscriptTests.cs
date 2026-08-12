@@ -1,4 +1,4 @@
-using System.Text.Json;
+﻿using System.Text.Json;
 using CcDirector.ControlApi;
 using CcDirector.Core.Sessions;
 using CcDirector.Gateway.Contracts;
@@ -68,8 +68,9 @@ public sealed class TurnsVerbUnresolvedTranscriptTests
 
     /// <summary>
     /// The negative control: an agent that exposes no conversation history at all keeps its own distinct
-    /// status. "Unsupported" and "the transcript has not appeared yet" are different facts and a caller may
-    /// reasonably treat them differently - collapsing them would trade one lie for another.
+    /// status. "Unsupported" and "the transcript has not appeared yet" are different facts and the voice
+    /// service now treats them differently - one is terminal, the other is retried - so collapsing them
+    /// would trade one lie for another.
     /// </summary>
     [Fact]
     public void Turns_AgentWithNoHistoryProvider_StillReportsUnsupported()
@@ -82,6 +83,45 @@ public sealed class TurnsVerbUnresolvedTranscriptTests
             var resp = Read(sm, session);
 
             Assert.Equal("unsupported", resp.Status);
+        }
+        finally { sm.Dispose(); }
+    }
+
+    /// <summary>
+    /// THE OTHER HALF (found in review): a RESOLVED path is not a proven read either.
+    ///
+    /// Copilot and OpenCode resolve to a GLOBAL SQLite store, which exists or does not exist for reasons
+    /// that have nothing to do with this session - and both readers answer an empty history both for a store
+    /// with no repository match AND for a database error they caught. Stamping "ok" on that recreates the
+    /// exact false success this whole change removes, so an empty conversation gets its own status.
+    ///
+    /// Gemini is the case asserted here: it goes down the same branch with a deliberately null transcript
+    /// path (it reads the terminal buffer), and an embedded test session's buffer is empty - so it produces
+    /// a resolved-but-empty read deterministically, on any machine.
+    ///
+    /// COPILOT AND OPENCODE ARE DELIBERATELY NOT ASSERTED HERE, and the reason is worth writing down: their
+    /// readers open the DEVELOPER'S OWN store at CopilotHistoryReader.DefaultDatabasePath and match by
+    /// repository path, so what this test would assert depends on what happens to be in that database on the
+    /// machine running it. A first version of this test did include them and failed on exactly that - the
+    /// local Copilot store answered a non-empty history for a temporary directory. A test whose verdict
+    /// moves with the developer's machine is not evidence, so the store-backed agents are covered by the
+    /// status-handling tests in WingmanVoiceServiceTests (which drive "empty_history" directly) rather than
+    /// by reading a real database here.
+    /// </summary>
+    [Theory]
+    [InlineData(Core.Agents.AgentKind.Gemini)]
+    public void Turns_ResolvedSourceWithNoConversation_ReportsEmptyHistory_NotOk(Core.Agents.AgentKind agent)
+    {
+        var (sm, session) = NewSession();
+        try
+        {
+            session.AgentKind = agent;
+
+            var resp = Read(sm, session);
+
+            Assert.NotEqual("ok", resp.Status);                    // the false success is gone...
+            Assert.Contains(resp.Status, new[] { "empty_history", "no_transcript" });
+            Assert.Empty(resp.Widgets);
         }
         finally { sm.Dispose(); }
     }

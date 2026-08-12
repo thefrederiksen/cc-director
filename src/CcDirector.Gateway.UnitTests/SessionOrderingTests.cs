@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Linq;
 using CcDirector.Gateway.Contracts;
 using Xunit;
@@ -550,10 +550,25 @@ public sealed class SessionOrderingTests
     }
 
     [Fact]
-    public void StateLabel_VoiceHoldWithAnUnknownVerdictKind_FallsBackToPreparingVoice()
+    public void StateLabel_VoiceHoldWithAVerdictKindAddedLater_RendersItsWords()
     {
-        // A voice state added later does not silently change this label until it is listed in VoiceHoldLabel.
+        // A verdict added to VoiceDisplayFold later reaches the rail WITHOUT a second edit here. An earlier
+        // version of this rule kept an allow-list of known-good kinds and defaulted everything else back to
+        // "Preparing voice", which meant adding a voice state to the fold and having the rail quietly go on
+        // claiming a narration was in flight about it - a second rule wearing the shape of a default.
         var s = VoiceHoldingSession("somethingAddedLater", "Some new words");
+        Assert.Equal("Some new words", SessionOrdering.StateLabel(s));
+    }
+
+    [Theory]
+    [InlineData("ready", "Voice ready")]
+    [InlineData("off", "Voice off")]
+    public void StateLabel_VoiceHoldWithAVerdictThatCannotHonestlyReachHere_KeepsTheOldWords(string kind, string label)
+    {
+        // These two cannot honestly co-occur with the yellow hold (it runs only for a session with no audio
+        // that is in voice mode). If one ever does, the safe answer is the old behaviour - never a rail
+        // reading "Voice ready" beside a yellow dot, which is a row contradicting itself.
+        var s = VoiceHoldingSession(kind, label);
         Assert.Equal("Preparing voice", SessionOrdering.StateLabel(s));
     }
 

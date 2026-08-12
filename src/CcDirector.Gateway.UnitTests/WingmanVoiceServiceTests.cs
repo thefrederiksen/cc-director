@@ -1,4 +1,4 @@
-using System.Net;
+﻿using System.Net;
 using System.Net.Sockets;
 using System.Text;
 using CcDirector.AgentBrain;
@@ -437,7 +437,7 @@ public sealed class WingmanVoiceServiceTests : IDisposable
     [InlineData("no_transcript")]
     [InlineData("no_jsonl")]
     [InlineData("parse_error")]
-    [InlineData("unsupported")]
+    [InlineData("empty_history")]
     [InlineData("no_session_id")]
     public async Task GenerateAsync_WhenTurnsReadFailed_RecordsRetrying_NotNothingToNarrate(string status)
     {
@@ -513,9 +513,11 @@ public sealed class WingmanVoiceServiceTests : IDisposable
     }
 
     /// <summary>
-    /// A read that answers ends the read-failure Retrying it caused, so the session does not carry a stale
+    /// A read that answers ends the read-failure state it caused, so the session does not carry a stale
     /// "voice on its way" forever once the transcript appears. Cleared BEFORE the reply check, because the
     /// display fold consults the unavailable state ahead of nothing-to-narrate and would otherwise mask it.
+    /// Seeded through NoteReadFailed so the test proves the READ's own state clears - seeding the generic
+    /// NoteRetrying instead would have proved nothing about provenance, which is the point of the split.
     /// </summary>
     [Fact]
     public async Task GenerateAsync_WhenReadRecovers_ClearsTheReadFailureRetrying()
@@ -526,14 +528,104 @@ public sealed class WingmanVoiceServiceTests : IDisposable
         try
         {
             var svc = ServiceWithBrainAndTts(new RecordingBrain(), new byte[] { 1 }, persistPath);
-            svc.NoteRetrying(TenantId.Local, "sid-1");   // left behind by an earlier failed read
+            svc.NoteReadFailed(TenantId.Local, "sid-1", HostedAiState.Retrying);   // left behind by an earlier failed read
 
             await svc.GenerateAsync(TenantId.Local, "sid-1", RouteFor(director), CancellationToken.None, showReadingWindow: true);
 
-            Assert.Null(svc.VoiceUnavailableFor(TenantId.Local, "sid-1"));
-            Assert.True(svc.NothingToNarrateFor(TenantId.Local, "sid-1"));   // and the honest verdict is not masked
+            Assert.Null(svc.ReadFailedFor(TenantId.Local, "sid-1"));
+            Assert.Null(svc.VoiceUnavailableFor(TenantId.Local, "sid-1"));    // nothing else was standing, so the row is clean
+            Assert.True(svc.NothingToNarrateFor(TenantId.Local, "sid-1"));    // and the honest verdict is not masked
         }
         finally { try { Directory.Delete(dir, recursive: true); } catch { /* best-effort */ } }
+    }
+
+
+    /// <summary>
+    /// "unsupported" is the one read failure that CANNOT recover: the agent exposes no conversation history
+    /// at all, so retrying can never produce one. It takes the terminal state instead, so the screen says
+    /// "Voice unavailable" rather than promising a narration that is not coming - and so the voice sweep can
+    /// leave it out of its three-per-cycle budget instead of letting it starve sessions that would produce
+    /// audio. Found in review: the first version of this fix retried it forever.
+    /// </summary>
+    [Fact]
+    public async Task GenerateAsync_WhenAgentHasNoConversationHistory_IsTerminal_NotRetriedForever()
+    {
+        var director = new TunnelReadStub("{\"status\":\"unsupported\",\"error\":\"no history provider\",\"widgets\":[]}");
+        var dir = Path.Combine(Path.GetTempPath(), "wmvs-unsup-" + Guid.NewGuid().ToString("N"));
+        var persistPath = Path.Combine(dir, "voice-sessions.json");
+        try
+        {
+            var svc = ServiceWithBrainAndTts(new RecordingBrain(), new byte[] { 1 }, persistPath);
+
+            await svc.GenerateAsync(TenantId.Local, "sid-1", RouteFor(director), CancellationToken.None, showReadingWindow: true);
+
+            Assert.Equal(HostedAiState.Unavailable, svc.ReadFailedFor(TenantId.Local, "sid-1"));
+            Assert.Equal(HostedAiState.Unavailable, svc.VoiceUnavailableFor(TenantId.Local, "sid-1"));
+            Assert.False(svc.NothingToNarrateFor(TenantId.Local, "sid-1"));
+        }
+        finally { try { Directory.Delete(dir, recursive: true); } catch { /* best-effort */ } }
+    }
+
+    /// <summary>
+    /// A failed read must NEVER replace a standing account condition. "Add credit" is actionable and certain;
+    /// a failed transcript read is neither, and says nothing whatever about the account. The first version of
+    /// this fix wrote the read state into the SAME dictionary, so one unreachable tunnel downgraded
+    /// "Voice needs credit" to "voice on its way" - found in review.
+    /// </summary>
+    [Fact]
+    public async Task GenerateAsync_WhenReadFails_DoesNotOverwriteAStandingAccountCondition()
+    {
+        var director = new TunnelReadStub("{\"status\":\"no_transcript\",\"error\":\"not located\",\"widgets\":[]}");
+        var dir = Path.Combine(Path.GetTempPath(), "wmvs-acct-" + Guid.NewGuid().ToString("N"));
+        var persistPath = Path.Combine(dir, "voice-sessions.json");
+        try
+        {
+            var svc = ServiceWithBrainAndTts(new RecordingBrain(), new byte[] { 1 }, persistPath);
+            svc.NoteUnavailableForTest(TenantId.Local, "sid-1", HostedAiState.NeedsCredits);
+
+            await svc.GenerateAsync(TenantId.Local, "sid-1", RouteFor(director), CancellationToken.None, showReadingWindow: true);
+
+            // The account condition still wins: it is the more actionable and the more certain of the two.
+            Assert.Equal(HostedAiState.NeedsCredits, svc.VoiceUnavailableFor(TenantId.Local, "sid-1"));
+            // ...and the read failure is still recorded, in its own store, so nothing is lost either.
+            Assert.Equal(HostedAiState.Retrying, svc.ReadFailedFor(TenantId.Local, "sid-1"));
+        }
+        finally { try { Directory.Delete(dir, recursive: true); } catch { /* best-effort */ } }
+    }
+
+    /// <summary>
+    /// The mirror: a successful read clears only the READ's own state. A Retrying set by the MODEL leg or the
+    /// speech leg is not evidence a transcript read can speak to, and erasing it flipped the row to "no
+    /// narration yet" for the length of another slow attempt and back again - found in review.
+    /// </summary>
+    [Fact]
+    public async Task GenerateAsync_WhenReadRecovers_DoesNotEraseAModelLegRetrying()
+    {
+        var director = new TunnelReadStub("{\"status\":\"ok\",\"widgets\":[{\"kind\":\"ToolUse\",\"content\":\"running a tool\"}]}");
+        var dir = Path.Combine(Path.GetTempPath(), "wmvs-modelretry-" + Guid.NewGuid().ToString("N"));
+        var persistPath = Path.Combine(dir, "voice-sessions.json");
+        try
+        {
+            var svc = ServiceWithBrainAndTts(new RecordingBrain(), new byte[] { 1 }, persistPath);
+            svc.NoteRetrying(TenantId.Local, "sid-1");   // the MODEL leg's own state, on the shared map
+
+            await svc.GenerateAsync(TenantId.Local, "sid-1", RouteFor(director), CancellationToken.None, showReadingWindow: true);
+
+            Assert.Equal(HostedAiState.Retrying, svc.VoiceUnavailableFor(TenantId.Local, "sid-1"));
+            Assert.Null(svc.ReadFailedFor(TenantId.Local, "sid-1"));   // the read's own store is empty - it answered
+        }
+        finally { try { Directory.Delete(dir, recursive: true); } catch { /* best-effort */ } }
+    }
+
+    [Fact]
+    public void ANewTurnReopensTheRead()
+    {
+        // A terminal read state must not outlive the turn that produced it: a new turn is a new transcript to
+        // try, and it is what lets a session the sweep had skipped back in.
+        var svc = NewService();
+        svc.NoteReadFailed(TenantId.Local, "s", HostedAiState.Unavailable);
+        svc.OnSessionWorking(TenantId.Local, "s");
+        Assert.Null(svc.ReadFailedFor(TenantId.Local, "s"));
     }
 
     /// <summary>A voice service wired to a recording brain and a text-to-speech stub that returns

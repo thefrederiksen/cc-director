@@ -137,6 +137,30 @@ internal sealed class SessionReadExecutor : ISessionCommandArea
             resp.JsonlPath = transcriptPath;
             resp.LineCount = history.Messages.Count;
             resp.Widgets = ControlEndpoints.BuildTurnWidgetsFromHistory(history);
+
+            // A RESOLVED PATH IS NOT A PROVEN READ EITHER, and this is the other half of the same defect
+            // (found in review). Having a path only says where to look.
+            //
+            // It is at its sharpest for Copilot and OpenCode, whose "path" is a GLOBAL SQLite store rather
+            // than a per-session file: ResolveTranscriptPath hands back the store as soon as it exists,
+            // which says nothing about whether it holds a row for THIS session - and both readers answer an
+            // empty history for a store with no repository match AND for a database error they caught. A Pi,
+            // Codex or Grok transcript that resolves but holds no readable message lands in the same place.
+            //
+            // Stamping "ok" on any of those recreates exactly the false success this change exists to
+            // remove: the voice service would see no text, record the never-retried "nothing to read aloud",
+            // and the session would go silent with nothing raised. So an empty conversation gets its OWN
+            // status. It is deliberately NOT an error - a session that has genuinely not spoken yet is the
+            // ordinary case, and this status is retryable rather than terminal, because the very next turn
+            // makes it non-empty.
+            if (history.Messages.Count == 0)
+            {
+                resp.Status = "empty_history";
+                resp.Error = $"No conversation was read for this {session.AgentKind} session"
+                             + (transcriptPath is null ? "." : $" from {transcriptPath}.");
+                return DirectorCommandResult.Success(SessionCommandExecutor.Serialize(resp));
+            }
+
             resp.Status = "ok";
             return DirectorCommandResult.Success(SessionCommandExecutor.Serialize(resp));
         }

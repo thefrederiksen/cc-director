@@ -1,4 +1,4 @@
-using System.Globalization;
+﻿using System.Globalization;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text.Json;
@@ -736,19 +736,34 @@ internal static class GatewayWingmanVoiceEndpoint
             // the screen says so, and let the voice sweep try again.
             if (turns is null || !string.Equals(turns.Status, "ok", StringComparison.OrdinalIgnoreCase))
             {
-                voice.NoteRetrying(reqTenant.Value, sid);
+                // "unsupported" is TERMINAL - this agent exposes no conversation history at all, so no amount
+                // of retrying will produce one and saying "it will keep trying" would be the same lie in a new
+                // costume. Everything else here can become readable on a later pass. Recorded through
+                // NoteReadFailed, into the read's own store, so it can never overwrite a standing account
+                // condition (see TenantVoiceState.ReadFailed).
+                var terminal = string.Equals(turns?.Status, "unsupported", StringComparison.OrdinalIgnoreCase);
+                voice.NoteReadFailed(reqTenant.Value, sid, terminal ? HostedAiState.Unavailable : HostedAiState.Retrying);
                 FileLog.Write(
                     $"[GatewayWingmanVoice] explain sid={sid}: turns read FAILED "
                     + $"(status={turns?.Status ?? "(no answer)"} error={turns?.Error ?? "(none)"}) "
-                    + "- Retrying; NOT reported as nothing-to-summarize (issue #2561).");
+                    + $"- {(terminal ? "TERMINAL" : "Retrying")}; NOT reported as nothing-to-summarize (issue #2561).");
                 return Results.Json(new
                 {
                     reply = "",
-                    spoken = "I could not read this session's conversation just now - it will keep trying.",
+                    spoken = terminal
+                        ? "This agent does not keep a conversation I can read back to you."
+                        : "I could not read this session's conversation just now - it will keep trying.",
                     replySeconds = 0.0,
-                    retrying = true,
+                    retrying = !terminal,
                 });
             }
+
+            // The read answered: clear whatever the LAST failed read recorded, so a stale retry verdict does
+            // not go on masking the honest result below. VoiceDisplayFold consults the unavailable state
+            // before nothingToNarrate, so without this an explain that failed once and then succeeded onto an
+            // empty turn kept reporting "voice on its way" forever (found in review). Only the read's own
+            // fact is cleared - the model and speech states clear where they were set.
+            voice.ClearReadFailed(reqTenant.Value, sid);
 
             var widgets = turns.Widgets ?? new List<TurnWidgetDto>();
             var lastReply = widgets.LastOrDefault(w => w.Kind == "Text")?.Content;
