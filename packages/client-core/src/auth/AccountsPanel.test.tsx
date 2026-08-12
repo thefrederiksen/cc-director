@@ -18,8 +18,12 @@ import { addAccount, removeAllAccounts } from "./accountStore";
 // already passed. Vitest reports that as an unhandled error rather than a failing test, so the suite
 // prints "961 passed" beside "Errors 2" and a summary skimmed for failures alone reads as green. It
 // reached main that way, and the web job on main is what caught it.
-const switchAccount = vi.fn();
-const signOutAccount = vi.fn(async () => ({ ok: true as const }));
+// The implementations take the SAME arguments the call sites pass. vi.fn(async () => ...) infers a
+// ZERO-argument mock, so calling it with an id is a type error (TS2554) - which vitest never sees,
+// because it does not typecheck. It broke the .NET build too: the Gateway project runs the workspace
+// typecheck as part of its own build, so one TypeScript error reddens both jobs.
+const switchAccount = vi.fn((_id: string) => {});
+const signOutAccount = vi.fn(async (_id: string) => ({ ok: true as const }));
 const signOutAllAccounts = vi.fn(async () => ({ ok: true as const }));
 vi.mock("./accountActions", () => ({
   switchAccount: (id: string) => switchAccount(id),
