@@ -1,4 +1,4 @@
-using System.Linq;
+﻿using System.Linq;
 using System.Text;
 using CcDirector.Core.Agents;
 using CcDirector.Core.Claude;
@@ -187,6 +187,19 @@ internal sealed class SessionReadExecutor : ISessionCommandArea
             var messages = StreamMessageParser.ParseFile(jsonl);
             resp.LineCount = messages.Count;
             resp.Widgets = WidgetBuilder.BuildFromMessages(messages);
+
+            // The SAME rule as the branch above, and it belongs here for the same reason (found in review:
+            // the first version applied it only to the non-Claude branch, leaving Claude Code - the agent
+            // this runs for most often - with exactly the false-success shape the change exists to remove).
+            // A transcript that exists but parses to nothing is not a conversation that was read; it is a
+            // read that produced none. Retryable, not terminal: the next turn writes into this same file.
+            if (messages.Count == 0)
+            {
+                resp.Status = "empty_history";
+                resp.Error = $"No conversation was read for this session from {jsonl}.";
+                return DirectorCommandResult.Success(SessionCommandExecutor.Serialize(resp));
+            }
+
             resp.Status = "ok";
             return DirectorCommandResult.Success(SessionCommandExecutor.Serialize(resp));
         }

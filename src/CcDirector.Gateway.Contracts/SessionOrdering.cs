@@ -411,10 +411,14 @@ public static class SessionOrdering
         {
             // The THREE verdicts whose own words would be wrong ON THE RAIL, named explicitly:
             //  - "preparing" is the case the existing words are already right about.
-            //  - "ready" and "off" cannot honestly reach here at all (this arm runs only for a session the
-            //    voice hold is keeping yellow), so if one ever does, the safe answer is the old behaviour
-            //    rather than a rail reading "Voice ready" beside a yellow dot.
-            "preparing" or "ready" or "off" => "Preparing voice",
+            //  - "ready", "off" and "working" cannot honestly reach here at all: this arm runs only for a
+            //    session the voice hold is keeping yellow, which requires voice mode, no audio, and a
+            //    WAITING activity - and StateLabel has already returned "Working" above for anything
+            //    actually working. So if one of them ever does arrive on a row, the safe answer is the old
+            //    behaviour rather than a rail reading "Voice ready" or "Agent is working" beside a yellow
+            //    dot on a session that is doing neither. ("working" was missed by the first version of this
+            //    list and found in review - it is a kind VoiceDisplayFold really does emit.)
+            "preparing" or "ready" or "off" or "working" => "Preparing voice",
             // EVERYTHING ELSE renders the fold's own words - including a verdict added later. The list runs
             // this way round deliberately: an allow-list of known-good kinds would mean adding a state to
             // VoiceDisplayFold and having the rail quietly keep saying "Preparing voice" about it, which is

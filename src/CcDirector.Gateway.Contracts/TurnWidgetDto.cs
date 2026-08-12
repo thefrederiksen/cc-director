@@ -1,4 +1,4 @@
-namespace CcDirector.Gateway.Contracts;
+﻿namespace CcDirector.Gateway.Contracts;
 
 /// <summary>
 /// One card / "widget" in the structured Agent view, transport-friendly DTO.
@@ -58,7 +58,8 @@ public sealed class TurnsResponse
     public int LineCount { get; set; }
 
     /// <summary>
-    /// Status string: "ok" | "unsupported" | "no_session_id" | "no_jsonl" | "no_transcript" | "parse_error".
+    /// Status string: "ok" | "unsupported" | "no_session_id" | "no_jsonl" | "no_transcript" |
+    /// "empty_history" | "parse_error".
     ///
     /// ONLY "ok" means the conversation was actually read. Every other value is a FAILED read that still
     /// arrives as a SUCCESSFUL command result (the transport worked; the read did not), carrying an empty

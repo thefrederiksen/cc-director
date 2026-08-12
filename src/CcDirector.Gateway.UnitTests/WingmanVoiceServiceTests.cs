@@ -617,6 +617,61 @@ public sealed class WingmanVoiceServiceTests : IDisposable
         finally { try { Directory.Delete(dir, recursive: true); } catch { /* best-effort */ } }
     }
 
+    /// <summary>
+    /// The terminal skip is BOUNDED. Found in review: its first version was an unbounded skip whose only
+    /// escape was a Working transition, which the hosted push path observes on a 15-second sampler and can
+    /// miss entirely - so a stale terminal verdict would have survived forever and no later sweep could have
+    /// found the recovery. The sweep's question must therefore be time-limited, not "is it terminal".
+    /// </summary>
+    [Fact]
+    public void SweepSkip_IsBounded_AndAppliesOnlyToATerminalVerdict()
+    {
+        var svc = NewService();
+
+        // Nothing recorded: never skipped.
+        Assert.False(svc.ShouldSkipSweep(TenantId.Local, "s"));
+
+        // A RETRYABLE failure must not stand the sweep down at all - it is the thing the sweep exists to
+        // retry, and skipping it would recreate the permanent silence this whole change removes.
+        svc.NoteReadFailed(TenantId.Local, "s", HostedAiState.Retrying);
+        Assert.False(svc.ShouldSkipSweep(TenantId.Local, "s"));
+
+        // A TERMINAL one stands it down - for now.
+        svc.NoteReadFailed(TenantId.Local, "s", HostedAiState.Unavailable);
+        Assert.True(svc.ShouldSkipSweep(TenantId.Local, "s"));
+
+        // ...and the verdict itself is still reported while the skip holds, so the screen keeps saying why.
+        Assert.Equal(HostedAiState.Unavailable, svc.VoiceUnavailableFor(TenantId.Local, "s"));
+    }
+
+    /// <summary>
+    /// A terminal read verdict outranks a stale shared condition. Found in review: ranking the shared map
+    /// first let a stale "add credit" sit in front of "this agent has no conversation to read" - and for such
+    /// a session nothing clears the shared value, because it can never reach a successful synthesis. The
+    /// reader would be told to fix it with credit, which cannot fix it.
+    /// </summary>
+    [Fact]
+    public void ATerminalReadVerdict_OutranksAStaleAccountCondition()
+    {
+        var svc = NewService();
+        svc.NoteUnavailableForTest(TenantId.Local, "s", HostedAiState.NeedsCredits);
+        svc.NoteReadFailed(TenantId.Local, "s", HostedAiState.Unavailable);
+
+        Assert.Equal(HostedAiState.Unavailable, svc.VoiceUnavailableFor(TenantId.Local, "s"));
+    }
+
+    [Fact]
+    public void ARetryableReadVerdict_StillYieldsToAStandingAccountCondition()
+    {
+        // The other direction, unchanged: "add credit" is the more actionable and the more certain of the
+        // two, and a read that merely has not answered yet says nothing that should displace it.
+        var svc = NewService();
+        svc.NoteUnavailableForTest(TenantId.Local, "s", HostedAiState.NeedsCredits);
+        svc.NoteReadFailed(TenantId.Local, "s", HostedAiState.Retrying);
+
+        Assert.Equal(HostedAiState.NeedsCredits, svc.VoiceUnavailableFor(TenantId.Local, "s"));
+    }
+
     [Fact]
     public void ANewTurnReopensTheRead()
     {

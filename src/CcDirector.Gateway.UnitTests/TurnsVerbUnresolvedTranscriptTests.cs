@@ -119,9 +119,42 @@ public sealed class TurnsVerbUnresolvedTranscriptTests
 
             var resp = Read(sm, session);
 
-            Assert.NotEqual("ok", resp.Status);                    // the false success is gone...
-            Assert.Contains(resp.Status, new[] { "empty_history", "no_transcript" });
+            // Pinned to the EXACT status, not "anything but ok". Accepting either value would have passed
+            // just as happily on the no_transcript branch and proved nothing about the one under test.
+            Assert.Equal("empty_history", resp.Status);
+            Assert.False(string.IsNullOrWhiteSpace(resp.Error));
             Assert.Empty(resp.Widgets);
+        }
+        finally { sm.Dispose(); }
+    }
+
+    /// <summary>
+    /// CLAUDE CODE TOO - the agent this verb runs for most often, and the one the first version of this rule
+    /// left out (found in review). A transcript file that EXISTS but parses to nothing is a read that
+    /// produced no conversation, not a conversation that was read, and stamping "ok" on it is the exact
+    /// false success this change exists to remove.
+    /// </summary>
+    [Fact]
+    public void Turns_ClaudeTranscriptThatExistsButIsEmpty_ReportsEmptyHistory_NotOk()
+    {
+        var (sm, session) = NewSession();
+        var claudeId = Guid.NewGuid();
+        try
+        {
+            // Put a REAL, empty transcript exactly where the reader will look for it, so the branch under
+            // test is the one that parses a present file - not the no_jsonl branch above it.
+            session.ClaudeSessionId = claudeId.ToString();
+            var jsonl = Core.Claude.ClaudeSessionReader.GetJsonlPath(session.ClaudeSessionId, session.RepoPath);
+            Directory.CreateDirectory(Path.GetDirectoryName(jsonl)!);
+            File.WriteAllText(jsonl, "");
+            try
+            {
+                var resp = Read(sm, session);
+
+                Assert.Equal("empty_history", resp.Status);
+                Assert.Empty(resp.Widgets);
+            }
+            finally { try { File.Delete(jsonl); } catch { /* best-effort */ } }
         }
         finally { sm.Dispose(); }
     }

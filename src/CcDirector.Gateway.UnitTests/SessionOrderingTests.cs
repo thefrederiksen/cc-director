@@ -563,11 +563,19 @@ public sealed class SessionOrderingTests
     [Theory]
     [InlineData("ready", "Voice ready")]
     [InlineData("off", "Voice off")]
+    [InlineData("working", "Agent is working")]
     public void StateLabel_VoiceHoldWithAVerdictThatCannotHonestlyReachHere_KeepsTheOldWords(string kind, string label)
     {
-        // These two cannot honestly co-occur with the yellow hold (it runs only for a session with no audio
-        // that is in voice mode). If one ever does, the safe answer is the old behaviour - never a rail
-        // reading "Voice ready" beside a yellow dot, which is a row contradicting itself.
+        // These three cannot honestly co-occur with the yellow hold (it runs only for a voice-mode session
+        // with no audio that is WAITING, and StateLabel returns "Working" above this arm for anything
+        // actually working). If one ever does arrive, the safe answer is the old behaviour - never a rail
+        // reading "Voice ready" or "Agent is working" beside a yellow dot on a session doing neither, which
+        // is a row contradicting itself.
+        //
+        // HONEST NOTE ON WHAT THESE PROVE: the "ready" and "off" rows also pass on the parent commit, so
+        // they are REGRESSION GUARDS on retained behaviour rather than evidence for the inversion - the
+        // inversion itself is proved by the future-kind test above. The "working" row is the discriminating
+        // one: the first version of the inverted list omitted it, so it renders "Agent is working" there.
         var s = VoiceHoldingSession(kind, label);
         Assert.Equal("Preparing voice", SessionOrdering.StateLabel(s));
     }

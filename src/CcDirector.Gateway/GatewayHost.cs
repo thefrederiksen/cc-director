@@ -1989,14 +1989,20 @@ public sealed class GatewayHost : IAsyncDisposable
                 {
                     if (generated >= 3) break;                       // gentle on the serialized brain (global cap)
                     if (vs.HasVoice(tenant, sid)) continue;          // already cached, nothing to do
-                    // A session whose agent exposes NO conversation history will never become readable, so
-                    // re-reading it every cycle buys nothing and is not free: this pass generates at most
-                    // three per cycle across all tenants, and a handful of such sessions can hold those
-                    // slots and starve the sessions that would actually produce audio (found in review).
-                    // Its screen already says "Voice unavailable" from the terminal state the read recorded,
-                    // so nothing is hidden by skipping it. A new turn clears that state (OnSessionWorking),
-                    // which is what lets a session back in if it ever does start exposing a conversation.
-                    if (vs.ReadFailedFor(tenant, sid) == Core.HostedAi.HostedAiState.Unavailable) continue;
+                    // A session whose agent exposes NO conversation history will not become readable by being
+                    // asked again immediately, and asking is not free: this pass generates at most three per
+                    // cycle across ALL tenants, so a handful of such sessions can hold those slots and starve
+                    // the sessions that would actually produce audio (found in review). Its screen already
+                    // says "Voice unavailable" from the terminal verdict the read recorded, so nothing is
+                    // hidden by standing down for a while.
+                    //
+                    // BOUNDED, NEVER PERMANENT. The first version of this skip was an unbounded `continue`
+                    // whose only escape was the Working transition - which on the hosted push path is
+                    // observed by TurnEndWatcher's 15-second sampler and can be missed entirely by a quick
+                    // turn. A stale terminal verdict would then have survived forever, and unlike before the
+                    // skip existed, no later sweep could have found the recovery. ShouldSkipSweep carries its
+                    // own revalidation deadline, so the read happens again on its own (found in review).
+                    if (vs.ShouldSkipSweep(tenant, sid)) continue;
                     var located = PushedSessions.TryLocate(tenant, sid, stale);
                     if (located is not { } loc) continue;            // not owned by any of this tenant's directors
                     var director = Registry.Get(tenant, loc.DirectorId);

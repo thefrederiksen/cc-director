@@ -59,6 +59,30 @@ public sealed class WingmanVoiceService
     /// row. This is the in-memory twin of the per-tenant directory on disk: the isolation is the container,
     /// not a check performed at the point of read.
     /// </summary>
+    /// <summary>
+    /// What the last transcript read recorded, and WHEN IT STOPS BEING TAKEN ON TRUST.
+    ///
+    /// The deadline exists because a terminal read verdict is a claim about the world that can go stale, and
+    /// the sweep acts on it by SKIPPING the session. Found in review: the first version of that skip was an
+    /// unbounded `continue` whose only escape was <see cref="OnSessionWorking"/> - and on the hosted push
+    /// path that clear is driven by TurnEndWatcher's 15-second sampler, which the codebase already documents
+    /// as a racy sampled edge (see the note in GenerateOnceAsync about a Working transition falling between
+    /// two samples). A session whose turn was quick enough to be missed would have kept a stale terminal
+    /// marker forever, and - unlike before the skip existed - no later sweep could have discovered the
+    /// recovery. A Director update that ADDS a history provider is exactly when that would bite.
+    ///
+    /// So the skip is time-bounded rather than permanent: it saves the repeated work that starves the
+    /// sweep's small per-cycle budget, and it still re-reads on its own. Recovery no longer depends on
+    /// catching an edge.
+    /// </summary>
+    private readonly record struct ReadFailure(HostedAiState State, DateTime RevalidateAfterUtc);
+
+    /// <summary>How long a TERMINAL read verdict ("this agent exposes no conversation history") is taken on
+    /// trust before the sweep reads once more to check it is still true. Long enough that a handful of such
+    /// sessions cannot dominate the three generations a cycle allows; short enough that an agent which gains
+    /// a history provider is picked up without anyone intervening.</summary>
+    private static readonly TimeSpan TerminalReadRevalidateAfter = TimeSpan.FromMinutes(10);
+
     private sealed class TenantVoiceState
     {
         public readonly ConcurrentDictionary<string, byte> VoiceSessions = new();          // sid -> marker
@@ -85,7 +109,7 @@ public sealed class WingmanVoiceService
         /// fact, the account and provider states keep theirs, and <see cref="VoiceUnavailableFor"/> decides
         /// precedence in ONE place.
         /// </summary>
-        public readonly ConcurrentDictionary<string, HostedAiState> ReadFailed = new();
+        public readonly ConcurrentDictionary<string, ReadFailure> ReadFailed = new();
     }
 
     private readonly WingmanTranslator _translator;
@@ -657,8 +681,15 @@ public sealed class WingmanVoiceService
     public HostedAiState? VoiceUnavailableFor(TenantId tenant, string sid)
     {
         var state = StateFor(tenant);
+        var read = state.ReadFailed.TryGetValue(sid, out var r) ? r.State : (HostedAiState?)null;
+        // A TERMINAL read verdict outranks EVERYTHING. Found in review: ranking the shared map first meant a
+        // stale NeedsCredits - or a stale model-leg Retrying - could sit in front of "this agent has no
+        // conversation to read", and for such a session nothing clears the shared value, because it can never
+        // reach a successful synthesis. The reader would be told to add credit to fix a problem credit cannot
+        // fix. No account or provider action makes an unreadable transcript readable, so this fact wins.
+        if (read == HostedAiState.Unavailable) return HostedAiState.Unavailable;
         if (state.Unavailable.TryGetValue(sid, out var s)) return s;
-        return state.ReadFailed.TryGetValue(sid, out var r) ? r : (HostedAiState?)null;
+        return read;
     }
 
     /// <summary>
@@ -668,7 +699,12 @@ public sealed class WingmanVoiceService
     /// of agent (this agent exposes no conversation history at all). Kept apart from the account / provider
     /// state so neither overwrites the other - see <c>TenantVoiceState.ReadFailed</c>.
     /// </summary>
-    public void NoteReadFailed(TenantId tenant, string sid, HostedAiState state) => StateFor(tenant).ReadFailed[sid] = state;
+    public void NoteReadFailed(TenantId tenant, string sid, HostedAiState state)
+        => StateFor(tenant).ReadFailed[sid] = new ReadFailure(
+            state,
+            // Only a TERMINAL verdict is taken on trust for a while; a retryable one is re-read next cycle,
+            // so its deadline is already past.
+            state == HostedAiState.Unavailable ? DateTime.UtcNow + TerminalReadRevalidateAfter : DateTime.MinValue);
 
     /// <summary>The transcript read answered, so whatever the last failed read recorded is over. Clears ONLY
     /// the read's own fact: a model timeout, a rate limit, or a standing account condition are all things a
@@ -678,7 +714,17 @@ public sealed class WingmanVoiceService
     /// <summary>What the last transcript read recorded, or null when it answered. Exposed so the voice sweep
     /// can leave a session whose agent will NEVER have a conversation out of its per-cycle budget.</summary>
     public HostedAiState? ReadFailedFor(TenantId tenant, string sid)
-        => StateFor(tenant).ReadFailed.TryGetValue(sid, out var s) ? s : (HostedAiState?)null;
+        => StateFor(tenant).ReadFailed.TryGetValue(sid, out var s) ? s.State : (HostedAiState?)null;
+
+    /// <summary>
+    /// True when the voice sweep should leave this session alone THIS CYCLE: the last read said the agent
+    /// exposes no conversation history at all, and that verdict has not yet come up for revalidation. It is a
+    /// bounded skip, never a permanent one - see <see cref="ReadFailure"/> for why an unbounded one wedged.
+    /// </summary>
+    public bool ShouldSkipSweep(TenantId tenant, string sid)
+        => StateFor(tenant).ReadFailed.TryGetValue(sid, out var s)
+           && s.State == HostedAiState.Unavailable
+           && DateTime.UtcNow < s.RevalidateAfterUtc;
 
     /// <summary>
     /// True when this session's latest turn has NO assistant text reply to read aloud - it is waiting for
