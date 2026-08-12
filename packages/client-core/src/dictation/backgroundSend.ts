@@ -218,7 +218,7 @@ export async function backgroundTranscribeAndSend(
     sourceBytes,
     captureWarning,
     surface: sendSurface,
-    // WHICH ACCOUNT RECORDED THIS (devthrottle_internal #1512). Stamped at record time, because the
+    // WHICH ACCOUNT RECORDED THIS (devthrottle_internal #1509). Stamped at record time, because the
     // upload happens later and authenticates as whoever is active THEN - see resumePendingDictations.
     accountId: activeAccount()?.id,
     before: hooks.composeParts?.before ?? "",
@@ -314,7 +314,7 @@ export async function resumePendingDictations(): Promise<void> {
   // re-publish their status so the strip and roster still show them after a reopen, but never re-drive them. A
   // dropped clip especially - its upload id carries a permanent moved-on tombstone, so re-driving it could only
   // be dropped again, and re-publishing is what keeps a lost dictation visible instead of vanishing on reload.
-  // A CLIP BELONGS TO THE ACCOUNT THAT RECORDED IT (devthrottle_internal #1512). This store is one
+  // A CLIP BELONGS TO THE ACCOUNT THAT RECORDED IT (devthrottle_internal #1509). This store is one
   // IndexedDB database per origin, shared by every account on the browser, and this resume runs on load
   // authenticating as whichever account is active NOW. Driving another account's clip would send the
   // person's own voice - and the text it becomes - into the wrong tenant.

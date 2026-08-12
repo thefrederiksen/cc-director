@@ -173,7 +173,7 @@ export function ensureGatewayCookie(): void {
   document.cookie = `cc-gateway-token=${encodeURIComponent(token)}; path=/; SameSite=Lax; Max-Age=${oneYearSeconds}`;
 }
 
-// THE COOKIE IS HttpOnly, SO ONLY THE SERVER CAN MOVE IT (devthrottle_internal #1513).
+// THE COOKIE IS HttpOnly, SO ONLY THE SERVER CAN MOVE IT (devthrottle_internal #1509).
 //
 // GatewayTokenCookie writes cc-gateway-token with HttpOnly set, which means a document.cookie write or
 // delete from this side is silently IGNORED - no error, no effect, and nothing in a test would notice.
@@ -280,7 +280,7 @@ export function resolveSignInTarget(current: SignInLocation): string {
 //   401 after the person has switched to B, and deleting the active account would then remove B - a
 //   perfectly good login - while leaving the actually-revoked A in place. The next poll would then take
 //   out A too, so one revoked key could sign the browser out of two valid accounts
-//   (devthrottle_internal #1513).
+//   (devthrottle_internal #1509).
 function onUnauthorized(rejectedKey: string): void {
   const account = listAccounts().find((a) => a.deviceKey === rejectedKey);
   // The rejected credential is no longer stored - it was already removed, or the person has moved on.

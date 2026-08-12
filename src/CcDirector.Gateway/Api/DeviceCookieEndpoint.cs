@@ -6,7 +6,7 @@ using Microsoft.AspNetCore.Routing;
 namespace CcDirector.Gateway.Api;
 
 /// <summary>
-/// <c>POST</c> and <c>DELETE /account/device-cookie</c> (devthrottle_internal #1513): move the
+/// <c>POST</c> and <c>DELETE /account/device-cookie</c> (devthrottle_internal #1509): move the
 /// <c>cc-gateway-token</c> cookie onto the calling account, or take it away.
 ///
 /// WHY THIS HAS TO BE A SERVER ROUTE. The cookie is written <c>HttpOnly</c>

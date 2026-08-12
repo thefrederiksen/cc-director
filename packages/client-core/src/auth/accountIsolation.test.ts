@@ -1,4 +1,4 @@
-// Account ISOLATION (devthrottle_internal #1512, #1513) - the review findings that a text assertion
+// Account ISOLATION (devthrottle_internal #1509) - the review findings that a text assertion
 // could never have caught, because in every one of them the screen looks right.
 //
 // The shape they share: local storage, the IndexedDB queues and the cc-gateway-token cookie are all

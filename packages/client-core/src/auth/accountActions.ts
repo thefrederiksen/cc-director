@@ -1,4 +1,4 @@
-// Switching and signing out (devthrottle_internal #1507, #1509, #1513). accountStore owns the STORAGE;
+// Switching and signing out (devthrottle_internal #1507, #1509). accountStore owns the STORAGE;
 // this owns what the running app and the SERVER have to do about a change of identity, which is more
 // than moving a pointer.
 //
