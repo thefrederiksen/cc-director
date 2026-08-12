@@ -23,6 +23,8 @@
 // authHeaders(), like every other client-core Gateway call.
 
 import { authHeaders } from "../api/client";
+import { getInstallId } from "../auth/deviceKey";
+import { listAccounts } from "../auth/accountStore";
 import {
   getRecording,
   listChunks,
@@ -285,8 +287,25 @@ async function drivePass(recordingId: string, onProgress?: () => void): Promise<
  */
 export async function resumePendingRecordingUploads(onProgress?: () => void): Promise<void> {
   const all = await listRecordings();
+  // A RECORDING BELONGS TO THE ACCOUNT THAT MADE IT (devthrottle_internal #1512). This store is one
+  // IndexedDB database per ORIGIN, so two accounts on one browser share it, while the upload
+  // authenticates as whichever account is ACTIVE. Without this filter, recording something with no
+  // connection on one account and then switching would upload that audio into the OTHER account's
+  // tenant on the next load - the person's own voice, filed under the wrong identity, and nothing on
+  // screen would say so.
+  //
+  // The owner is already on the row: deviceId is the install id, and every account now carries its own.
+  // A recording belonging to another account is LEFT ALONE rather than dropped - it goes up when that
+  // account is active again, which is what the durable store promises. A row with no deviceId predates
+  // this and is driven as before.
+  // Inert while this browser holds ONE account (the overwhelming case, and every case before #1509):
+  // there is no other account a recording could belong to, so nothing is withheld. The filter only
+  // starts excluding once a second account exists and the question becomes answerable.
+  const single = listAccounts().length <= 1;
+  const mine = getInstallId();
   for (const rec of all) {
     if (!needsUpload(rec.state, rec.completed)) continue;
+    if (!single && rec.deviceId && rec.deviceId !== mine) continue;
     await driveRecordingUpload(rec.recordingId, onProgress);
   }
 }

@@ -59,7 +59,7 @@ describe("a browser with one account", () => {
     render(<AccountsPanel onAddAccount={() => {}} />);
 
     expect(screen.getByRole("button", { name: "Add account" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: /Sign out of personal@example.com/ })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Sign out" })).toBeTruthy();
   });
 
   it("does NOT offer sign out of all - there is only one", () => {
@@ -71,7 +71,7 @@ describe("a browser with one account", () => {
   it("NEVER signs out on the first tap - it asks first", () => {
     render(<AccountsPanel onAddAccount={() => {}} />);
 
-    fireEvent.click(screen.getByRole("button", { name: /Sign out of personal@example.com/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Sign out" }));
 
     expect(signOutAccount).not.toHaveBeenCalled();
     expect(screen.getByText(/You will need to sign in through devthrottle.com/i)).toBeTruthy();
@@ -80,13 +80,25 @@ describe("a browser with one account", () => {
   it("signs out on the confirmation, and can be backed out of", () => {
     render(<AccountsPanel onAddAccount={() => {}} />);
 
-    fireEvent.click(screen.getByRole("button", { name: /Sign out of personal@example.com/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Sign out" }));
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
     expect(signOutAccount).not.toHaveBeenCalled();
 
-    fireEvent.click(screen.getByRole("button", { name: /Sign out of personal@example.com/ }));
     fireEvent.click(screen.getByRole("button", { name: "Sign out" }));
+    fireEvent.click(screen.getByRole("button", { name: "Yes, sign out" }));
     expect(signOutAccount).toHaveBeenCalledTimes(1);
+  });
+
+  it("replaces the actions with the question, and the committing button answers it", () => {
+    render(<AccountsPanel onAddAccount={() => {}} />);
+    fireEvent.click(screen.getByRole("button", { name: "Sign out" }));
+
+    // The trigger is GONE while the question is up - the actions are replaced, not stacked - so exactly
+    // one sign-out control is on screen and it is the one that commits. It reads as an answer rather
+    // than as the same button appearing twice.
+    expect(screen.getAllByRole("button", { name: /sign out/i })).toHaveLength(1);
+    expect(screen.getByRole("button", { name: "Yes, sign out" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Add account" })).toBeNull();
   });
 
   it("hands Add account back to the shell, which owns the sign-in route", () => {
@@ -138,7 +150,7 @@ describe("a browser with two accounts", () => {
   it("promises the OTHER account survives - the outcome that differs from a single-login sign-out", () => {
     render(<AccountsPanel onAddAccount={() => {}} />);
 
-    fireEvent.click(screen.getByRole("button", { name: /Sign out of work@example.com/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Sign out of this account" }));
 
     expect(screen.getByText(/You stay signed in to your other account/i)).toBeTruthy();
   });
@@ -146,18 +158,18 @@ describe("a browser with two accounts", () => {
   it("offers signing out of all of them, and warns that each needs signing in again", () => {
     render(<AccountsPanel onAddAccount={() => {}} />);
 
-    fireEvent.click(screen.getByRole("button", { name: /Sign out of all accounts/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Sign out of all" }));
     expect(signOutAllAccounts).not.toHaveBeenCalled();
     expect(screen.getByText(/again for each one/i)).toBeTruthy();
 
-    fireEvent.click(screen.getByRole("button", { name: "Sign out" }));
+    fireEvent.click(screen.getByRole("button", { name: "Yes, sign out" }));
     expect(signOutAllAccounts).toHaveBeenCalledTimes(1);
   });
 
   it("says the device stays on the account at devthrottle.com, so a sign-out is not read as a revoke", () => {
     render(<AccountsPanel onAddAccount={() => {}} />);
 
-    fireEvent.click(screen.getByRole("button", { name: /Sign out of work@example.com/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Sign out of this account" }));
 
     expect(screen.getByText(/stays on your account at devthrottle.com/i)).toBeTruthy();
   });

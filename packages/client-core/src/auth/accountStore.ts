@@ -57,6 +57,30 @@ function announce(): void {
   for (const listener of listeners) listener();
 }
 
+// ANOTHER TAB CAN CHANGE WHO YOU ARE (devthrottle_internal #1513). localStorage is shared across every
+// tab on this origin, but only the tab that ran the switch reloads - so a second tab went on showing
+// account A's name and A's roster while its very next call read the shared pointer and authenticated as
+// B. That is the work-versus-personal mis-send the hard reload was supposed to make impossible,
+// happening in the window the reload does not cover.
+//
+// The `storage` event fires only in the OTHER tabs, which is exactly the set that needs to know. A
+// change to the active pointer is an identity change and the tab reloads; a change to the list alone
+// (an account added or renamed elsewhere) only re-renders, because the identity still holds.
+if (typeof window !== "undefined") {
+  window.addEventListener("storage", (event) => {
+    if (event.key === null) {
+      // The whole origin's storage was cleared out from under us - there is no identity left to trust.
+      window.location.reload();
+      return;
+    }
+    if (event.key === ACTIVE_KEY) {
+      window.location.reload();
+      return;
+    }
+    if (event.key === ACCOUNTS_KEY) announce();
+  });
+}
+
 function readRaw(key: string): string | null {
   try {
     return localStorage.getItem(key);
@@ -124,11 +148,21 @@ function persist(accounts: StoredAccount[], activeId: string): void {
   if (activeId) writeRaw(ACTIVE_KEY, activeId);
   else deleteRaw(ACTIVE_KEY);
 
-  // Keep the previous bundle's single-key store pointing at whichever account is active. See the note
-  // at the top of this file: this is a rollout mirror, not a credential this code reads.
+  // Keep the previous bundle's single-key store pointing at whichever account is active. See the note at
+  // the top of this file: this is a rollout mirror, not a credential this code reads.
+  //
+  // THE KEY AND THE INSTALL ID MOVE TOGETHER. Mirroring only the key left the pair MISMATCHED after a
+  // switch - the old bundle would read account B's device key beside account A's install id, and enroll
+  // or file a recording as if B were A's device row. They are one identity; a mirror that copies half of
+  // it is worse than no mirror, because the halves are individually plausible.
   const active = accounts.find((a) => a.id === activeId);
-  if (active) writeRaw(LEGACY_DEVICE_KEY, active.deviceKey);
-  else deleteRaw(LEGACY_DEVICE_KEY);
+  if (active) {
+    writeRaw(LEGACY_DEVICE_KEY, active.deviceKey);
+    writeRaw(LEGACY_INSTALL_KEY, active.installId);
+  } else {
+    deleteRaw(LEGACY_DEVICE_KEY);
+    deleteRaw(LEGACY_INSTALL_KEY);
+  }
 }
 
 /**
@@ -159,10 +193,35 @@ function newId(): string {
   return crypto.randomUUID();
 }
 
-/** Every account enrolled on this browser, in the order they were added. */
+/** Where an unreadable account list is kept instead of being overwritten. See listAccounts. */
+const DAMAGED_KEY = "cc.accounts.damaged";
+
+/**
+ * Every account enrolled on this browser, in the order they were added.
+ *
+ * MIGRATION RUNS ONLY WHEN THERE IS NO LIST AT ALL. An earlier version keyed that decision on the list
+ * being EMPTY, which is the same thing right up until the list is damaged: a `cc.accounts` value that
+ * would not parse read as zero accounts, migration then adopted the legacy single key, and persisting
+ * that one account OVERWROTE the damaged value - permanently destroying every inactive account's key,
+ * including ones that might still have been recoverable by hand. An absent list and an unreadable list
+ * are different states and must not share a code path.
+ *
+ * A damaged value is moved aside rather than deleted, so nothing this code could not read is thrown
+ * away by this code. The person signs in again, which writes a clean list.
+ */
 export function listAccounts(): StoredAccount[] {
-  const stored = parseAccounts(readRaw(ACCOUNTS_KEY));
+  const raw = readRaw(ACCOUNTS_KEY);
+  const stored = parseAccounts(raw);
   if (stored.length > 0) return stored;
+
+  if (raw) {
+    // A list EXISTS and yielded nothing usable. Do not migrate over it, and do not delete it.
+    if (readRaw(DAMAGED_KEY) === null) writeRaw(DAMAGED_KEY, raw);
+    deleteRaw(ACCOUNTS_KEY);
+    deleteRaw(ACTIVE_KEY);
+    return [];
+  }
+
   return migrateLegacy();
 }
 
@@ -192,17 +251,50 @@ export function setActiveAccount(id: string): boolean {
 }
 
 /**
+ * Which stored entry a fresh enrollment REPLACES, or undefined to append a new one.
+ *
+ * Two rules, and the second is the one that was missing:
+ *
+ *  1. Same email, compared case-insensitively. Addresses are not case-sensitive in practice and the
+ *     Gateway is not guaranteed to hand back the same casing twice, so an exact match would let
+ *     "Soren@..." and "soren@..." become two rows for one account.
+ *  2. THE MIGRATED ACCOUNT. Migration deliberately stores email: null, because a browser upgrading from
+ *     the single-key store has no identity to record. Matching on email alone therefore never
+ *     recognised it, so the very first person to re-sign-in on the account they were already using got
+ *     a SECOND entry and a second device row - which is the one upgrade path everybody takes. An
+ *     identity-less entry is adopted when it is unambiguous: exactly one exists, and nothing matched by
+ *     email. Two of them is ambiguous and appends instead, because guessing which is worse than a
+ *     duplicate the Accounts screen can remove.
+ */
+function findExisting(accounts: StoredAccount[], email: string | null): StoredAccount | undefined {
+  // No idea who just signed in, so no basis to claim they are anyone already here. Append. Collapsing
+  // two unidentified enrollments into one entry would DESTROY a device key - the case that matters is a
+  // self-host Gateway, where identity is often unresolvable and two accounts would silently become one.
+  if (!email) return undefined;
+
+  const wanted = email.toLowerCase();
+  const byEmail = accounts.find((a) => a.email !== null && a.email.toLowerCase() === wanted);
+  if (byEmail) return byEmail;
+
+  // Nothing matched by email, and exactly one stored account has no identity at all. That is the
+  // migrated entry - it is the one shape that arrives without an email, because a browser upgrading
+  // from the single-key store had nothing to record - and this sign-in has just told us who it is. Two
+  // identity-less entries is ambiguous, so it appends: a duplicate the Accounts screen can remove beats
+  // a guess that overwrites the wrong key.
+  const identityLess = accounts.filter((a) => a.email === null);
+  return identityLess.length === 1 ? identityLess[0] : undefined;
+}
+
+/**
  * Record a freshly-enrolled account and make it active.
  *
- * An account already stored under the same email is REPLACED rather than appended: signing in again on
+ * An account already stored for the same identity is REPLACED rather than appended: signing in again on
  * an account you already hold (after a revoke, or just to refresh it) means one entry with a new key,
- * never a second identical row in the switcher. Dedupe is by email because that is the only identity
- * the Gateway hands back; when it could not resolve one the entry is appended, and the Accounts screen
- * is where a duplicate gets removed.
+ * never a second identical row in the switcher. See findExisting for what counts as the same identity.
  */
 export function addAccount(entry: { deviceKey: string; installId: string; email: string | null; label?: string }): StoredAccount {
   const accounts = listAccounts();
-  const existing = entry.email ? accounts.find((a) => a.email === entry.email) : undefined;
+  const existing = findExisting(accounts, entry.email);
 
   const account: StoredAccount = {
     id: existing?.id ?? newId(),
@@ -219,6 +311,24 @@ export function addAccount(entry: { deviceKey: string; installId: string; email:
   persist(next, account.id);
   announce();
   return account;
+}
+
+/**
+ * Attach an identity that arrived AFTER the account was stored (devthrottle_internal #1513).
+ *
+ * Enrollment writes the key immediately and looks up who it belongs to afterwards, so the account
+ * exists for a moment with no email. This fills that in. The label is only overwritten while it is
+ * still the positional placeholder - a name the person chose themselves is theirs to keep.
+ */
+export function nameAccount(id: string, email: string): void {
+  const accounts = listAccounts();
+  const next = accounts.map((a) =>
+    a.id === id
+      ? { ...a, email, label: /^Account \d+$/.test(a.label) ? email : a.label }
+      : a,
+  );
+  persist(next, activeAccount()?.id ?? "");
+  announce();
 }
 
 /** Give an account a name of its own in the switcher ("Work", "Personal"). */

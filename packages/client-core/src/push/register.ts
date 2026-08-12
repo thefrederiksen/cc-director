@@ -256,6 +256,35 @@ export async function disablePush(): Promise<void> {
 }
 
 /**
+ * Hand the browser's push subscription BACK from the account that is active right now
+ * (devthrottle_internal #1513), without unsubscribing the browser itself.
+ *
+ * A browser has exactly ONE push subscription for the origin, but the Gateway stores it per account.
+ * Startup registers whatever subscription exists under whichever account is active, so with two
+ * accounts the SAME endpoint ends up registered under both: the phone then receives pushes from an
+ * account the person is not looking at, those notifications overwrite each other under a shared tag,
+ * and tapping one opens whichever account happens to be active rather than the one that sent it.
+ *
+ * MUST be called BEFORE the active account changes - it authenticates as the outgoing account, which
+ * is the registration being released. The browser subscription is deliberately kept: the next load
+ * re-registers it under the incoming account (ensurePushSubscribed), so notifications follow the
+ * person rather than accumulating.
+ *
+ * Never throws. Losing a push registration must not be able to block a switch or a sign-out.
+ */
+export async function releasePushForCurrentAccount(): Promise<void> {
+  try {
+    if (!("serviceWorker" in navigator)) return;
+    const registration = await navigator.serviceWorker.ready;
+    const subscription = await registration.pushManager.getSubscription();
+    if (subscription === null) return;
+    await postUnsubscribe(subscription.endpoint);
+  } catch (err) {
+    console.warn("[push] releasing the subscription from the outgoing account failed:", err);
+  }
+}
+
+/**
  * Whether THIS browser currently has a live push subscription (permission granted AND a push manager
  * subscription present). Used to render the notifications toggle in its true state on load, so the
  * checkbox reflects reality rather than a guess. Returns false when push is unsupported.

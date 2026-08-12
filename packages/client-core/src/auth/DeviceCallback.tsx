@@ -16,7 +16,7 @@
 // effects (store the key, mirror the cookie, land on the route, surface errors).
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { addAccount, clearPendingInstallId, pendingInstallId } from "./accountStore";
+import { addAccount, clearPendingInstallId, nameAccount, pendingInstallId } from "./accountStore";
 import { enrollmentProfile, takeEnrollNext } from "./enrollRequest";
 import { runEnrollmentCallback } from "./enrollCallback";
 import { isGatewayNotSignedIn } from "../api/enroll";
@@ -75,19 +75,22 @@ export function DeviceCallback() {
             setMessage("Sign-in did not return a device key. Please try again.");
             return;
           case "enrolled": {
-            // Ask the Gateway who this brand-new key belongs to, so the account is labeled with the
-            // person's email rather than a position in a list. It is asked with THAT key, because the
-            // key is not the active one until addAccount stores it. Null is ordinary (a self-host
-            // Gateway with no resolvable identity, or a fresh tenant row that carries no email yet) and
-            // never blocks a sign-in that has already succeeded.
-            const identity = await getAccountStatusForKey(outcome.localKey);
-            if (cancelled) return;
-            addAccount({
-              deviceKey: outcome.localKey,
-              installId,
-              email: identity?.email ?? null,
-            });
+            // STORE THE KEY FIRST, BEFORE ANY OTHER NETWORK WORK. Enrollment has already succeeded here
+            // - the Gateway minted the key and changed the server cookie - so anything done before the
+            // key is written is a chance to lose it. Waiting on the identity lookup first meant that a
+            // hang (that call has no timeout), a closed tab, or a reload in the gap left the device
+            // enrolled server-side and ABSENT from the only store the app reads: back to the old
+            // account, or asked to sign in again, with a live device row the person never sees.
+            const account = addAccount({ deviceKey: outcome.localKey, installId, email: null });
             clearPendingInstallId();
+
+            // NOW ask who it belongs to, so the switcher shows an email instead of a position in a list.
+            // Asked with THAT key, since it is the one just enrolled. This is a LABEL, not a credential:
+            // a null answer is ordinary (a self-host Gateway with no resolvable identity, or a fresh
+            // tenant row carrying no email yet) and the account stands either way.
+            const identity = await getAccountStatusForKey(outcome.localKey);
+            if (identity?.email) nameAccount(account.id, identity.email);
+            if (cancelled) return;
             // Mirror the fresh key into the cc-gateway-token cookie right away, so the terminal
             // WebSocket and any hard navigation authenticate without waiting for the next full page load.
             ensureGatewayCookie();

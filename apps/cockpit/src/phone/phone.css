@@ -8,6 +8,10 @@
 
 .phone-card {
   margin-top: 1rem;
+  /* Shrinkable. The Cockpit keeps a fixed left rail plus its own main-pane padding, so a narrow window
+     leaves very little for content - this page needed horizontal scrolling and sat mostly off-screen
+     before the card and the code were allowed to shrink. */
+  min-width: 0;
   padding: 1.1rem 1.25rem;
   border: 1px solid var(--border, rgba(255, 255, 255, 0.14));
   border-radius: 12px;
@@ -22,10 +26,14 @@
 
 /* White plate behind the code, always - a QR is read as dark-on-light, and a dark theme painting the
    transparent PNG onto a dark surface produces a code that will not scan. */
+/* Square, capped at 200px, but never wider than the card it sits in - a hard 200px is what pushed the
+   code off-screen on a narrow window. */
 .phone-qr {
   display: block;
   width: 200px;
-  height: 200px;
+  max-width: 100%;
+  height: auto;
+  aspect-ratio: 1 / 1;
   padding: 10px;
   border-radius: 8px;
   background: #ffffff;
@@ -34,6 +42,7 @@
 
 .phone-qr-pending {
   width: 200px;
+  max-width: 100%;
   height: 200px;
   display: flex;
   align-items: center;
