@@ -86,4 +86,77 @@ public sealed class DisplayPushVoiceEnrichmentTests
 
         Assert.Equal("yellow", s.EffectiveColor);
     }
+
+    // ---------- The push seam carries the REASON, not just the readiness (issue #2576) ----------
+
+    /// <summary>
+    /// The two booleans say there is no audio; they cannot say WHY. Without the reason on the row,
+    /// <c>SessionOrdering.StateLabel</c> has nothing to render and falls back to "Preparing voice" - so the
+    /// desktop would claim a narration was in flight for a session that will never produce one, which is the
+    /// defect on the phone wearing a different surface. The push seam must therefore stamp the same
+    /// <c>VoiceUnavailable</c> and <c>VoiceDisplay</c> facts the roster stamps.
+    ///
+    /// Asserted on the LABEL, not on the stamped field: the point is that the reason reaches the words the
+    /// desktop renders. Asserting the field alone would pass even if the label never read it.
+    /// </summary>
+    [Fact]
+    public void PushSeam_WhenNothingToNarrate_LabelSaysSo_NotPreparingVoice()
+    {
+        var s = PushedVoiceSession(snapshotAudioReady: false);
+
+        GatewayHost.EnrichVoiceThenFoldForPush(
+            new List<SessionDto> { s },
+            voiceGeneratingFor: _ => false,
+            voiceAudioReadyFor: _ => false,
+            tenant: TenantId.Local,
+            needsYouStampFor: null,
+            snoozeRegistry: null,
+            voiceUnavailableFor: _ => null,
+            nothingToNarrateFor: _ => true);
+
+        Assert.Equal("yellow", s.EffectiveColor);                    // the hold is unchanged
+        Assert.Equal("nothingToNarrate", s.VoiceDisplay?.Kind);      // the reason rode the push
+        Assert.Equal("Nothing to read aloud", s.StateLabel);         // and reached the words
+    }
+
+    [Fact]
+    public void PushSeam_WhenVoiceServiceDown_LabelSaysSo_NotPreparingVoice()
+    {
+        var s = PushedVoiceSession(snapshotAudioReady: false);
+
+        GatewayHost.EnrichVoiceThenFoldForPush(
+            new List<SessionDto> { s },
+            voiceGeneratingFor: _ => false,
+            voiceAudioReadyFor: _ => false,
+            tenant: TenantId.Local,
+            needsYouStampFor: null,
+            snoozeRegistry: null,
+            voiceUnavailableFor: _ => Core.HostedAi.HostedAiState.ServiceDown,
+            nothingToNarrateFor: _ => false);
+
+        Assert.NotNull(s.VoiceUnavailable);                          // the roster's own fact, on the push row
+        Assert.Equal("yellow", s.EffectiveColor);
+        Assert.Equal("Voice service down", s.StateLabel);
+    }
+
+    /// <summary>The negative control: with no reason to give, the push seam still folds the genuine
+    /// "being made right now" case to the existing words. The new stamps add a reason; they do not
+    /// change what a session with nothing wrong says.</summary>
+    [Fact]
+    public void PushSeam_WhileGenerating_WithNoReason_StillSaysPreparingVoice()
+    {
+        var s = PushedVoiceSession(snapshotAudioReady: false);
+
+        GatewayHost.EnrichVoiceThenFoldForPush(
+            new List<SessionDto> { s },
+            voiceGeneratingFor: _ => true,
+            voiceAudioReadyFor: _ => false,
+            tenant: TenantId.Local,
+            needsYouStampFor: null,
+            snoozeRegistry: null,
+            voiceUnavailableFor: _ => null,
+            nothingToNarrateFor: _ => false);
+
+        Assert.Equal("Preparing voice", s.StateLabel);
+    }
 }

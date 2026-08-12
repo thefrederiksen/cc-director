@@ -1366,7 +1366,16 @@ public sealed class GatewayHost : IAsyncDisposable
                 // owning tenant so a session id shared across accounts keeps a per-tenant "waiting since".
                 tenant: _tenantPass.Current ?? TenantId.Local,
                 needsYouStampFor: (tenant, sid, isRed) => _needsYouClock.Stamp(tenant, sid, isRed),
-                snoozeRegistry: _snoozeRegistry),
+                snoozeRegistry: _snoozeRegistry,
+                // Same tenant guard as the two booleans above: an ambient tenant that cannot name a voice
+                // partition answers "no voice state at all" rather than throwing out of PushSnapshot.
+                voiceUnavailableFor: sid => _tenantPass.Current is { } t
+                    && Wingman.WingmanVoiceService.CanNameVoicePartition(t)
+                        ? _voiceService?.VoiceUnavailableFor(t, sid)
+                        : null,
+                nothingToNarrateFor: sid => _tenantPass.Current is { } t
+                    && Wingman.WingmanVoiceService.CanNameVoicePartition(t)
+                    && _voiceService?.NothingToNarrateFor(t, sid) == true),
             SendCommandAsync,
             currentScopeKey: () => _tenantPass.Current?.Value);
         // Mission Screen mission (Phase 1b, issue #1405): the mission-WHY store, at a Gateway-side file
@@ -1980,6 +1989,20 @@ public sealed class GatewayHost : IAsyncDisposable
                 {
                     if (generated >= 3) break;                       // gentle on the serialized brain (global cap)
                     if (vs.HasVoice(tenant, sid)) continue;          // already cached, nothing to do
+                    // A session whose agent exposes NO conversation history will not become readable by being
+                    // asked again immediately, and asking is not free: this pass generates at most three per
+                    // cycle across ALL tenants, so a handful of such sessions can hold those slots and starve
+                    // the sessions that would actually produce audio (found in review). Its screen already
+                    // says "Voice unavailable" from the terminal verdict the read recorded, so nothing is
+                    // hidden by standing down for a while.
+                    //
+                    // BOUNDED, NEVER PERMANENT. The first version of this skip was an unbounded `continue`
+                    // whose only escape was the Working transition - which on the hosted push path is
+                    // observed by TurnEndWatcher's 15-second sampler and can be missed entirely by a quick
+                    // turn. A stale terminal verdict would then have survived forever, and unlike before the
+                    // skip existed, no later sweep could have found the recovery. ShouldSkipSweep carries its
+                    // own revalidation deadline, so the read happens again on its own (found in review).
+                    if (vs.ShouldSkipSweep(tenant, sid)) continue;
                     var located = PushedSessions.TryLocate(tenant, sid, stale);
                     if (located is not { } loc) continue;            // not owned by any of this tenant's directors
                     var director = Registry.Get(tenant, loc.DirectorId);
@@ -3776,12 +3799,32 @@ public sealed class GatewayHost : IAsyncDisposable
         Func<string, bool> voiceAudioReadyFor,
         TenantId tenant,
         Func<TenantId, string, bool, DateTime?>? needsYouStampFor,
-        Snooze.SnoozeRegistry? snoozeRegistry)
+        Snooze.SnoozeRegistry? snoozeRegistry,
+        Func<string, Core.HostedAi.HostedAiState?>? voiceUnavailableFor = null,
+        Func<string, bool>? nothingToNarrateFor = null)
     {
         foreach (var s in sessions)
         {
             s.VoiceGenerating = voiceGeneratingFor(s.SessionId);
             s.VoiceAudioReady = voiceAudioReadyFor(s.SessionId);
+            // The REASON there is no voice, carried on the push exactly as the roster carries it. Without
+            // these two the pushed row holds only the two readiness booleans, so the desktop can be told
+            // "no audio" but never WHY - and SessionOrdering.VoiceHoldLabel, which renders the reason the
+            // Gateway already folded, has nothing to render and falls back to "Preparing voice" forever.
+            // The roster path stamps both (GatewayEndpoints); this is the same stamp so the two surfaces
+            // cannot say different things about one session. Null delegates leave the fields unset, which
+            // is the pre-existing behaviour and keeps every non-production caller compiling unchanged.
+            var unavailable = voiceUnavailableFor?.Invoke(s.SessionId);
+            if (unavailable is Core.HostedAi.HostedAiState reason)
+                s.VoiceUnavailable = HostedAi.HostedAiHttp.Dto(reason);
+            s.VoiceDisplay = Wingman.VoiceDisplayFold.Fold(
+                voiceMode: s.VoiceMode,
+                agentWorking: string.Equals(s.ActivityState, "Working", StringComparison.OrdinalIgnoreCase)
+                           || string.Equals(s.ActivityState, "Starting", StringComparison.OrdinalIgnoreCase),
+                hasAudio: s.VoiceAudioReady,
+                generating: s.VoiceGenerating,
+                unavailable: unavailable,
+                nothingToNarrate: nothingToNarrateFor?.Invoke(s.SessionId) ?? false);
         }
         Api.GatewayEndpoints.StampFleetRolesAndFold(sessions, sessions, needsYouStampFor, snoozeRegistry, tenant);
     }

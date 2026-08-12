@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Linq;
 using CcDirector.Gateway.Contracts;
 using Xunit;
@@ -493,6 +493,90 @@ public sealed class SessionOrderingTests
         var s = BrandNewVoiceSession();
         s.IsBrandNew = false;
         Assert.Equal("yellow", SessionOrdering.EffectiveColor(s));
+        Assert.Equal("Preparing voice", SessionOrdering.StateLabel(s));
+    }
+
+    // ---------- The voice hold's WORDS tell the truth (issue #2576) ----------
+
+    /// <summary>A waiting voice session with no audio, carrying the Gateway's folded voice verdict.</summary>
+    private static SessionDto VoiceHoldingSession(string kind, string label)
+    {
+        var s = BrandNewVoiceSession();
+        s.IsBrandNew = false;
+        s.VoiceDisplay = new VoiceDisplay { Kind = kind, Label = label };
+        return s;
+    }
+
+    /// <summary>
+    /// THE DEFECT: "Preparing voice" was the only thing the label could say about a session with no audio,
+    /// so a state that would NEVER become audio wore it indefinitely. On 11 August a session sat on it for
+    /// 48 minutes while the Gateway's own verdict on the same row read "Nothing to read aloud".
+    ///
+    /// The dot is unchanged - the hold is still yellow, by the 2026-07-19 ruling. Only the words move, and
+    /// they are the words VoiceDisplayFold already chose, so there is one answer and not two.
+    /// </summary>
+    [Theory]
+    [InlineData("nothingToNarrate", "Nothing to read aloud")]
+    [InlineData("serviceDown", "Voice service down")]
+    [InlineData("blocked", "Voice needs credit")]
+    [InlineData("retrying", "Voice on its way")]
+    [InlineData("notReady", "No narration yet")]
+    public void StateLabel_VoiceHoldWithAReason_SaysTheReason_NotPreparingVoice(string kind, string label)
+    {
+        var s = VoiceHoldingSession(kind, label);
+        Assert.True(SessionOrdering.IsVoicePreparing(s));           // the hold itself is untouched...
+        Assert.Equal("yellow", SessionOrdering.EffectiveColor(s));  // ...and so is the dot
+        Assert.Equal(label, SessionOrdering.StateLabel(s));         // only the words changed
+    }
+
+    [Fact]
+    public void StateLabel_VoiceHoldWhileGenuinelyPreparing_StillSaysPreparingVoice()
+    {
+        // The positive case the words were always right about: something IS being made.
+        var s = VoiceHoldingSession("preparing", "Voice on its way");
+        s.VoiceGenerating = true;
+        Assert.Equal("Preparing voice", SessionOrdering.StateLabel(s));
+    }
+
+    [Fact]
+    public void StateLabel_VoiceHoldWithNoVerdictOnTheRow_FallsBackToPreparingVoice()
+    {
+        // A row carrying no folded verdict (an older client, or a surface that does not stamp one) keeps the
+        // existing words. The label renders a verdict; it never invents one.
+        var s = BrandNewVoiceSession();
+        s.IsBrandNew = false;
+        s.VoiceDisplay = null;
+        Assert.Equal("Preparing voice", SessionOrdering.StateLabel(s));
+    }
+
+    [Fact]
+    public void StateLabel_VoiceHoldWithAVerdictKindAddedLater_RendersItsWords()
+    {
+        // A verdict added to VoiceDisplayFold later reaches the rail WITHOUT a second edit here. An earlier
+        // version of this rule kept an allow-list of known-good kinds and defaulted everything else back to
+        // "Preparing voice", which meant adding a voice state to the fold and having the rail quietly go on
+        // claiming a narration was in flight about it - a second rule wearing the shape of a default.
+        var s = VoiceHoldingSession("somethingAddedLater", "Some new words");
+        Assert.Equal("Some new words", SessionOrdering.StateLabel(s));
+    }
+
+    [Theory]
+    [InlineData("ready", "Voice ready")]
+    [InlineData("off", "Voice off")]
+    [InlineData("working", "Agent is working")]
+    public void StateLabel_VoiceHoldWithAVerdictThatCannotHonestlyReachHere_KeepsTheOldWords(string kind, string label)
+    {
+        // These three cannot honestly co-occur with the yellow hold (it runs only for a voice-mode session
+        // with no audio that is WAITING, and StateLabel returns "Working" above this arm for anything
+        // actually working). If one ever does arrive, the safe answer is the old behaviour - never a rail
+        // reading "Voice ready" or "Agent is working" beside a yellow dot on a session doing neither, which
+        // is a row contradicting itself.
+        //
+        // HONEST NOTE ON WHAT THESE PROVE: the "ready" and "off" rows also pass on the parent commit, so
+        // they are REGRESSION GUARDS on retained behaviour rather than evidence for the inversion - the
+        // inversion itself is proved by the future-kind test above. The "working" row is the discriminating
+        // one: the first version of the inverted list omitted it, so it renders "Agent is working" there.
+        var s = VoiceHoldingSession(kind, label);
         Assert.Equal("Preparing voice", SessionOrdering.StateLabel(s));
     }
 

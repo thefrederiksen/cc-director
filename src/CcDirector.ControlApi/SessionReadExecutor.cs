@@ -1,4 +1,4 @@
-using System.Linq;
+﻿using System.Linq;
 using System.Text;
 using CcDirector.Core.Agents;
 using CcDirector.Core.Claude;
@@ -107,10 +107,60 @@ internal sealed class SessionReadExecutor : ISessionCommandArea
                 return DirectorCommandResult.Success(SessionCommandExecutor.Serialize(resp));
             }
 
+            // AN UNRESOLVED TRANSCRIPT IS A FAILED READ, NOT AN EMPTY CONVERSATION.
+            //
+            // This branch used to stamp "ok" unconditionally. But SessionHistoryReader.ReadAll returns
+            // ConversationHistory.Empty whenever ResolveTranscriptPath returns null - which is exactly what
+            // the per-agent locators (PiSessionLocator, CodexRolloutLocator, GrokSessionLocator) do when they
+            // cannot find the session's transcript. So a Codex / Pi / Grok session whose transcript had not
+            // been located reported a SUCCESSFUL read of an EMPTY conversation, and the one field that could
+            // have told the caller otherwise said "ok".
+            //
+            // What that cost: voice narration reads this verb, sees no text widget, and records "there is
+            // nothing to read aloud" - a NON-failure that is never retried. A Pi session on worktrees/oc-8403
+            // sat silent for 48 minutes on 12 August with no error raised anywhere, and the roster showed it
+            // "Preparing voice" the whole time. See issue #2561.
+            //
+            // Gemini is the deliberate exception and must NOT be caught by this: it persists no transcript at
+            // all, so a null path is its normal state and its conversation is read from the session's own
+            // terminal buffer (see SessionHistoryReader.ReadAll). A null path for Gemini is honest; for every
+            // other agent here it means the transcript has not been found yet.
+            var transcriptPath = SessionHistoryReader.ResolveTranscriptPath(session);
+            if (transcriptPath is null && session.AgentKind != AgentKind.Gemini)
+            {
+                resp.Status = "no_transcript";
+                resp.Error = $"No transcript has been located yet for this {session.AgentKind} session.";
+                return DirectorCommandResult.Success(SessionCommandExecutor.Serialize(resp));
+            }
+
             var history = SessionHistoryReader.Read(session);
-            resp.JsonlPath = SessionHistoryReader.ResolveTranscriptPath(session);
+            resp.JsonlPath = transcriptPath;
             resp.LineCount = history.Messages.Count;
             resp.Widgets = ControlEndpoints.BuildTurnWidgetsFromHistory(history);
+
+            // A RESOLVED PATH IS NOT A PROVEN READ EITHER, and this is the other half of the same defect
+            // (found in review). Having a path only says where to look.
+            //
+            // It is at its sharpest for Copilot and OpenCode, whose "path" is a GLOBAL SQLite store rather
+            // than a per-session file: ResolveTranscriptPath hands back the store as soon as it exists,
+            // which says nothing about whether it holds a row for THIS session - and both readers answer an
+            // empty history for a store with no repository match AND for a database error they caught. A Pi,
+            // Codex or Grok transcript that resolves but holds no readable message lands in the same place.
+            //
+            // Stamping "ok" on any of those recreates exactly the false success this change exists to
+            // remove: the voice service would see no text, record the never-retried "nothing to read aloud",
+            // and the session would go silent with nothing raised. So an empty conversation gets its OWN
+            // status. It is deliberately NOT an error - a session that has genuinely not spoken yet is the
+            // ordinary case, and this status is retryable rather than terminal, because the very next turn
+            // makes it non-empty.
+            if (history.Messages.Count == 0)
+            {
+                resp.Status = "empty_history";
+                resp.Error = $"No conversation was read for this {session.AgentKind} session"
+                             + (transcriptPath is null ? "." : $" from {transcriptPath}.");
+                return DirectorCommandResult.Success(SessionCommandExecutor.Serialize(resp));
+            }
+
             resp.Status = "ok";
             return DirectorCommandResult.Success(SessionCommandExecutor.Serialize(resp));
         }
@@ -137,6 +187,19 @@ internal sealed class SessionReadExecutor : ISessionCommandArea
             var messages = StreamMessageParser.ParseFile(jsonl);
             resp.LineCount = messages.Count;
             resp.Widgets = WidgetBuilder.BuildFromMessages(messages);
+
+            // The SAME rule as the branch above, and it belongs here for the same reason (found in review:
+            // the first version applied it only to the non-Claude branch, leaving Claude Code - the agent
+            // this runs for most often - with exactly the false-success shape the change exists to remove).
+            // A transcript that exists but parses to nothing is not a conversation that was read; it is a
+            // read that produced none. Retryable, not terminal: the next turn writes into this same file.
+            if (messages.Count == 0)
+            {
+                resp.Status = "empty_history";
+                resp.Error = $"No conversation was read for this session from {jsonl}.";
+                return DirectorCommandResult.Success(SessionCommandExecutor.Serialize(resp));
+            }
+
             resp.Status = "ok";
             return DirectorCommandResult.Success(SessionCommandExecutor.Serialize(resp));
         }

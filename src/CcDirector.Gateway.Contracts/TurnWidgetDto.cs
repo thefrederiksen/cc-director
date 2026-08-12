@@ -1,4 +1,4 @@
-namespace CcDirector.Gateway.Contracts;
+﻿namespace CcDirector.Gateway.Contracts;
 
 /// <summary>
 /// One card / "widget" in the structured Agent view, transport-friendly DTO.
@@ -57,7 +57,17 @@ public sealed class TurnsResponse
     /// <summary>How many JSONL lines were parsed.</summary>
     public int LineCount { get; set; }
 
-    /// <summary>Status string: "ok" | "no_session_id" | "no_jsonl" | "parse_error".</summary>
+    /// <summary>
+    /// Status string: "ok" | "unsupported" | "no_session_id" | "no_jsonl" | "no_transcript" |
+    /// "empty_history" | "parse_error".
+    ///
+    /// ONLY "ok" means the conversation was actually read. Every other value is a FAILED read that still
+    /// arrives as a SUCCESSFUL command result (the transport worked; the read did not), carrying an empty
+    /// <see cref="Widgets"/> list. So a caller that looks only at the widgets cannot tell a failed read from
+    /// a session that genuinely has nothing to say - which is how voice narration went permanently silent on
+    /// unreadable sessions, recording "nothing to narrate" and never retrying (issue #2561). Check this
+    /// before drawing ANY conclusion from an empty widget list.
+    /// </summary>
     public string Status { get; set; } = "ok";
 
     /// <summary>Free-text error message if Status != "ok".</summary>
