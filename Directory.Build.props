@@ -1,4 +1,4 @@
-<Project>
+﻿<Project>
   <!--
     THE single source of truth for the CC Director product version.
 
@@ -16,7 +16,7 @@
       - UIs read the version from their assembly at runtime - never hardcode it.
   -->
   <PropertyGroup>
-    <Version>2.0.2</Version>
+    <Version>2.0.3</Version>
   </PropertyGroup>
   <!--
     THE MUTATION-PROOF PIN GUARD, linked into every test assembly in the repository.
