@@ -28,10 +28,13 @@ import { dirname, join } from "node:path";
 import { AccountsPanel } from "./AccountsPanel";
 import { addAccount, removeAllAccounts } from "./accountStore";
 
+// Resolving to a real result, for the reason spelled out in AccountsPanel.test.tsx: a stub resolving to
+// undefined makes the panel read .ok off nothing, and it throws after the assertion has passed - an
+// unhandled error the summary reports separately from the test count.
 vi.mock("./accountActions", () => ({
-  switchAccount: () => {},
-  signOutAccount: () => {},
-  signOutAllAccounts: () => {},
+  switchAccount: async () => {},
+  signOutAccount: async () => ({ ok: true as const }),
+  signOutAllAccounts: async () => ({ ok: true as const }),
 }));
 
 const HERE = dirname(fileURLToPath(import.meta.url));
