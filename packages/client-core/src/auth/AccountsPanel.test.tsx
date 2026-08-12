@@ -12,9 +12,15 @@ import { addAccount, removeAllAccounts } from "./accountStore";
 // accountActions ends every path in a hard navigation, which jsdom cannot perform. Stubbing the module
 // keeps these tests about the PANEL - what it offers and what it says - and leaves where it navigates to
 // accountActions itself.
+//
+// THE STUBS MUST RESOLVE TO A RESULT, exactly like the real actions do. A bare vi.fn() resolves to
+// undefined, and the panel then reads .ok off it - which throws ASYNCHRONOUSLY, after the assertion has
+// already passed. Vitest reports that as an unhandled error rather than a failing test, so the suite
+// prints "961 passed" beside "Errors 2" and a summary skimmed for failures alone reads as green. It
+// reached main that way, and the web job on main is what caught it.
 const switchAccount = vi.fn();
-const signOutAccount = vi.fn();
-const signOutAllAccounts = vi.fn();
+const signOutAccount = vi.fn(async () => ({ ok: true as const }));
+const signOutAllAccounts = vi.fn(async () => ({ ok: true as const }));
 vi.mock("./accountActions", () => ({
   switchAccount: (id: string) => switchAccount(id),
   signOutAccount: (id: string) => signOutAccount(id),
