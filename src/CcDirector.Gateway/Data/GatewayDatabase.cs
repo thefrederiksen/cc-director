@@ -1,4 +1,4 @@
-using CcDirector.Core.Storage;
+﻿using CcDirector.Core.Storage;
 using CcDirector.Core.Tenancy;
 using CcDirector.Core.Utilities;
 using Microsoft.Data.Sqlite;
@@ -66,7 +66,32 @@ public sealed class GatewayDatabase : IDisposable
     // timeout and no command timeout (see the note further down), so a single attempt can block past both
     // this window and the platform limit. That residual case is tracked separately as issue #2395; it is
     // not addressed here, and nothing in this file should be read as ruling it out.
-    private static readonly TimeSpan PostgresOpenRetryWindow = TimeSpan.FromSeconds(90);
+    //
+    // THE NINETY SECONDS ABOVE WAS CHOSEN ON A PREMISE THAT IS FALSE, AND 12 AUGUST DISPROVED IT (#2585).
+    //
+    // The reasoning was: give up well inside the platform's 230-second start limit, so the container exits
+    // on OUR terms rather than being timed out by the platform. That is worth doing only if exiting early
+    // is better than being timed out. It is not. The platform's own log shows it treats the two
+    // identically - a container that EXITS during site startup and one that never binds both end at
+    // "Failed to start site. Revert by stopping site." - and stopping the site tears down the healthy
+    // container that was serving traffic beside it. That is where the outage comes from, either way.
+    //
+    // So giving up early buys nothing and costs the remaining budget. On 12 August the container exited at
+    // 103.1 seconds (90 of retry plus boot) and the site was stopped, throwing away roughly 127 seconds in
+    // which the same database, on the same image, opened cleanly minutes later. Production was dark for
+    // 46.7 seconds.
+    //
+    // The window is therefore sized against the budget it actually has to fit inside, with headroom for
+    // the rest of boot and for binding the port afterwards: the healthy boot that day bound and answered
+    // the platform probe 21 seconds after the container started, database open included. There is no
+    // downside case. A database that is genuinely gone still fails - it just fails later, and the site was
+    // going to be stopped in that case regardless.
+    //
+    // THIS IS A MITIGATION, NOT THE FIX. The fix is to bind the port BEFORE the database work so that
+    // site startup never depends on PostgreSQL at all, which is #2383's first recommendation and is still
+    // unbuilt. This constant only widens the window in which a slow database can recover before the
+    // platform is asked to judge the startup. Do not read it as closing #2585.
+    private static readonly TimeSpan PostgresOpenRetryWindow = TimeSpan.FromSeconds(170);
     private const int PostgresOpenFirstDelayMs = 1_000;
     private const int PostgresOpenMaxDelayMs = 10_000;
 

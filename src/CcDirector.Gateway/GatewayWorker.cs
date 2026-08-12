@@ -1,4 +1,4 @@
-using CcDirector.Core.Utilities;
+﻿using CcDirector.Core.Utilities;
 using Microsoft.Extensions.Hosting;
 
 namespace CcDirector.Gateway;
@@ -59,6 +59,14 @@ public sealed class GatewayWorker : BackgroundService
     ///
     /// A container that EXITS is restarted. A container that is alive and silent is waited out and then
     /// takes the healthy one with it. So the failed start must end the process.
+    ///
+    /// THAT SECOND SENTENCE IS TRUE ONLY AFTER THE SITE HAS STARTED, and reading it as unconditional cost
+    /// an outage on 12 August (#2585). During SITE STARTUP the platform makes no such distinction: its own
+    /// log shows a container that exits and a container that never binds both reaching "Site container
+    /// terminated during site startup" and then "Failed to start site. Revert by stopping site." - and the
+    /// site stop tears down the healthy container serving beside it. Exiting is FASTER (103 seconds that
+    /// day rather than the full 230-second probe timeout) but it is not SAFER, and this comment implied it
+    /// was. The exit still belongs here; what does not belong is the belief that it removes the outage.
     ///
     /// Pure and internal so the policy is unit-testable without starting a Gateway or ending a test run.
     /// </summary>
