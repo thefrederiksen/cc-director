@@ -9,7 +9,8 @@
 import type { components } from "./schema";
 import type { SessionHistoryDto } from "../history/types";
 import { planUploadChunks } from "./chunking";
-import { getDeviceKey, clearDeviceKey } from "../auth/deviceKey";
+import { getDeviceKey } from "../auth/deviceKey";
+import { listAccounts, removeAccount } from "../auth/accountStore";
 import { publishDictationStatus } from "../dictation/status";
 import { reportGatewayReachable, reportGatewayUnreachable } from "../connection/health";
 
@@ -172,17 +173,58 @@ export function ensureGatewayCookie(): void {
   document.cookie = `cc-gateway-token=${encodeURIComponent(token)}; path=/; SameSite=Lax; Max-Age=${oneYearSeconds}`;
 }
 
-// Drop the mirrored cookie when the last account signs out (devthrottle_internal #1507). The cookie is
-// PERSISTENT (Max-Age one year), so without this a signed-out browser keeps a working credential on
-// disk for the cookie-authenticated resource loads - the terminal stream and the bare <img>/<iframe>
-// sources - long after the key it mirrors has been forgotten from storage. Signing out has to take the
-// credential with it everywhere it was put, not just where it was read from.
+// THE COOKIE IS HttpOnly, SO ONLY THE SERVER CAN MOVE IT (devthrottle_internal #1513).
 //
-// Switching accounts does NOT call this: ensureGatewayCookie overwrites the same name and path with the
-// newly active account's key.
-export function clearGatewayCookie(): void {
-  if (typeof document === "undefined") return;
-  document.cookie = "cc-gateway-token=; path=/; SameSite=Lax; Max-Age=0";
+// GatewayTokenCookie writes cc-gateway-token with HttpOnly set, which means a document.cookie write or
+// delete from this side is silently IGNORED - no error, no effect, and nothing in a test would notice.
+// The first version of the account switch and sign-out did exactly that and looked correct everywhere,
+// while in a real browser the cookie stayed on the previous account: the WebSockets and the bare
+// image/iframe loads that authenticate BY COOKIE, because they cannot carry a Bearer header, went on
+// running as an account the person had left or signed out of - for the cookie's full 30-day life.
+//
+// So both are server calls now (POST/DELETE /account/device-cookie), and both are AWAITED before the
+// hard navigation that follows them: a reload mid-flight would leave the cookie and the active account
+// disagreeing, which is the precise state this exists to prevent.
+//
+// ensureGatewayCookie above is left as it was. It is the enrollment-time path, where the Gateway's own
+// response has already set the cookie server-side, and its document.cookie write is a no-op wherever
+// that is true.
+
+/**
+ * Move the cookie onto the ACTIVE account, server-side. Sent with the active Bearer; the Gateway mirrors
+ * the credential it just authenticated, so this can only ever install a key this browser already holds.
+ * Never throws - a switch must not be blocked by a transport failure, and the reload that follows
+ * re-runs it.
+ */
+export async function adoptGatewayCookie(signal?: AbortSignal): Promise<void> {
+  const token = gatewayToken();
+  if (!token) return;
+  try {
+    await fetch("/account/device-cookie", { method: "POST", headers: { Authorization: `Bearer ${token}` }, signal });
+  } catch {
+    /* offline: the cookie follows on the next load, which calls this again */
+  }
+}
+
+/**
+ * Clear the cookie server-side. MUST be called while the key is STILL HELD - the request has to
+ * authenticate to be accepted, so a caller that forgets the key locally first can never clear the
+ * cookie afterwards. Never throws; a failure is reported by the caller rather than stranding the
+ * sign-out half-done.
+ */
+export async function clearGatewayCookie(signal?: AbortSignal): Promise<boolean> {
+  const token = gatewayToken();
+  if (!token) return true;
+  try {
+    const res = await fetch("/account/device-cookie", {
+      method: "DELETE",
+      headers: { Authorization: `Bearer ${token}` },
+      signal,
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
 }
 
 // The redirect target when a credentialed call is rejected (401) mid-session is SHELL-AWARE, because
@@ -233,22 +275,35 @@ export function resolveSignInTarget(current: SignInLocation): string {
 // website's "Your devices") or is otherwise no longer valid. Forget it and send the user back to the
 // shell's own Sign in entry, so a revoke on the account promptly ends access (the revoke round-trip,
 // issue #908). A hard navigation (not the router) guarantees the whole app re-gates from a clean state.
-function onUnauthorized(): void {
-  clearDeviceKey();
+// @param rejectedKey The credential the failed request was SENT with. Required, because "whichever
+//   account is active when the response lands" is a different thing: a roster poll made as A can return
+//   401 after the person has switched to B, and deleting the active account would then remove B - a
+//   perfectly good login - while leaving the actually-revoked A in place. The next poll would then take
+//   out A too, so one revoked key could sign the browser out of two valid accounts
+//   (devthrottle_internal #1513).
+function onUnauthorized(rejectedKey: string): void {
+  const account = listAccounts().find((a) => a.deviceKey === rejectedKey);
+  // The rejected credential is no longer stored - it was already removed, or the person has moved on.
+  // Nothing to revoke, and nothing to re-gate: acting here would remove an account on the strength of a
+  // stale answer about a different one.
+  if (!account) return;
+
+  removeAccount(account.id);
   if (typeof window === "undefined") return;
 
   // A revoke takes out ONE account, not the browser (devthrottle_internal #1509). When another account
-  // is still enrolled here, clearDeviceKey has already made it the active one, so the honest landing is
-  // that account's app - re-mirror its key into the cookie and reload in place. Sending a person who
-  // still holds a working login to the sign-in screen would read as "you have been signed out" when
-  // they have not been.
+  // is still enrolled here, removeAccount has already made it the active one, so the honest landing is
+  // that account's app - hand the cookie to it and reload in place. Sending a person who still holds a
+  // working login to the sign-in screen would read as "you have been signed out" when they have not been.
   if (getDeviceKey()) {
-    ensureGatewayCookie();
+    void adoptGatewayCookie();
     window.location.reload();
     return;
   }
 
-  clearGatewayCookie();
+  // No account left. The cookie cannot be cleared with a credential this browser no longer holds, so
+  // this is best-effort - the Gateway rejected the key anyway, which is what made it worthless.
+  void clearGatewayCookie();
   const target = resolveSignInTarget({
     pathname: window.location.pathname,
     search: window.location.search,
@@ -620,6 +675,9 @@ async function readGatewayErrorBody(res: Response): Promise<string | undefined> 
 // Mobile page consumes. Throws GatewayError on a non-2xx so the caller surfaces it (no silent
 // fallback). The request is same-origin against the Gateway front door.
 export async function listSessions(signal?: AbortSignal): Promise<SessionDto[]> {
+  // Captured BEFORE the request, so a 401 arriving after the active account has moved on can be
+  // attributed to the credential that was actually rejected.
+  const rejected = getDeviceKey();
   const res = await gatewayFetch("/sessions", {
     method: "GET",
     headers: { Accept: "application/json", ...authHeaders() },
@@ -628,7 +686,9 @@ export async function listSessions(signal?: AbortSignal): Promise<SessionDto[]> 
   if (res.status === 401) {
     // The device key was revoked (or is otherwise invalid): forget it and re-gate to Sign in. The
     // roster is the first credentialed call the app makes, so this is where a revoke surfaces.
-    onUnauthorized();
+    // The key THIS request was sent with is passed in - see onUnauthorized for why the active one at
+    // response time is the wrong thing to delete.
+    onUnauthorized(rejected);
     throw new GatewayError(res.status, "This device is no longer authorized. Please sign in again.");
   }
   if (!res.ok) {

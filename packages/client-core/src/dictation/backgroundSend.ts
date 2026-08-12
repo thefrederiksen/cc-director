@@ -4,6 +4,7 @@ import { deletePending, getPending, listPending, savePending, type PendingDictat
 import { clearDictationStatus, publishDictationStatus } from "./status";
 import { blobToWav16kMono } from "./wav";
 import { reportDictationQuality } from "./qualityReport";
+import { activeAccount, listAccounts } from "../auth/accountStore";
 
 // The durable Send pipeline + background retry driver for the mobile Speak dialog (issue #1006,
 // strengthened for #1182). The instant the user hits Send the dialog hands the recorded audio here and
@@ -217,6 +218,9 @@ export async function backgroundTranscribeAndSend(
     sourceBytes,
     captureWarning,
     surface: sendSurface,
+    // WHICH ACCOUNT RECORDED THIS (devthrottle_internal #1512). Stamped at record time, because the
+    // upload happens later and authenticates as whoever is active THEN - see resumePendingDictations.
+    accountId: activeAccount()?.id,
     before: hooks.composeParts?.before ?? "",
     after: hooks.composeParts?.after ?? "",
     prefix: captured.prefixText ?? "",
@@ -310,8 +314,20 @@ export async function resumePendingDictations(): Promise<void> {
   // re-publish their status so the strip and roster still show them after a reopen, but never re-drive them. A
   // dropped clip especially - its upload id carries a permanent moved-on tombstone, so re-driving it could only
   // be dropped again, and re-publishing is what keeps a lost dictation visible instead of vanishing on reload.
+  // A CLIP BELONGS TO THE ACCOUNT THAT RECORDED IT (devthrottle_internal #1512). This store is one
+  // IndexedDB database per origin, shared by every account on the browser, and this resume runs on load
+  // authenticating as whichever account is active NOW. Driving another account's clip would send the
+  // person's own voice - and the text it becomes - into the wrong tenant.
+  //
+  // A clip that is not ours is LEFT WHERE IT IS, neither driven nor deleted: it goes when its account is
+  // active again, which is what the durable store promises. A clip with no stamp predates this field and
+  // is driven only while a single account is enrolled, where there is no other owner it could have.
+  const mine = activeAccount()?.id;
+  const single = listAccounts().length <= 1;
+  const ours = all.filter((rec) => (rec.accountId ? rec.accountId === mine : single));
+
   await Promise.all(
-    all.map((rec) => {
+    ours.map((rec) => {
       if (rec.staleDropped) {
         publishDropped(rec);
         return Promise.resolve();

@@ -3104,6 +3104,14 @@ public sealed class GatewayHost : IAsyncDisposable
         // phone could reach. Inherits the host-wide token middleware exactly like /account/status.
         MobileQrEndpoint.Map(_app);
 
+        // devthrottle_internal #1513: POST/DELETE /account/device-cookie move the HttpOnly cc-gateway-token
+        // cookie onto the calling account, or clear it. A browser can do NEITHER from JavaScript, which is
+        // why the multi-account switch and the new sign-out both needed a server route: without it the
+        // cookie channel silently stayed on the previous account, so the WebSockets and bare image/iframe
+        // loads that authenticate by cookie kept running as an account the person had left or signed out
+        // of. The cookie is set to the credential the gate already accepted, so this grants nothing new.
+        DeviceCookieEndpoint.Map(_app);
+
         // Gateway Centralization Phase 3 (issue #648): POST /account/logout CLEARS the Gateway-hosted
         // DevThrottle credential through the same reused DevThrottleAccountService (Account). The account
         // lives on the gateway, so the logout action lives here too: the Cockpit account surface calls

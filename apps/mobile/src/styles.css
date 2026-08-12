@@ -2956,6 +2956,13 @@ a.banner-btn {
   padding: 14px 0;
   display: flex;
   flex-direction: column;
+  /* The menu SCROLLS. It is pinned top to bottom, and its contents outgrew a short phone the moment the
+     account card, the Account row and Sign out were added: 689px of content in a 568px viewport, which
+     left Sign out 121px below the fold with no way to reach it. A fixed-height column that cannot
+     scroll does not degrade gracefully - it silently loses its LAST destinations, which are exactly the
+     ones this change appended. */
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 .drawer-head {
   display: flex;
