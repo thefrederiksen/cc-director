@@ -41,7 +41,7 @@ public sealed class VoiceWaitingClockTests
     }
 
     [Fact]
-    public void VoiceArriving_EndsTheEpisode_AndTheNextWaitIsStrictlyLater()
+    public void VoiceArriving_EndsTheEpisode_AndTheNextWaitIsNotEarlier()
     {
         var clock = new VoiceWaitingClock();
         var first = clock.Stamp(TenantId.Local, "s", isWaitingForVoice: true);
@@ -50,6 +50,8 @@ public sealed class VoiceWaitingClockTests
 
         var second = clock.Stamp(TenantId.Local, "s", isWaitingForVoice: true);    // a new turn, a new wait
         Assert.NotNull(second);
+        // Not-earlier, which is all a wall clock guarantees at this resolution - the test name used to say
+        // "strictly later" while asserting >=, and review was right that those are different claims.
         Assert.True(second >= first, "a later episode must not report an earlier moment than the one before it");
     }
 
@@ -71,18 +73,5 @@ public sealed class VoiceWaitingClockTests
 
         // Mine is untouched, and still reports the moment MY wait began.
         Assert.Equal(mine, clock.Stamp(TenantId.Local, "shared-id", isWaitingForVoice: true));
-    }
-
-    [Fact]
-    public void Forget_DropsTheEpisode()
-    {
-        var clock = new VoiceWaitingClock();
-        var first = clock.Stamp(TenantId.Local, "s", isWaitingForVoice: true);
-        clock.Forget(TenantId.Local, "s");
-
-        var second = clock.Stamp(TenantId.Local, "s", isWaitingForVoice: true);
-        Assert.NotNull(first);
-        Assert.NotNull(second);
-        Assert.True(second >= first);
     }
 }

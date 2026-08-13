@@ -1,4 +1,4 @@
-using System.Collections.Concurrent;
+﻿using System.Collections.Concurrent;
 using CcDirector.Core.Tenancy;
 using CcDirector.Core.Utilities;
 
@@ -30,6 +30,16 @@ namespace CcDirector.Gateway.Wingman;
 /// Keyed by (tenant, sessionId) exactly as the needs-you clock is, and for the same reason: two
 /// accounts can run sessions with the same id, and a bare-sid key would let one tenant's "voice
 /// arrived" clear another tenant's entry.
+///
+/// KNOWN AND NOT ADDRESSED HERE: an entry is dropped only when a refresh reports the session NOT
+/// waiting, so a session DELETED while it waits leaves its row behind until the Gateway restarts.
+/// <see cref="Briefing.NeedsYouClock"/> has exactly the same shape and the same gap, so this is the
+/// existing pattern rather than a new one - which is the argument for matching it, not for calling it
+/// correct. A per-session timestamp is small and a Gateway restart clears the lot, so it is a slow
+/// leak rather than a live risk; fixing it properly means pruning both clocks against the roster in
+/// one place, and that belongs in its own change rather than smuggled into this one. A Forget method
+/// was written here first and deleted: nothing called it, and a cleanup entry point with no caller
+/// reads as a policy that exists when it does not.
 /// </summary>
 public sealed class VoiceWaitingClock
 {
@@ -66,8 +76,4 @@ public sealed class VoiceWaitingClock
             FileLog.Write($"[VoiceWaitingClock] tenant={tenant.ToLogString()} sid={sessionId}: started waiting for voice, VoiceWaitingSince={since:o}");
         return since;
     }
-
-    /// <summary>Forget a session entirely - it is gone, or voice was turned off for it. Distinct from
-    /// the clear above only in intent; both drop the episode.</summary>
-    public void Forget(TenantId tenant, string sessionId) => _since.TryRemove((tenant, sessionId), out _);
 }

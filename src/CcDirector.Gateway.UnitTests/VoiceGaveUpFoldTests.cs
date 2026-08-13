@@ -1,4 +1,4 @@
-using CcDirector.Core.HostedAi;
+﻿using CcDirector.Core.HostedAi;
 using CcDirector.Gateway.Contracts;
 using CcDirector.Gateway.Wingman;
 using Xunit;
@@ -81,6 +81,38 @@ public sealed class VoiceGaveUpFoldTests
         Assert.Equal("gaveUp", v.Kind);
     }
 
+    /// <summary>
+    /// EVERY ACTIONABLE REASON OUTRANKS THE GIVE-UP VERDICT, and the first draft had this backwards for all
+    /// of them. A member who needs to add credit, finish setup, or wait out a speech outage was told "voice
+    /// did not arrive" - the symptom, in place of the one sentence that tells them what to do about it.
+    /// Same defect as a terminal read failure hiding a standing account condition, which this codebase
+    /// fixed once already the same day.
+    /// </summary>
+    [Theory]
+    [InlineData(HostedAiState.ServiceDown, "serviceDown")]
+    [InlineData(HostedAiState.NeedsCredits, "blocked")]
+    [InlineData(HostedAiState.NeedsKey, "blocked")]
+    [InlineData(HostedAiState.CapReached, "blocked")]
+    [InlineData(HostedAiState.SubscriptionRequired, "blocked")]
+    public void AnActionableReason_OutranksGaveUp_HoweverLongTheWait(HostedAiState state, string expectedKind)
+    {
+        var v = Fold(Now - TimeSpan.FromMinutes(48), unavailable: state);
+        Assert.Equal(expectedKind, v.Kind);
+    }
+
+    [Fact]
+    public void WaitingOnAPromptForHours_IsNotAccusedOfLosingANarration()
+    {
+        // THE FALSE ALARM this ordering exists to prevent, and the first draft got it wrong. A session
+        // parked on a menu has no text reply to read aloud, so no narration was ever coming - saying "it
+        // did not arrive" reports a failure that never happened, and points the reader at the voice
+        // pipeline instead of at the prompt actually waiting for them.
+        var v = Fold(Now - TimeSpan.FromHours(2), nothingToNarrate: true);
+
+        Assert.Equal("nothingToNarrate", v.Kind);
+        Assert.Equal("Nothing to read aloud", v.Label);
+    }
+
     [Fact]
     public void NotWaitingAtAll_IsUnchanged()
     {
@@ -101,6 +133,27 @@ public sealed class VoiceGaveUpFoldTests
     {
         var since = Now - TimeSpan.FromHours(hours) - TimeSpan.FromSeconds(seconds);
         Assert.Equal(expected, VoiceDisplayFold.WaitedLabelFor(since, Now));
+    }
+
+    [Fact]
+    public void APlainNotReadyWindow_AlsoGivesUpEventually()
+    {
+        // The other sentence that was still being said at forty-eight minutes. "No narration yet" is honest
+        // for a moment and misleading for an hour, so it takes the same threshold the retrying arm does.
+        var v = Fold(Now - TimeSpan.FromMinutes(48));
+        Assert.Equal("gaveUp", v.Kind);
+    }
+
+    [Fact]
+    public void TheWaitingPredicate_IsTheOneBothCallersUse()
+    {
+        // It lived TWICE, hand-written, in the roster aggregation and the display-push enrichment. They
+        // agreed character for character, which is the condition under which two copies stay wrong together
+        // and then quietly diverge. This is the single definition both now call.
+        Assert.True(VoiceDisplayFold.IsWaitingForVoice(voiceMode: true, hasAudio: false, agentWorking: false));
+        Assert.False(VoiceDisplayFold.IsWaitingForVoice(voiceMode: false, hasAudio: false, agentWorking: false));
+        Assert.False(VoiceDisplayFold.IsWaitingForVoice(voiceMode: true, hasAudio: true, agentWorking: false));
+        Assert.False(VoiceDisplayFold.IsWaitingForVoice(voiceMode: true, hasAudio: false, agentWorking: true));
     }
 
     [Fact]

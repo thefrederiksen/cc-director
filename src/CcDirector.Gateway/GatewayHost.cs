@@ -3831,7 +3831,8 @@ public sealed class GatewayHost : IAsyncDisposable
                        || string.Equals(s.ActivityState, "Starting", StringComparison.OrdinalIgnoreCase);
             // The clock is stamped from the SAME facts the fold below reads, so the elapsed time and the
             // words can never disagree about whether this session is waiting at all.
-            s.VoiceWaitingSince = voiceWaitingStampFor?.Invoke(s.SessionId, s.VoiceMode && !s.VoiceAudioReady && !working);
+            s.VoiceWaitingSince = voiceWaitingStampFor?.Invoke(
+                s.SessionId, Wingman.VoiceDisplayFold.IsWaitingForVoice(s.VoiceMode, s.VoiceAudioReady, working));
             s.VoiceDisplay = Wingman.VoiceDisplayFold.Fold(
                 voiceMode: s.VoiceMode,
                 agentWorking: working,

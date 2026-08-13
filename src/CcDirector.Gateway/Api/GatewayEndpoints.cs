@@ -1473,7 +1473,8 @@ internal static class GatewayEndpoints
                     var voiceAgentWorking = string.Equals(s.ActivityState, "Working", StringComparison.OrdinalIgnoreCase)
                                          || string.Equals(s.ActivityState, "Starting", StringComparison.OrdinalIgnoreCase);
                     s.VoiceWaitingSince = voiceWaitingStampFor?.Invoke(
-                        reqTenant.Value, s.SessionId, s.VoiceMode && !s.VoiceAudioReady && !voiceAgentWorking);
+                        reqTenant.Value, s.SessionId,
+                        Wingman.VoiceDisplayFold.IsWaitingForVoice(s.VoiceMode, s.VoiceAudioReady, voiceAgentWorking));
                     s.VoiceDisplay = Wingman.VoiceDisplayFold.Fold(
                         voiceMode: s.VoiceMode,
                         agentWorking: voiceAgentWorking,
