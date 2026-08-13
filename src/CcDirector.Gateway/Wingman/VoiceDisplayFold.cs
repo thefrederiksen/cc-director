@@ -1,4 +1,4 @@
-using CcDirector.Core.HostedAi;
+﻿using CcDirector.Core.HostedAi;
 using CcDirector.Gateway.Contracts;
 using CcDirector.Gateway.HostedAi;
 
@@ -24,6 +24,40 @@ public static class VoiceDisplayFold
     /// deliberately names NO provider (the host non-disclosure rule has no carve-out) and states there is
     /// no extra charge, because the member is billed the normal rate on a fallback. Owner-approved wording.
     /// </summary>
+    /// <summary>
+    /// How long a session may wait for its voice before the screen stops promising one and says it did
+    /// not arrive.
+    ///
+    /// Three minutes because that is the number this product already committed to: SessionOrdering's
+    /// note on IsVoicePreparing says voice generation should average under a minute and that "anything
+    /// over three minutes is an exception to be flagged and fixed". This is that flag, finally built -
+    /// it does not invent a new standard, it renders the one already written down.
+    ///
+    /// Erring long on purpose. A false "did not arrive" on a narration that lands at three minutes and
+    /// one second costs a moment of doubt; a promise that never ends cost forty-eight minutes of a
+    /// person believing the product was working on something.
+    /// </summary>
+    public static readonly TimeSpan GaveUpAfter = TimeSpan.FromMinutes(3);
+
+    /// <summary>
+    /// The wait, in whole minutes and hours, or null under a minute. ONE ladder, matching the one the
+    /// roster already uses for needs-you waits (client-core sessions/waiting.ts durationFromMs) so the two
+    /// elapsed times on a card cannot describe the same kind of span two different ways.
+    ///
+    /// Null under a minute rather than "0m": the healthy case is a two-second synthesis, and a card that
+    /// announces "0m" on every ordinary turn trains the reader to ignore the number that matters.
+    /// </summary>
+    internal static string? WaitedLabelFor(DateTime? waitingSince, DateTime utcNow)
+    {
+        if (waitingSince is not { } since) return null;
+        var elapsed = utcNow - since;
+        if (elapsed < TimeSpan.FromMinutes(1)) return null;
+        var days = (int)elapsed.TotalDays;
+        if (days >= 1) return $"{days}d {elapsed.Hours}h";
+        if (elapsed.TotalHours >= 1) return $"{elapsed.Hours}h {elapsed.Minutes}m";
+        return $"{(int)elapsed.TotalMinutes}m";
+    }
+
     public const string BackupVoiceNotice =
         "Some voice providers are overloaded right now, so we switched you to a backup voice. No extra charge.";
 
@@ -44,8 +78,18 @@ public static class VoiceDisplayFold
     /// primary was overloaded and the cloud proxy quietly failed over). A SUCCESS-with-a-note: it only ever
     /// rides the green <c>ready</c> verdict and adds the generic <see cref="BackupVoiceNotice"/> - it is not
     /// an unavailable/outage state and changes nothing else. Ignored unless there is playable audio.</param>
-    public static VoiceDisplay Fold(bool voiceMode, bool agentWorking, bool hasAudio, bool generating, HostedAiState? unavailable, bool nothingToNarrate, bool servedViaFallback = false)
+    /// <param name="waitingSince">When this session's wait for voice began (SessionDto.VoiceWaitingSince),
+    /// or null when it is not waiting. Past <see cref="GaveUpAfter"/> the verdict becomes a terminal
+    /// "gave up" instead of another calm "on its way" - see that field for why a promise with no end is
+    /// worse than an admission.</param>
+    /// <param name="utcNow">Now, injected so the give-up boundary is testable without waiting for it.</param>
+    public static VoiceDisplay Fold(bool voiceMode, bool agentWorking, bool hasAudio, bool generating, HostedAiState? unavailable, bool nothingToNarrate, bool servedViaFallback = false, DateTime? waitingSince = null, DateTime? utcNow = null)
     {
+        // Computed once, up front, because more than one verdict below carries it: the calm "on its way"
+        // wants it so a healthy wait can be seen climbing, and the give-up verdict wants it in its own
+        // sentence. Null under a minute - see WaitedLabelFor.
+        var waited = WaitedLabelFor(waitingSince, utcNow ?? DateTime.UtcNow);
+
         // Not a voice session: the screen shows its own "off" card; there is no verdict to render.
         if (!voiceMode)
             return new VoiceDisplay { Kind = "off", Tone = "neutral", Label = "Voice off", Message = "" };
@@ -84,13 +128,51 @@ public static class VoiceDisplayFold
                 Tone = "yellow",
                 Label = "Voice on its way",
                 Message = "The wingman is preparing this turn's narration.",
+                WaitedLabel = waited,
             };
+
+        // GAVE UP. The one state the voice screen could never reach before, and the reason a session
+        // could sit on "voice on its way" for forty-eight minutes: every arm below is either a calm
+        // "still coming" or a specific fault, and a narration that simply never arrives matches the
+        // calm one forever. IsVoicePreparing's own comment named a terminal gave-up state as the
+        // correct answer to that wedge; this is it.
+        //
+        // Keyed on ELAPSED TIME rather than on a count of attempts, deliberately. The attempts are made
+        // by two different loops (the turn-end path and the idle sweep) at rates neither controls, so a
+        // count means different things on a busy Gateway and a quiet one, while a clock means the same
+        // thing to the person reading it - which is the only place this number is used. It is therefore
+        // "nothing has arrived in three minutes", NOT "three attempts have failed", and the sweep's
+        // three-per-cycle global cap means those are genuinely different claims.
+        //
+        // WHERE IT SITS, and the two versions of this that were wrong before review caught them:
+        //
+        //   above it  - off, working, hasAudio, generating. A playable clip or a live attempt must never
+        //               be hidden behind a verdict about how long the wait has been.
+        //   also above - EVERY SPECIFIC, ACTIONABLE REASON: service down, out of credits, cap reached,
+        //               finish setup. The first draft put gaveUp ahead of these, so a member who needed
+        //               to add credit was told "voice did not arrive" instead - the actionable sentence
+        //               replaced by a symptom. That is the same defect as a terminal read hiding a
+        //               standing account condition, which this codebase fixed once already today.
+        //   also above - nothingToNarrate. A session parked on a menu was never going to be narrated, so
+        //               "it did not arrive" reports a failure that never happened.
+        //
+        // What gaveUp DOES displace is Retrying and notReady - the two states whose whole content is "be
+        // patient". Those are the sentences that were still being said at forty-eight minutes.
+        //
+        // Nothing here stops the work: the sweep keeps trying and a success replaces this on the next
+        // fold. What ends is the PROMISE, not the effort.
+        var gaveUp = !nothingToNarrate
+                     && waitingSince is { } since
+                     && (utcNow ?? DateTime.UtcNow) - since >= GaveUpAfter;
 
         // An ANSWERED or in-progress hosted-AI condition. Reuse the single-source copy so the voice screen
         // matches the roster and every other surface for the same state - never a hand-written string here.
         switch (unavailable)
         {
             case HostedAiState.Retrying:
+                // "Voice on its way" is true for a minute and a lie at forty-eight. Past the threshold the
+                // retry stops being news and becomes the thing being reported.
+                if (gaveUp) return GaveUpDisplay(waited);
                 return new VoiceDisplay
                 {
                     Kind = "retrying",
@@ -141,6 +223,9 @@ public static class VoiceDisplayFold
         // Voice on, no audio, no reason, not being made, and not known-empty: a genuine "not made yet"
         // window (just entered voice, or a fresh turn before the sweep runs). Here - and ONLY here -
         // offering "Generate narration now" is honest, because there may be a text reply waiting to narrate.
+        // The same rule for the plain "not made yet" window: honest for a moment, misleading for an hour.
+        if (gaveUp) return GaveUpDisplay(waited);
+
         return new VoiceDisplay
         {
             Kind = "notReady",
@@ -148,8 +233,40 @@ public static class VoiceDisplayFold
             Label = "No narration yet",
             Message = "There is no spoken summary for this turn yet.",
             CanGenerate = true,
+            WaitedLabel = waited,
         };
     }
+
+    /// <summary>
+    /// THE ONE definition of "this session is waiting for its voice", used by every caller that stamps the
+    /// clock AND readable beside the fold that consumes it.
+    ///
+    /// It existed twice, hand-written, before review: once in the roster aggregation and once in the
+    /// display-push enrichment. They happened to agree character for character, which is exactly the
+    /// condition under which two copies stay wrong together and then quietly diverge - nothing bound them,
+    /// and no test would have noticed the day one of them changed.
+    ///
+    /// Deliberately NARROWER than "the fold shows a no-audio verdict". A session that is out of credits or
+    /// whose speech service is down is not waiting for a narration that is coming - it is blocked, and
+    /// counting that as waiting would start a clock whose only use is to declare a give-up that the
+    /// blocked verdict already explains better. So the clock runs for voice sessions with no audio that
+    /// are not mid-turn, and the fold decides what to SAY about that; the two questions are related but
+    /// they are not the same question.
+    /// </summary>
+    public static bool IsWaitingForVoice(bool voiceMode, bool hasAudio, bool agentWorking)
+        => voiceMode && !hasAudio && !agentWorking;
+
+    /// <summary>The terminal verdict, in one place so the two arms that reach it cannot word it differently.</summary>
+    private static VoiceDisplay GaveUpDisplay(string? waited) => new()
+    {
+        Kind = "gaveUp",
+        Tone = "red",
+        Label = waited is null ? "Voice did not arrive" : $"Voice did not arrive after {waited}",
+        Message = "This turn's narration has not been produced. The Gateway is still trying, "
+                + "and you can read the turn instead.",
+        // No Generate button: it would re-run exactly what has already not worked for the whole wait.
+        WaitedLabel = waited,
+    };
 
     /// <summary>The short badge headline for a blocked (account) state - the body text and the call-to-
     /// action still come from the shared <see cref="HostedAiMessages"/> / <see cref="HostedAiHttp.Dto"/>.</summary>

@@ -182,6 +182,25 @@ public sealed class SessionDto
     public DateTime? NeedsYouSince { get; set; }
 
     /// <summary>
+    /// Issue #2576: UTC timestamp this session last found itself a VOICE session with no playable
+    /// narration - the moment its wait for voice began. Gateway-owned, stamped during the same
+    /// aggregation that folds <see cref="VoiceDisplay"/>, held stable for the whole episode, and
+    /// cleared to null the moment audio arrives or the agent starts a new turn.
+    ///
+    /// It exists because <see cref="NeedsYouSince"/> could not answer this. That clock is stamped
+    /// only when the folded colour is RED, and a session waiting for its voice is YELLOW - so the
+    /// one clock the product had was, by construction, never running for exactly the sessions that
+    /// were stuck. A session sat on "Preparing voice" for forty-eight minutes and no surface could
+    /// say so, because no fact recorded when the wait started.
+    ///
+    /// Clients render the AGE of this, never a duration the Gateway computed: a number computed at
+    /// stamp time is wrong by however long it sat in transit and on the screen. In-memory only - a
+    /// Gateway restart re-derives it on the next waiting refresh. Always null in Director-local
+    /// responses, which have no Gateway voice state at all.
+    /// </summary>
+    public DateTime? VoiceWaitingSince { get; set; }
+
+    /// <summary>
     /// The absolute UTC time an ARMED snooze returns this session to "needs you" - the snooze clock's
     /// deadline, so a client can show "wakes in 3h 48m". Gateway-owned: the snooze registry
     /// (<c>SnoozeRegistry.SnoozeEntry.SnoozeUntilUtc</c>) is the sole source of the timer, stamped by the

@@ -1,4 +1,4 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using System.Net.Http.Json;
 using System.Net.Sockets;
 using System.Text.Json;
@@ -74,6 +74,10 @@ internal static class GatewayEndpoints
         Func<TenantId, string, Core.HostedAi.HostedAiState?>? voiceUnavailableFor = null,
         Func<TenantId, string, bool>? nothingToNarrateFor = null,
         Func<TenantId, string, bool>? servedViaFallbackFor = null,
+        /// <summary>Issue #2576: stamps and returns SessionDto.VoiceWaitingSince - when this session's wait
+        /// for voice began, or null when it is not waiting. Null delegate leaves the field unset, so a caller
+        /// that has no voice state (a test, a diagnostic route) is unchanged.</summary>
+        Func<TenantId, string, bool, DateTime?>? voiceWaitingStampFor = null,
         Func<TenantId, string, bool, DateTime?>? needsYouStampFor = null,
         Func<TenantId, string, bool>? transcribingFor = null,
         Func<TenantId, string, string?>? dictationStatusFor = null,
@@ -1461,15 +1465,25 @@ internal static class GatewayEndpoints
                     // stamped plus the "nothing to narrate" marker, so a dumb client never has to guess (the
                     // guess is what put a dead-end Generate button next to a red "unavailable" badge). This
                     // is the law: the Gateway rules, the client renders (docs/new_architecture/session-state.html).
+                    // Issue #2576: the wait-for-voice clock. Stamped from the SAME facts the fold
+                    // immediately below reads, so the elapsed time on the row and the words on the row can
+                    // never disagree about whether this session is waiting at all. It is a SECOND clock
+                    // beside NeedsYouSince because that one is stamped only on RED and a session waiting
+                    // for voice is YELLOW - which is why nothing could say "48 minutes" when it mattered.
+                    var voiceAgentWorking = string.Equals(s.ActivityState, "Working", StringComparison.OrdinalIgnoreCase)
+                                         || string.Equals(s.ActivityState, "Starting", StringComparison.OrdinalIgnoreCase);
+                    s.VoiceWaitingSince = voiceWaitingStampFor?.Invoke(
+                        reqTenant.Value, s.SessionId,
+                        Wingman.VoiceDisplayFold.IsWaitingForVoice(s.VoiceMode, s.VoiceAudioReady, voiceAgentWorking));
                     s.VoiceDisplay = Wingman.VoiceDisplayFold.Fold(
                         voiceMode: s.VoiceMode,
-                        agentWorking: string.Equals(s.ActivityState, "Working", StringComparison.OrdinalIgnoreCase)
-                                   || string.Equals(s.ActivityState, "Starting", StringComparison.OrdinalIgnoreCase),
+                        agentWorking: voiceAgentWorking,
                         hasAudio: s.VoiceAudioReady,
                         generating: s.VoiceGenerating,
                         unavailable: voiceUnavailableFor?.Invoke(reqTenant.Value, s.SessionId),
                         nothingToNarrate: nothingToNarrateFor?.Invoke(reqTenant.Value, s.SessionId) ?? false,
-                        servedViaFallback: servedViaFallbackFor?.Invoke(reqTenant.Value, s.SessionId) ?? false);
+                        servedViaFallback: servedViaFallbackFor?.Invoke(reqTenant.Value, s.SessionId) ?? false,
+                        waitingSince: s.VoiceWaitingSince);
                     // Orange "Transcribing..." while a dictated utterance is uploading/transcribing in
                     // the background for this session (mobile Speak -> Send released the screen). Stamped
                     // BEFORE the NeedsYouSince clock below so the EffectiveColor fold already sees orange

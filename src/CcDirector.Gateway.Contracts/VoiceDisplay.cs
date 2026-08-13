@@ -1,4 +1,4 @@
-namespace CcDirector.Gateway.Contracts;
+﻿namespace CcDirector.Gateway.Contracts;
 
 /// <summary>
 /// The FOLDED voice-mode display verdict for one session - what the Voice screen must show and offer,
@@ -54,6 +54,22 @@ public sealed class VoiceDisplay
     /// <c>blocked</c> - the same single-source <see cref="HostedAiMessageDto"/> the roster uses. Null
     /// otherwise.</summary>
     public HostedAiMessageDto? Reason { get; set; }
+
+    /// <summary>
+    /// How long this session has been waiting for its voice, already in words ("4m", "1h 12m"), or null
+    /// when it is not waiting or has waited under a minute (issue #2576).
+    ///
+    /// Composed HERE rather than on each client, from the Gateway's own VoiceWaitingSince stamp, for the
+    /// same reason every other string on this record is: a second place that turns the stamp into words is
+    /// a second answer to a question this fold has already answered. A spinner alone reads identically at
+    /// two seconds and at forty-eight minutes, which is exactly how a session sat stuck for forty-eight
+    /// minutes with nobody able to say so.
+    ///
+    /// COARSE on purpose - whole minutes, refreshed at whatever rate the client polls. A precise duration
+    /// computed at stamp time would be wrong by however long it sat in transit, and this number exists to
+    /// answer "is this stuck?", which minutes answer and seconds do not.
+    /// </summary>
+    public string? WaitedLabel { get; set; }
 
     /// <summary>
     /// The optional GENERIC heads-up shown when this turn's ready clip was made by the BACKUP voice
