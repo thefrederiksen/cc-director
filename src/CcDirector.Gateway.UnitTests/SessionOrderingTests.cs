@@ -532,10 +532,34 @@ public sealed class SessionOrderingTests
     [Fact]
     public void StateLabel_VoiceHoldWhileGenuinelyPreparing_StillSaysPreparingVoice()
     {
-        // The positive case the words were always right about: something IS being made.
+        // The positive case the words were always right about: something IS being made. With no wait worth
+        // reporting (under a minute), the label is exactly what it always was.
         var s = VoiceHoldingSession("preparing", "Voice on its way");
         s.VoiceGenerating = true;
         Assert.Equal("Preparing voice", SessionOrdering.StateLabel(s));
+    }
+
+    [Fact]
+    public void StateLabel_PreparingWithAWaitWorthReporting_SaysHowLong()
+    {
+        // Issue #2576. "Preparing voice" reads identically at two seconds and at forty-eight minutes, and a
+        // session really did sit at forty-eight with nobody able to tell. The Gateway has already turned
+        // its own clock into words; the rail renders them.
+        var s = VoiceHoldingSession("preparing", "Voice on its way");
+        s.VoiceGenerating = true;
+        s.VoiceDisplay!.WaitedLabel = "44m";
+        Assert.Equal("Preparing voice (44m)", SessionOrdering.StateLabel(s));
+        Assert.Equal("yellow", SessionOrdering.EffectiveColor(s));   // the dot is untouched
+    }
+
+    [Fact]
+    public void StateLabel_GaveUp_ReachesTheRailWithItsOwnWords()
+    {
+        // The terminal verdict needs no new arm here - the deny-list added for the earlier half of #2576
+        // renders any kind that is not preparing/ready/off/working. This asserts that it actually arrives,
+        // because "a future verdict reaches the rail" is the whole claim that list was inverted to make.
+        var s = VoiceHoldingSession("gaveUp", "Voice did not arrive after 48m");
+        Assert.Equal("Voice did not arrive after 48m", SessionOrdering.StateLabel(s));
     }
 
     [Fact]

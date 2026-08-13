@@ -407,6 +407,16 @@ public static class SessionOrdering
     {
         var display = s.VoiceDisplay;
         if (display is null || string.IsNullOrWhiteSpace(display.Label)) return "Preparing voice";
+
+        // THE WAIT, ON THE RAIL (issue #2576). A row that says "Preparing voice" reads identically at two
+        // seconds and at forty-eight minutes, and a session really did sit at forty-eight with nobody able
+        // to tell. The Gateway already holds when the wait began and has already turned it into words
+        // (VoiceDisplay.WaitedLabel, null under a minute), so this only renders them - the healthy case
+        // still reads plain "Preparing voice", and a wait worth noticing carries its own age.
+        if (string.Equals(display.Kind, "preparing", StringComparison.Ordinal))
+            return string.IsNullOrWhiteSpace(display.WaitedLabel)
+                ? "Preparing voice"
+                : $"Preparing voice ({display.WaitedLabel})";
         return display.Kind switch
         {
             // The THREE verdicts whose own words would be wrong ON THE RAIL, named explicitly:

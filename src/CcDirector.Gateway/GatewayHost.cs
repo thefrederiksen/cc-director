@@ -668,6 +668,9 @@ public sealed class GatewayHost : IAsyncDisposable
     private readonly Running.WorkListRunnerManager _runnerManager = new();
     // Issue #218: Gateway-owned clock for when each session entered the red / NEEDS-YOU state.
     private readonly NeedsYouClock _needsYouClock = new();
+    /// <summary>Issue #2576: how long each session has been waiting for its voice. A SECOND clock beside
+    /// the needs-you one because they time different episodes - see VoiceWaitingClock.</summary>
+    private readonly Wingman.VoiceWaitingClock _voiceWaitingClock = new();
     // Car Mode (Car Mode mission): the server-side, per-device conversation context behind the fleet
     // tool-calling brain (POST /carmode/turn), so multi-turn references ("the latest one") resolve.
     // In-memory by design; one instance for the whole Gateway.
@@ -1375,7 +1378,10 @@ public sealed class GatewayHost : IAsyncDisposable
                         : null,
                 nothingToNarrateFor: sid => _tenantPass.Current is { } t
                     && Wingman.WingmanVoiceService.CanNameVoicePartition(t)
-                    && _voiceService?.NothingToNarrateFor(t, sid) == true),
+                    && _voiceService?.NothingToNarrateFor(t, sid) == true,
+                voiceWaitingStampFor: (sid, waiting) => _tenantPass.Current is { } t
+                    ? _voiceWaitingClock.Stamp(t, sid, waiting)
+                    : null),
             SendCommandAsync,
             currentScopeKey: () => _tenantPass.Current?.Value);
         // Mission Screen mission (Phase 1b, issue #1405): the mission-WHY store, at a Gateway-side file
@@ -2791,6 +2797,9 @@ public sealed class GatewayHost : IAsyncDisposable
             // was overloaded and the cloud proxy failed over). Feeds the folded VoiceDisplay so the screen
             // shows the generic backup-voice notice. A success-with-a-note, never an outage state.
             servedViaFallbackFor: (tenant, sid) => _voiceService?.ServedViaFallbackFor(tenant, sid) == true,
+            // Issue #2576: the wait-for-voice clock, so a stuck session can finally say HOW LONG. Separate
+            // from the needs-you clock below because that one only runs on red and this state is yellow.
+            voiceWaitingStampFor: (tenant, sid, waiting) => _voiceWaitingClock.Stamp(tenant, sid, waiting),
             // Issue #218: stamp the Gateway-owned NeedsYouSince entry clock onto each session. MTR-10 Gap C:
             // the clock is partitioned per tenant, so the roster's request tenant (threaded into the fold)
             // scopes each stamp - a session id shared across accounts keeps a per-tenant "waiting since".
@@ -3801,7 +3810,8 @@ public sealed class GatewayHost : IAsyncDisposable
         Func<TenantId, string, bool, DateTime?>? needsYouStampFor,
         Snooze.SnoozeRegistry? snoozeRegistry,
         Func<string, Core.HostedAi.HostedAiState?>? voiceUnavailableFor = null,
-        Func<string, bool>? nothingToNarrateFor = null)
+        Func<string, bool>? nothingToNarrateFor = null,
+        Func<string, bool, DateTime?>? voiceWaitingStampFor = null)
     {
         foreach (var s in sessions)
         {
@@ -3817,14 +3827,19 @@ public sealed class GatewayHost : IAsyncDisposable
             var unavailable = voiceUnavailableFor?.Invoke(s.SessionId);
             if (unavailable is Core.HostedAi.HostedAiState reason)
                 s.VoiceUnavailable = HostedAi.HostedAiHttp.Dto(reason);
+            var working = string.Equals(s.ActivityState, "Working", StringComparison.OrdinalIgnoreCase)
+                       || string.Equals(s.ActivityState, "Starting", StringComparison.OrdinalIgnoreCase);
+            // The clock is stamped from the SAME facts the fold below reads, so the elapsed time and the
+            // words can never disagree about whether this session is waiting at all.
+            s.VoiceWaitingSince = voiceWaitingStampFor?.Invoke(s.SessionId, s.VoiceMode && !s.VoiceAudioReady && !working);
             s.VoiceDisplay = Wingman.VoiceDisplayFold.Fold(
                 voiceMode: s.VoiceMode,
-                agentWorking: string.Equals(s.ActivityState, "Working", StringComparison.OrdinalIgnoreCase)
-                           || string.Equals(s.ActivityState, "Starting", StringComparison.OrdinalIgnoreCase),
+                agentWorking: working,
                 hasAudio: s.VoiceAudioReady,
                 generating: s.VoiceGenerating,
                 unavailable: unavailable,
-                nothingToNarrate: nothingToNarrateFor?.Invoke(s.SessionId) ?? false);
+                nothingToNarrate: nothingToNarrateFor?.Invoke(s.SessionId) ?? false,
+                waitingSince: s.VoiceWaitingSince);
         }
         Api.GatewayEndpoints.StampFleetRolesAndFold(sessions, sessions, needsYouStampFor, snoozeRegistry, tenant);
     }
