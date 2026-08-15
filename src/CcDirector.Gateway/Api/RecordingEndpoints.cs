@@ -303,9 +303,11 @@ internal static class RecordingEndpoints
                 if (dto is null)
                     return Results.BadRequest(new { error = "dictionary body required" });
 
-                var path = GlossaryPathFor(t.Value);
-                DictionaryLoader.WriteToDisk(path, FromDto(dto));
-                var reread = DictionaryLoader.LoadFromDisk(path);
+                // Through TenantGlossaryWriter, taking the SAME per-tenant lock the additive path takes.
+                // A whole-document save needs no read of its own, but if it can land in the MIDDLE of
+                // somebody else's read-modify-write then their stale copy is written back over it and this
+                // person's save vanishes - which was the human-edit-lost case found reviewing #2484.
+                var reread = TenantGlossaryWriter.Replace(t.Value, FromDto(dto));
                 return Results.Json(ToDto(reread));
             }
             catch (JsonException ex)
@@ -318,6 +320,23 @@ internal static class RecordingEndpoints
         // Additive convenience endpoint so an agent in a session can add a term
         // (and optional mistranscription spellings) without round-tripping the
         // whole document. Existing entries are preserved; duplicates are ignored.
+        //
+        // THE ONE ROUTE UNDER /ingest A SESSION KEY MAY CALL (issue #2484, the owner's ruling of
+        // 2026-08-07). SessionKeyGuard opens POST /ingest/dictionary/terms and nothing else here, so an
+        // agent adds a word with no confirmation step in the way. THIS handler enforces the half of that
+        // grant a path cannot express: the same route carries a term AND a wrong-spellings map, and only a
+        // reader of the body can tell them apart. For a SESSION caller:
+        //
+        //   * 'terms' is accepted - a new word goes in, a word already present is skipped, nothing is
+        //     removed or renamed. Worst case is a stray extra word, which is exactly the worst case the
+        //     ruling weighed and accepted;
+        //   * 'mistranscriptions' is REFUSED. A wrong-spellings entry rewrites what the transcriber HEARS,
+        //     so a careless one ("the" -> "Kubernetes") corrupts dictation everywhere rather than leaving a
+        //     stray word, and on an existing term the ruling forbids touching that list outright. Refusing
+        //     the field wholesale is what makes "worst case is a stray extra word" a true sentence rather
+        //     than an approximate one.
+        //
+        // A person in the Cockpit, or a device key, is unchanged and may still send both.
         app.MapPost("/dictionary/terms", async (HttpContext ctx) =>
         {
             var t = GatewayEndpoints.ResolveReadTenant(ctx, tenantBoundary);
@@ -331,42 +350,138 @@ internal static class RecordingEndpoints
                 if (add is null || (!hasTerms && !hasPatterns))
                     return Results.BadRequest(new { error = "provide 'terms' and/or 'mistranscriptions'" });
 
-                var path = GlossaryPathFor(t.Value);
-                var current = ToDto(DictionaryLoader.LoadFromDisk(path));
-
-                foreach (var term in add.Terms ?? new())
+                // Read the caller from the identity the auth gate resolved, never from the raw request -
+                // see AuthMiddleware.CallingSession. Null means the caller is not a session (the Cockpit,
+                // the phone, a Director), and the add-only narrowing does not apply to them.
+                var callingSession = Util.AuthMiddleware.CallingSession(ctx);
+                if (callingSession is not null && hasPatterns)
                 {
-                    var trimmed = term?.Trim();
-                    if (!string.IsNullOrWhiteSpace(trimmed) && !current.Vocabulary.Contains(trimmed))
-                        current.Vocabulary.Add(trimmed);
+                    FileLog.Write($"[RecordingEndpoints] dictionary add REFUSED wrong spellings from session {callingSession.SessionId}");
+                    return Results.Json(new
+                    {
+                        error = "a session key may add vocabulary 'terms' only; 'mistranscriptions' " +
+                                "(the wrong-spellings list) is edited by a person in the Cockpit dictionary editor",
+                        code = "session_key_add_only",
+                    }, statusCode: StatusCodes.Status403Forbidden);
                 }
 
-                foreach (var kv in add.Mistranscriptions ?? new())
-                {
-                    var term = kv.Key?.Trim();
-                    if (string.IsNullOrWhiteSpace(term) || kv.Value is null)
-                        continue;
-                    if (!current.CommonMistranscriptions.TryGetValue(term, out var variants))
-                    {
-                        variants = new List<string>();
-                        current.CommonMistranscriptions[term] = variants;
-                    }
-                    foreach (var v in kv.Value)
-                    {
-                        var vv = v?.Trim();
-                        if (!string.IsNullOrWhiteSpace(vv) && !variants.Contains(vv))
-                            variants.Add(vv);
-                    }
-                }
+                // The terms that were ACTUALLY new, so the trail below names a session that changed
+                // something. Filled INSIDE the lock, from the document the writer hands over - deciding
+                // "is this term already there?" against a copy read outside the lock is the stale read
+                // that made a concurrent human edit losable in the first place.
+                var added = new List<string>();
 
-                DictionaryLoader.WriteToDisk(path, FromDto(current));
-                return Results.Json(ToDto(DictionaryLoader.LoadFromDisk(path)));
+                // MutateAndRecord, not Mutate: the glossary change and the provenance record are ONE atomic
+                // pair inside one per-tenant lock, with the record written first. The record used to happen
+                // out here, after the lock was released, appending unlocked and swallowing its own failure -
+                // so two sessions could both land their terms while one session's trail entries vanished,
+                // and a word with no trail entry is un-traceable and therefore un-sweepable.
+                var reread = TenantGlossaryWriter.MutateAndRecord(t.Value, current =>
+                {
+                    // The writer calls this once inside the lock; cleared anyway so that if it ever gains a
+                    // retry, a second pass cannot report a term twice.
+                    added.Clear();
+                    var document = ToDto(current);
+
+                    // Matched case-insensitively for the same reason TenantGlossary.Merge does:
+                    // "kubernetes" beside "Kubernetes" is two entries for one word, and the existing wins.
+                    foreach (var term in add.Terms ?? new())
+                    {
+                        var trimmed = term?.Trim();
+                        if (!string.IsNullOrWhiteSpace(trimmed) &&
+                            !document.Vocabulary.Any(v => string.Equals(v, trimmed, StringComparison.OrdinalIgnoreCase)))
+                        {
+                            document.Vocabulary.Add(trimmed);
+                            added.Add(trimmed);
+                        }
+                    }
+
+                    foreach (var kv in add.Mistranscriptions ?? new())
+                    {
+                        var term = kv.Key?.Trim();
+                        if (string.IsNullOrWhiteSpace(term) || kv.Value is null)
+                            continue;
+                        if (!document.CommonMistranscriptions.TryGetValue(term, out var variants))
+                        {
+                            variants = new List<string>();
+                            document.CommonMistranscriptions[term] = variants;
+                        }
+                        foreach (var v in kv.Value)
+                        {
+                            var vv = v?.Trim();
+                            if (!string.IsNullOrWhiteSpace(vv) && !variants.Contains(vv))
+                                variants.Add(vv);
+                        }
+                    }
+
+                    return (FromDto(document), (IReadOnlyList<string>)added);
+                },
+                callingSession?.SessionId.ToString(),
+                callingSession?.DirectorId ?? "",
+                DateTime.UtcNow);
+
+                return Results.Json(ToDto(reread));
             }
             catch (JsonException ex)
             {
                 FileLog.Write($"[RecordingEndpoints] dictionary add bad JSON: {ex.Message}");
                 return Results.BadRequest(new { error = "invalid JSON" });
             }
+            catch (IOException ex)
+            {
+                // The glossary lock could not be taken, or the provenance record could not be written. Both
+                // mean NOTHING was added, and both are reported as a failure rather than a success - an add
+                // that silently lost its provenance would silently lose the traceability the owner traded
+                // the confirmation step for.
+                FileLog.Write($"[RecordingEndpoints] dictionary add FAILED: {ex.Message}");
+                return Results.Json(new
+                {
+                    error = "the term was NOT added: the dictation glossary could not be written together " +
+                            "with the record of which session added it, and adding a word without that " +
+                            "record would leave an entry nobody could trace or sweep. " + ex.Message,
+                    code = "glossary_write_failed",
+                }, statusCode: StatusCodes.Status500InternalServerError);
+            }
+            catch (UnauthorizedAccessException ex)
+            {
+                FileLog.Write($"[RecordingEndpoints] dictionary add FAILED: {ex.Message}");
+                return Results.Json(new
+                {
+                    error = "the term was NOT added: the dictation glossary could not be written together " +
+                            "with the record of which session added it, and adding a word without that " +
+                            "record would leave an entry nobody could trace or sweep. " + ex.Message,
+                    code = "glossary_write_failed",
+                }, statusCode: StatusCodes.Status500InternalServerError);
+            }
+        });
+
+        // WHAT AGENTS ADDED, AND WHICH ONE ADDED IT - the READ half of the traceability the owner's
+        // ruling asks for (issue #2484). Newest first.
+        //
+        // WHY THIS ROUTE HAD TO EXIST. The ruling says a bad entry must be able to be "traced AND swept".
+        // Writing the trail satisfies only the first verb: a record nothing can read is a file somebody has
+        // to go and find on disk, which is not a sweep, and the traceability the ruling traded the
+        // confirmation step for would have been nominal.
+        //
+        // WHY A SESSION KEY MAY READ IT, WHEN IT MAY NOT READ THE GLOSSARY. This serves the addition trail
+        // ONLY, and the trail contains exactly one thing: what AGENTS wrote. A person adding a term through
+        // the Cockpit is not a session and leaves no entry (asserted in AgentDictionaryAddTests), so the
+        // owner's own curation - his hand-added terms and every wrong-spellings list - is not in this file
+        // and is not reachable through this route. Letting agents read back what agents wrote exposes none
+        // of the owner's material, which is why this is not the widening that opening GET /ingest/dictionary
+        // would be. That route stays refused.
+        //
+        // Removal is still the person's, in the Cockpit editor. This route makes a bad batch FINDABLE; it
+        // deliberately offers no way to act on what it finds.
+        app.MapGet("/dictionary/additions", (HttpContext ctx) =>
+        {
+            var t = GatewayEndpoints.ResolveReadTenant(ctx, tenantBoundary);
+            if (t is null) return TenantRequired();
+            var entries = GlossaryAdditionLog.Read(t.Value)
+                .Reverse()
+                .Select(e => new GlossaryAdditionDto(e.AddedAtUtc, e.Term, e.SessionId, e.DirectorId))
+                .ToList();
+            return Results.Json(new GlossaryAdditionsResponse(entries, entries.Count));
         });
 
         // ===== Dictionary suggestions API (devthrottle #2075) ================
@@ -932,6 +1047,17 @@ internal sealed record DictionaryProfileDto(bool CleanupEnabled);
 internal sealed record DictionaryAddRequest(
     List<string>? Terms,
     Dictionary<string, List<string>>? Mistranscriptions);
+
+/// <summary>One entry of GET /ingest/dictionary/additions - a word an agent added, and which one (#2484).</summary>
+internal sealed record GlossaryAdditionDto(
+    DateTime AddedAtUtc,
+    string Term,
+    string SessionId,
+    string DirectorId);
+
+/// <summary>GET /ingest/dictionary/additions - what agents added to this tenant's glossary, newest first,
+/// plus the count (the client never re-derives it - rule 7).</summary>
+internal sealed record GlossaryAdditionsResponse(List<GlossaryAdditionDto> Additions, int Count);
 
 // ===== Dictionary suggestions DTOs (devthrottle #2075) ==================================================
 

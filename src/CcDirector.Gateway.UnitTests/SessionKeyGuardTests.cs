@@ -217,6 +217,72 @@ public sealed class SessionKeyGuardTests
         Assert.False(SessionKeyGuard.Check("GET", "/sessions/11111111-1111-1111-1111-111111111111/transcript").Allowed);
     }
 
+    // ---------- Adding a word to the dictation dictionary (issue #2484) ----------
+
+    [Fact]
+    public void A_session_may_add_a_dictionary_term()
+    {
+        // The owner's ruling of 2026-08-07: an agent may add words to the dictation dictionary, with no
+        // confirmation step in the way. This is the ONE write route that grant opens.
+        Assert.True(SessionKeyGuard.Check("POST", "/ingest/dictionary/terms").Allowed);
+    }
+
+    [Fact]
+    public void A_session_may_read_back_what_agents_added_but_not_the_glossary()
+    {
+        // The pair that carries the whole shape of the grant, and the one a later edit is most likely to
+        // collapse into "the dictionary is readable". It is not. The ADDITION TRAIL is open because it holds
+        // only what agents wrote - a person's own edit leaves no entry - so an agent reads back agents'
+        // writes and reaches none of the owner's curation. The GLOSSARY holds the owner's hand-added terms
+        // and every wrong-spellings list, and stays refused.
+        Assert.True(SessionKeyGuard.Check("GET", "/ingest/dictionary/additions").Allowed);
+        Assert.False(SessionKeyGuard.Check("GET", "/ingest/dictionary").Allowed);
+    }
+
+    [Fact]
+    public void The_addition_trail_is_readable_and_nothing_more()
+    {
+        // Finding is not acting. There is deliberately no verb to remove what the trail finds - pruning is
+        // the person's, in the Cockpit editor - so every write shape on this path is refused.
+        Assert.False(SessionKeyGuard.Check("POST", "/ingest/dictionary/additions").Allowed);
+        Assert.False(SessionKeyGuard.Check("PUT", "/ingest/dictionary/additions").Allowed);
+        Assert.False(SessionKeyGuard.Check("DELETE", "/ingest/dictionary/additions").Allowed);
+        Assert.False(SessionKeyGuard.Check("GET", "/ingest/dictionary/additions/sweep").Allowed);
+    }
+
+    [Theory]
+    // Replacing the whole glossary. This is the verb the Cockpit editor uses to save a hand-edited
+    // document, and it is exactly the loss the ruling forbids: it can drop a term, rename one, or empty a
+    // wrong-spellings list the owner relies on. A person does this; a session key does not.
+    [InlineData("PUT", "/ingest/dictionary")]
+    // Reading the glossary back. Not needed to add - adding is idempotent, a term already there is skipped -
+    // and the grant is deliberately no wider than the ruling's words.
+    [InlineData("GET", "/ingest/dictionary")]
+    // The suggestion surface: applying a suggestion writes a term AND its wrong spellings, dismissing and
+    // restoring change what the owner is shown, and scanning reads his transcripts.
+    [InlineData("GET", "/ingest/dictionary/suggestions")]
+    [InlineData("POST", "/ingest/dictionary/suggestions/scan")]
+    [InlineData("POST", "/ingest/dictionary/suggestions/apply")]
+    [InlineData("POST", "/ingest/dictionary/suggestions/dismiss")]
+    [InlineData("GET", "/ingest/dictionary/dismissed")]
+    [InlineData("POST", "/ingest/dictionary/dismissed/restore")]
+    // The rest of the ingest surface is recordings - dictation audio and transcripts, which are the
+    // owner's. The add grant opens one route, not the prefix it sits under.
+    [InlineData("GET", "/ingest/recordings")]
+    [InlineData("POST", "/ingest/recording")]
+    [InlineData("GET", "/ingest/recording/r-1/transcript")]
+    [InlineData("DELETE", "/ingest/recording/r-1")]
+    [InlineData("PATCH", "/ingest/recording/r-1/meta")]
+    // The verb decides as much as the path: only POST adds.
+    [InlineData("GET", "/ingest/dictionary/terms")]
+    [InlineData("PUT", "/ingest/dictionary/terms")]
+    [InlineData("DELETE", "/ingest/dictionary/terms")]
+    // And nothing hangs off the add route.
+    [InlineData("POST", "/ingest/dictionary/terms/delete")]
+    [InlineData("DELETE", "/ingest/dictionary/terms/kubernetes")]
+    public void The_dictionary_grant_is_add_only(string method, string path)
+        => Assert.False(SessionKeyGuard.Check(method, path).Allowed, $"{method} {path} must NOT be allowed");
+
     [Theory]
     // Device registration and enrolment. The owner named this one himself: a credential that can enrol a
     // device can admit a NEW device, which is not configuring the product - it is the boundary itself.
