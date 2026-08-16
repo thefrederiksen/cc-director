@@ -916,6 +916,48 @@ COMMANDS:
   doctor [--json]
 ```
 
+### Dictionary
+
+Add words to the account's dictation dictionary, so dictation stops getting them wrong.
+
+```
+USAGE: cc-devthrottle dictionary add TERM [TERM ...]
+
+ARGUMENTS:
+  TERM  A word or phrase to add. One word or phrase per argument. [required]
+
+USAGE: cc-devthrottle dictionary additions [OPTIONS]
+
+OPTIONS:
+  --session   Only terms added by this session (full id or an id prefix)
+  --json  -j  Output as JSON
+```
+
+```
+cc-devthrottle dictionary add "Kubernetes"
+cc-devthrottle dictionary add "mindzie" "DevThrottle" "Frederiksen"
+cc-devthrottle dictionary additions --session 9b2f
+```
+
+**ADD is the only WRITE verb, deliberately.** A session key may add a term and read back what agents
+added, and nothing else - it can never delete, rename or overwrite an existing term, and it can never
+touch the wrong-spellings list attached to one (the owner's ruling of 2026-08-07, issue #2484). So
+the worst an agent can do is leave a stray extra word; the person prunes the list in the Cockpit
+dictionary editor. There is no confirmation step: being asked every time is worse than the occasional
+stray entry.
+
+**`additions` is the sweep.** It lists every word an agent added, when, and which session added it,
+so a bad entry can be traced and the rest of that session's batch found. It shows only what agents
+added - a person's own edit leaves no entry, so the owner's terms and every wrong-spellings list stay
+out of reach of a session key, which is why this one read is open while `GET /ingest/dictionary` is
+not. Finding is not removing: the person prunes.
+
+**Spell it the way it is written down.** The spelling you add becomes the canonical one that
+dictation corrects other spellings to, and a word that reached you through dictation may already be
+mangled. Take the spelling from the repository, the code, or the product name in front of you -
+never from something you only heard. Which session added which word is recorded beside that
+account's glossary, so a bad entry can be traced back and swept.
+
 ---
 
 ## cc-reddit
