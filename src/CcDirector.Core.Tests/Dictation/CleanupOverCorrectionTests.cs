@@ -172,10 +172,10 @@ public sealed class CleanupOverCorrectionTests
     }
 
     /// <summary>
-    /// The opt-in also survives the Gateway's dictionary JSON. This parser rebuilds the profile AND
-    /// writes the local cache, so dropping the field would quietly rewrite a deliberate enable as
-    /// false on every resolve. Asserted with a TRUE value, because a false one would pass whether
-    /// the field was read or ignored.
+    /// The opt-in also survives the Gateway's dictionary JSON. What this parser returns is what
+    /// ResolveAsync then writes to the local cache, so dropping the field here would quietly rewrite
+    /// a deliberate enable as false on every resolve. Asserted with a TRUE value, because a false one
+    /// would pass whether the field was read or ignored.
     /// </summary>
     [Fact]
     public void FuzzyCorrection_OptInSurvivesTheGatewayJson()

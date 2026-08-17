@@ -133,7 +133,8 @@ public sealed class DictionaryResolver
     /// <summary>
     /// Parse the camelCase JSON the Gateway's <c>GET /ingest/dictionary</c> returns
     /// (<c>vocabulary</c>, <c>commonMistranscriptions</c>, <c>profiles</c> as
-    /// <c>{ name: { cleanupEnabled } }</c>) into a <see cref="DictationDictionary"/>. Applies the
+    /// <c>{ name: { cleanupEnabled, fuzzyCorrectionEnabled } }</c>) into a
+    /// <see cref="DictationDictionary"/>. Applies the
     /// same normalization as <see cref="DictionaryLoader.Parse"/> (trimming, an always-present
     /// "default" profile) so the gateway path and the local-file path produce identical models.
     /// Exposed internally for testing without a network call.
