@@ -18,10 +18,11 @@ namespace CcDirector.Core.Dictation.Models;
 ///    LLM, which replaces these exact wrong forms with the canonical term and
 ///    changes nothing else.
 ///
-/// Profiles let the same dictionary serve multiple contexts. The only knob is
-/// whether dictionary correction runs at all (see
-/// <see cref="DictationProfile.CleanupEnabled"/>); the correction itself never
-/// rewrites, summarizes, or restyles the speaker's words.
+/// Profiles let the same dictionary serve multiple contexts. They control whether
+/// dictionary correction runs at all (<see cref="DictationProfile.CleanupEnabled"/>) and
+/// whether the unlisted fuzzy matcher may run on top of it
+/// (<see cref="DictationProfile.FuzzyCorrectionEnabled"/>, default off); the correction
+/// itself never rewrites, summarizes, or restyles the speaker's words.
 /// </summary>
 public sealed record DictationDictionary(
     IReadOnlyList<string> Vocabulary,
@@ -35,11 +36,31 @@ public sealed record DictationDictionary(
 }
 
 /// <summary>
-/// A named dictation profile. <see cref="CleanupEnabled"/> is the only knob:
-/// when true, the dictionary-correction LLM pass runs (dictionary terms only,
-/// never rewording); when false, the raw transcript is returned verbatim with
-/// no correction at all.
+/// A named dictation profile. Two knobs, and the split between them matters:
+///
+/// <see cref="CleanupEnabled"/> - when false, the raw transcript is returned verbatim
+/// with no correction at all. When true, the wrong forms the user LISTED in
+/// <see cref="DictationDictionary.CommonMistranscriptions"/> are corrected. Those are safe
+/// because the user chose them.
+///
+/// <see cref="FuzzyCorrectionEnabled"/> - whether the UNLISTED fuzzy matcher may also run.
+/// It guesses from spelling similarity alone, with no sentence context and no signal that
+/// the spoken word is already an ordinary word, so it rewrites ordinary English into
+/// dictionary terms: "make sure" -> "make Soren", "explain the concept" -> "explain the
+/// ConPty", "the screen is open" -> "the Soren is Soren". Measured against a real 28-term
+/// glossary, 293 ordinary words out of a 22k-word corpus were silently rewritten. It is
+/// therefore DEFAULT OFF and stays off until a judge that can read the sentence decides
+/// each candidate (devthrottle_internal #1554).
+///
+/// Turning it on is a deliberate opt-in written into the glossary
+/// (<c>fuzzy_correction_enabled: true</c> in YAML, <c>fuzzyCorrectionEnabled</c> over the
+/// Gateway's dictionary JSON). Absent means OFF everywhere it is read, so every glossary
+/// already in the field - all of which predate the key - gets the safe answer. Absent means
+/// something different when a glossary is WRITTEN: the Gateway preserves whatever is on disk
+/// rather than erasing it, so a save from a client that knows nothing about this setting
+/// cannot switch it back off.
 /// </summary>
 public sealed record DictationProfile(
     string Name,
-    bool CleanupEnabled);
+    bool CleanupEnabled,
+    bool FuzzyCorrectionEnabled = false);

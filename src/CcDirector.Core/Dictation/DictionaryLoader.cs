@@ -24,8 +24,13 @@ namespace CcDirector.Core.Dictation;
 ///   profiles:
 ///     default:
 ///       cleanup_enabled: true
+///       fuzzy_correction_enabled: false   # optional; OFF unless written here
 ///     code:
 ///       cleanup_enabled: false
+///
+/// <c>fuzzy_correction_enabled</c> is the opt-in for the unlisted fuzzy matcher and is
+/// absent from every glossary in the field, which is the point: absent means off. See
+/// <see cref="DictationProfile.FuzzyCorrectionEnabled"/> for why.
 /// </summary>
 public sealed class DictionaryLoader : IDisposable
 {
@@ -133,6 +138,7 @@ public sealed class DictionaryLoader : IDisposable
                 kv => new YamlProfile
                 {
                     CleanupEnabled = kv.Value.CleanupEnabled,
+                    FuzzyCorrectionEnabled = kv.Value.FuzzyCorrectionEnabled,
                 }),
         };
 
@@ -212,7 +218,8 @@ public sealed class DictionaryLoader : IDisposable
                     continue;
                 profiles[kv.Key.Trim()] = new DictationProfile(
                     Name: kv.Key.Trim(),
-                    CleanupEnabled: kv.Value.CleanupEnabled);
+                    CleanupEnabled: kv.Value.CleanupEnabled,
+                    FuzzyCorrectionEnabled: kv.Value.FuzzyCorrectionEnabled);
             }
         }
 
@@ -222,7 +229,8 @@ public sealed class DictionaryLoader : IDisposable
         {
             profiles["default"] = new DictationProfile(
                 Name: "default",
-                CleanupEnabled: true);
+                CleanupEnabled: true,
+                FuzzyCorrectionEnabled: false);
         }
 
         return new DictationDictionary(vocab, patterns, profiles);
@@ -251,5 +259,9 @@ public sealed class DictionaryLoader : IDisposable
     public sealed class YamlProfile
     {
         public bool CleanupEnabled { get; set; } = true;
+
+        /// <summary>Opt-in for the unlisted fuzzy matcher. Absent from the YAML means OFF -
+        /// see <see cref="DictationProfile.FuzzyCorrectionEnabled"/>.</summary>
+        public bool FuzzyCorrectionEnabled { get; set; }
     }
 }

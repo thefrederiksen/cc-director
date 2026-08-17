@@ -18,7 +18,9 @@ namespace CcDirector.Core.Dictation;
 ///      dictionary lists explicitly (instant, boundary-aware). Short-circuits when it changes text.
 ///   2. <see cref="FuzzyDictionaryMatcher"/> - phonetic/edit-distance matcher: catches NEW mishearings
 ///      that were never hand-listed ("Mindsey" -> mindzie, "Akmeflow" -> acmeflow) by scoring word
-///      windows against the canonical vocabulary. This is what replaced the language model.
+///      windows against the canonical vocabulary. OPT-IN and OFF by default, because it decides on
+///      spelling alone and rewrites ordinary words into dictionary terms - see
+///      <see cref="DictationProfile.FuzzyCorrectionEnabled"/>.
 ///
 /// The transcript never round-trips through any generative model, so nothing can reword, summarize,
 /// answer, or inject text (issue #190). The only change made to the user's words is a validated
@@ -75,7 +77,16 @@ public sealed class CleanupOrchestrator
         var sw = Stopwatch.StartNew();
         try
         {
-            // Stage 1: exact/alias map (the hand-listed wrong forms). Short-circuits on any change.
+            // Stage 1: exact/alias map (the hand-listed wrong forms the user chose for themselves).
+            //
+            // It still short-circuits. Letting stage 2 run on the alias-corrected text was tried and
+            // reverted: the fuzzy matcher skips a multi-word canonical window but does not RESERVE it,
+            // so it then considers each token inside separately and can rewrite half of a canonical
+            // phrase stage 1 just inserted ("alfa beta" -> "Alpha Beta" -> "Alpha Beto"). Composing the
+            // two stages needs edits generated against the raw text and merged only where they do not
+            // overlap, which is real work and belongs with the offset-based apply in #1554 - not in an
+            // emergency fix. The order-dependence this leaves is a known defect, and it is strictly
+            // less harmful than corrupting a term the user hand-listed.
             var deterministic = TryApplyKnownMistranscriptions(rawTranscript, dictionary);
             if (deterministic is not null)
             {
@@ -85,8 +96,23 @@ public sealed class CleanupOrchestrator
                 return Done(deterministic);
             }
 
-            // Stage 2: fuzzy matcher proposes edits for the unlisted mishearings; the SAME engine
-            // gate validates and applies them, so the safety invariant is identical to before.
+            // Stage 2 is OPT-IN and off unless the glossary asks for it. The fuzzy matcher guesses
+            // from spelling alone and rewrites ordinary words into dictionary terms ("make sure" ->
+            // "make Soren"); it stays off until a judge that can read the sentence rules on each
+            // candidate (devthrottle_internal #1554). Stage 1 above still runs, so the corrections the
+            // user listed by hand keep working.
+            if (!profile.FuzzyCorrectionEnabled)
+            {
+                sw.Stop();
+                FileLog.Write($"[CleanupOrchestrator] CleanAsync: no listed mistranscription matched and "
+                              + $"unlisted fuzzy correction is off for profile '{profile.Name}'; "
+                              + $"returning verbatim in {sw.Elapsed.TotalMilliseconds:0.###}ms");
+                return Done(new CleanupOutcome(
+                    rawTranscript, Applied: false, Reason: "no dictionary corrections needed"));
+            }
+
+            // The fuzzy matcher proposes edits for the unlisted mishearings; the SAME engine gate
+            // validates and applies them, so the safety invariant is identical to before.
             var proposed = FuzzyDictionaryMatcher.Propose(rawTranscript, dictionary);
             var validation = TranscriptEditEngine.Validate(proposed, rawTranscript, dictionary);
             foreach (var r in validation.Rejected)
@@ -188,7 +214,7 @@ public sealed class CleanupOrchestrator
             return found;
         if (dictionary.Profiles.TryGetValue("default", out var def))
             return def;
-        return new DictationProfile("default", CleanupEnabled: true);
+        return new DictationProfile("default", CleanupEnabled: true, FuzzyCorrectionEnabled: false);
     }
 
     private static string Truncate(string s, int max)

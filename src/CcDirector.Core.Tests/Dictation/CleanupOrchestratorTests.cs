@@ -9,6 +9,11 @@ namespace CcDirector.Core.Tests.Dictation;
 /// exact/alias map, then the <see cref="FuzzyDictionaryMatcher"/>, and validates every proposed edit
 /// through <see cref="TranscriptEditEngine"/>. These pin the two invariants that matter: real
 /// dictionary mishearings get corrected, and text that is NOT a dictionary term is never touched.
+///
+/// This file exercises the fuzzy stage ON PURPOSE, so its dictionaries opt in explicitly
+/// (<see cref="DictationProfile.FuzzyCorrectionEnabled"/>). That stage is OFF by default in the
+/// field; the default and the over-correction it prevents are covered by
+/// <see cref="CleanupOverCorrectionTests"/>.
 /// </summary>
 public sealed class CleanupOrchestratorTests
 {
@@ -21,7 +26,8 @@ public sealed class CleanupOrchestratorTests
             patterns ?? new Dictionary<string, IReadOnlyList<string>>(),
             profiles ?? new Dictionary<string, DictationProfile>
             {
-                ["default"] = new DictationProfile("default", CleanupEnabled: true),
+                ["default"] = new DictationProfile(
+                    "default", CleanupEnabled: true, FuzzyCorrectionEnabled: true),
             });
 
     private static DictationDictionary ProductionLikeDict() => BuildDict(
