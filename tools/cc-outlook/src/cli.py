@@ -820,12 +820,17 @@ def categorize(
 @app.command()
 def attachments(
     message_id: str = typer.Argument(..., help="Message ID"),
+    json_output: bool = typer.Option(False, "--json", help="Output as JSON for machine consumption"),
 ):
     """List attachments on a message."""
     client = get_client()
 
     try:
         atts = client.list_attachments(message_id)
+
+        if json_output:
+            print(json.dumps(atts, indent=2, ensure_ascii=True))
+            return
 
         if not atts:
             console.print("[yellow]No attachments[/yellow]")
@@ -835,7 +840,6 @@ def attachments(
         table.add_column("Name", style="cyan")
         table.add_column("Size", justify="right")
         table.add_column("Type")
-        table.add_column("ID")
 
         for att in atts:
             size = att.get('size', 0)
@@ -844,11 +848,17 @@ def attachments(
                 att.get('name', ''),
                 size_str,
                 att.get('content_type', ''),
-                # Print the full id: download-attachment consumes it verbatim.
-                att.get('id', ''),
             )
 
         console.print(table)
+
+        # The ids go BELOW the table, one per line, unboxed and unstyled.
+        # download-attachment consumes the id verbatim, and an id is far wider
+        # than a terminal - inside a table cell Rich ellipsizes it, so the very
+        # id the next command needs could not be copied out of this output.
+        console.print("\n[dim]Attachment IDs (pass to download-attachment):[/dim]")
+        for att in atts:
+            print(f"{att.get('name', '')}: {att.get('id', '')}")
 
     except ValueError as e:
         logger.error(f"Attachments error: {e}")
@@ -888,11 +898,17 @@ def download_attachment(
         else:
             save_path = target_att.get('name', 'attachment')
 
+        # Report the path that was WRITTEN, not the one that was asked for: the
+        # two differ when O365 sanitizes the file name.
         result = client.download_attachment(message_id, attachment_id, save_path)
-        console.print(f"[green]Downloaded:[/green] {result.get('name')} -> {save_path}")
+        console.print(f"[green]Downloaded:[/green] {result.get('name')} -> {result.get('path')}")
 
     except ValueError as e:
         logger.error(f"Download error: {e}")
+        console.print(f"[red]Error:[/red] {e}")
+        raise typer.Exit(1)
+    except RuntimeError as e:
+        logger.error(f"Download failed to write file: {e}")
         console.print(f"[red]Error:[/red] {e}")
         raise typer.Exit(1)
     except (ConnectionError, OSError) as e:

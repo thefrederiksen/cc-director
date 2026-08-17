@@ -89,8 +89,11 @@ cc-outlook flag <message_id> -d 2024-12-31      # Flag with due date
 cc-outlook categorize <message_id> "Work,Urgent"
 
 # Attachments
-cc-outlook attachments <message_id>                           # List attachments
-cc-outlook download-attachment <message_id> <attachment_id>   # Download
+cc-outlook attachments <message_id>                           # List attachments, with full IDs
+cc-outlook attachments <message_id> --json                    # Same, as JSON
+cc-outlook download-attachment <message_id> <attachment_id>   # Download to the current directory
+cc-outlook download-attachment <message_id> <attachment_id> -o C:\out\invite.ics
+cc-outlook download-attachment <message_id> <attachment_id> -o C:\out   # Into a directory
 
 # Folders
 cc-outlook folders

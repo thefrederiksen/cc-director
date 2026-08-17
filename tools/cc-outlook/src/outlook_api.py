@@ -3,6 +3,7 @@
 import logging
 import os
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Optional, List
 
 
@@ -897,15 +898,20 @@ class OutlookClient:
     def download_attachment(self, message_id: str, attachment_id: str,
                            save_path: str) -> dict:
         """
-        Download an attachment.
+        Download an attachment to disk.
 
         Args:
             message_id: Message ID
             attachment_id: Attachment ID
-            save_path: Path to save the file
+            save_path: Where to write the file. A path naming an existing
+                directory writes the attachment there under its own name.
 
         Returns:
-            Dict with download info
+            Dict with the attachment name, the path actually written, and its size
+
+        Raises:
+            ValueError: message, attachment, or output directory not found
+            RuntimeError: the attachment could not be written
         """
         mailbox = self.account.mailbox()
         # Attachments are only present when fetched with download_attachments=True.
@@ -925,11 +931,39 @@ class OutlookClient:
         if not target_attachment:
             raise ValueError(f"Attachment not found: {attachment_id}")
 
-        target_attachment.save(save_path)
+        # O365's Attachment.save(location, custom_name) wants location to be an
+        # EXISTING DIRECTORY, with the file name in custom_name. Handed a full file
+        # path it logs at debug level and returns False, writing nothing - so the
+        # directory and the name are split apart here, and the result is checked.
+        requested = Path(save_path)
+        if requested.is_dir():
+            directory, filename = requested, target_attachment.name
+        else:
+            directory, filename = requested.parent, requested.name
+
+        if not directory.is_dir():
+            raise ValueError(f"Output directory does not exist: {directory}")
+
+        if not filename:
+            raise ValueError(f"No file name to save the attachment as: {save_path}")
+
+        if not target_attachment.save(str(directory), custom_name=filename):
+            raise RuntimeError(
+                f"Failed to write attachment '{target_attachment.name}' to {directory}"
+            )
+
+        # save() sanitizes the file name, so the path asked for is not necessarily
+        # the path written. Report the one O365 recorded.
+        written = getattr(target_attachment, 'attachment', None)
+        if written is None:
+            raise RuntimeError(
+                f"Attachment '{target_attachment.name}' reported saved "
+                f"but recorded no path on disk"
+            )
 
         return {
             'name': target_attachment.name,
-            'path': save_path,
+            'path': str(written),
             'size': getattr(target_attachment, 'size', 0)
         }
 
