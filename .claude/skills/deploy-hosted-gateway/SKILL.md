@@ -92,15 +92,41 @@ report it. That was wrong, and it trained people to accept the exact failure tha
 took the live service down for 38.5 seconds on 2 August 2026 (issue #2383).
 
 The deploy is a **warmed slot swap**: the old instance keeps serving until the new
-one is proven healthy, so a healthy deploy has **no user-visible gap at all**.
-Three consecutive deploys measured `Longest unavailable stretch: 0.0s` over a
-ten-minute watch. There is no cold start on the user path, because the user is
-never moved onto a cold instance.
+one is proven healthy, and the swap itself has measured `Longest unavailable
+stretch: 0.0s` across three consecutive deploys. There is no cold start on the
+user path, because the user is never moved onto a cold instance.
+
+**But the swap is not the whole cost of a deploy, and this section used to imply
+it was.** It said a healthy deploy has "no user-visible gap at all". Around the
+swap, a healthy deploy still costs roughly four seconds while the spare slot
+starts, five while the old slot stops, and about ten in which Directors show
+yellow and reconnect on their own - both slots share one worker, so starting and
+stopping the spare disturbs production.
+
+**And a deploy can be far worse than that, from a cause the swap number does not
+cover.** On 12 August 2026 one took the live service off the air for **46.7
+seconds** against a five-second budget (issue #2585) - worse than the 38.5-second
+failure above, and eight days after this section was written to prevent a repeat.
+Neither outage was the cutover. In both, a second container failed its own
+startup, the platform reverted by stopping the SITE, and stopping the site tore
+down the healthy container that was serving traffic beside it.
 
 So if `/healthz` does not answer `200` immediately after the run goes green,
-something went wrong with the hand-off. Say so; do not wait it out. The run itself
-now fails if the external outage exceeds five seconds, so a green run already
-means production stayed up.
+something went wrong with the hand-off. Say so; do not wait it out.
+
+**A failed run is a report, not a protection.** The watch job fails if the
+external outage exceeds five seconds, and it did fail on 12 August - users were
+dark for 46.7 seconds regardless. A green run means production stayed inside the
+budget; a red one tells you afterwards that it did not. Neither prevents an
+outage, so never present a green run as proof that deploying is free.
+
+v2.0.4 mitigates the 12 August cause: the Gateway now waits for its database
+inside the platform's start budget instead of giving up at ninety seconds and
+exiting. Its own code comments say it is a mitigation and NOT the fix. The fix is
+to bind the port before the database work, so site startup never depends on
+PostgreSQL (#2383's first recommendation), and that is unbuilt. Until it is,
+expect that a deploy CAN take the service down for tens of seconds, and say so
+when you report one.
 
 ### 5. Report plainly
 
