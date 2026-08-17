@@ -171,6 +171,34 @@ public sealed class CleanupOverCorrectionTests
         Assert.True(reparsed.Profiles["default"].FuzzyCorrectionEnabled);
     }
 
+    /// <summary>
+    /// The opt-in also survives the Gateway's dictionary JSON. This parser rebuilds the profile AND
+    /// writes the local cache, so dropping the field would quietly rewrite a deliberate enable as
+    /// false on every resolve. Asserted with a TRUE value, because a false one would pass whether
+    /// the field was read or ignored.
+    /// </summary>
+    [Fact]
+    public void FuzzyCorrection_OptInSurvivesTheGatewayJson()
+    {
+        var dict = DictionaryResolver.ParseDictionaryJson("""
+            {"vocabulary":["Soren"],"commonMistranscriptions":{},
+             "profiles":{"default":{"cleanupEnabled":true,"fuzzyCorrectionEnabled":true}}}
+            """);
+
+        Assert.True(dict.Profiles["default"].FuzzyCorrectionEnabled);
+    }
+
+    /// <summary>And a Gateway response that says nothing about it still means off.</summary>
+    [Fact]
+    public void FuzzyCorrection_IsOffWhenTheGatewayJsonOmitsIt()
+    {
+        var dict = DictionaryResolver.ParseDictionaryJson("""
+            {"vocabulary":["Soren"],"profiles":{"default":{"cleanupEnabled":true}}}
+            """);
+
+        Assert.False(dict.Profiles["default"].FuzzyCorrectionEnabled);
+    }
+
     /// <summary>Cleanup disabled entirely still means verbatim, aliases included.</summary>
     [Fact]
     public void CleanupDisabled_LeavesEvenListedWrongFormsAlone()

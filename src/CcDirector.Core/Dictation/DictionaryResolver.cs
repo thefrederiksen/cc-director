@@ -186,8 +186,19 @@ public sealed class DictionaryResolver
                     && TryGetProperty(prop.Value, "cleanupEnabled", out var ce)
                     && ce.ValueKind is JsonValueKind.True or JsonValueKind.False)
                     cleanupEnabled = ce.GetBoolean();
+
+                // Absent means off, matching the YAML loader: this reconstruction also WRITES the
+                // local cache, so dropping the field here would quietly rewrite a Gateway opt-in
+                // as false on every resolve.
+                var fuzzyEnabled = false;
+                if (prop.Value.ValueKind == JsonValueKind.Object
+                    && TryGetProperty(prop.Value, "fuzzyCorrectionEnabled", out var fe)
+                    && fe.ValueKind is JsonValueKind.True or JsonValueKind.False)
+                    fuzzyEnabled = fe.GetBoolean();
+
                 var name = prop.Name.Trim();
-                profiles[name] = new DictationProfile(Name: name, CleanupEnabled: cleanupEnabled);
+                profiles[name] = new DictationProfile(
+                    Name: name, CleanupEnabled: cleanupEnabled, FuzzyCorrectionEnabled: fuzzyEnabled);
             }
         }
 

@@ -52,9 +52,13 @@ public sealed record DictationDictionary(
 /// therefore DEFAULT OFF and stays off until a judge that can read the sentence decides
 /// each candidate (devthrottle_internal #1554).
 ///
-/// Turning it on is a deliberate opt-in written into the glossary YAML
-/// (<c>fuzzy_correction_enabled: true</c>). Nothing else can flip it, and no wire format
-/// carries it, so every path that does not explicitly ask for it gets the safe answer.
+/// Turning it on is a deliberate opt-in written into the glossary
+/// (<c>fuzzy_correction_enabled: true</c> in YAML, <c>fuzzyCorrectionEnabled</c> over the
+/// Gateway's dictionary JSON). Absent means OFF everywhere it is read, so every glossary
+/// already in the field - all of which predate the key - gets the safe answer. Absent means
+/// something different when a glossary is WRITTEN: the Gateway preserves whatever is on disk
+/// rather than erasing it, so a save from a client that knows nothing about this setting
+/// cannot switch it back off.
 /// </summary>
 public sealed record DictationProfile(
     string Name,

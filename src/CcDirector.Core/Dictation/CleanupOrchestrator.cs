@@ -124,14 +124,11 @@ public sealed class CleanupOrchestrator
             var (cleaned, appliedCount) = TranscriptEditEngine.Apply(rawTranscript, validation.Accepted);
             sw.Stop();
 
-            var reasons = new List<string>();
-            if (appliedCount > 0)
-                reasons.Add($"{appliedCount} unlisted fuzzy correction(s) applied");
+            string? reason = null;
             if (validation.Rejected.Count > 0)
-                reasons.Add($"{validation.Rejected.Count} proposed edit(s) rejected");
+                reason = $"{validation.Rejected.Count} proposed edit(s) rejected";
             if (appliedCount == 0)
-                reasons.Add("no dictionary corrections needed");
-            var reason = reasons.Count > 0 ? string.Join("; ", reasons) : null;
+                reason = reason is null ? "no dictionary corrections needed" : reason + "; none applied";
 
             FileLog.Write($"[CleanupOrchestrator] CleanAsync done in {sw.Elapsed.TotalMilliseconds:0.###}ms: "
                           + $"proposed={proposed.Count} accepted={validation.Accepted.Count} "
