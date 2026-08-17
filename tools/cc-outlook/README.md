@@ -70,11 +70,18 @@ cc-outlook send -t "to@example.com" -s "Subject" -b "Body" --cc "cc@example.com"
 cc-outlook send -t "to@example.com" -s "Subject" -b "Body" --bcc "bcc@example.com"
 cc-outlook send -t "to@example.com" -s "Subject" -b "<h1>HTML</h1>" --html
 cc-outlook send -t "to@example.com" -s "Subject" -b "Urgent!" --importance high
+cc-outlook send -t "to@example.com" -s "Subject" -b "Body" -a report.pdf -a notes.txt
+
+# Draft for review before sending
+cc-outlook draft -t "to@example.com" -s "Subject" -b "Body"
+cc-outlook draft -t "to@example.com" -s "Subject" -b "Body" -a report.pdf  # Repeatable
 
 # Reply/Forward
 cc-outlook reply <message_id> -b "Thanks for the info"
 cc-outlook reply <message_id> -b "Thanks all" --all  # Reply all
+cc-outlook reply <message_id> -b "Attached" --attach report.pdf  # -a is --all here
 cc-outlook forward <message_id> -t "other@example.com" -b "FYI"
+cc-outlook forward <message_id> -t "other@example.com" -a extra.pdf
 
 # Search
 cc-outlook search "project update"

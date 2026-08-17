@@ -28,6 +28,28 @@ def _to_utc(dt: datetime) -> datetime:
         dt = dt.astimezone()
     return dt.astimezone(timezone.utc)
 
+
+def _add_attachments(message, attachments: Optional[List[str]]) -> None:
+    """Attach local files to an outgoing message.
+
+    Shared by every outgoing path - send, draft, reply and forward - so an
+    attachment behaves identically whichever one is used.
+
+    Args:
+        message: O365 Message to attach the files to
+        attachments: File paths to attach; None or empty attaches nothing
+
+    Raises:
+        FileNotFoundError: one of the paths does not exist
+    """
+    if not attachments:
+        return
+
+    for file_path in attachments:
+        if not os.path.exists(file_path):
+            raise FileNotFoundError(f"Attachment not found: {file_path}")
+        message.attachments.add(file_path)
+
 from O365 import Account
 from tzlocal import get_localzone
 
@@ -218,19 +240,14 @@ class OutlookClient:
         message.body_type = 'HTML' if html else 'text'
         message.importance = importance
 
-        # Add attachments
-        if attachments:
-            for file_path in attachments:
-                if os.path.exists(file_path):
-                    message.attachments.add(file_path)
-                else:
-                    raise FileNotFoundError(f"Attachment not found: {file_path}")
+        _add_attachments(message, attachments)
 
         message.send()
         return {'status': 'sent', 'to': to, 'subject': subject}
 
     def create_draft(self, to: List[str], subject: str, body: str,
-                     cc: Optional[List[str]] = None, html: bool = False) -> dict:
+                     cc: Optional[List[str]] = None, html: bool = False,
+                     attachments: Optional[List[str]] = None) -> dict:
         """
         Create a draft email.
 
@@ -240,9 +257,13 @@ class OutlookClient:
             body: Email body
             cc: List of CC recipients
             html: Whether body is HTML
+            attachments: List of file paths to attach
 
         Returns:
             Dict with draft info
+
+        Raises:
+            FileNotFoundError: an attachment path does not exist
         """
         mailbox = self.account.mailbox()
         message = mailbox.new_message()
@@ -255,6 +276,11 @@ class OutlookClient:
         message.body = body
         # Honor --html; O365 defaults the body type to HTML otherwise.
         message.body_type = 'HTML' if html else 'text'
+
+        # Attach BEFORE save_draft so the draft lands in Drafts carrying its
+        # attachments - the point of a draft is that it is complete and ready
+        # for a human to review and send.
+        _add_attachments(message, attachments)
 
         # Save as draft
         message.save_draft()
@@ -703,7 +729,8 @@ class OutlookClient:
     # =========================================================================
 
     def reply_message(self, message_id: str, body: str, reply_all: bool = False,
-                      send: bool = False, html: bool = False) -> dict:
+                      send: bool = False, html: bool = False,
+                      attachments: Optional[List[str]] = None) -> dict:
         """
         Create a draft reply (or send immediately) to a message.
 
@@ -713,9 +740,13 @@ class OutlookClient:
             reply_all: If True, reply to all recipients
             send: If True, send immediately instead of saving as draft
             html: If True, body is HTML
+            attachments: List of file paths to attach
 
         Returns:
             Dict with reply details
+
+        Raises:
+            FileNotFoundError: an attachment path does not exist
         """
         mailbox = self.account.mailbox()
         message = mailbox.get_message(object_id=message_id)
@@ -731,6 +762,8 @@ class OutlookClient:
         reply.body = body
         if html:
             reply.body_type = 'HTML'
+
+        _add_attachments(reply, attachments)
 
         if send:
             reply.send()
@@ -748,7 +781,8 @@ class OutlookClient:
             'reply_all': reply_all
         }
 
-    def forward_message(self, message_id: str, to: List[str], body: str = None) -> dict:
+    def forward_message(self, message_id: str, to: List[str], body: str = None,
+                        attachments: Optional[List[str]] = None) -> dict:
         """
         Forward a message.
 
@@ -756,9 +790,14 @@ class OutlookClient:
             message_id: Message ID to forward
             to: List of recipient emails
             body: Optional additional message
+            attachments: List of file paths to attach in addition to the
+                attachments the forwarded message already carries
 
         Returns:
             Dict with forward status
+
+        Raises:
+            FileNotFoundError: an attachment path does not exist
         """
         mailbox = self.account.mailbox()
         message = mailbox.get_message(object_id=message_id)
@@ -784,6 +823,8 @@ class OutlookClient:
                 forward.body_type = "HTML"
             else:
                 forward.body = body + "\n\n" + existing
+
+        _add_attachments(forward, attachments)
 
         forward.send()
 

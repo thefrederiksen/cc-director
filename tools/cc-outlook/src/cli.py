@@ -618,6 +618,7 @@ def draft(
     body_file: Path = typer.Option(None, "-f", "--file", help="Read body from file"),
     cc: str = typer.Option(None, "--cc", help="CC recipients, comma-separated"),
     html: bool = typer.Option(False, "--html", help="Body is HTML"),
+    attach: Optional[List[Path]] = typer.Option(None, "--attach", "-a", help="Attachments"),
 ):
     """Create a draft email."""
     client = get_client()
@@ -635,6 +636,7 @@ def draft(
     # Parse recipients
     to_list = [addr.strip() for addr in to.split(',')]
     cc_list = [addr.strip() for addr in cc.split(',')] if cc else None
+    attach_list = [str(p) for p in attach] if attach else None
 
     try:
         result = client.create_draft(
@@ -643,9 +645,16 @@ def draft(
             body=body,
             cc=cc_list,
             html=html,
+            attachments=attach_list,
         )
         console.print(f"[green]Draft created.[/green] ID: {result.get('id', '')[:50]}...")
 
+    # FileNotFoundError is an OSError, so it must be caught before the network
+    # clause below or a missing attachment reads as a network failure.
+    except FileNotFoundError as e:
+        logger.error(f"Attachment not found: {e}")
+        console.print(f"[red]Error:[/red] {e}")
+        raise typer.Exit(1)
     except ValueError as e:
         logger.error(f"Invalid draft parameter: {e}")
         console.print(f"[red]Error:[/red] {e}")
@@ -702,6 +711,8 @@ def reply(
     reply_all: bool = typer.Option(False, "--all", "-a", help="Reply to all recipients"),
     send_flag: bool = typer.Option(False, "--send", help="Send immediately instead of saving as draft"),
     html: bool = typer.Option(False, "--html", help="Body is HTML"),
+    # Long form only: -a is already taken by --all on this command.
+    attach: Optional[List[Path]] = typer.Option(None, "--attach", help="Attachments"),
 ):
     """Create a reply to an email (draft or send)."""
     client = get_client()
@@ -716,9 +727,12 @@ def reply(
         console.print("[red]Error:[/red] Provide --body or --file")
         raise typer.Exit(1)
 
+    attach_list = [str(p) for p in attach] if attach else None
+
     try:
         result = client.reply_message(message_id, body=body, reply_all=reply_all,
-                                      send=send_flag, html=html)
+                                      send=send_flag, html=html,
+                                      attachments=attach_list)
         action = "Reply-all" if reply_all else "Reply"
         if send_flag:
             console.print(f"[green]{action} sent.[/green]")
@@ -727,6 +741,12 @@ def reply(
             if result.get('id'):
                 console.print(f"Draft ID: {result['id']}")
 
+    # FileNotFoundError is an OSError, so it must be caught before the network
+    # clause below or a missing attachment reads as a network failure.
+    except FileNotFoundError as e:
+        logger.error(f"Attachment not found: {e}")
+        console.print(f"[red]Error:[/red] {e}")
+        raise typer.Exit(1)
     except ValueError as e:
         logger.error(f"Reply error: {e}")
         console.print(f"[red]Error:[/red] {e}")
@@ -742,16 +762,25 @@ def forward(
     message_id: str = typer.Argument(..., help="Message ID to forward"),
     to: str = typer.Option(..., "-t", "--to", help="Recipient email(s), comma-separated"),
     body: str = typer.Option(None, "-b", "--body", help="Additional message"),
+    attach: Optional[List[Path]] = typer.Option(None, "--attach", "-a", help="Attachments"),
 ):
     """Forward an email."""
     client = get_client()
 
     to_list = [addr.strip() for addr in to.split(',')]
+    attach_list = [str(p) for p in attach] if attach else None
 
     try:
-        result = client.forward_message(message_id, to=to_list, body=body)
+        result = client.forward_message(message_id, to=to_list, body=body,
+                                        attachments=attach_list)
         console.print(f"[green]Message forwarded to {', '.join(to_list)}[/green]")
 
+    # FileNotFoundError is an OSError, so it must be caught before the network
+    # clause below or a missing attachment reads as a network failure.
+    except FileNotFoundError as e:
+        logger.error(f"Attachment not found: {e}")
+        console.print(f"[red]Error:[/red] {e}")
+        raise typer.Exit(1)
     except ValueError as e:
         logger.error(f"Forward error: {e}")
         console.print(f"[red]Error:[/red] {e}")

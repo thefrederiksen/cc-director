@@ -174,6 +174,156 @@ class TestForwardMessageNote:
         forward.send.assert_called_once()
 
 
+class TestOutgoingAttachments:
+    """Regression tests for issue #2526.
+
+    Only `send` could carry an attachment. `draft` could not, so a draft could
+    never be built already carrying the file it is about - which is exactly what
+    a review-before-send workflow needs; the choice was to send unreviewed or to
+    ask a human to drag the file on. `reply --draft` and `forward` shared the gap.
+
+    The ordering assertions matter as much as the attach assertions: attaching
+    after save_draft/send would leave the draft in Drafts, or the mail in the
+    recipient's inbox, without the attachment.
+    """
+
+    def _existing_file(self, tmp_path, name="report.pdf"):
+        path = tmp_path / name
+        path.write_bytes(b"PDF")
+        return str(path)
+
+    def _call_order(self, mock):
+        return [name for name, _, _ in mock.mock_calls]
+
+    # --- draft -----------------------------------------------------------
+
+    def test_draft_attaches_before_saving(self, tmp_path):
+        client, message = _client_with_message()
+        path = self._existing_file(tmp_path)
+
+        client.create_draft(to=["a@example.com"], subject="s", body="b",
+                            attachments=[path])
+
+        message.attachments.add.assert_called_once_with(path)
+        order = self._call_order(message)
+        assert order.index("attachments.add") < order.index("save_draft")
+
+    def test_draft_attaches_every_file_given(self, tmp_path):
+        client, message = _client_with_message()
+        first = self._existing_file(tmp_path, "one.pdf")
+        second = self._existing_file(tmp_path, "two.pdf")
+
+        client.create_draft(to=["a@example.com"], subject="s", body="b",
+                            attachments=[first, second])
+
+        assert [c.args[0] for c in message.attachments.add.call_args_list] == [first, second]
+
+    def test_draft_without_attachments_attaches_nothing(self):
+        client, message = _client_with_message()
+
+        client.create_draft(to=["a@example.com"], subject="s", body="b")
+
+        message.attachments.add.assert_not_called()
+        message.save_draft.assert_called_once()
+
+    def test_draft_missing_attachment_raises_and_saves_no_draft(self, tmp_path):
+        client, message = _client_with_message()
+
+        with pytest.raises(FileNotFoundError):
+            client.create_draft(to=["a@example.com"], subject="s", body="b",
+                                attachments=[str(tmp_path / "nope.pdf")])
+
+        # No half-built draft is left behind in Drafts.
+        message.save_draft.assert_not_called()
+
+    # --- reply -----------------------------------------------------------
+
+    def _client_with_reply(self):
+        account = MagicMock()
+        original = MagicMock()
+        account.mailbox.return_value.get_message.return_value = original
+        return OutlookClient(account=account), original.reply.return_value
+
+    def test_reply_draft_attaches_before_saving(self, tmp_path):
+        client, reply = self._client_with_reply()
+        path = self._existing_file(tmp_path)
+
+        client.reply_message("id1", body="b", attachments=[path])
+
+        reply.attachments.add.assert_called_once_with(path)
+        order = self._call_order(reply)
+        assert order.index("attachments.add") < order.index("save_draft")
+
+    def test_reply_send_attaches_before_sending(self, tmp_path):
+        client, reply = self._client_with_reply()
+        path = self._existing_file(tmp_path)
+
+        client.reply_message("id1", body="b", send=True, attachments=[path])
+
+        reply.attachments.add.assert_called_once_with(path)
+        order = self._call_order(reply)
+        assert order.index("attachments.add") < order.index("send")
+
+    def test_reply_missing_attachment_raises_and_sends_nothing(self, tmp_path):
+        client, reply = self._client_with_reply()
+
+        with pytest.raises(FileNotFoundError):
+            client.reply_message("id1", body="b", send=True,
+                                 attachments=[str(tmp_path / "nope.pdf")])
+
+        reply.send.assert_not_called()
+        reply.save_draft.assert_not_called()
+
+    # --- forward ---------------------------------------------------------
+
+    def _client_with_forward(self):
+        account = MagicMock()
+        original = MagicMock()
+        account.mailbox.return_value.get_message.return_value = original
+        return OutlookClient(account=account), original.forward.return_value
+
+    def test_forward_attaches_before_sending(self, tmp_path):
+        client, forward = self._client_with_forward()
+        path = self._existing_file(tmp_path)
+
+        client.forward_message("id1", ["a@example.com"], attachments=[path])
+
+        forward.attachments.add.assert_called_once_with(path)
+        order = self._call_order(forward)
+        assert order.index("attachments.add") < order.index("send")
+
+    def test_forward_missing_attachment_raises_and_sends_nothing(self, tmp_path):
+        client, forward = self._client_with_forward()
+
+        with pytest.raises(FileNotFoundError):
+            client.forward_message("id1", ["a@example.com"],
+                                   attachments=[str(tmp_path / "nope.pdf")])
+
+        forward.send.assert_not_called()
+
+    # --- send (unchanged behavior, guarded through the shared helper) -----
+
+    def test_send_still_attaches(self, tmp_path):
+        client, message = _client_with_message()
+        path = self._existing_file(tmp_path)
+
+        client.send_message(to=["a@example.com"], subject="s", body="b",
+                            attachments=[path])
+
+        message.attachments.add.assert_called_once_with(path)
+        order = self._call_order(message)
+        assert order.index("attachments.add") < order.index("send")
+
+    def test_send_missing_attachment_raises_and_sends_nothing(self, tmp_path):
+        client, message = _client_with_message()
+
+        with pytest.raises(FileNotFoundError):
+            client.send_message(to=["a@example.com"], subject="s", body="b",
+                                attachments=[str(tmp_path / "nope.pdf")])
+
+        message.send.assert_not_called()
+
+
 class TestCreateEventTimezone:
     """Regression tests for the calendar-create timezone crash.
 

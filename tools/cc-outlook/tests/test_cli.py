@@ -124,3 +124,83 @@ class TestDownloadAttachmentCommand:
         assert result.exit_code != 0
         assert "Downloaded" not in result.output
         assert "Failed to write attachment" in result.output
+
+
+class TestOutgoingAttachFlags:
+    """Issue #2526: --attach on draft, and on the reply/forward paths that shared the gap."""
+
+    def _client(self):
+        client = MagicMock()
+        client.create_draft.return_value = {"id": "draft-1"}
+        client.reply_message.return_value = {"id": "reply-1"}
+        client.forward_message.return_value = {"status": "forwarded"}
+        return client
+
+    def _run(self, argv):
+        client = self._client()
+        with patch("src.cli.get_client", return_value=client):
+            result = runner.invoke(app, argv)
+        return client, result
+
+    def test_draft_passes_attachments_through(self, tmp_path):
+        path = tmp_path / "report.pdf"
+        path.write_bytes(b"PDF")
+        client, result = self._run(
+            ["draft", "-t", "a@example.com", "-s", "s", "-b", "b", "-a", str(path)]
+        )
+        assert result.exit_code == 0, result.output
+        assert client.create_draft.call_args.kwargs["attachments"] == [str(path)]
+
+    def test_draft_attach_is_repeatable(self, tmp_path):
+        first, second = tmp_path / "one.pdf", tmp_path / "two.pdf"
+        first.write_bytes(b"1")
+        second.write_bytes(b"2")
+        client, result = self._run(
+            ["draft", "-t", "a@example.com", "-s", "s", "-b", "b",
+             "--attach", str(first), "--attach", str(second)]
+        )
+        assert result.exit_code == 0, result.output
+        assert client.create_draft.call_args.kwargs["attachments"] == [str(first), str(second)]
+
+    def test_draft_without_attach_passes_none(self):
+        client, result = self._run(["draft", "-t", "a@example.com", "-s", "s", "-b", "b"])
+        assert result.exit_code == 0, result.output
+        assert client.create_draft.call_args.kwargs["attachments"] is None
+
+    def test_draft_missing_attachment_is_a_clear_error(self, tmp_path):
+        client = self._client()
+        client.create_draft.side_effect = FileNotFoundError("Attachment not found: nope.pdf")
+        with patch("src.cli.get_client", return_value=client):
+            result = runner.invoke(
+                app, ["draft", "-t", "a@example.com", "-s", "s", "-b", "b",
+                      "-a", str(tmp_path / "nope.pdf")]
+            )
+        assert result.exit_code != 0
+        # FileNotFoundError is an OSError; it must not be reported as a network error.
+        assert "Network error" not in result.output
+        assert "Attachment not found" in result.output
+
+    def test_reply_passes_attachments_through(self, tmp_path):
+        path = tmp_path / "report.pdf"
+        path.write_bytes(b"PDF")
+        client, result = self._run(
+            ["reply", "msg-1", "-b", "b", "--attach", str(path)]
+        )
+        assert result.exit_code == 0, result.output
+        assert client.reply_message.call_args.kwargs["attachments"] == [str(path)]
+
+    def test_reply_short_a_still_means_reply_all(self, tmp_path):
+        # -a was already --all on this command, so --attach is long-form only.
+        client, result = self._run(["reply", "msg-1", "-b", "b", "-a"])
+        assert result.exit_code == 0, result.output
+        assert client.reply_message.call_args.kwargs["reply_all"] is True
+        assert client.reply_message.call_args.kwargs["attachments"] is None
+
+    def test_forward_passes_attachments_through(self, tmp_path):
+        path = tmp_path / "report.pdf"
+        path.write_bytes(b"PDF")
+        client, result = self._run(
+            ["forward", "msg-1", "-t", "a@example.com", "-a", str(path)]
+        )
+        assert result.exit_code == 0, result.output
+        assert client.forward_message.call_args.kwargs["attachments"] == [str(path)]
