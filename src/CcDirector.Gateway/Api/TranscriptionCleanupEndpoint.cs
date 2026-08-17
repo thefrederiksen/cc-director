@@ -43,10 +43,20 @@ internal static class TranscriptionCleanupEndpoint
             FileLog.Write($"[TranscriptionCleanupEndpoint] POST /transcription/cleanup: chars={req.Text.Length}, "
                           + $"terms={terms.Length}, language={req.Language ?? "?"}");
 
+            // The fuzzy matcher is enabled EXPLICITLY here, and only here. This route is the
+            // text-in/text-out evaluation surface: the caller hands over the term list itself and gets
+            // the answer back rather than having it substituted into their dictation, so measuring the
+            // matcher is the whole point of the endpoint. It carries no alias map, so with the
+            // field-wide default it could never correct anything and would be a silent no-op that
+            // still returned 200. Live dictation keeps the safe default - see
+            // DictationProfile.FuzzyCorrectionEnabled.
             var dictionary = new DictationDictionary(
                 terms,
                 new Dictionary<string, IReadOnlyList<string>>(),
-                new Dictionary<string, DictationProfile> { ["default"] = new("default", CleanupEnabled: true) });
+                new Dictionary<string, DictationProfile>
+                {
+                    ["default"] = new("default", CleanupEnabled: true, FuzzyCorrectionEnabled: true),
+                });
 
             var outcome = await new CleanupOrchestrator().CleanAsync(req.Text, dictionary, "default", ctx.RequestAborted);
 

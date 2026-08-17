@@ -94,18 +94,28 @@ public sealed class CleanupOverCorrectionTests
         => Assert.Equal(expected, Clean(raw, RealWorldDictionary()));
 
     /// <summary>
-    /// An alias firing must not decide whether anything else happens. Before the fix, stage 1
-    /// returned the moment it changed text, so a sentence containing a listed wrong form silently
-    /// skipped every other correction in the same utterance.
+    /// A term the user listed by hand must survive intact. Letting the fuzzy stage run on the
+    /// alias-corrected text was tried and reverted because of exactly this: the matcher skips a
+    /// multi-word canonical window but does not RESERVE it, so it then judges each token inside
+    /// separately and rewrote half of the phrase stage 1 had just inserted - "alfa beta" became
+    /// "Alpha Beta" and then "Alpha Beto".
+    ///
+    /// Stage 1 short-circuits again, so this cannot happen. The order-dependence that restores is a
+    /// known defect tracked with the offset-based apply in #1554, and it is strictly less harmful
+    /// than corrupting a term the user chose for themselves.
     /// </summary>
     [Fact]
-    public void AnAliasFiring_DoesNotSuppressTheRestOfThePipeline()
+    public void AnAliasResult_IsNeverPartlyRewrittenByTheFuzzyStage()
     {
-        var dict = RealWorldDictionary(fuzzy: true);
-        var cleaned = Clean("Mindsey deployed Terascale today", dict);
+        var dict = new DictationDictionary(
+            new[] { "Alpha Beta", "Beto" },
+            new Dictionary<string, IReadOnlyList<string>> { ["Alpha Beta"] = new[] { "alfa beta" } },
+            new Dictionary<string, DictationProfile>
+            {
+                ["default"] = new("default", CleanupEnabled: true, FuzzyCorrectionEnabled: true),
+            });
 
-        Assert.Contains("mindzie", cleaned);
-        Assert.Contains("Tailscale", cleaned);
+        Assert.Equal("ship Alpha Beta today", Clean("ship alfa beta today", dict));
     }
 
     /// <summary>

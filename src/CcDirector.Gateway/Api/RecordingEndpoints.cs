@@ -304,7 +304,7 @@ internal static class RecordingEndpoints
                     return Results.BadRequest(new { error = "dictionary body required" });
 
                 var path = GlossaryPathFor(t.Value);
-                DictionaryLoader.WriteToDisk(path, FromDto(dto));
+                DictionaryLoader.WriteToDisk(path, FromDto(dto, DictionaryLoader.LoadFromDisk(path)));
                 var reread = DictionaryLoader.LoadFromDisk(path);
                 return Results.Json(ToDto(reread));
             }
@@ -332,7 +332,8 @@ internal static class RecordingEndpoints
                     return Results.BadRequest(new { error = "provide 'terms' and/or 'mistranscriptions'" });
 
                 var path = GlossaryPathFor(t.Value);
-                var current = ToDto(DictionaryLoader.LoadFromDisk(path));
+                var onDisk = DictionaryLoader.LoadFromDisk(path);
+                var current = ToDto(onDisk);
 
                 foreach (var term in add.Terms ?? new())
                 {
@@ -359,7 +360,7 @@ internal static class RecordingEndpoints
                     }
                 }
 
-                DictionaryLoader.WriteToDisk(path, FromDto(current));
+                DictionaryLoader.WriteToDisk(path, FromDto(current, onDisk));
                 return Results.Json(ToDto(DictionaryLoader.LoadFromDisk(path)));
             }
             catch (JsonException ex)
@@ -883,9 +884,14 @@ internal static class RecordingEndpoints
             .ToDictionary(kv => kv.Key, kv => kv.Value.ToList()),
         Profiles: dict.Profiles.ToDictionary(
             kv => kv.Key,
-            kv => new DictionaryProfileDto(kv.Value.CleanupEnabled)));
+            kv => new DictionaryProfileDto(kv.Value.CleanupEnabled, kv.Value.FuzzyCorrectionEnabled)));
 
-    private static DictationDictionary FromDto(DictionaryDto dto)
+    /// <param name="onDisk">The glossary as it currently stands, so a save cannot DESTROY a setting the
+    /// request does not mention. <see cref="DictionaryProfileDto.FuzzyCorrectionEnabled"/> is nullable
+    /// for exactly this reason: the phone editor and any older client send a profile as
+    /// <c>{ cleanupEnabled }</c> only, and without this a routine save of the word list would silently
+    /// switch a deliberate opt-in back off. Absent means "leave it as it was", not "false".</param>
+    private static DictationDictionary FromDto(DictionaryDto dto, DictationDictionary onDisk)
     {
         var vocab = (dto.Vocabulary ?? new List<string>())
             .Where(v => !string.IsNullOrWhiteSpace(v))
@@ -913,7 +919,9 @@ internal static class RecordingEndpoints
             var name = kv.Key.Trim();
             profiles[name] = new DictationProfile(
                 Name: name,
-                CleanupEnabled: kv.Value.CleanupEnabled);
+                CleanupEnabled: kv.Value.CleanupEnabled,
+                FuzzyCorrectionEnabled: kv.Value.FuzzyCorrectionEnabled
+                    ?? (onDisk.Profiles.TryGetValue(name, out var existing) && existing.FuzzyCorrectionEnabled));
         }
 
         return new DictationDictionary(vocab, patterns, profiles);
@@ -926,7 +934,10 @@ internal sealed record DictionaryDto(
     Dictionary<string, List<string>> CommonMistranscriptions,
     Dictionary<string, DictionaryProfileDto> Profiles);
 
-internal sealed record DictionaryProfileDto(bool CleanupEnabled);
+/// <param name="FuzzyCorrectionEnabled">Nullable on purpose: absent means "leave whatever is on disk
+/// alone". Clients that predate the field send a profile as <c>{ cleanupEnabled }</c>, and a routine
+/// word-list save from one of those must not switch a deliberate opt-in back off.</param>
+internal sealed record DictionaryProfileDto(bool CleanupEnabled, bool? FuzzyCorrectionEnabled = null);
 
 /// <summary>Additive request for POST /ingest/dictionary/terms.</summary>
 internal sealed record DictionaryAddRequest(

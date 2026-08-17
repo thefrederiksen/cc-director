@@ -15,15 +15,12 @@ namespace CcDirector.Core.Dictation;
 /// Two stages, both of which only ever PROPOSE find/replace edits that the deterministic
 /// <see cref="TranscriptEditEngine"/> validates and applies:
 ///   1. <see cref="TryApplyKnownMistranscriptions"/> - exact/alias map: fixes the wrong-forms the
-///      dictionary lists explicitly (instant, boundary-aware). Always runs when cleanup is enabled.
+///      dictionary lists explicitly (instant, boundary-aware). Short-circuits when it changes text.
 ///   2. <see cref="FuzzyDictionaryMatcher"/> - phonetic/edit-distance matcher: catches NEW mishearings
 ///      that were never hand-listed ("Mindsey" -> mindzie, "Akmeflow" -> acmeflow) by scoring word
 ///      windows against the canonical vocabulary. OPT-IN and OFF by default, because it decides on
 ///      spelling alone and rewrites ordinary words into dictionary terms - see
 ///      <see cref="DictationProfile.FuzzyCorrectionEnabled"/>.
-///
-/// The two stages COMPOSE: stage 1 no longer returns early, so stage 2 (when enabled) works on the
-/// alias-corrected text. Whether an unrelated alias fired must not change what else gets corrected.
 ///
 /// The transcript never round-trips through any generative model, so nothing can reword, summarize,
 /// answer, or inject text (issue #190). The only change made to the user's words is a validated
@@ -81,50 +78,58 @@ public sealed class CleanupOrchestrator
         try
         {
             // Stage 1: exact/alias map (the hand-listed wrong forms the user chose for themselves).
-            // It no longer short-circuits: whether an unrelated alias happened to fire must not decide
-            // whether the rest of the pipeline runs, or the same sentence corrects differently
-            // depending on what else was said in it.
-            var aliasOutcome = TryApplyKnownMistranscriptions(rawTranscript, dictionary);
-            var textAfterAliases = aliasOutcome?.Text ?? rawTranscript;
-            var aliasEdits = aliasOutcome?.ChangedWords ?? Array.Empty<TranscriptEdit>();
+            //
+            // It still short-circuits. Letting stage 2 run on the alias-corrected text was tried and
+            // reverted: the fuzzy matcher skips a multi-word canonical window but does not RESERVE it,
+            // so it then considers each token inside separately and can rewrite half of a canonical
+            // phrase stage 1 just inserted ("alfa beta" -> "Alpha Beta" -> "Alpha Beto"). Composing the
+            // two stages needs edits generated against the raw text and merged only where they do not
+            // overlap, which is real work and belongs with the offset-based apply in #1554 - not in an
+            // emergency fix. The order-dependence this leaves is a known defect, and it is strictly
+            // less harmful than corrupting a term the user hand-listed.
+            var deterministic = TryApplyKnownMistranscriptions(rawTranscript, dictionary);
+            if (deterministic is not null)
+            {
+                sw.Stop();
+                FileLog.Write($"[CleanupOrchestrator] CleanAsync: deterministic known-mistranscription cleanup "
+                              + $"applied={deterministic.ChangedWords.Count} in {sw.Elapsed.TotalMilliseconds:0.###}ms");
+                return Done(deterministic);
+            }
 
             // Stage 2 is OPT-IN and off unless the glossary asks for it. The fuzzy matcher guesses
             // from spelling alone and rewrites ordinary words into dictionary terms ("make sure" ->
             // "make Soren"); it stays off until a judge that can read the sentence rules on each
-            // candidate (devthrottle_internal #1554). Stage 1 still runs above, so the corrections
-            // the user listed by hand keep working.
+            // candidate (devthrottle_internal #1554). Stage 1 above still runs, so the corrections the
+            // user listed by hand keep working.
             if (!profile.FuzzyCorrectionEnabled)
             {
                 sw.Stop();
-                FileLog.Write($"[CleanupOrchestrator] CleanAsync: alias-only cleanup "
-                              + $"applied={aliasEdits.Count} in {sw.Elapsed.TotalMilliseconds:0.###}ms "
-                              + $"(unlisted fuzzy correction is off for profile '{profile.Name}')");
-                return Done(aliasOutcome ?? new CleanupOutcome(
+                FileLog.Write($"[CleanupOrchestrator] CleanAsync: no listed mistranscription matched and "
+                              + $"unlisted fuzzy correction is off for profile '{profile.Name}'; "
+                              + $"returning verbatim in {sw.Elapsed.TotalMilliseconds:0.###}ms");
+                return Done(new CleanupOutcome(
                     rawTranscript, Applied: false, Reason: "no dictionary corrections needed"));
             }
 
             // The fuzzy matcher proposes edits for the unlisted mishearings; the SAME engine gate
-            // validates and applies them, so the safety invariant is identical to before. It runs on
-            // the alias-corrected text, not the raw text, so both stages compose.
-            var proposed = FuzzyDictionaryMatcher.Propose(textAfterAliases, dictionary);
-            var validation = TranscriptEditEngine.Validate(proposed, textAfterAliases, dictionary);
+            // validates and applies them, so the safety invariant is identical to before.
+            var proposed = FuzzyDictionaryMatcher.Propose(rawTranscript, dictionary);
+            var validation = TranscriptEditEngine.Validate(proposed, rawTranscript, dictionary);
             foreach (var r in validation.Rejected)
                 FileLog.Write($"[CleanupOrchestrator] edit REJECTED: \"{Truncate(r.Edit.Find, 60)}\" -> "
                               + $"\"{Truncate(r.Edit.Replace, 60)}\" ({r.Reason})");
             foreach (var a in validation.Accepted)
                 FileLog.Write($"[CleanupOrchestrator] edit accepted: \"{Truncate(a.Find, 60)}\" -> \"{a.Replace}\"");
 
-            var (cleaned, appliedCount) = TranscriptEditEngine.Apply(textAfterAliases, validation.Accepted);
+            var (cleaned, appliedCount) = TranscriptEditEngine.Apply(rawTranscript, validation.Accepted);
             sw.Stop();
 
-            // Both stages may have contributed, so the reason names whichever actually did. Stage 1
-            // keeps saying "deterministic ..." exactly as it did when it returned on its own.
             var reasons = new List<string>();
-            if (aliasEdits.Count > 0)
-                reasons.Add("deterministic known-mistranscription cleanup");
+            if (appliedCount > 0)
+                reasons.Add($"{appliedCount} unlisted fuzzy correction(s) applied");
             if (validation.Rejected.Count > 0)
                 reasons.Add($"{validation.Rejected.Count} proposed edit(s) rejected");
-            if (appliedCount == 0 && aliasEdits.Count == 0)
+            if (appliedCount == 0)
                 reasons.Add("no dictionary corrections needed");
             var reason = reasons.Count > 0 ? string.Join("; ", reasons) : null;
 
@@ -133,16 +138,11 @@ public sealed class CleanupOrchestrator
                           + $"applied={appliedCount} rejected={validation.Rejected.Count}");
 
             // Report which dictionary terms were swapped (issue #587): the accepted edits ARE the
-            // change list, and only when something actually reached the text. Both stages report,
-            // because both stages may now have changed the text.
+            // change list, and only when something actually reached the text.
             var changedWords = appliedCount > 0
-                ? aliasEdits.Concat(validation.Accepted).ToList()
-                : (IReadOnlyList<TranscriptEdit>)aliasEdits;
-            return Done(new CleanupOutcome(
-                cleaned,
-                Applied: appliedCount > 0 || aliasEdits.Count > 0,
-                Reason: reason,
-                ChangedWords: changedWords));
+                ? validation.Accepted
+                : (IReadOnlyList<TranscriptEdit>)Array.Empty<TranscriptEdit>();
+            return Done(new CleanupOutcome(cleaned, Applied: appliedCount > 0, Reason: reason, ChangedWords: changedWords));
         }
         catch (Exception ex)
         {
