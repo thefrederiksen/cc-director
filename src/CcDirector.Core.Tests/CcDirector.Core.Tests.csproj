@@ -10,11 +10,6 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <!-- Parses dictation source for the TranscriptionIntegrity guard. A substring scan over source
-         text could not tell "raw.Replace(" from "raw.Replace (" and missed string.Concat and
-         Substring rebuilds entirely, so the guard was evadable by whitespace - it has to read syntax,
-         not characters. Pinned to a version already in the local cache so restore stays offline. -->
-    <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="4.11.0" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.*" />
     <PackageReference Include="xunit" Version="2.*" />
     <PackageReference Include="xunit.runner.visualstudio" Version="2.*" />

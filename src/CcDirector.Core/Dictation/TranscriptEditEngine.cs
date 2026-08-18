@@ -50,8 +50,15 @@ public sealed record EditValidation(
 /// find/replace. A language model may LOCATE misheard terms (propose edits); it
 /// must NEVER receive the transcript and return free text used as the user's
 /// words. Do not add a second cleanup path and do not route a transcript
-/// through a text-generating model. The TranscriptionIntegrity architecture
-/// test enforces this at build time.
+/// through a text-generating model.
+///
+/// HOW MUCH OF THIS IS ACTUALLY ENFORCED: the model half is, structurally - a
+/// judge returns candidate ids and is handed a read-only list, so it can neither
+/// return text nor reach the candidates that get applied
+/// (TranscriptionIntegrityGuardTests). The "only this class rewrites transcript
+/// text" half is NOT checked by anything; it is a rule people follow. This
+/// comment used to claim a build-time test that did not exist, which is worse
+/// than claiming nothing - a reader trusts it. See devthrottle_internal#1556.
 /// </summary>
 public static class TranscriptEditEngine
 {
