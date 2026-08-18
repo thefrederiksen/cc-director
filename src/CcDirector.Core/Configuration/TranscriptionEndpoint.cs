@@ -156,6 +156,15 @@ public static class TranscriptionEndpointResolver
         new(DevThrottleBaseUrl, DevThrottleKeyName, DevThrottleWingmanFastModel);
 
     /// <summary>
+    /// Resolve the dictation-cleanup judge target for <paramref name="mode"/>. Same base URL and key as
+    /// <see cref="ResolveWingman"/>; only the model differs, so the judge is metered as the included
+    /// dictation service rather than billing a member's credits. The caller appends
+    /// <c>/chat/completions</c>.
+    /// </summary>
+    public static ProviderEndpoint ResolveDictationCleanup(TranscriptionMode mode) =>
+        new(DevThrottleBaseUrl, DevThrottleKeyName, DevThrottleDictationCleanupModel);
+
+    /// <summary>
     /// Resolve the text-to-speech target for <paramref name="mode"/> (base URL + key name + model).
     /// Same base + key as transcription; the caller appends <c>/audio/speech</c>. The voice is a
     /// separate choice (<see cref="TtsVoiceConfig"/>), not part of the routing target.

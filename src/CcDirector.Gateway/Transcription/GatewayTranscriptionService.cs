@@ -355,10 +355,42 @@ public sealed class GatewayTranscriptionService
         if (dictionary.Vocabulary.Count == 0 && dictionary.CommonMistranscriptions.Count == 0)
             return new CleanupOutcome(raw, Applied: false, Reason: "empty dictionary");
 
-        var cleanup = new CleanupOrchestrator(model: _cleanupModel);
+        var cleanup = new CleanupOrchestrator(
+            model: _cleanupModel, judge: BuildJudge(), mode: DictationJudgeMode.Current);
         var outcome = await cleanup.CleanAsync(raw, dictionary, "default", ct);
         FileLog.Write($"[GatewayTranscriptionService] cleanup: applied={outcome.Applied}, changed={outcome.ChangedWords.Count}, reason=\"{outcome.Reason}\"");
         return outcome;
+    }
+
+    /// <summary>
+    /// The judge for unlisted corrections, or null when this deployment has no credential for it.
+    ///
+    /// Null is a safe answer, not a degraded one: without a judge the orchestrator applies no unlisted
+    /// correction at all, which is exactly the behaviour a self-host install with no DevThrottle key
+    /// should get. The listed wrong forms still work, because those the user chose themselves.
+    /// </summary>
+    private ICandidateJudge? BuildJudge()
+    {
+        try
+        {
+            var endpoint = TranscriptionEndpointResolver.ResolveDictationCleanup(TranscriptionModeConfig.Get());
+            var key = _vault.Get(endpoint.KeyName);
+            if (string.IsNullOrWhiteSpace(key))
+            {
+                FileLog.Write("[GatewayTranscriptionService] no dictation-judge credential; "
+                              + "unlisted corrections stay off and listed ones still apply");
+                return null;
+            }
+            return new HostedCandidateJudge(
+                endpoint.BaseUrl, key!, IncludedModelId.DictationCleanup, log: FileLog.Write);
+        }
+        catch (Exception ex)
+        {
+            // Never fail a turn over the judge. No judge means no unlisted correction, which is safe.
+            FileLog.Write($"[GatewayTranscriptionService] judge unavailable ({ex.GetType().Name}); "
+                          + "unlisted corrections stay off");
+            return null;
+        }
     }
 
     /// <summary>

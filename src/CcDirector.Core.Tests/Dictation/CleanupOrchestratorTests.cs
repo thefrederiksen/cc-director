@@ -14,6 +14,11 @@ namespace CcDirector.Core.Tests.Dictation;
 /// (<see cref="DictationProfile.FuzzyCorrectionEnabled"/>). That stage is OFF by default in the
 /// field; the default and the over-correction it prevents are covered by
 /// <see cref="CleanupOverCorrectionTests"/>.
+///
+/// It also supplies an ACCEPT-ALL judge in Enforce mode, because an unlisted correction now needs an
+/// affirmative ruling to reach the text. That keeps these tests measuring what they were written to
+/// measure - which spans the matcher finds - rather than silently passing because nothing is applied
+/// any more. What happens with a refusing or absent judge is <see cref="DictationJudgeTests"/>.
 /// </summary>
 public sealed class CleanupOrchestratorTests
 {
@@ -39,7 +44,9 @@ public sealed class CleanupOrchestratorTests
         });
 
     private static async Task<CleanupOutcome> Clean(string raw, DictationDictionary dict, string profile = "default")
-        => await new CleanupOrchestrator().CleanAsync(raw, dict, profile);
+        => await new CleanupOrchestrator(
+                judge: Judges.AcceptAll, mode: UnlistedCorrectionMode.Enforce)
+            .CleanAsync(raw, dict, profile);
 
     [Fact]
     public async Task CleanAsync_EmptyInput_ReturnsEmpty()

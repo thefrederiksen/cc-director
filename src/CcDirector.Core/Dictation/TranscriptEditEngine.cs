@@ -209,6 +209,37 @@ public static class TranscriptEditEngine
         return (text, appliedCount);
     }
 
+    /// <summary>
+    /// Apply judged corrections AT THEIR OFFSETS. Each accepted candidate rewrites the one span it was
+    /// judged about and nothing else.
+    ///
+    /// This is the difference between a ruling and a rule. <see cref="Apply"/> rewrites every occurrence
+    /// of the find string in the utterance, which is right for a wrong form the user listed by hand -
+    /// they meant it everywhere. It is wrong for a judged correction: the judge ruled on "sure" in one
+    /// sentence, and a second "sure" later in the same breath is a different word it never saw.
+    ///
+    /// Edits are applied right to left so an earlier offset is never shifted by a later replacement, and
+    /// a candidate whose span no longer matches the text verbatim is skipped rather than trusted - an
+    /// offset that has gone stale is a bug in the caller, and guessing past it would corrupt the turn.
+    /// </summary>
+    public static (string Text, int AppliedCount) ApplyAt(
+        string rawTranscript,
+        IReadOnlyList<JudgeCandidate> accepted)
+    {
+        var applied = 0;
+        var text = rawTranscript;
+        foreach (var c in accepted.OrderByDescending(c => c.Start))
+        {
+            if (c.Start < 0 || c.Start + c.Find.Length > text.Length)
+                continue;
+            if (string.CompareOrdinal(text, c.Start, c.Find, 0, c.Find.Length) != 0)
+                continue;
+            text = text[..c.Start] + c.Replace + text[(c.Start + c.Find.Length)..];
+            applied++;
+        }
+        return (text, applied);
+    }
+
     // ===== internals =========================================================
 
     private static HashSet<string> BuildCanonicalSet(DictationDictionary dictionary)
