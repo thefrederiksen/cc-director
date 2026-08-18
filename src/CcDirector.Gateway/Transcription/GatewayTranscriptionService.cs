@@ -54,8 +54,9 @@ public sealed class GatewayTranscriptionService
     /// <see cref="TranscriptionModeConfig.Get"/>.</param>
     /// <param name="http">Optional shared HttpClient for the remote batch transcription and the
     /// dictionary-corrector POST (tests inject a stub). The pipeline creates and owns one when null.</param>
-    /// <param name="cleanupModel">Cleanup identity used only for logging (the corrector is deterministic,
-    /// not a model). Defaults to the dictation default when blank.</param>
+    /// <param name="cleanupModel">Cleanup identity used only for logging. It does NOT select the judge
+    /// model - that is resolved through <see cref="DictationJudgeFactory"/> from the routing table.
+    /// Defaults to the dictation default when blank.</param>
     /// <param name="history">Local, bounded transcription history. In production the host owns one
     /// instance and passes it here; when omitted it defaults to a fresh instance over the per-user
     /// location, and tests inject their own.</param>
@@ -334,9 +335,11 @@ public sealed class GatewayTranscriptionService
         if (string.IsNullOrWhiteSpace(raw))
             return new CleanupOutcome(raw ?? "", Applied: false, Reason: "empty transcript");
 
-        // Cleanup is deterministic and in-process now - no key or provider endpoint is needed, so it
-        // runs even offline. CleanAsync short-circuits an empty dictionary to a verbatim passthrough;
-        // the early check just avoids constructing the orchestrator for nothing.
+        // The listed wrong forms are corrected in-process and work offline. An UNLISTED correction
+        // needs a judge, which needs the deployment credential - and when there is none, the factory
+        // returns null and no unlisted correction is applied, which is the safe answer rather than a
+        // degraded one. CleanAsync short-circuits an empty dictionary to a verbatim passthrough; the
+        // early check just avoids constructing the orchestrator for nothing.
         //
         // The dictionary read shares the corrector's fail-open contract (issue #2483): a malformed or
         // unreadable dictionary file must never fail a transcription that already produced text, so a

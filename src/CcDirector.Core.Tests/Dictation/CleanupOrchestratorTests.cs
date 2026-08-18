@@ -5,7 +5,7 @@ using Xunit;
 namespace CcDirector.Core.Tests.Dictation;
 
 /// <summary>
-/// Tests for the deterministic cleanup orchestrator. Cleanup no longer calls a model: it applies the
+/// Tests for the cleanup orchestrator. It applies the
 /// exact/alias map, then the <see cref="FuzzyDictionaryMatcher"/>, and validates every proposed edit
 /// through <see cref="TranscriptEditEngine"/>. These pin the two invariants that matter: real
 /// dictionary mishearings get corrected, and text that is NOT a dictionary term is never touched.

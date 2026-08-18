@@ -7,10 +7,17 @@ using CcDirector.Core.Utilities;
 namespace CcDirector.Core.Dictation;
 
 /// <summary>
-/// Corrects a final transcript against the dictation dictionary, deterministically and in-process.
-/// There is NO language model in this path (it used to call a hosted chat model to locate
-/// mishearings, which added several seconds per turn and a whole class of network failures for a job
-/// that is really just fuzzy matching against a small known vocabulary).
+/// Corrects a final transcript against the dictation dictionary.
+///
+/// The wrong forms the user listed by hand are applied deterministically, in-process, with no model
+/// and no network. An UNLISTED correction is different: it needs a ruling from a judge that can read
+/// the sentence, so that path does make one bounded call (see <see cref="ICandidateJudge"/>).
+///
+/// This class used to say there was NO language model in this path, which was true between July and
+/// August 2026 and is not true now. The earlier hosted pass was removed for costing several seconds a
+/// turn; what replaced it applied its own spelling guesses unsupervised and rewrote ordinary English
+/// into glossary terms. The judge is the third answer: the deterministic matcher may nominate, only a
+/// ruling may authorise, and no ruling means the user keeps the words they said.
 ///
 /// Two stages, both of which only ever PROPOSE find/replace edits that the deterministic
 /// <see cref="TranscriptEditEngine"/> validates and applies:

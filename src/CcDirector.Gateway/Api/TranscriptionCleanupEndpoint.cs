@@ -12,7 +12,7 @@ using Microsoft.AspNetCore.Routing;
 namespace CcDirector.Gateway.Api;
 
 /// <summary>
-/// Runs ONLY the deterministic dictionary cleanup over caller-supplied text and a caller-supplied term
+/// Runs ONLY dictionary cleanup over caller-supplied text and a caller-supplied term
 /// list - no audio, no transcription. This is the text-in / text-out engine the multilingual evaluation
 /// harness drives (hold transcription constant, feed a raw transcript + a per-fixture term list, score
 /// the correction), and it lets any agent test the cleanup on arbitrary text and terms.

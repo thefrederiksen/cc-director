@@ -812,7 +812,7 @@ await Task.Delay(500);
 | Regex | Always set timeout | `TimeSpan.FromMilliseconds(50)` |
 | Brushes | Freeze for cross-thread | `brush.Freeze()` |
 | Collections | Snapshot before iterating across threads | `.ToList()` |
-| Transcription | Model may only LOCATE words; only `TranscriptEditEngine` may change them | Never round-trip a transcript through a model that returns free text |
+| Transcription | Model may only RULE on spans code isolated first, answering with candidate ids; only `TranscriptEditEngine` may change words | Never round-trip a transcript through a model that returns free text |
 
 ---
 

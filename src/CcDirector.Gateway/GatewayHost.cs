@@ -3271,7 +3271,7 @@ public sealed class GatewayHost : IAsyncDisposable
         // down. No audio and no transcript reach this route.
         Api.VoiceQualityEndpoint.Map(_app, _tenantBoundary);
 
-        // Text-in / text-out cleanup: run ONLY the deterministic dictionary correction over supplied
+        // Text-in / text-out cleanup: run ONLY dictionary correction over supplied
         // text + a supplied term list (no audio). The engine the multilingual eval harness drives, and
         // a way for any agent to test cleanup on arbitrary text/terms.
         Api.TranscriptionCleanupEndpoint.Map(_app, _keyVault);

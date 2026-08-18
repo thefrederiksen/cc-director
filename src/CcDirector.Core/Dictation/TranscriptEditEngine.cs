@@ -5,7 +5,7 @@ using CcDirector.Core.Dictation.Models;
 namespace CcDirector.Core.Dictation;
 
 /// <summary>
-/// One proposed dictionary correction from the cleanup model:
+/// One proposed dictionary correction:
 /// replace every standalone occurrence of <see cref="Find"/> (text copied
 /// verbatim from the raw transcript) with <see cref="Replace"/> (a canonical
 /// dictionary term).
@@ -23,13 +23,18 @@ public sealed record EditValidation(
 /// <summary>
 /// Deterministic core of the dictation cleanup pass (issue #190).
 ///
-/// The cleanup model no longer echoes the transcript (the mechanism behind
-/// every logged corruption: paraphrasing, truncation, refusals, few-shot
-/// leakage). Instead it returns a JSON edit document - a list of
-/// find-and-replace proposals - and THIS class is the only thing that ever
-/// touches the user's words:
+/// No model echoes the transcript (the mechanism behind every logged corruption:
+/// paraphrasing, truncation, refusals, few-shot leakage). THIS class is the only
+/// thing that ever touches the user's words:
 ///
-///   1. <see cref="ParseEdits"/>   - strict JSON parse; anything else is null.
+///   1. <see cref="ParseEdits"/>   - strict JSON parse of the ORIGINAL edit-document
+///                                   protocol, in which the model returned its own
+///                                   find/replace pairs. HISTORICAL: it has no
+///                                   production caller. The judge answers with
+///                                   candidate ids over spans this code isolated
+///                                   first, which is strictly tighter - it cannot
+///                                   name a span nobody offered. Kept because the
+///                                   validation below is shared.
 ///   2. <see cref="Validate"/>     - every edit must point at text that exists
 ///                                   in the raw transcript and rewrite it to a
 ///                                   canonical dictionary term that the found
@@ -47,9 +52,9 @@ public sealed record EditValidation(
 /// INVARIANT (transcription integrity - see docs/CodingStyle.md section 16):
 /// This is the ONLY code in the product allowed to change a user's transcribed
 /// words, and the only change it may make is applying a validated dictionary
-/// find/replace. A language model may LOCATE misheard terms (propose edits); it
-/// must NEVER receive the transcript and return free text used as the user's
-/// words. Do not add a second cleanup path and do not route a transcript
+/// find/replace. A language model may RULE on spans this code isolated first,
+/// answering with candidate ids; it must NEVER receive the transcript and return
+/// free text used as the user's words. Do not add a second cleanup path and do not route a transcript
 /// through a text-generating model.
 ///
 /// HOW MUCH OF THIS IS ACTUALLY ENFORCED: the model half is, structurally - a

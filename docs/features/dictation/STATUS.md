@@ -4,9 +4,11 @@
 > This file describes designs that shipped in May 2026 and were later replaced. In
 > particular, the "Cleanup model switch" section below (a `gpt-4o-mini` chat-completions
 > pass over the transcript) and the earlier Claude Haiku cleanup NO LONGER EXIST: the
-> only post-transcription transform today is the deterministic dictionary corrector
-> (`src/CcDirector.Core/Dictation/CleanupOrchestrator.cs` - exact mistranscription map
-> plus fuzzy dictionary matching, no model, no network). No prompt or vocabulary text is
+> only post-transcription transform today is the dictionary corrector
+> (`src/CcDirector.Core/Dictation/CleanupOrchestrator.cs`). NOTE: the "no model, no network"
+> description this line used to carry was true only between July and August 2026. Listed wrong
+> forms are still applied deterministically and offline, but an UNLISTED correction now requires a
+> ruling from a hosted judge that answers with candidate ids (devthrottle_internal#1554). No prompt or vocabulary text is
 > sent to the transcription model either. Do not reintroduce a language-model rewrite of
 > the user's words; see `docs/architecture/transcription-quality-loop.md` for the current
 > design. The dictionary-resolution section (#253) below is still accurate.

@@ -22,8 +22,10 @@ namespace CcDirector.Gateway.Transcription;
 ///      <see cref="GatewayTranscriptionService.Resolve"/>, so every path uses the same hosted target.
 ///   3. Dictionary corrector ONLY. The raw transcript runs through the validated dictionary
 ///      corrector (<see cref="CleanupOrchestrator"/> + <see cref="TranscriptEditEngine"/>): the
-///      model proposes find/replace edits, deterministic code validates and applies them to the RAW
-///      text. There is NO free-text language-model cleanup - the only text change allowed is swapping
+///      wrong forms the user listed are applied deterministically, and an UNLISTED one is applied
+///      only when a judge rules on it (<see cref="CcDirector.Core.Dictation.ICandidateJudge"/>,
+///      which answers with candidate ids and never text). There is NO free-text language-model
+///      cleanup - the only text change allowed is swapping
 ///      a known dictionary term, so a transcript with no dictionary hit comes back byte-identical.
 ///
 /// Routing-and-text decisions (e.g. agent vs wingman, wake-phrase handling) are NOT this pipeline's
@@ -83,8 +85,9 @@ public sealed class BatchTranscriptionPipeline : IDisposable
 
     /// <param name="httpClient">Optional shared HttpClient (tests inject a stub). The pipeline creates
     /// and owns one when null.</param>
-    /// <param name="cleanupModel">The chat model the dictionary corrector uses to PROPOSE edits
-    /// (deterministic validation still gates them). Defaults to the dictation default.</param>
+    /// <param name="cleanupModel">Cleanup identity used only for logging. It does NOT select the
+    /// judge model - pass <paramref name="judge"/>, or the pipeline builds one from its resolved
+    /// route. Defaults to the dictation default.</param>
     /// <param name="transcoder">Turns a non-WAV clip too large to send into a splittable PCM WAV (issue
     /// #1139). Defaults to the bundled-ffmpeg transcoder; tests inject a stub. ffmpeg is resolved lazily,
     /// so this default never touches disk unless a clip actually needs transcoding.</param>
