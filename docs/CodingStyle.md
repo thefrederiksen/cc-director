@@ -812,7 +812,7 @@ await Task.Delay(500);
 | Regex | Always set timeout | `TimeSpan.FromMilliseconds(50)` |
 | Brushes | Freeze for cross-thread | `brush.Freeze()` |
 | Collections | Snapshot before iterating across threads | `.ToList()` |
-| Transcription | Model may only LOCATE words; only `TranscriptEditEngine` may change them | Never round-trip a transcript through a model that returns free text |
+| Transcription | Model may only RULE on spans code isolated first, answering with candidate ids; only `TranscriptEditEngine` may change words | Never round-trip a transcript through a model that returns free text |
 
 ---
 
@@ -820,13 +820,13 @@ await Task.Delay(500);
 
 **When a user dictates by voice, the speech-to-text result is the user's words and is the source of truth. It must never be rewritten by a language model.**
 
-This is an absolute, load-bearing rule (it traces to a real corruption incident, issue #190). It has regressed before, so it is written here, enforced by an architecture test, and called out in the one engine allowed to touch the words.
+This is an absolute, load-bearing rule (it traces to a real corruption incident, issue #190). It has regressed before, so it is written here and called out in the one engine allowed to touch the words. Read the Enforcement section below before relying on it: only PART of this rule is checked automatically, and knowing which part is the difference between a rule and a wish.
 
 ### The rule
 
 1. The raw speech-to-text transcript is the user's words. The ONLY permitted change to it is replacing a misheard term with the correct **dictionary** spelling of a term the user actually said (a single word, or a tightly-joined multi-word term like `cc-director`).
 
-2. A language model may be used ONLY to **locate** which spans are misheard dictionary terms, and it must return that judgment as a **JSON list of find/replace proposals** - never the transcript text itself.
+2. A language model may be used ONLY to **rule on** spans that deterministic code has already isolated, and it must answer with **candidate ids and nothing else** (`{"acceptedCandidateIds":[1]}`) - never the transcript text, and never a span it chose itself. It cannot name a candidate that was not offered, and an id that was never offered voids the whole ruling. This is tighter than the original rule, which let the model return its own find/replace pairs; `TranscriptEditEngine.ParseEdits` is the remnant of that protocol and has no production caller.
 
 3. Only deterministic code - `CcDirector.Core.Dictation.TranscriptEditEngine`, driven by `CleanupOrchestrator` - may change the words, and only by applying a validated proposal (the `find` must occur verbatim in the raw transcript, the `replace` must be an exact dictionary term, and it must be a plausible mishearing). Everything else fails open to the raw transcript.
 
@@ -844,8 +844,17 @@ In voice-**conversation** mode, summarizing the **agent's reply** for text-to-sp
 
 ### Enforcement
 
-- The invariant is restated at the top of `TranscriptEditEngine`.
-- An architecture test fails the build if any transcription path sends the user's transcript into a text-returning model, and byte-identical regression tests guard every surface.
+Be precise about this, because it was wrong for a month. From July 2026 until August 2026 this section and `TranscriptEditEngine` both claimed an architecture test enforced the whole rule. **No such test existed** - the name appeared nowhere in the repository except in those two sentences. A reader trusts a sentence like that, which is exactly why it must be true.
+
+**Enforced automatically:**
+
+- The judge boundary, structurally. `ICandidateJudge` returns candidate ids and takes a read-only list, so a model can neither return text used as the user's words nor reach the candidates that get applied. `TranscriptionIntegrityGuardTests` pins the contract; `DictationJudgeTests` proves at runtime that a judge attempting to write through its candidate list is refused and changes nothing.
+- Byte-identical regression tests over the sentences this has actually corrupted, against a realistic glossary (`CleanupOverCorrectionTests`).
+
+**NOT enforced automatically - followed by people:**
+
+- Rule 3, that only `TranscriptEditEngine` rewrites transcript text. Two attempts at a build-time check were written and deleted: a substring scan over source text (evadable by one space, and it failed the build on the word inside a comment) and a Roslyn syntax walk (missed `text.Replace(...)`, `String.Concat`, `this.rawTranscript`, null-conditional calls and interpolated rebuilds, while flagging a `Substring` used for a log preview). Both were deleted rather than shipped: a check that certifies an unconditional claim while missing the ordinary spellings is worse than none, because the green run is read as proof.
+- Doing it properly needs semantic analysis that follows transcript values rather than a syntax walk. Tracked, with the known-bad and known-good controls it must satisfy, on devthrottle_internal#1556.
 
 ---
 

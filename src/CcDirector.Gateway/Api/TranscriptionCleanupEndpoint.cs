@@ -1,6 +1,8 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using CcDirector.Core.Dictation;
+using CcDirector.Core;
+using CcDirector.Gateway.Transcription;
 using CcDirector.Core.Dictation.Models;
 using CcDirector.Core.Utilities;
 using Microsoft.AspNetCore.Builder;
@@ -10,7 +12,7 @@ using Microsoft.AspNetCore.Routing;
 namespace CcDirector.Gateway.Api;
 
 /// <summary>
-/// Runs ONLY the deterministic dictionary cleanup over caller-supplied text and a caller-supplied term
+/// Runs ONLY dictionary cleanup over caller-supplied text and a caller-supplied term
 /// list - no audio, no transcription. This is the text-in / text-out engine the multilingual evaluation
 /// harness drives (hold transcription constant, feed a raw transcript + a per-fixture term list, score
 /// the correction), and it lets any agent test the cleanup on arbitrary text and terms.
@@ -26,7 +28,10 @@ namespace CcDirector.Gateway.Api;
 /// </summary>
 internal static class TranscriptionCleanupEndpoint
 {
-    public static void Map(IEndpointRouteBuilder app)
+    /// <param name="vault">Holds the deployment credential the judge needs. Without one this route
+    /// can still answer, but it can never apply an unlisted correction - so it is threaded here rather
+    /// than left to default, which is how this endpoint silently became a successful no-op once before.</param>
+    public static void Map(IEndpointRouteBuilder app, KeyVault vault)
     {
         app.MapPost("/transcription/cleanup", async (HttpContext ctx) =>
         {
@@ -58,7 +63,13 @@ internal static class TranscriptionCleanupEndpoint
                     ["default"] = new("default", CleanupEnabled: true, FuzzyCorrectionEnabled: true),
                 });
 
-            var outcome = await new CleanupOrchestrator().CleanAsync(req.Text, dictionary, "default", ctx.RequestAborted);
+            // ENFORCE here, and only here: this route exists to return the corrected text to its
+            // caller rather than substitute it into anyone's dictation, so shadowing it would make the
+            // evaluation surface unable to evaluate. Live dictation keeps whatever the deployment says.
+            var outcome = await new CleanupOrchestrator(
+                    judge: DictationJudgeFactory.FromVault(vault),
+                    mode: UnlistedCorrectionMode.Enforce)
+                .CleanAsync(req.Text, dictionary, "default", ctx.RequestAborted);
 
             return Results.Json(new
             {

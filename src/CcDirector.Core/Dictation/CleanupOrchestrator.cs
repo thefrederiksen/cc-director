@@ -7,10 +7,17 @@ using CcDirector.Core.Utilities;
 namespace CcDirector.Core.Dictation;
 
 /// <summary>
-/// Corrects a final transcript against the dictation dictionary, deterministically and in-process.
-/// There is NO language model in this path (it used to call a hosted chat model to locate
-/// mishearings, which added several seconds per turn and a whole class of network failures for a job
-/// that is really just fuzzy matching against a small known vocabulary).
+/// Corrects a final transcript against the dictation dictionary.
+///
+/// The wrong forms the user listed by hand are applied deterministically, in-process, with no model
+/// and no network. An UNLISTED correction is different: it needs a ruling from a judge that can read
+/// the sentence, so that path does make one bounded call (see <see cref="ICandidateJudge"/>).
+///
+/// This class used to say there was NO language model in this path, which was true between July and
+/// August 2026 and is not true now. The earlier hosted pass was removed for costing several seconds a
+/// turn; what replaced it applied its own spelling guesses unsupervised and rewrote ordinary English
+/// into glossary terms. The judge is the third answer: the deterministic matcher may nominate, only a
+/// ruling may authorise, and no ruling means the user keeps the words they said.
 ///
 /// Two stages, both of which only ever PROPOSE find/replace edits that the deterministic
 /// <see cref="TranscriptEditEngine"/> validates and applies:
@@ -38,18 +45,29 @@ public sealed class CleanupOrchestrator
     public const string DefaultModel = TranscriptionEndpointResolver.DevThrottleDictationCleanupModel;
 
     private readonly string _model;
+    private readonly ICandidateJudge? _judge;
+    private readonly UnlistedCorrectionMode _mode;
 
     /// <param name="model">Cleanup identity used only in log lines. Defaults to <see cref="DefaultModel"/>.</param>
-    public CleanupOrchestrator(string? model = DefaultModel)
+    /// <param name="judge">Rules on unlisted candidates in context. WITHOUT ONE, NO UNLISTED CORRECTION
+    /// IS EVER APPLIED, whatever the glossary asks for - see <see cref="UnlistedCorrectionMode"/>.</param>
+    /// <param name="mode">Whether an accepted ruling actually reaches the text. Defaults to
+    /// <see cref="UnlistedCorrectionMode.Shadow"/>: judge, record, change nothing.</param>
+    public CleanupOrchestrator(
+        string? model = DefaultModel,
+        ICandidateJudge? judge = null,
+        UnlistedCorrectionMode mode = UnlistedCorrectionMode.Shadow)
     {
         _model = string.IsNullOrWhiteSpace(model) ? DefaultModel : model;
+        _judge = judge;
+        _mode = mode;
     }
 
     /// <summary>
     /// Clean a raw transcript using the dictionary and the specified profile.
     /// Returns the original text unchanged when cleanup is disabled or nothing matches.
     /// </summary>
-    public Task<CleanupOutcome> CleanAsync(
+    public async Task<CleanupOutcome> CleanAsync(
         string rawTranscript,
         DictationDictionary dictionary,
         string profileName,
@@ -58,20 +76,20 @@ public sealed class CleanupOrchestrator
         FileLog.Write($"[CleanupOrchestrator] CleanAsync: profile={profileName}, model={_model}, len={rawTranscript?.Length ?? 0}");
 
         if (string.IsNullOrWhiteSpace(rawTranscript))
-            return Done(new CleanupOutcome(rawTranscript ?? "", Applied: false, Reason: "empty transcript"));
+            return new CleanupOutcome(rawTranscript ?? "", Applied: false, Reason: "empty transcript");
 
         var profile = ResolveProfile(dictionary, profileName);
         if (!profile.CleanupEnabled)
         {
             FileLog.Write($"[CleanupOrchestrator] CleanAsync: cleanup disabled for profile '{profile.Name}', returning verbatim");
-            return Done(new CleanupOutcome(rawTranscript, Applied: false, Reason: $"profile '{profile.Name}' has cleanup disabled"));
+            return new CleanupOutcome(rawTranscript, Applied: false, Reason: $"profile '{profile.Name}' has cleanup disabled");
         }
 
         // No dictionary knowledge at all means there is nothing to correct.
         if (dictionary.Vocabulary.Count == 0 && dictionary.CommonMistranscriptions.Count == 0)
         {
             FileLog.Write("[CleanupOrchestrator] CleanAsync: empty dictionary, returning verbatim");
-            return Done(new CleanupOutcome(rawTranscript, Applied: false, Reason: "no dictionary terms to correct"));
+            return new CleanupOutcome(rawTranscript, Applied: false, Reason: "no dictionary terms to correct");
         }
 
         var sw = Stopwatch.StartNew();
@@ -93,7 +111,7 @@ public sealed class CleanupOrchestrator
                 sw.Stop();
                 FileLog.Write($"[CleanupOrchestrator] CleanAsync: deterministic known-mistranscription cleanup "
                               + $"applied={deterministic.ChangedWords.Count} in {sw.Elapsed.TotalMilliseconds:0.###}ms");
-                return Done(deterministic);
+                return deterministic;
             }
 
             // Stage 2 is OPT-IN and off unless the glossary asks for it. The fuzzy matcher guesses
@@ -107,39 +125,136 @@ public sealed class CleanupOrchestrator
                 FileLog.Write($"[CleanupOrchestrator] CleanAsync: no listed mistranscription matched and "
                               + $"unlisted fuzzy correction is off for profile '{profile.Name}'; "
                               + $"returning verbatim in {sw.Elapsed.TotalMilliseconds:0.###}ms");
-                return Done(new CleanupOutcome(
-                    rawTranscript, Applied: false, Reason: "no dictionary corrections needed"));
+                return new CleanupOutcome(
+                    rawTranscript, Applied: false, Reason: "no dictionary corrections needed");
             }
 
-            // The fuzzy matcher proposes edits for the unlisted mishearings; the SAME engine gate
-            // validates and applies them, so the safety invariant is identical to before.
-            var proposed = FuzzyDictionaryMatcher.Propose(rawTranscript, dictionary);
-            var validation = TranscriptEditEngine.Validate(proposed, rawTranscript, dictionary);
-            foreach (var r in validation.Rejected)
-                FileLog.Write($"[CleanupOrchestrator] edit REJECTED: \"{Truncate(r.Edit.Find, 60)}\" -> "
-                              + $"\"{Truncate(r.Edit.Replace, 60)}\" ({r.Reason})");
-            foreach (var a in validation.Accepted)
-                FileLog.Write($"[CleanupOrchestrator] edit accepted: \"{Truncate(a.Find, 60)}\" -> \"{a.Replace}\"");
+            // The matcher no longer decides anything. It nominates spans - every occurrence
+            // separately, with the offset it was found at - and a judge that can read the sentence
+            // rules on each one. This is the whole design: string similarity is the right thing to
+            // SEARCH with and the wrong thing to DECIDE on, and nothing in an edit-distance score can
+            // tell "I am not sure" from the speaker's name.
+            var candidates = FuzzyDictionaryMatcher.ProposeCandidates(rawTranscript, dictionary);
 
-            var (cleaned, appliedCount) = TranscriptEditEngine.Apply(rawTranscript, validation.Accepted);
+            // The same deterministic gate as before still stands in front of the judge, so a candidate
+            // it never should have seen cannot be rescued by a permissive ruling.
+            var validation = TranscriptEditEngine.Validate(
+                candidates.Select(c => new TranscriptEdit(c.Find, c.Replace)).ToList(),
+                rawTranscript,
+                dictionary);
+            foreach (var r in validation.Rejected)
+                // The spoken span is the user's words and stays out of the log; the canonical term
+                // came from their own glossary, so naming it is what makes a rejection diagnosable.
+                FileLog.Write($"[CleanupOrchestrator] candidate REJECTED before judging: {r.Edit.Find.Length} "
+                              + $"char(s) -> \"{Truncate(r.Edit.Replace, 60)}\" ({r.Reason})");
+
+            var allowed = new HashSet<(string, string)>(
+                validation.Accepted.Select(e => (e.Find, e.Replace)));
+
+            // THE SNAPSHOT. This private array is what gets applied, and the judge never touches it.
+            //
+            // Handing the judge the same list we later read from would make the whole safety claim a
+            // matter of trust: an in-process judge can cast an IReadOnlyList back to the List it really
+            // is, swap an entry AFTER validation, accept its id, and have arbitrary Find/Replace/Start
+            // applied to the user's words. That is exactly the "a judge cannot supply text" property
+            // this design sells, defeated through the parameter rather than the return value.
+            //
+            // So the judge is given defensive COPIES and its answer is nothing but numbers, which are
+            // then resolved against this untouched snapshot.
+            var snapshot = candidates.Where(c => allowed.Contains((c.Find, c.Replace)))
+                .Take(CandidateJudgeProtocol.MaxCandidates).ToArray();
+            // Wrapped, not just copied: a bare array or List handed out as IReadOnlyList can be cast
+            // straight back and written through. A ReadOnlyCollection has no such door.
+            var offered = new System.Collections.ObjectModel.ReadOnlyCollection<JudgeCandidate>(
+                snapshot.Select(c => new JudgeCandidate(c.Id, c.Find, c.Replace, c.Start)).ToList());
+
+            if (snapshot.Length == 0)
+            {
+                sw.Stop();
+                FileLog.Write($"[CleanupOrchestrator] CleanAsync: nothing to judge in {sw.Elapsed.TotalMilliseconds:0.###}ms");
+                return new CleanupOutcome(rawTranscript, Applied: false, Reason: "no dictionary corrections needed");
+            }
+
+            // THE INVARIANT. An unlisted word is changed only on an affirmative ruling. No judge, no
+            // ruling, a malformed ruling, a slow or unreachable one - all of them mean the user keeps
+            // the words they said. The deterministic matcher applying its own guesses is the defect
+            // this feature exists to end, so there is deliberately no path back to it here.
+            if (_judge is null)
+            {
+                sw.Stop();
+                FileLog.Write($"[CleanupOrchestrator] CleanAsync: {snapshot.Length} candidate(s) but NO JUDGE "
+                              + $"configured; nothing applied ({sw.Elapsed.TotalMilliseconds:0.###}ms)");
+                return new CleanupOutcome(rawTranscript, Applied: false,
+                    Reason: "unlisted corrections need a judge and none is configured");
+            }
+
+            var ruling = await _judge.AcceptAsync(rawTranscript, offered, ct).ConfigureAwait(false);
+            if (ruling is null)
+            {
+                sw.Stop();
+                FileLog.Write($"[CleanupOrchestrator] CleanAsync: judge gave no usable ruling on "
+                              + $"{snapshot.Length} candidate(s); nothing applied ({sw.Elapsed.TotalMilliseconds:0.###}ms)");
+                return new CleanupOutcome(rawTranscript, Applied: false, Reason: "judge gave no ruling");
+            }
+
+            // An id nobody offered VOIDS the whole ruling - it is not filtered out. A judge ruling on a
+            // candidate that does not exist did not understand the question, so its opinion on the ones
+            // that do exist is not worth acting on either. The protocol parser already enforces this for
+            // a hosted judge; enforcing it here too covers every ICandidateJudge, including in-process
+            // ones whose answer never passes through that parser.
+            var offeredIds = new HashSet<int>(snapshot.Select(c => c.Id));
+            if (ruling.Any(id => !offeredIds.Contains(id)))
+            {
+                sw.Stop();
+                FileLog.Write($"[CleanupOrchestrator] CleanAsync: judge ruled on candidate(s) that were "
+                              + $"never offered; whole ruling discarded ({sw.Elapsed.TotalMilliseconds:0.###}ms)");
+                return new CleanupOutcome(rawTranscript, Applied: false,
+                    Reason: "judge ruled on candidates that were never offered");
+            }
+
+            // Resolved against the SNAPSHOT, never against the list the judge was handed.
+            var acceptedIds = new HashSet<int>(ruling);
+            var accepted = snapshot.Where(c => acceptedIds.Contains(c.Id)).ToList();
+            var judgedEdits = accepted.Select(c => new TranscriptEdit(c.Find, c.Replace)).ToList();
+
+            // Shadow: ask the question, write down the answer, change nothing. This is how a judge earns
+            // the right to act - on a record of what it WOULD have done to real dictation, read before
+            // it is allowed to do it.
+            // Fail CLOSED on the mode: only the exact Enforce value applies. An undefined enum value -
+            // a cast integer, a new member added later and not handled here - must shadow, not enforce.
+            if (_mode != UnlistedCorrectionMode.Enforce)
+            {
+                sw.Stop();
+                foreach (var c in accepted)
+                    FileLog.Write($"[CleanupOrchestrator] SHADOW would correct {c.Find.Length} char(s) "
+                                  + $"at {c.Start} -> \"{c.Replace}\"");
+                FileLog.Write($"[CleanupOrchestrator] CleanAsync SHADOW: offered={snapshot.Length} "
+                              + $"accepted={accepted.Count} applied=0 in {sw.Elapsed.TotalMilliseconds:0.###}ms");
+                return new CleanupOutcome(rawTranscript, Applied: false,
+                    Reason: $"shadow mode: {accepted.Count} of {snapshot.Length} candidate(s) would have been corrected",
+                    ChangedWords: Array.Empty<TranscriptEdit>(),
+                    ShadowChanges: judgedEdits);
+            }
+
+            // Applied AT THE OFFSET each candidate was judged at, so one ruling changes one span.
+            var (cleaned, appliedCount) = TranscriptEditEngine.ApplyAt(rawTranscript, accepted);
             sw.Stop();
 
-            string? reason = null;
-            if (validation.Rejected.Count > 0)
-                reason = $"{validation.Rejected.Count} proposed edit(s) rejected";
-            if (appliedCount == 0)
-                reason = reason is null ? "no dictionary corrections needed" : reason + "; none applied";
-
+            foreach (var c in accepted)
+                FileLog.Write($"[CleanupOrchestrator] judged correction of {c.Find.Length} char(s) "
+                              + $"at {c.Start} -> \"{c.Replace}\"");
             FileLog.Write($"[CleanupOrchestrator] CleanAsync done in {sw.Elapsed.TotalMilliseconds:0.###}ms: "
-                          + $"proposed={proposed.Count} accepted={validation.Accepted.Count} "
-                          + $"applied={appliedCount} rejected={validation.Rejected.Count}");
+                          + $"offered={snapshot.Length} accepted={accepted.Count} applied={appliedCount} "
+                          + $"rejected-before-judging={validation.Rejected.Count}");
 
-            // Report which dictionary terms were swapped (issue #587): the accepted edits ARE the
-            // change list, and only when something actually reached the text.
             var changedWords = appliedCount > 0
-                ? validation.Accepted
+                ? judgedEdits
                 : (IReadOnlyList<TranscriptEdit>)Array.Empty<TranscriptEdit>();
-            return Done(new CleanupOutcome(cleaned, Applied: appliedCount > 0, Reason: reason, ChangedWords: changedWords));
+            return new CleanupOutcome(
+                cleaned,
+                Applied: appliedCount > 0,
+                Reason: appliedCount > 0 ? null : "no dictionary corrections needed",
+                ChangedWords: changedWords);
         }
         catch (Exception ex)
         {
@@ -147,11 +262,9 @@ public sealed class CleanupOrchestrator
             // ship the raw transcript, exactly as before the cleanup step existed.
             sw.Stop();
             FileLog.Write($"[CleanupOrchestrator] CleanAsync FAILED in {sw.Elapsed.TotalMilliseconds:0.###}ms: {ex.Message}");
-            return Done(new CleanupOutcome(rawTranscript, Applied: false, Reason: "cleanup failed: " + ex.Message));
+            return new CleanupOutcome(rawTranscript, Applied: false, Reason: "cleanup failed: " + ex.Message);
         }
     }
-
-    private static Task<CleanupOutcome> Done(CleanupOutcome outcome) => Task.FromResult(outcome);
 
     private static CleanupOutcome? TryApplyKnownMistranscriptions(
         string rawTranscript,
@@ -217,8 +330,11 @@ public sealed class CleanupOrchestrator
         return new DictationProfile("default", CleanupEnabled: true, FuzzyCorrectionEnabled: false);
     }
 
+    /// <summary>
+    /// Shorten a value for a log line.
+    /// </summary>
     private static string Truncate(string s, int max)
-        => string.IsNullOrEmpty(s) || s.Length <= max ? s : s[..max] + "...";
+        => string.IsNullOrEmpty(s) || s.Length <= max ? s : string.Concat(s.AsSpan(0, max), "...");
 }
 
 /// <summary>
@@ -237,8 +353,20 @@ public sealed record CleanupOutcome(
     string Text,
     bool Applied,
     string? Reason,
-    IReadOnlyList<TranscriptEdit> ChangedWords)
+    IReadOnlyList<TranscriptEdit> ChangedWords,
+    IReadOnlyList<TranscriptEdit>? ShadowChanges = null)
 {
+    /// <summary>
+    /// What the judge accepted while in <see cref="UnlistedCorrectionMode.Shadow"/> - corrections that
+    /// were NOT applied. Null or empty everywhere else.
+    ///
+    /// It is a separate field from <see cref="ChangedWords"/> on purpose. A shadow run must be
+    /// indistinguishable from no cleanup at all to anything reading the transcript, while still being
+    /// legible to whoever is deciding whether to trust the judge. Folding the two together would put
+    /// changes that never happened into the record of changes that did.
+    /// </summary>
+    public IReadOnlyList<TranscriptEdit> ShadowChanges { get; init; } = ShadowChanges ?? Array.Empty<TranscriptEdit>();
+
     /// <summary>
     /// Convenience constructor for the no-change paths (empty, disabled, failed open) where there
     /// is never a change list. Keeps the existing 3-argument call sites unchanged while the success

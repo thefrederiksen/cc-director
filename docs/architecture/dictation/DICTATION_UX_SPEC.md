@@ -7,8 +7,10 @@ feature looks and behaves the same everywhere. Where a surface deviates, the
 deviation must be listed in section 8 with a reason.
 
 This document is the single source of truth for the dialog's behaviour. The
-text-cleanup safety contract (the model proposes edits, code applies them) lives
-separately in `EDIT_DOCUMENT_CLEANUP.md` and is unchanged by this spec.
+text-cleanup safety contract lives separately and is unchanged by this spec. It is no longer
+"the model proposes edits": deterministic code isolates candidate spans and a judge rules on them
+by id (devthrottle_internal#1554). `EDIT_DOCUMENT_CLEANUP.md` describes the SUPERSEDED protocol and
+is kept as history.
 
 ---
 

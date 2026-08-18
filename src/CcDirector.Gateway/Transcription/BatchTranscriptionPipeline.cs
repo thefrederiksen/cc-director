@@ -22,8 +22,10 @@ namespace CcDirector.Gateway.Transcription;
 ///      <see cref="GatewayTranscriptionService.Resolve"/>, so every path uses the same hosted target.
 ///   3. Dictionary corrector ONLY. The raw transcript runs through the validated dictionary
 ///      corrector (<see cref="CleanupOrchestrator"/> + <see cref="TranscriptEditEngine"/>): the
-///      model proposes find/replace edits, deterministic code validates and applies them to the RAW
-///      text. There is NO free-text language-model cleanup - the only text change allowed is swapping
+///      wrong forms the user listed are applied deterministically, and an UNLISTED one is applied
+///      only when a judge rules on it (<see cref="CcDirector.Core.Dictation.ICandidateJudge"/>,
+///      which answers with candidate ids and never text). There is NO free-text language-model
+///      cleanup - the only text change allowed is swapping
 ///      a known dictionary term, so a transcript with no dictionary hit comes back byte-identical.
 ///
 /// Routing-and-text decisions (e.g. agent vs wingman, wake-phrase handling) are NOT this pipeline's
@@ -77,19 +79,25 @@ public sealed class BatchTranscriptionPipeline : IDisposable
     private readonly HttpClient _http;
     private readonly bool _ownsHttp;
     private readonly string _cleanupModel;
+    private readonly ICandidateJudge? _judge;
+    private readonly UnlistedCorrectionMode _judgeMode;
     private readonly IAudioTranscoder _transcoder;
 
     /// <param name="httpClient">Optional shared HttpClient (tests inject a stub). The pipeline creates
     /// and owns one when null.</param>
-    /// <param name="cleanupModel">The chat model the dictionary corrector uses to PROPOSE edits
-    /// (deterministic validation still gates them). Defaults to the dictation default.</param>
+    /// <param name="cleanupModel">Cleanup identity used only for logging. It does NOT select the
+    /// judge model - pass <paramref name="judge"/>, or the pipeline builds one from its resolved
+    /// route. Defaults to the dictation default.</param>
     /// <param name="transcoder">Turns a non-WAV clip too large to send into a splittable PCM WAV (issue
     /// #1139). Defaults to the bundled-ffmpeg transcoder; tests inject a stub. ffmpeg is resolved lazily,
     /// so this default never touches disk unless a clip actually needs transcoding.</param>
     public BatchTranscriptionPipeline(HttpClient? httpClient = null, string? cleanupModel = null,
-        IAudioTranscoder? transcoder = null)
+        IAudioTranscoder? transcoder = null, ICandidateJudge? judge = null,
+        UnlistedCorrectionMode judgeMode = UnlistedCorrectionMode.Shadow)
     {
         _cleanupModel = string.IsNullOrWhiteSpace(cleanupModel) ? CleanupOrchestrator.DefaultModel : cleanupModel;
+        _judge = judge;
+        _judgeMode = judgeMode;
         _transcoder = transcoder ?? new FfmpegAudioTranscoder();
         if (httpClient is null)
         {
@@ -418,9 +426,11 @@ public sealed class BatchTranscriptionPipeline : IDisposable
         if (string.IsNullOrWhiteSpace(raw))
             return new CleanupOutcome(raw, Applied: false, Reason: "empty transcript");
 
-        // The corrector is deterministic and in-process (no provider call), so no key or base URL is
-        // threaded here. Its own fail-open contract turns any cleanup problem into a verbatim passthrough.
-        var cleanup = new CleanupOrchestrator(model: _cleanupModel);
+        // Listed wrong forms are corrected in-process; an UNLISTED one now needs a judge, and this
+        // pipeline gets the same one live dictation uses. Without it the caller would still get a
+        // successful response that could never correct anything - see DictationJudgeFactory.
+        var judge = _judge ?? DictationJudgeFactory.FromKey(routing.BaseUrl, routing.ApiKey);
+        var cleanup = new CleanupOrchestrator(model: _cleanupModel, judge: judge, mode: _judgeMode);
         return await cleanup.CleanAsync(raw, dictionary, profileName, ct);
     }
 

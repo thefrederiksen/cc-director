@@ -20,8 +20,9 @@ namespace CcDirector.Gateway.Tests;
 ///
 /// These tests build the service exactly as the endpoints do - with the DEFAULT dictionary provider,
 /// nothing injected - so they prove the default itself is tenant-aware. The transcription provider is
-/// a stubbed HttpClient (cleanup is deterministic and in-process, so no network is needed for the
-/// correction). Uses CC_DIRECTOR_ROOT for the glossary locations - in the "DirectorRoot" collection
+/// a stubbed HttpClient. No network is needed for the correction here because these fixtures have no
+/// judge credential, so only the deterministic listed-alias path runs - an UNLISTED correction would
+/// need a hosted ruling, and with no judge none is applied. Uses CC_DIRECTOR_ROOT for the glossary locations - in the "DirectorRoot" collection
 /// because it sets CC_DIRECTOR_ROOT.
 /// </summary>
 [Collection("DirectorRoot")]

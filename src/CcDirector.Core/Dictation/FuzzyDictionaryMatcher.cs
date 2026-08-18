@@ -63,24 +63,63 @@ public static class FuzzyDictionaryMatcher
     /// </summary>
     public static IReadOnlyList<TranscriptEdit> Propose(string rawTranscript, DictationDictionary dictionary)
     {
+        // Deduped by exact found text, because Apply rewrites every occurrence of a find anyway.
+        //
+        // Deliberately reads Scan directly rather than ProposeCandidates: the judge API sorts into
+        // document order to number its candidates, and this one must keep the SCAN order it has always
+        // returned - two-token windows before one-token ones. That order is observable, because it
+        // decides which edits survive the engine's cap and how equal-length edits sort in Apply.
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        var edits = new List<TranscriptEdit>();
+        foreach (var f in Scan(rawTranscript, dictionary))
+            if (seen.Add(f.Find))
+                edits.Add(new TranscriptEdit(f.Find, f.Replace));
+        return edits;
+    }
+
+    /// <summary>
+    /// The same scan, but keeping WHERE each span was found and every separate occurrence of it.
+    ///
+    /// This is what the judge is given. <see cref="Propose"/> collapses repeats because its consumer
+    /// rewrites the whole utterance per find; a judge rules on one occurrence in one sentence, and a
+    /// second "sure" three words later is a different use of the word that it never saw. Keeping the
+    /// occurrences apart is what lets one ruling change one span - see
+    /// <see cref="TranscriptEditEngine.ApplyAt"/>.
+    ///
+    /// Ids are assigned in document order and are the judge's entire vocabulary.
+    /// </summary>
+    public static IReadOnlyList<JudgeCandidate> ProposeCandidates(
+        string rawTranscript, DictationDictionary dictionary)
+    {
+        var found = Scan(rawTranscript, dictionary);
+        var ordered = found.OrderBy(f => f.Start).ToList();
+        var candidates = new List<JudgeCandidate>(ordered.Count);
+        for (int i = 0; i < ordered.Count; i++)
+            candidates.Add(new JudgeCandidate(i, ordered[i].Find, ordered[i].Replace, ordered[i].Start));
+        return candidates;
+    }
+
+    private readonly record struct Found(string Find, string Replace, int Start);
+
+    private static List<Found> Scan(string rawTranscript, DictationDictionary dictionary)
+    {
+        var none = new List<Found>();
         if (string.IsNullOrWhiteSpace(rawTranscript))
-            return Array.Empty<TranscriptEdit>();
+            return none;
 
         var targets = BuildTargets(dictionary);
         if (targets.Count == 0)
-            return Array.Empty<TranscriptEdit>();
+            return none;
 
         var canonicalNorms = new HashSet<string>(targets.Select(t => t.Norm), StringComparer.Ordinal);
 
         var tokens = Regex.Matches(rawTranscript, @"[\p{L}\p{Nd}][\p{L}\p{Nd}'\-]*",
             RegexOptions.CultureInvariant, RegexTimeout);
         if (tokens.Count == 0)
-            return Array.Empty<TranscriptEdit>();
+            return none;
 
         var used = new bool[tokens.Count];
-        // Keyed by the exact found text so we never propose the same span twice (Apply already
-        // rewrites every occurrence of a find).
-        var proposals = new Dictionary<string, TranscriptEdit>(StringComparer.Ordinal);
+        var proposals = new List<Found>();
 
         // Prefer longer windows first so a two-word spoken form ("Acme Flow") wins over a one-word match.
         for (int win = MaxWindow; win >= 1; win--)
@@ -115,12 +154,12 @@ public static class FuzzyDictionaryMatcher
                 if (bestScore < threshold)
                     continue;
 
-                proposals.TryAdd(spanText, new TranscriptEdit(spanText, bestTerm));
+                proposals.Add(new Found(spanText, bestTerm, tokens[i].Index));
                 MarkUsed(used, i, win);
             }
         }
 
-        return proposals.Values.ToList();
+        return proposals;
     }
 
     private readonly record struct Target(string Canonical, string Norm, int TokenCount);

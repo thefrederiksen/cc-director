@@ -5,7 +5,7 @@ using CcDirector.Core.Dictation.Models;
 namespace CcDirector.Core.Dictation;
 
 /// <summary>
-/// One proposed dictionary correction from the cleanup model:
+/// One proposed dictionary correction:
 /// replace every standalone occurrence of <see cref="Find"/> (text copied
 /// verbatim from the raw transcript) with <see cref="Replace"/> (a canonical
 /// dictionary term).
@@ -23,13 +23,18 @@ public sealed record EditValidation(
 /// <summary>
 /// Deterministic core of the dictation cleanup pass (issue #190).
 ///
-/// The cleanup model no longer echoes the transcript (the mechanism behind
-/// every logged corruption: paraphrasing, truncation, refusals, few-shot
-/// leakage). Instead it returns a JSON edit document - a list of
-/// find-and-replace proposals - and THIS class is the only thing that ever
-/// touches the user's words:
+/// No model echoes the transcript (the mechanism behind every logged corruption:
+/// paraphrasing, truncation, refusals, few-shot leakage). THIS class is the only
+/// thing that ever touches the user's words:
 ///
-///   1. <see cref="ParseEdits"/>   - strict JSON parse; anything else is null.
+///   1. <see cref="ParseEdits"/>   - strict JSON parse of the ORIGINAL edit-document
+///                                   protocol, in which the model returned its own
+///                                   find/replace pairs. HISTORICAL: it has no
+///                                   production caller. The judge answers with
+///                                   candidate ids over spans this code isolated
+///                                   first, which is strictly tighter - it cannot
+///                                   name a span nobody offered. Kept because the
+///                                   validation below is shared.
 ///   2. <see cref="Validate"/>     - every edit must point at text that exists
 ///                                   in the raw transcript and rewrite it to a
 ///                                   canonical dictionary term that the found
@@ -47,11 +52,18 @@ public sealed record EditValidation(
 /// INVARIANT (transcription integrity - see docs/CodingStyle.md section 16):
 /// This is the ONLY code in the product allowed to change a user's transcribed
 /// words, and the only change it may make is applying a validated dictionary
-/// find/replace. A language model may LOCATE misheard terms (propose edits); it
-/// must NEVER receive the transcript and return free text used as the user's
-/// words. Do not add a second cleanup path and do not route a transcript
-/// through a text-generating model. The TranscriptionIntegrity architecture
-/// test enforces this at build time.
+/// find/replace. A language model may RULE on spans this code isolated first,
+/// answering with candidate ids; it must NEVER receive the transcript and return
+/// free text used as the user's words. Do not add a second cleanup path and do not route a transcript
+/// through a text-generating model.
+///
+/// HOW MUCH OF THIS IS ACTUALLY ENFORCED: the model half is, structurally - a
+/// judge returns candidate ids and is handed a read-only list, so it can neither
+/// return text nor reach the candidates that get applied
+/// (TranscriptionIntegrityGuardTests). The "only this class rewrites transcript
+/// text" half is NOT checked by anything; it is a rule people follow. This
+/// comment used to claim a build-time test that did not exist, which is worse
+/// than claiming nothing - a reader trusts it. See devthrottle_internal#1556.
 /// </summary>
 public static class TranscriptEditEngine
 {
@@ -207,6 +219,37 @@ public static class TranscriptEditEngine
             }
         }
         return (text, appliedCount);
+    }
+
+    /// <summary>
+    /// Apply judged corrections AT THEIR OFFSETS. Each accepted candidate rewrites the one span it was
+    /// judged about and nothing else.
+    ///
+    /// This is the difference between a ruling and a rule. <see cref="Apply"/> rewrites every occurrence
+    /// of the find string in the utterance, which is right for a wrong form the user listed by hand -
+    /// they meant it everywhere. It is wrong for a judged correction: the judge ruled on "sure" in one
+    /// sentence, and a second "sure" later in the same breath is a different word it never saw.
+    ///
+    /// Edits are applied right to left so an earlier offset is never shifted by a later replacement, and
+    /// a candidate whose span no longer matches the text verbatim is skipped rather than trusted - an
+    /// offset that has gone stale is a bug in the caller, and guessing past it would corrupt the turn.
+    /// </summary>
+    public static (string Text, int AppliedCount) ApplyAt(
+        string rawTranscript,
+        IReadOnlyList<JudgeCandidate> accepted)
+    {
+        var applied = 0;
+        var text = rawTranscript;
+        foreach (var c in accepted.OrderByDescending(c => c.Start))
+        {
+            if (c.Start < 0 || c.Start + c.Find.Length > text.Length)
+                continue;
+            if (string.CompareOrdinal(text, c.Start, c.Find, 0, c.Find.Length) != 0)
+                continue;
+            text = text[..c.Start] + c.Replace + text[(c.Start + c.Find.Length)..];
+            applied++;
+        }
+        return (text, applied);
     }
 
     // ===== internals =========================================================

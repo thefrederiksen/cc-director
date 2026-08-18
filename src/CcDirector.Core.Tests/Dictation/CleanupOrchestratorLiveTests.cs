@@ -7,8 +7,10 @@ namespace CcDirector.Core.Tests.Dictation;
 
 /// <summary>
 /// Proof that the dictation cleanup pass corrects ONLY dictionary terms and never changes the
-/// speaker's words. Cleanup is now deterministic and in-process (no hosted model, no key), so these
-/// run always and offline - the historical "Live" name is kept for continuity.
+/// speaker's words. These construct no judge, so they exercise the deterministic listed-alias path
+/// and run always and offline - the historical "Live" name is kept for continuity. They do NOT cover
+/// the hosted judge path that unlisted corrections now go through; that is DictationJudgeTests and
+/// HostedCandidateJudgeTests.
 ///
 /// The bar is deliberately strict: for transcripts that contain no dictionary
 /// term, the output must equal the input character for character (fillers,

@@ -46,8 +46,9 @@ public sealed class CleanupOverCorrectionTests
                 ["default"] = new("default", CleanupEnabled: true, FuzzyCorrectionEnabled: fuzzy),
             });
 
-    private static string Clean(string raw, DictationDictionary dict)
-        => new CleanupOrchestrator().CleanAsync(raw, dict, "default").GetAwaiter().GetResult().Text;
+    private static string Clean(string raw, DictationDictionary dict, ICandidateJudge? judge = null)
+        => new CleanupOrchestrator(judge: judge, mode: UnlistedCorrectionMode.Enforce)
+            .CleanAsync(raw, dict, "default").GetAwaiter().GetResult().Text;
 
     /// <summary>
     /// Every one of these was corrupted by the shipped corrector. They must come back byte for byte.
@@ -119,16 +120,24 @@ public sealed class CleanupOverCorrectionTests
     }
 
     /// <summary>
-    /// The switch is real: with the guessing explicitly turned on, the known corruption comes back.
-    /// A test that only proves the safe direction would pass just as well against a corrector that
-    /// was accidentally disabled outright, so this is the negative control for the whole file.
+    /// The negative control for the whole file, and it now has two halves.
+    ///
+    /// With the guessing enabled AND a judge that accepts everything, the known corruption comes back -
+    /// proving the matcher still nominates "sure" as the speaker's name, so the safe results above are
+    /// the judge refusing rather than a corrector that quietly stopped working.
+    ///
+    /// With the guessing enabled and NO judge, the same sentence is untouched. That is the invariant:
+    /// the matcher's opinion on its own is never enough.
     /// </summary>
     [Fact]
-    public void WithFuzzyExplicitlyEnabled_TheKnownCorruptionReappears()
+    public void TheMatcherStillNominatesTheCorruption_AndOnlyTheJudgeStopsIt()
     {
-        var corrupted = Clean("make sure to create GitHub issues", RealWorldDictionary(fuzzy: true));
+        const string sentence = "make sure to create GitHub issues";
 
-        Assert.Equal("make Soren to create GitHub issues", corrupted);
+        Assert.Equal("make Soren to create GitHub issues",
+            Clean(sentence, RealWorldDictionary(fuzzy: true), Judges.AcceptAll));
+
+        Assert.Equal(sentence, Clean(sentence, RealWorldDictionary(fuzzy: true)));
     }
 
     /// <summary>Absent from the YAML means off. Every glossary in the field predates this key, so

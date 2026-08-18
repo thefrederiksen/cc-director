@@ -1,6 +1,16 @@
 # The Edit-Document Pattern: LLM Text Cleanup That Cannot Corrupt User Text
 
-Status: IMPLEMENTED in the dictation pipeline (issue #190, 2026-06-06).
+> **HISTORICAL DOCUMENT - this protocol is SUPERSEDED and no longer runs.**
+> The pattern below, in which the model returns its own `{"edits":[{"find":..,"replace":..}]}`
+> document, was removed on 2026-07-09 and is not what dictation does today. The current design is
+> tighter: deterministic code isolates candidate spans, and a judge rules on them by ID
+> (`{"acceptedCandidateIds":[1]}`), so the model cannot name a span nobody offered - see
+> `CcDirector.Core.Dictation.ICandidateJudge` and devthrottle_internal#1554.
+> `TranscriptEditEngine.ParseEdits` still implements the parse described here and has no production
+> caller. The REASONING below is still worth reading - it is why the model is never allowed to hand
+> back text - but do not treat any of it as a description of current wiring.
+
+Status: SUPERSEDED (was IMPLEMENTED in the dictation pipeline, issue #190, 2026-06-06).
 Audience: any agent or developer adding or retrofitting an LLM cleanup pass
 over user-authored text (dictation, transcription post-processing, OCR
 correction, form-field normalization - anywhere "the model tidies what the

@@ -2,7 +2,16 @@
 
 Goal: keep making dictation transcription + dictionary cleanup better over time, measure it rigorously
 (multilingually), let any agent analyze it locally, and always have the best version deployed on the
-live Gateway. Everything here is LOCAL - no transcription content leaves the machine.
+live Gateway.
+
+**Where transcripts go, precisely.** Everything in sections 1-3 - history, analysis, the Cockpit
+screen - is LOCAL: no transcription content leaves the machine. That is NOT true of the correction
+step itself since the judge landed (devthrottle_internal#1554). When the matcher nominates a
+candidate, the utterance and that bounded candidate list are sent to the hosted judge over the
+DevThrottle inference route, and the judge answers with candidate ids. It is skipped entirely when
+nothing is nominated, which is most utterances, but "most" is not "never" and this document said
+never. Nothing is ever sent to the speech-to-text provider (issue 2481); that constraint is
+unchanged.
 
 Status legend: DONE (built + deployed), NEXT (planned, ready to build), RESEARCH (informing design).
 
