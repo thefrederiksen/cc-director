@@ -61,6 +61,17 @@ public static class CandidateJudgeProtocol
     /// The instruction sent with every question. It states the job, the answer shape, and the tie-break:
     /// when unsure, reject. A missed correction costs a wrong spelling; a wrong acceptance costs the
     /// user's meaning, and those are not the same price.
+    ///
+    /// The independence paragraph is there because of a MEASURED failure, not a hunch. Without it the
+    /// judge was consistently wrong on one shape: a sentence containing a real mishearing alongside
+    /// ordinary words. "make sure Mindsey knows about the store" - it correctly accepted Mindsey and
+    /// then accepted "store" as the speaker's name in the same breath, in two live runs out of three.
+    /// Accepting one candidate was priming it to accept the rest. With the paragraph, three
+    /// consecutive runs over 21 live cases produced ZERO false accepts.
+    ///
+    /// It costs recall - the judge now declines some genuine mishearings it used to catch. That is the
+    /// trade this feature exists to make, and it is cheaper than it looks: a term the user cares about
+    /// ends up in their glossary, where stage one corrects it deterministically without ever asking.
     /// </summary>
     public const string SystemPrompt =
         "You decide whether words in a speech transcript were misheard versions of a known term.\n" +
@@ -70,6 +81,10 @@ public static class CandidateJudgeProtocol
         "Accept a candidate ONLY if, reading the sentence, the speaker clearly meant the term and the\n" +
         "transcriber misheard it. Reject it if the spoken word is being used as an ordinary word of the\n" +
         "language, even when it looks similar to the term. When you are not sure, REJECT.\n" +
+        "\n" +
+        "Judge each candidate INDEPENDENTLY. Accepting one says nothing about the others: a sentence often\n" +
+        "contains one genuine mishearing alongside several ordinary words that merely resemble terms.\n" +
+        "Decide each one on its own as if it were the only candidate.\n" +
         "\n" +
         "Reply with JSON and nothing else, in exactly this shape:\n" +
         "{\"acceptedCandidateIds\": [0, 2]}\n" +

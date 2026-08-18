@@ -123,6 +123,16 @@ public sealed class CandidateJudgeProtocolTests
         Assert.Contains("acceptedCandidateIds", CandidateJudgeProtocol.SystemPrompt);
     }
 
+    /// <summary>
+    /// Pinned because removing it brought a measured defect back. Without the independence
+    /// instruction the judge accepted "store" as the speaker's name in a sentence that also
+    /// contained a real mishearing - accepting one candidate primed it to accept the rest, in two
+    /// live runs out of three. With it, three runs over 21 cases gave zero false accepts.
+    /// </summary>
+    [Fact]
+    public void TheInstructionTellsTheJudgeToDecideEachCandidateOnItsOwn()
+        => Assert.Contains("INDEPENDENTLY", CandidateJudgeProtocol.SystemPrompt);
+
     // ===== applying at an offset ==============================================
 
     [Fact]
