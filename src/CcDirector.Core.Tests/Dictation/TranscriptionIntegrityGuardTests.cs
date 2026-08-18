@@ -73,10 +73,9 @@ public sealed class TranscriptionIntegrityGuardTests
             if (Path.GetFileName(file) == "TranscriptEditEngine.cs") continue;
 
             var text = File.ReadAllText(file);
-            if (text.Contains("Regex.Replace(", StringComparison.Ordinal))
-                offenders.Add($"{rel} calls Regex.Replace");
-            if (text.Contains(".Replace(", StringComparison.Ordinal))
-                offenders.Add($"{rel} calls string Replace");
+            var hit = DetectRewrite(text);
+            if (hit is not null)
+                offenders.Add($"{rel}: {hit}");
         }
 
         // The instrument must not pass by scanning nothing: an empty sweep is a broken run, not a
@@ -91,18 +90,55 @@ public sealed class TranscriptionIntegrityGuardTests
     }
 
     /// <summary>
-    /// The guard above is only worth having if it can fail. This proves the detector fires on the
-    /// exact shape it is looking for, so a green run means "nothing rewrites text" rather than "the
-    /// scan never matched anything".
+    /// The guard above is only worth having if it can FAIL, and the previous version of this test could
+    /// not tell you that: it asserted a literal string contained a literal substring, which proves
+    /// nothing about the detector the scan actually uses. Now the same <see cref="DetectRewrite"/> the
+    /// scan calls is run over source fixtures, so a green sweep means "no rewrite mechanism present"
+    /// rather than "the pattern happened not to match".
     /// </summary>
-    [Fact]
-    public void TheGuardDetectsARewriteWhenThereIsOne()
-    {
-        const string offending = "var cleaned = raw.Replace(\"a\", \"b\");";
-        const string innocent = "var score = Jaro(spanNorm, target);";
+    [Theory]
+    [InlineData("var cleaned = raw.Replace(\"a\", \"b\");")]
+    [InlineData("return Regex.Replace(text, pattern, replacement);")]
+    [InlineData("var cleaned = raw[..start] + term + raw[(start + len)..];")]
+    [InlineData("text = text[..c.Start] + c.Replace + text[(c.Start + c.Find.Length)..];")]
+    [InlineData("var sb = new StringBuilder(raw); sb.Remove(0, 2); return sb.ToString();")]
+    public void TheDetectorFiresOnEveryRewriteMechanismWeKnowOf(string source)
+        => Assert.NotNull(DetectRewrite(source));
 
-        Assert.Contains(".Replace(", offending, StringComparison.Ordinal);
-        Assert.DoesNotContain(".Replace(", innocent, StringComparison.Ordinal);
+    /// <summary>And stays quiet on code that only READS or scores text, or the guard becomes a nuisance
+    /// that the next person deletes instead of honouring.</summary>
+    [Theory]
+    [InlineData("var score = Jaro(spanNorm, target.Norm);")]
+    [InlineData("var tokens = Regex.Matches(raw, TokenPattern);")]
+    [InlineData("if (raw.Contains(edit.Find, StringComparison.Ordinal)) { }")]
+    [InlineData("var norm = char.ToLowerInvariant(c);")]
+    [InlineData("// we never Replace anything here, we only measure it")]
+    public void TheDetectorStaysQuietOnCodeThatOnlyReadsText(string source)
+        => Assert.Null(DetectRewrite(source));
+
+    /// <summary>
+    /// The rewrite mechanisms we know how to spot. Heuristic by nature - it reads source text, not
+    /// semantics - so it is deliberately aimed at the shapes that actually produce a modified
+    /// transcript: a replace call, a slice-and-concatenate rebuild (what ApplyAt itself does), and
+    /// StringBuilder mutation. A new mechanism that evades all three is a gap to close here, and the
+    /// fixtures above are where it gets pinned.
+    /// </summary>
+    private static string? DetectRewrite(string source)
+    {
+        var code = string.Join(
+            Environment.NewLine,
+            source.Split('\n')
+                .Where(l => !l.TrimStart().StartsWith("//", StringComparison.Ordinal)));
+
+        if (code.Contains("Regex.Replace(", StringComparison.Ordinal)) return "calls Regex.Replace";
+        if (code.Contains(".Replace(", StringComparison.Ordinal)) return "calls string Replace";
+        if (code.Contains("[..", StringComparison.Ordinal) && code.Contains("] +", StringComparison.Ordinal))
+            return "rebuilds a string by slicing and concatenating";
+        if (code.Contains("new StringBuilder(", StringComparison.Ordinal)
+            && (code.Contains(".Remove(", StringComparison.Ordinal)
+                || code.Contains(".Insert(", StringComparison.Ordinal)))
+            return "mutates text through a StringBuilder";
+        return null;
     }
 
     private static bool ReturnsTextSomehow(Type t)

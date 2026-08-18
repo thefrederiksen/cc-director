@@ -238,6 +238,101 @@ public sealed class DictationJudgeTests
         Assert.InRange(recording.LastCandidates.Count, 1, CandidateJudgeProtocol.MaxCandidates);
     }
 
+    // ===== the judge cannot reach past its own answer =========================
+
+    /// <summary>
+    /// The Critical hole a review found, pinned.
+    ///
+    /// The judge is handed a candidate list and its answer is only ids - but if it were handed the very
+    /// list we later read from, an in-process judge could cast the IReadOnlyList back to what it really
+    /// is, swap an entry AFTER validation, accept that entry's id, and have arbitrary replacement text
+    /// applied. The "a judge cannot supply text" property would be defeated through the PARAMETER
+    /// rather than the return value, which the return-type guard cannot see.
+    ///
+    /// So the ids are resolved against a private snapshot the judge never touches. This judge tries the
+    /// attack; the transcript must be untouched.
+    /// </summary>
+    [Fact]
+    public async Task AJudgeThatRewritesItsOwnCandidateList_ChangesNothing()
+    {
+        var attacker = new MutatingJudge();
+
+        var outcome = await Run("we deployed Terascale last night", attacker);
+
+        Assert.True(attacker.Tried, "the attack never ran - this test would pass for the wrong reason");
+        Assert.False(attacker.MutationSucceeded,
+            "the judge was able to write through its candidate list, so the snapshot is not protecting anything");
+        Assert.DoesNotContain("ARBITRARY", outcome.Text);
+        Assert.Equal("we deployed Tailscale last night", outcome.Text);
+    }
+
+    /// <summary>
+    /// A ruling mixing real ids with invented ones must be VOIDED, not filtered. The earlier double
+    /// returned only an invented id, so the filter happened to produce no edits and the test passed
+    /// without ever covering the mixed case.
+    /// </summary>
+    [Fact]
+    public async Task ARulingMixingRealAndInventedIds_IsDiscardedEntirely()
+    {
+        var outcome = await Run("we deployed Terascale last night", new MixedIdsJudge());
+
+        Assert.Equal("we deployed Terascale last night", outcome.Text);
+        Assert.False(outcome.Applied);
+        Assert.Contains("never offered", outcome.Reason);
+    }
+
+    /// <summary>An undefined mode value must shadow. Only the exact Enforce member may change text.</summary>
+    [Fact]
+    public async Task AnUndefinedModeValue_Shadows()
+    {
+        var outcome = await new CleanupOrchestrator(
+                judge: Judges.AcceptAll, mode: (UnlistedCorrectionMode)99)
+            .CleanAsync("we deployed Terascale last night", Dict(), "default");
+
+        Assert.Equal("we deployed Terascale last night", outcome.Text);
+        Assert.False(outcome.Applied);
+    }
+
+    /// <summary>Tries to swap a validated candidate for one carrying arbitrary replacement text, and
+    /// records whether the collection let it.</summary>
+    private sealed class MutatingJudge : ICandidateJudge
+    {
+        public bool Tried { get; private set; }
+        public bool MutationSucceeded { get; private set; }
+
+        public Task<IReadOnlyList<int>?> AcceptAsync(
+            string utterance, IReadOnlyList<JudgeCandidate> candidates, CancellationToken ct = default)
+        {
+            Tried = true;
+            var poison = new JudgeCandidate(candidates[0].Id, "we", "ARBITRARY TEXT", 0);
+
+            try
+            {
+                if (candidates is JudgeCandidate[] array) array[0] = poison;
+                else if (candidates is IList<JudgeCandidate> list) list[0] = poison;
+            }
+            catch (NotSupportedException)
+            {
+                // A genuinely read-only collection refuses the write. That is the property.
+            }
+
+            MutationSucceeded = !ReferenceEquals(candidates[0], poison)
+                ? candidates[0].Replace == "ARBITRARY TEXT"
+                : true;
+
+            return Task.FromResult<IReadOnlyList<int>?>(candidates.Select(c => c.Id).ToList());
+        }
+    }
+
+    /// <summary>Returns one real id and one that was never offered.</summary>
+    private sealed class MixedIdsJudge : ICandidateJudge
+    {
+        public Task<IReadOnlyList<int>?> AcceptAsync(
+            string utterance, IReadOnlyList<JudgeCandidate> candidates, CancellationToken ct = default)
+            => Task.FromResult<IReadOnlyList<int>?>(
+                candidates.Select(c => c.Id).Concat(new[] { 9_999 }).ToList());
+    }
+
     /// <summary>Accepts only the first candidate offered, by id.</summary>
     private sealed class FirstCandidateOnly : ICandidateJudge
     {

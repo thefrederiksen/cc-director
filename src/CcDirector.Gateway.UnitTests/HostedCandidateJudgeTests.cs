@@ -180,6 +180,12 @@ public sealed class HostedCandidateJudgeTests
 
     // ===== the deployment switch =============================================
 
+    /// <summary>
+    /// Exact means exact. Case and padding used to promote the judge, which contradicted the setting's
+    /// own documentation and meant a stray space or a shouted value silently bought permission to
+    /// rewrite someone's words. An operator who cannot type the word precisely has not clearly asked
+    /// for this.
+    /// </summary>
     [Theory]
     [InlineData(null)]
     [InlineData("")]
@@ -190,15 +196,16 @@ public sealed class HostedCandidateJudgeTests
     [InlineData("1")]
     [InlineData("enforced")]
     [InlineData("en force")]
+    [InlineData("ENFORCE")]
+    [InlineData("Enforce")]
+    [InlineData("  enforce  ")]
+    [InlineData("enforce\n")]
     public void AnythingButTheExactWord_LeavesTheJudgeShadowing(string? raw)
         => Assert.Equal(UnlistedCorrectionMode.Shadow, DictationJudgeMode.Parse(raw));
 
-    [Theory]
-    [InlineData("enforce")]
-    [InlineData("ENFORCE")]
-    [InlineData("  Enforce  ")]
-    public void OnlyTheExactWordPromotesTheJudge(string raw)
-        => Assert.Equal(UnlistedCorrectionMode.Enforce, DictationJudgeMode.Parse(raw));
+    [Fact]
+    public void OnlyTheExactWordPromotesTheJudge()
+        => Assert.Equal(UnlistedCorrectionMode.Enforce, DictationJudgeMode.Parse("enforce"));
 
     // ===== handlers ==========================================================
 

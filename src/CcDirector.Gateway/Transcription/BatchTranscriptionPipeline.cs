@@ -77,6 +77,8 @@ public sealed class BatchTranscriptionPipeline : IDisposable
     private readonly HttpClient _http;
     private readonly bool _ownsHttp;
     private readonly string _cleanupModel;
+    private readonly ICandidateJudge? _judge;
+    private readonly UnlistedCorrectionMode _judgeMode;
     private readonly IAudioTranscoder _transcoder;
 
     /// <param name="httpClient">Optional shared HttpClient (tests inject a stub). The pipeline creates
@@ -87,9 +89,12 @@ public sealed class BatchTranscriptionPipeline : IDisposable
     /// #1139). Defaults to the bundled-ffmpeg transcoder; tests inject a stub. ffmpeg is resolved lazily,
     /// so this default never touches disk unless a clip actually needs transcoding.</param>
     public BatchTranscriptionPipeline(HttpClient? httpClient = null, string? cleanupModel = null,
-        IAudioTranscoder? transcoder = null)
+        IAudioTranscoder? transcoder = null, ICandidateJudge? judge = null,
+        UnlistedCorrectionMode judgeMode = UnlistedCorrectionMode.Shadow)
     {
         _cleanupModel = string.IsNullOrWhiteSpace(cleanupModel) ? CleanupOrchestrator.DefaultModel : cleanupModel;
+        _judge = judge;
+        _judgeMode = judgeMode;
         _transcoder = transcoder ?? new FfmpegAudioTranscoder();
         if (httpClient is null)
         {
@@ -418,9 +423,11 @@ public sealed class BatchTranscriptionPipeline : IDisposable
         if (string.IsNullOrWhiteSpace(raw))
             return new CleanupOutcome(raw, Applied: false, Reason: "empty transcript");
 
-        // The corrector is deterministic and in-process (no provider call), so no key or base URL is
-        // threaded here. Its own fail-open contract turns any cleanup problem into a verbatim passthrough.
-        var cleanup = new CleanupOrchestrator(model: _cleanupModel);
+        // Listed wrong forms are corrected in-process; an UNLISTED one now needs a judge, and this
+        // pipeline gets the same one live dictation uses. Without it the caller would still get a
+        // successful response that could never correct anything - see DictationJudgeFactory.
+        var judge = _judge ?? DictationJudgeFactory.FromKey(routing.BaseUrl, routing.ApiKey);
+        var cleanup = new CleanupOrchestrator(model: _cleanupModel, judge: judge, mode: _judgeMode);
         return await cleanup.CleanAsync(raw, dictionary, profileName, ct);
     }
 

@@ -313,7 +313,9 @@ public sealed class GatewayTranscriptionService
         string? language = null)
     {
         var name = string.IsNullOrWhiteSpace(fileName) ? "audio." + ExtensionFor(contentType) : fileName;
-        using var pipeline = new BatchTranscriptionPipeline(httpClient: _http, cleanupModel: _cleanupModel);
+        using var pipeline = new BatchTranscriptionPipeline(
+            httpClient: _http, cleanupModel: _cleanupModel,
+            judge: DictationJudgeFactory.FromVault(_vault), judgeMode: DictationJudgeMode.Current);
         FileLog.Write($"[GatewayTranscriptionService] transcribe remote: bytes={audio.Length}, mode={routing.Mode.ToConfigString()}, model={routing.Endpoint.Model}, language={language ?? "auto"}");
         return await pipeline.TranscribeRawAsync(audio, name, routing.ToResolved(language), ct);
     }
@@ -356,41 +358,10 @@ public sealed class GatewayTranscriptionService
             return new CleanupOutcome(raw, Applied: false, Reason: "empty dictionary");
 
         var cleanup = new CleanupOrchestrator(
-            model: _cleanupModel, judge: BuildJudge(), mode: DictationJudgeMode.Current);
+            model: _cleanupModel, judge: DictationJudgeFactory.FromVault(_vault), mode: DictationJudgeMode.Current);
         var outcome = await cleanup.CleanAsync(raw, dictionary, "default", ct);
         FileLog.Write($"[GatewayTranscriptionService] cleanup: applied={outcome.Applied}, changed={outcome.ChangedWords.Count}, reason=\"{outcome.Reason}\"");
         return outcome;
-    }
-
-    /// <summary>
-    /// The judge for unlisted corrections, or null when this deployment has no credential for it.
-    ///
-    /// Null is a safe answer, not a degraded one: without a judge the orchestrator applies no unlisted
-    /// correction at all, which is exactly the behaviour a self-host install with no DevThrottle key
-    /// should get. The listed wrong forms still work, because those the user chose themselves.
-    /// </summary>
-    private ICandidateJudge? BuildJudge()
-    {
-        try
-        {
-            var endpoint = TranscriptionEndpointResolver.ResolveDictationCleanup(TranscriptionModeConfig.Get());
-            var key = _vault.Get(endpoint.KeyName);
-            if (string.IsNullOrWhiteSpace(key))
-            {
-                FileLog.Write("[GatewayTranscriptionService] no dictation-judge credential; "
-                              + "unlisted corrections stay off and listed ones still apply");
-                return null;
-            }
-            return new HostedCandidateJudge(
-                endpoint.BaseUrl, key!, IncludedModelId.DictationCleanup, log: FileLog.Write);
-        }
-        catch (Exception ex)
-        {
-            // Never fail a turn over the judge. No judge means no unlisted correction, which is safe.
-            FileLog.Write($"[GatewayTranscriptionService] judge unavailable ({ex.GetType().Name}); "
-                          + "unlisted corrections stay off");
-            return null;
-        }
     }
 
     /// <summary>

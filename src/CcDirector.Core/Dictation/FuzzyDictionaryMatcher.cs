@@ -64,11 +64,16 @@ public static class FuzzyDictionaryMatcher
     public static IReadOnlyList<TranscriptEdit> Propose(string rawTranscript, DictationDictionary dictionary)
     {
         // Deduped by exact found text, because Apply rewrites every occurrence of a find anyway.
+        //
+        // Deliberately reads Scan directly rather than ProposeCandidates: the judge API sorts into
+        // document order to number its candidates, and this one must keep the SCAN order it has always
+        // returned - two-token windows before one-token ones. That order is observable, because it
+        // decides which edits survive the engine's cap and how equal-length edits sort in Apply.
         var seen = new HashSet<string>(StringComparer.Ordinal);
         var edits = new List<TranscriptEdit>();
-        foreach (var c in ProposeCandidates(rawTranscript, dictionary))
-            if (seen.Add(c.Find))
-                edits.Add(new TranscriptEdit(c.Find, c.Replace));
+        foreach (var f in Scan(rawTranscript, dictionary))
+            if (seen.Add(f.Find))
+                edits.Add(new TranscriptEdit(f.Find, f.Replace));
         return edits;
     }
 

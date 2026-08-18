@@ -19,8 +19,9 @@ namespace CcDirector.Gateway.Transcription;
 public static class DictationJudgeMode
 {
     /// <summary>Environment variable that promotes the judge. Anything other than the exact value
-    /// <c>enforce</c> (case-insensitive, trimmed) leaves it shadowing - an unset, empty, misspelled or
-    /// garbled value must never be read as permission to rewrite someone's words.</summary>
+    /// <c>enforce</c> leaves it shadowing - an unset, empty, misspelled, differently-cased or padded
+    /// value must never be read as permission to rewrite someone's words. Exact means exact: an
+    /// operator who cannot type the word precisely has not clearly asked for this.</summary>
     public const string EnvVar = "DEVTHROTTLE_DICTATION_JUDGE_MODE";
 
     /// <summary>The mode this process runs in. Read per call so the setting can be changed without a
@@ -30,7 +31,7 @@ public static class DictationJudgeMode
     /// <summary>Exposed for testing without touching process environment.</summary>
     internal static UnlistedCorrectionMode Parse(string? raw)
     {
-        var enforce = string.Equals(raw?.Trim(), "enforce", StringComparison.OrdinalIgnoreCase);
+        var enforce = string.Equals(raw, "enforce", StringComparison.Ordinal);
         if (enforce)
             FileLog.Write($"[DictationJudgeMode] {EnvVar}=enforce - judged corrections WILL be applied");
         return enforce ? UnlistedCorrectionMode.Enforce : UnlistedCorrectionMode.Shadow;

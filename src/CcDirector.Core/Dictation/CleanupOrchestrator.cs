@@ -136,15 +136,32 @@ public sealed class CleanupOrchestrator
                 rawTranscript,
                 dictionary);
             foreach (var r in validation.Rejected)
-                FileLog.Write($"[CleanupOrchestrator] candidate REJECTED before judging: \"{Truncate(r.Edit.Find, 60)}\" -> "
-                              + $"\"{Truncate(r.Edit.Replace, 60)}\" ({r.Reason})");
+                // The spoken span is the user's words and stays out of the log; the canonical term
+                // came from their own glossary, so naming it is what makes a rejection diagnosable.
+                FileLog.Write($"[CleanupOrchestrator] candidate REJECTED before judging: {r.Edit.Find.Length} "
+                              + $"char(s) -> \"{Truncate(r.Edit.Replace, 60)}\" ({r.Reason})");
 
             var allowed = new HashSet<(string, string)>(
                 validation.Accepted.Select(e => (e.Find, e.Replace)));
-            var offered = candidates.Where(c => allowed.Contains((c.Find, c.Replace)))
-                .Take(CandidateJudgeProtocol.MaxCandidates).ToList();
 
-            if (offered.Count == 0)
+            // THE SNAPSHOT. This private array is what gets applied, and the judge never touches it.
+            //
+            // Handing the judge the same list we later read from would make the whole safety claim a
+            // matter of trust: an in-process judge can cast an IReadOnlyList back to the List it really
+            // is, swap an entry AFTER validation, accept its id, and have arbitrary Find/Replace/Start
+            // applied to the user's words. That is exactly the "a judge cannot supply text" property
+            // this design sells, defeated through the parameter rather than the return value.
+            //
+            // So the judge is given defensive COPIES and its answer is nothing but numbers, which are
+            // then resolved against this untouched snapshot.
+            var snapshot = candidates.Where(c => allowed.Contains((c.Find, c.Replace)))
+                .Take(CandidateJudgeProtocol.MaxCandidates).ToArray();
+            // Wrapped, not just copied: a bare array or List handed out as IReadOnlyList can be cast
+            // straight back and written through. A ReadOnlyCollection has no such door.
+            var offered = new System.Collections.ObjectModel.ReadOnlyCollection<JudgeCandidate>(
+                snapshot.Select(c => new JudgeCandidate(c.Id, c.Find, c.Replace, c.Start)).ToList());
+
+            if (snapshot.Length == 0)
             {
                 sw.Stop();
                 FileLog.Write($"[CleanupOrchestrator] CleanAsync: nothing to judge in {sw.Elapsed.TotalMilliseconds:0.###}ms");
@@ -158,7 +175,7 @@ public sealed class CleanupOrchestrator
             if (_judge is null)
             {
                 sw.Stop();
-                FileLog.Write($"[CleanupOrchestrator] CleanAsync: {offered.Count} candidate(s) but NO JUDGE "
+                FileLog.Write($"[CleanupOrchestrator] CleanAsync: {snapshot.Length} candidate(s) but NO JUDGE "
                               + $"configured; nothing applied ({sw.Elapsed.TotalMilliseconds:0.###}ms)");
                 return new CleanupOutcome(rawTranscript, Applied: false,
                     Reason: "unlisted corrections need a judge and none is configured");
@@ -169,27 +186,45 @@ public sealed class CleanupOrchestrator
             {
                 sw.Stop();
                 FileLog.Write($"[CleanupOrchestrator] CleanAsync: judge gave no usable ruling on "
-                              + $"{offered.Count} candidate(s); nothing applied ({sw.Elapsed.TotalMilliseconds:0.###}ms)");
+                              + $"{snapshot.Length} candidate(s); nothing applied ({sw.Elapsed.TotalMilliseconds:0.###}ms)");
                 return new CleanupOutcome(rawTranscript, Applied: false, Reason: "judge gave no ruling");
             }
 
+            // An id nobody offered VOIDS the whole ruling - it is not filtered out. A judge ruling on a
+            // candidate that does not exist did not understand the question, so its opinion on the ones
+            // that do exist is not worth acting on either. The protocol parser already enforces this for
+            // a hosted judge; enforcing it here too covers every ICandidateJudge, including in-process
+            // ones whose answer never passes through that parser.
+            var offeredIds = new HashSet<int>(snapshot.Select(c => c.Id));
+            if (ruling.Any(id => !offeredIds.Contains(id)))
+            {
+                sw.Stop();
+                FileLog.Write($"[CleanupOrchestrator] CleanAsync: judge ruled on candidate(s) that were "
+                              + $"never offered; whole ruling discarded ({sw.Elapsed.TotalMilliseconds:0.###}ms)");
+                return new CleanupOutcome(rawTranscript, Applied: false,
+                    Reason: "judge ruled on candidates that were never offered");
+            }
+
+            // Resolved against the SNAPSHOT, never against the list the judge was handed.
             var acceptedIds = new HashSet<int>(ruling);
-            var accepted = offered.Where(c => acceptedIds.Contains(c.Id)).ToList();
+            var accepted = snapshot.Where(c => acceptedIds.Contains(c.Id)).ToList();
             var judgedEdits = accepted.Select(c => new TranscriptEdit(c.Find, c.Replace)).ToList();
 
             // Shadow: ask the question, write down the answer, change nothing. This is how a judge earns
             // the right to act - on a record of what it WOULD have done to real dictation, read before
             // it is allowed to do it.
-            if (_mode == UnlistedCorrectionMode.Shadow)
+            // Fail CLOSED on the mode: only the exact Enforce value applies. An undefined enum value -
+            // a cast integer, a new member added later and not handled here - must shadow, not enforce.
+            if (_mode != UnlistedCorrectionMode.Enforce)
             {
                 sw.Stop();
                 foreach (var c in accepted)
-                    FileLog.Write($"[CleanupOrchestrator] SHADOW would correct \"{Truncate(c.Find, 60)}\" -> "
-                                  + $"\"{c.Replace}\" at {c.Start}");
-                FileLog.Write($"[CleanupOrchestrator] CleanAsync SHADOW: offered={offered.Count} "
+                    FileLog.Write($"[CleanupOrchestrator] SHADOW would correct {c.Find.Length} char(s) "
+                                  + $"at {c.Start} -> \"{c.Replace}\"");
+                FileLog.Write($"[CleanupOrchestrator] CleanAsync SHADOW: offered={snapshot.Length} "
                               + $"accepted={accepted.Count} applied=0 in {sw.Elapsed.TotalMilliseconds:0.###}ms");
                 return new CleanupOutcome(rawTranscript, Applied: false,
-                    Reason: $"shadow mode: {accepted.Count} of {offered.Count} candidate(s) would have been corrected",
+                    Reason: $"shadow mode: {accepted.Count} of {snapshot.Length} candidate(s) would have been corrected",
                     ChangedWords: Array.Empty<TranscriptEdit>(),
                     ShadowChanges: judgedEdits);
             }
@@ -199,10 +234,10 @@ public sealed class CleanupOrchestrator
             sw.Stop();
 
             foreach (var c in accepted)
-                FileLog.Write($"[CleanupOrchestrator] judged correction \"{Truncate(c.Find, 60)}\" -> "
-                              + $"\"{c.Replace}\" at {c.Start}");
+                FileLog.Write($"[CleanupOrchestrator] judged correction of {c.Find.Length} char(s) "
+                              + $"at {c.Start} -> \"{c.Replace}\"");
             FileLog.Write($"[CleanupOrchestrator] CleanAsync done in {sw.Elapsed.TotalMilliseconds:0.###}ms: "
-                          + $"offered={offered.Count} accepted={accepted.Count} applied={appliedCount} "
+                          + $"offered={snapshot.Length} accepted={accepted.Count} applied={appliedCount} "
                           + $"rejected-before-judging={validation.Rejected.Count}");
 
             var changedWords = appliedCount > 0
@@ -288,8 +323,17 @@ public sealed class CleanupOrchestrator
         return new DictationProfile("default", CleanupEnabled: true, FuzzyCorrectionEnabled: false);
     }
 
+    /// <summary>
+    /// Shorten a value for a log line.
+    ///
+    /// Built with <see cref="string.Concat(ReadOnlySpan{char}, ReadOnlySpan{char})"/> rather than the
+    /// obvious slice-and-plus, so this file contains no construct that BUILDS a string out of pieces of
+    /// another one. That shape is how a transcript actually gets rewritten, the integrity guard looks
+    /// for exactly it, and a log helper that trips the guard is how a guard gets weakened until it
+    /// stops guarding. Cheaper to write the helper differently than to teach the check to ignore it.
+    /// </summary>
     private static string Truncate(string s, int max)
-        => string.IsNullOrEmpty(s) || s.Length <= max ? s : s[..max] + "...";
+        => string.IsNullOrEmpty(s) || s.Length <= max ? s : string.Concat(s.AsSpan(0, max), "...");
 }
 
 /// <summary>
