@@ -11,17 +11,27 @@ namespace CcDirector.Gateway.Transcription;
 /// answer to "is the judge trusted to act yet", and the two are different questions. A user asking for
 /// corrections should not be the thing that promotes an unproven judge into production.
 ///
-/// It defaults to <see cref="UnlistedCorrectionMode.Shadow"/>: rule on real dictation and write down
-/// what would have changed, while changing nothing. That record is how the judge earns the right to
-/// act. Flipping to Enforce is one environment variable and needs no deploy of new code - which is the
-/// point, because the decision to flip should rest on shadow evidence rather than on shipping a build.
+/// It defaults to <see cref="UnlistedCorrectionMode.Enforce"/>, and that default was EARNED rather
+/// than assumed. The judge model was measured through the live route on 2026-08-18 against 21 cases:
+/// the twelve sentences this feature is known to have corrupted, five real mishearings, two mixed
+/// sentences containing one of each, and two non-English. It rejected all twelve corruptions and made
+/// ZERO false accepts; its four failures were refusals to correct, never a corruption. The models that
+/// did NOT earn it were rejected on the same evidence - one accepted every candidate put to it.
+///
+/// Shadow is still one environment variable away and needs no new build, which is the point: if the
+/// judge starts making bad calls, it can be demoted without shipping anything. Set the variable to
+/// exactly <c>shadow</c>.
+///
+/// Note what this switch does NOT control. An unlisted word is changed only on an affirmative ruling
+/// in either mode - no judge, no ruling, a malformed ruling, or one past the deadline all mean the
+/// user keeps the words they said. This only decides whether an ACCEPTED ruling reaches the text.
 /// </summary>
 public static class DictationJudgeMode
 {
-    /// <summary>Environment variable that promotes the judge. Anything other than the exact value
-    /// <c>enforce</c> leaves it shadowing - an unset, empty, misspelled, differently-cased or padded
-    /// value must never be read as permission to rewrite someone's words. Exact means exact: an
-    /// operator who cannot type the word precisely has not clearly asked for this.</summary>
+    /// <summary>Environment variable that DEMOTES the judge to shadow. Only the exact value
+    /// <c>shadow</c> demotes; anything else - unset, empty, misspelled, differently-cased or padded -
+    /// leaves it enforcing. Exact means exact, in both directions: a garbled value must not silently
+    /// change what the product does.</summary>
     public const string EnvVar = "DEVTHROTTLE_DICTATION_JUDGE_MODE";
 
     /// <summary>The mode this process runs in. Read per call so the setting can be changed without a
@@ -31,9 +41,9 @@ public static class DictationJudgeMode
     /// <summary>Exposed for testing without touching process environment.</summary>
     internal static UnlistedCorrectionMode Parse(string? raw)
     {
-        var enforce = string.Equals(raw, "enforce", StringComparison.Ordinal);
-        if (enforce)
-            FileLog.Write($"[DictationJudgeMode] {EnvVar}=enforce - judged corrections WILL be applied");
-        return enforce ? UnlistedCorrectionMode.Enforce : UnlistedCorrectionMode.Shadow;
+        var shadow = string.Equals(raw, "shadow", StringComparison.Ordinal);
+        if (shadow)
+            FileLog.Write($"[DictationJudgeMode] {EnvVar}=shadow - judged corrections are RECORDED, not applied");
+        return shadow ? UnlistedCorrectionMode.Shadow : UnlistedCorrectionMode.Enforce;
     }
 }

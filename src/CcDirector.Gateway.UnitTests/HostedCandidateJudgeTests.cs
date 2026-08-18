@@ -181,31 +181,28 @@ public sealed class HostedCandidateJudgeTests
     // ===== the deployment switch =============================================
 
     /// <summary>
-    /// Exact means exact. Case and padding used to promote the judge, which contradicted the setting's
-    /// own documentation and meant a stray space or a shouted value silently bought permission to
-    /// rewrite someone's words. An operator who cannot type the word precisely has not clearly asked
-    /// for this.
+    /// Exact means exact, in both directions. Only the literal word demotes the judge - a garbled,
+    /// padded or differently-cased value must not silently change what the product does. The default
+    /// is Enforce, earned by measuring the model against 21 live cases with zero false accepts.
     /// </summary>
     [Theory]
     [InlineData(null)]
     [InlineData("")]
     [InlineData("   ")]
-    [InlineData("shadow")]
-    [InlineData("off")]
-    [InlineData("true")]
-    [InlineData("1")]
-    [InlineData("enforced")]
-    [InlineData("en force")]
+    [InlineData("enforce")]
     [InlineData("ENFORCE")]
-    [InlineData("Enforce")]
-    [InlineData("  enforce  ")]
-    [InlineData("enforce\n")]
-    public void AnythingButTheExactWord_LeavesTheJudgeShadowing(string? raw)
-        => Assert.Equal(UnlistedCorrectionMode.Shadow, DictationJudgeMode.Parse(raw));
+    [InlineData("on")]
+    [InlineData("true")]
+    [InlineData("shadowed")]
+    [InlineData("SHADOW")]
+    [InlineData("  shadow  ")]
+    [InlineData("shadow\n")]
+    public void AnythingButTheExactWord_LeavesTheJudgeEnforcing(string? raw)
+        => Assert.Equal(UnlistedCorrectionMode.Enforce, DictationJudgeMode.Parse(raw));
 
     [Fact]
-    public void OnlyTheExactWordPromotesTheJudge()
-        => Assert.Equal(UnlistedCorrectionMode.Enforce, DictationJudgeMode.Parse("enforce"));
+    public void OnlyTheExactWordDemotesTheJudgeToShadow()
+        => Assert.Equal(UnlistedCorrectionMode.Shadow, DictationJudgeMode.Parse("shadow"));
 
     // ===== handlers ==========================================================
 
