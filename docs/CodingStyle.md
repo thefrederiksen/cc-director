@@ -826,7 +826,7 @@ This is an absolute, load-bearing rule (it traces to a real corruption incident,
 
 1. The raw speech-to-text transcript is the user's words. The ONLY permitted change to it is replacing a misheard term with the correct **dictionary** spelling of a term the user actually said (a single word, or a tightly-joined multi-word term like `cc-director`).
 
-2. A language model may be used ONLY to **locate** which spans are misheard dictionary terms, and it must return that judgment as a **JSON list of find/replace proposals** - never the transcript text itself.
+2. A language model may be used ONLY to **rule on** spans that deterministic code has already isolated, and it must answer with **candidate ids and nothing else** (`{"acceptedCandidateIds":[1]}`) - never the transcript text, and never a span it chose itself. It cannot name a candidate that was not offered, and an id that was never offered voids the whole ruling. This is tighter than the original rule, which let the model return its own find/replace pairs; `TranscriptEditEngine.ParseEdits` is the remnant of that protocol and has no production caller.
 
 3. Only deterministic code - `CcDirector.Core.Dictation.TranscriptEditEngine`, driven by `CleanupOrchestrator` - may change the words, and only by applying a validated proposal (the `find` must occur verbatim in the raw transcript, the `replace` must be an exact dictionary term, and it must be a plausible mishearing). Everything else fails open to the raw transcript.
 

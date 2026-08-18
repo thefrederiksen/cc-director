@@ -325,12 +325,6 @@ public sealed class CleanupOrchestrator
 
     /// <summary>
     /// Shorten a value for a log line.
-    ///
-    /// Built with <see cref="string.Concat(ReadOnlySpan{char}, ReadOnlySpan{char})"/> rather than the
-    /// obvious slice-and-plus, so this file contains no construct that BUILDS a string out of pieces of
-    /// another one. That shape is how a transcript actually gets rewritten, the integrity guard looks
-    /// for exactly it, and a log helper that trips the guard is how a guard gets weakened until it
-    /// stops guarding. Cheaper to write the helper differently than to teach the check to ignore it.
     /// </summary>
     private static string Truncate(string s, int max)
         => string.IsNullOrEmpty(s) || s.Length <= max ? s : string.Concat(s.AsSpan(0, max), "...");
