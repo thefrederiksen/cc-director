@@ -1562,7 +1562,19 @@ public sealed class GatewayHost : IAsyncDisposable
         // through, resolved at call time (the dictionary-screening precedent) - summarisation is a
         // background digest, and the fast leg is the cheap one. The per-pass caps live in the sweep.
         _sessionHistory = new History.SessionHistoryStore(_gatewayDb);
-        _sessionHistoryRecorder = new History.SessionHistoryRecorder(_sessionHistory);
+        // The machine name and the Director version are stamped from the CONNECTION record, not
+        // from the pushed session: the pushed machine name is hard-coded empty on every client in
+        // the field, and the version has never been on the session payload at all. Reading them
+        // here means the fix lands for Directors that are already running and will never be
+        // upgraded. Registry.Get is tenant-scoped, so one account can never stamp another's.
+        _sessionHistoryRecorder = new History.SessionHistoryRecorder(
+            _sessionHistory,
+            (tenant, directorId) =>
+            {
+                var d = Registry.Get(tenant, directorId);
+                return d is null ? History.DirectorFacts.Unknown
+                                 : new History.DirectorFacts(d.MachineName, d.Version);
+            });
         var historySummarizer = new History.SessionHistorySummarizer(_sessionHistory, _promptLog,
             (tenant, ct) =>
             {

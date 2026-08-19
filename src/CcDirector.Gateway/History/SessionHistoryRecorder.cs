@@ -56,9 +56,32 @@ public sealed class SessionHistoryRecorder
     // Session ids whose first prompt is known handled, so prompt ingest does not hit the store per batch.
     private readonly ConcurrentDictionary<string, byte> _firstPromptHandled = new(StringComparer.Ordinal);
 
-    public SessionHistoryRecorder(SessionHistoryStore store)
+    /// <summary>
+    /// Resolves what the Gateway knows about a Director from its live connection record. Optional
+    /// so the tests that only exercise the write cadence need not stand up a registry; when it is
+    /// absent every row is written with <see cref="DirectorFacts.Unknown"/>, which is exactly the
+    /// behaviour that produced a table with no machine name in it, so production MUST supply one.
+    /// </summary>
+    private readonly Func<TenantId, string, DirectorFacts>? _directorFacts;
+
+    public SessionHistoryRecorder(SessionHistoryStore store,
+        Func<TenantId, string, DirectorFacts>? directorFacts = null)
     {
         _store = store ?? throw new ArgumentNullException(nameof(store));
+        _directorFacts = directorFacts;
+    }
+
+    /// <summary>The Director's machine and version, or Unknown. Never throws and never lets a
+    /// registry hiccup fail a push - a row without these facts is worth far more than a dropped one.</summary>
+    private DirectorFacts FactsFor(TenantId tenant, string directorId)
+    {
+        if (_directorFacts is null) return DirectorFacts.Unknown;
+        try { return _directorFacts(tenant, directorId); }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[SessionHistoryRecorder] director facts lookup FAILED (swallowed): {ex.Message}");
+            return DirectorFacts.Unknown;
+        }
     }
 
     /// <summary>An authoritative full snapshot: upsert what is due, and reconcile removals that
@@ -191,7 +214,8 @@ public sealed class SessionHistoryRecorder
     private void ObserveCore(TenantId tenant, string directorId, SessionDto session, DateTime nowUtc)
     {
         var key = Key(tenant, session.SessionId);
-        var signature = MaterialSignature(session);
+        var facts = FactsFor(tenant, directorId);
+        var signature = MaterialSignature(session, facts);
         var tracked = _tracked.GetOrAdd(key, static _ => new TrackedSession());
 
         bool writeDue;
@@ -212,13 +236,18 @@ public sealed class SessionHistoryRecorder
         }
 
         if (writeDue)
-            _store.UpsertLive(directorId, session, nowUtc);
+            _store.UpsertLive(directorId, session, nowUtc, facts);
     }
 
     /// <summary>The facts whose change forces an immediate write. Activity state and last-activity
     /// time are deliberately absent - see the class doc.</summary>
-    private static string MaterialSignature(SessionDto s)
-        => string.Join('|', s.Name, s.Number?.ToString(), s.MachineName, s.RepoPath, s.RepoName,
+    private static string MaterialSignature(SessionDto s, DirectorFacts facts)
+        // The Director's machine and VERSION are part of the signature, so an upgrade that happens
+        // while a long-lived session is running is written the moment it is observed rather than
+        // waiting on the five-minute heartbeat. Sessions here run for days; a version stamped at
+        // first sight and never revisited would misattribute the whole run to the old build.
+        => string.Join('|', facts.MachineName, facts.Version,
+            s.Name, s.Number?.ToString(), s.MachineName, s.RepoPath, s.RepoName,
             s.Agent, s.CurrentModel, s.MissionName, s.ExplicitRole,
             // The birth facts (devthrottle_internal issue #982). They are stamped before launch and
             // never change, so on the normal path they arrive with the first push and this costs

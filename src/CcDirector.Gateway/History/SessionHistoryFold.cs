@@ -98,6 +98,7 @@ public static class SessionHistoryFold
         SessionNumber = e.SessionNumber,
         SessionName = e.SessionName,
         MachineName = e.MachineName,
+        DirectorVersion = e.DirectorVersion,
         DirectorId = e.DirectorId,
         RepoPath = e.RepoPath,
         RepoName = e.RepoName,
