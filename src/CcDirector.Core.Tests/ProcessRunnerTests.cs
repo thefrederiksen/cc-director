@@ -27,7 +27,18 @@ public sealed class ProcessRunnerTests
             "powershell", new[] { "-NoProfile", "-Command", script }, workingDirectory: null);
 
         // If the drain regressed to sequential, run never completes and the delay wins.
-        var finished = await Task.WhenAny(run, Task.Delay(TimeSpan.FromSeconds(30)));
+        //
+        // The budget is generous ON PURPOSE, and raising it costs the assertion nothing. What this
+        // test distinguishes is "completes" from "NEVER completes": a sequential drain deadlocks
+        // permanently, so it fails this test at any timeout whatsoever. The number is only a
+        // liveness guard so a regression reports rather than hangs the suite forever.
+        //
+        // It was 30 seconds, and that is not a drain budget - it also has to cover starting
+        // powershell, which is a heavy child process. On a busy continuous-integration runner that
+        // start alone can approach it, and the test then fails for machine load rather than for the
+        // hazard it exists to catch. Seen twice on 2026-08-19 during a run whose other jobs were
+        // saturating the machine; the drain itself takes well under a second locally.
+        var finished = await Task.WhenAny(run, Task.Delay(TimeSpan.FromMinutes(2)));
         Assert.Same(run, finished);
 
         var result = await run;
