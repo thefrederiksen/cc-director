@@ -38,20 +38,51 @@ public sealed class WorkflowStore
     /// so self-host - where the single-tenant context answers Local for everything - keeps reading
     /// the exact rows it always read, and the reserved System id never appears outside the hosted
     /// composition root.</summary>
-    private readonly string _libraryTenant;
+    // Captured by InitializeCore, which may run after construction (the Gateway defers it so its listener
+    // can bind first), so this cannot be readonly. It is still written EXACTLY ONCE: InitializeCore is
+    // guarded by _initialized and never runs twice. Empty until then, and nothing reads it before the
+    // readiness gate opens.
+    private string _libraryTenant = "";
 
     /// <param name="db">The Gateway EF database this store reads and writes through.</param>
     /// <exception cref="ArgumentNullException">The database is null.</exception>
-    public WorkflowStore(GatewayDatabase db)
+    /// <param name="deferInitialize">
+    /// When true the constructor stops after wiring; the caller must call <see cref="Initialize"/> once the
+    /// database is open. The Gateway passes true so its listener can bind BEFORE any database work.
+    ///
+    /// The caller MUST run Initialize inside the same ambient tenant scope the constructor would have had -
+    /// the library partition is captured from it below, and capturing it under a different scope would put
+    /// the shared workflow library in the wrong tenant.
+    /// </param>
+    public WorkflowStore(GatewayDatabase db, bool deferInitialize = false)
     {
         _db = db ?? throw new ArgumentNullException(nameof(db));
 
+        if (!deferInitialize)
+            InitializeCore();
+    }
+
+    /// <summary>Run the deferred load. Idempotent.</summary>
+    public void Initialize()
+    {
+        if (_initialized) return;
+        InitializeCore();
+    }
+
+    /// <summary>True once the load has run.</summary>
+    public bool IsInitialized => _initialized;
+
+    private bool _initialized;
+
+    private void InitializeCore()
+    {
         lock (_gate)
         {
             using var ctx = _db.CreateContext();
             _libraryTenant = ctx.ActiveTenant!;
             BuiltInWorkflowSeeder.Seed(ctx);
         }
+        _initialized = true;
     }
 
     /// <summary>A fresh context scoped to the shared library partition. Read-only by contract on

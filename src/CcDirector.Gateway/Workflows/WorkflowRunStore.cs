@@ -37,7 +37,11 @@ public sealed class WorkflowRunStore
 
     /// <summary>The shared library partition - the tenant ambient at construction (System on hosted,
     /// Local on self-host), mirroring <see cref="WorkflowStore"/>.</summary>
-    private readonly string _libraryTenant;
+    // Captured by InitializeCore, which may run after construction (the Gateway defers it so its listener
+    // can bind first), so this cannot be readonly. It is still written EXACTLY ONCE: InitializeCore is
+    // guarded by _initialized and never runs twice. Empty until then, and nothing reads it before the
+    // readiness gate opens.
+    private string _libraryTenant = "";
 
     private static readonly Dictionary<string, string[]> LegalTransitions = new(StringComparer.Ordinal)
     {
@@ -68,16 +72,46 @@ public sealed class WorkflowRunStore
         WorkflowRunCriterionStatus.Pending, WorkflowRunCriterionStatus.Met,
         WorkflowRunCriterionStatus.NotMet, WorkflowRunCriterionStatus.Waived,
     };
-
-    public WorkflowRunStore(GatewayDatabase db)
+    /// <param name="deferInitialize">
+    /// When true the constructor validates arguments and stops; the caller must call
+    /// <see cref="Initialize"/> once the database is open. The Gateway passes true so its listener can bind
+    /// BEFORE any database work - the load below used to sit in front of the bind, and a slow database
+    /// therefore delayed it past the platform's container-start deadline (#2383, #2585).
+    ///
+    /// The caller MUST run Initialize inside the same ambient tenant scope the constructor would have had.
+    /// Nothing is served in the meantime: the readiness gate refuses every request but /healthz.
+    /// </param>
+    public WorkflowRunStore(GatewayDatabase db, bool deferInitialize = false)
     {
         _db = db ?? throw new ArgumentNullException(nameof(db));
 
         // Capture the library partition from the construction-time ambient tenant, exactly as
         // WorkflowStore does (the composition root constructs both inside the startup System scope).
+        if (!deferInitialize)
+            InitializeCore();
+    }
+
+    /// <summary>
+    /// Run the deferred load. Idempotent, and a no-op for an instance whose constructor already did it.
+    /// </summary>
+    public void Initialize()
+    {
+        if (_initialized) return;
+        InitializeCore();
+    }
+
+    /// <summary>True once the load has run.</summary>
+    public bool IsInitialized => _initialized;
+
+    private bool _initialized;
+
+    private void InitializeCore()
+    {
         using var ctx = _db.CreateContext();
         _libraryTenant = ctx.ActiveTenant!;
+        _initialized = true;
     }
+
 
     /// <summary>
     /// Open the context for the partition that OWNS workflow <paramref name="key"/>: the shared

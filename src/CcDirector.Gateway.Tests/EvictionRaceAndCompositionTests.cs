@@ -226,6 +226,11 @@ public sealed class EvictionRaceAndCompositionTests : IDisposable
             authEnabled: true, instancesDirectory: _instancesDir,
             workListsPath: Path.Combine(_instancesDir, "worklists", "worklists.json"));
 
+        // The host is used without being started, and the database is no longer opened by the constructor:
+        // StartAsync opens it right after the listener binds so a slow database cannot delay the bind
+        // (#2383, #2585). This test wants the stores, not a bound port, so it runs that step directly.
+        gateway.EnsureStoresReady();
+
         gateway.Registry.RegisterFromStream(DirectorId, Machine, "soren", "1.0", pid: 1234,
             startedAt: DateTime.UtcNow, tenant: TenantId.Local);
         gateway.PushedSessions.RegisterConnection(TenantId.Local, DirectorId, "conn-1");

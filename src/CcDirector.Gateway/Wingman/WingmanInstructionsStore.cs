@@ -66,8 +66,17 @@ public sealed class WingmanInstructionsStore
     /// <param name="db">The Gateway EF database this store reads and writes through.</param>
     /// <param name="legacyJsonPath">The legacy <c>wingman-instructions.json</c> path to import ONCE if it
     /// exists and the table is empty. REQUIRED (no silent default).</param>
+    /// <param name="deferInitialize">
+    /// When true the constructor validates arguments and stops; the caller must call
+    /// <see cref="Initialize"/> once the database is open. The Gateway passes true so its listener can bind
+    /// BEFORE any database work - the load below used to sit in front of the bind, and a slow database
+    /// therefore delayed it past the platform's container-start deadline (#2383, #2585).
+    ///
+    /// The caller MUST run Initialize inside the same ambient tenant scope the constructor would have had.
+    /// Nothing is served in the meantime: the readiness gate refuses every request but /healthz.
+    /// </param>
     public WingmanInstructionsStore(GatewayDatabase db, string legacyJsonPath,
-        string? defaultContent = null, string? defaultVersion = null)
+        string? defaultContent = null, string? defaultVersion = null, bool deferInitialize = false)
     {
         _db = db ?? throw new ArgumentNullException(nameof(db));
         if (string.IsNullOrWhiteSpace(legacyJsonPath))
@@ -75,8 +84,30 @@ public sealed class WingmanInstructionsStore
         _legacyJsonPath = legacyJsonPath;
         _defaultContent = defaultContent ?? WingmanTranslator.FidelityPrompt;
         _defaultVersion = defaultVersion ?? WingmanTranslator.DefaultInstructionsVersion;
-        Load();
+        if (!deferInitialize)
+            InitializeCore();
     }
+
+    /// <summary>
+    /// Run the deferred load. Idempotent, and a no-op for an instance whose constructor already did it.
+    /// </summary>
+    public void Initialize()
+    {
+        if (_initialized) return;
+        InitializeCore();
+    }
+
+    /// <summary>True once the load has run.</summary>
+    public bool IsInitialized => _initialized;
+
+    private bool _initialized;
+
+    private void InitializeCore()
+    {
+        Load();
+        _initialized = true;
+    }
+
 
     public string DefaultContent => _defaultContent;
     public string DefaultVersion => _defaultVersion;
