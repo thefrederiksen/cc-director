@@ -63,6 +63,9 @@ public sealed record WorkHistorySessionDto
     [JsonPropertyName("sessionNumber")] public int? SessionNumber { get; init; }
     [JsonPropertyName("sessionName")] public string? SessionName { get; init; }
     [JsonPropertyName("machineName")] public string? MachineName { get; init; }
+    /// <summary>The Director version the session ran on, from the connection hello. Null on rows
+    /// written before the column existed, and on rows whose Director had no live record.</summary>
+    [JsonPropertyName("directorVersion")] public string? DirectorVersion { get; init; }
     [JsonPropertyName("directorId")] public string? DirectorId { get; init; }
     [JsonPropertyName("repoPath")] public string? RepoPath { get; init; }
 

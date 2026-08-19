@@ -39,7 +39,7 @@ public sealed class SessionHistoryStore
     /// stream is REOPENED - the interrupted ruling is an inference from absence, and presence is the
     /// stronger evidence.
     /// </summary>
-    public void UpsertLive(string directorId, SessionDto session, DateTime nowUtc)
+    public void UpsertLive(string directorId, SessionDto session, DateTime nowUtc, DirectorFacts facts = default)
     {
         lock (_gate)
         {
@@ -67,7 +67,15 @@ public sealed class SessionHistoryStore
             entity.DirectorId = directorId;
             entity.SessionNumber = session.Number ?? entity.SessionNumber;
             entity.SessionName = string.IsNullOrWhiteSpace(session.Name) ? entity.SessionName : session.Name;
-            entity.MachineName = string.IsNullOrWhiteSpace(session.MachineName) ? entity.MachineName : session.MachineName;
+            // The pushed machine name is believed when it is there, and the Gateway's own record of
+            // the connection is used when it is not - which today is always. See the entity's
+            // MachineName doc for why the pushed field is empty on every client in the field.
+            // Known is never overwritten by unknown, in either direction.
+            var machine = !string.IsNullOrWhiteSpace(session.MachineName) ? session.MachineName
+                : (!string.IsNullOrWhiteSpace(facts.MachineName) ? facts.MachineName : null);
+            entity.MachineName = machine ?? entity.MachineName;
+            // The version has no pushed counterpart at all - it exists only on the connection.
+            entity.DirectorVersion = string.IsNullOrWhiteSpace(facts.Version) ? entity.DirectorVersion : facts.Version;
             entity.RepoPath = string.IsNullOrWhiteSpace(session.RepoPath) ? entity.RepoPath : session.RepoPath;
             entity.RepoName = string.IsNullOrWhiteSpace(session.RepoName) ? entity.RepoName : session.RepoName;
             entity.AgentKind = string.IsNullOrWhiteSpace(session.Agent) ? entity.AgentKind : session.Agent;

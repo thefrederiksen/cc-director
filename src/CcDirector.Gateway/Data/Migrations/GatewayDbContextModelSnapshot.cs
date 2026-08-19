@@ -755,6 +755,9 @@ namespace CcDirector.Gateway.Data.Migrations
                         .IsRequired()
                         .HasColumnType("TEXT");
 
+                    b.Property<string>("DirectorVersion")
+                        .HasColumnType("TEXT");
+
                     b.Property<DateTime?>("EndedAtUtc")
                         .HasColumnType("TEXT");
 

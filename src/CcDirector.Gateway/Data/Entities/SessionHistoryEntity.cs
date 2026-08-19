@@ -38,7 +38,35 @@ public sealed class SessionHistoryEntity : TenantScopedEntity
     public int? SessionNumber { get; set; }
 
     public string? SessionName { get; set; }
+    /// <summary>
+    /// The machine the session ran on. STAMPED BY THE GATEWAY from the Director's connection
+    /// record, not taken from the pushed session.
+    ///
+    /// It has to be, because the pushed field is empty and always has been:
+    /// <c>ControlEndpoints.Map</c> takes <c>string machineName = ""</c> and no production caller
+    /// passes it - not the snapshot the stream sends, not any of the delta pushes. The column was
+    /// null on every row of this table, for every account, since it was created. Sourcing it from
+    /// <see cref="Discovery.DirectorRegistry"/> instead fixes it for every client ALREADY IN THE
+    /// FIELD, including versions that will never be upgraded, because the machine name arrives on
+    /// the connection hello rather than in the session payload.
+    ///
+    /// A non-blank pushed value still wins, so a future client that fills it in is believed.
+    /// </summary>
     public string? MachineName { get; set; }
+
+    /// <summary>
+    /// The Director version this session ran on, from the connection hello. Null when the Gateway
+    /// has no live record for the Director (a row written from a reconnect race, or an old build
+    /// that did not report one).
+    ///
+    /// WHY IT IS WORTH A COLUMN. Without it there is no way to ask what version anybody is running
+    /// from the history: no upgrade curve, no way to tie a defect to a release, no way to see who
+    /// is stranded on an old build. The only other record of a version is the website's
+    /// devices.app_version, which is a registry of GATEWAY installs - a member on the hosted
+    /// Gateway never appears in it at all, so for hosted users it answers nothing.
+    /// </summary>
+    public string? DirectorVersion { get; set; }
+
     public string DirectorId { get; set; } = "";
     public string? RepoPath { get; set; }
 
