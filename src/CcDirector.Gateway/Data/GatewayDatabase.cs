@@ -122,8 +122,14 @@ public sealed class GatewayDatabase : IDisposable
     private readonly string _path;
     private readonly bool _usePostgres;
     private readonly ITenantContext _tenant;
-    private readonly ServiceProvider _provider;
-    private readonly IDbContextFactory<GatewayDbContext> _factory;
+    // Assigned by Open(), not by the constructor: the hosted Gateway defers the connect so its listener
+    // can bind first. Null until Open() succeeds, which is exactly what IsOpen reports.
+    private ServiceProvider? _provider;
+    private IDbContextFactory<GatewayDbContext>? _factory;
+
+    // The pool-bounded Postgres connection string, parsed and validated in the constructor and used by
+    // Open(). Holds credentials, so it is never logged - see RedactConnectionTarget for what is.
+    private readonly string? _boundedConn;
     private bool _disposed;
 
     /// <summary>The database file path (SQLite), for logging. On the Postgres path this is NOT a file - it
@@ -186,7 +192,21 @@ public sealed class GatewayDatabase : IDisposable
     /// <see cref="SingleTenantContext"/> and every row is the "local" tenant.</param>
     /// <param name="dbPath">The SQLite database file. Defaults to <see cref="CcStorage.GatewayDb"/>. Ignored
     /// when <see cref="PostgresConnectionEnvVar"/> is set (the Postgres path never touches a file).</param>
-    public GatewayDatabase(ITenantContext tenant, string? dbPath = null)
+    /// <param name="deferOpen">
+    /// When true the constructor VALIDATES configuration and stops there, and the caller must call
+    /// <see cref="Open"/> to connect and migrate. The hosted Gateway passes true so its listener can
+    /// bind BEFORE any database work: connecting and migrating used to sit in front of the bind, and a
+    /// slow database therefore pushed the bind past the platform's container-start deadline, at which
+    /// point the platform stopped the SITE - tearing down the healthy container that was serving beside
+    /// it. That is the 2 and 12 August 2026 outages (#2383, #2585); this parameter is what lets the
+    /// order be fixed rather than the wait merely shortened.
+    ///
+    /// Configuration faults still fail in the CONSTRUCTOR either way - an unset-but-blank connection
+    /// string, or one that cannot be parsed. Those are misconfiguration, they cannot be recovered by
+    /// waiting, and a Gateway must not bind a port to serve errors forever because of one. Only the
+    /// part that can succeed later - reaching the server - is deferred.
+    /// </param>
+    public GatewayDatabase(ITenantContext tenant, string? dbPath = null, bool deferOpen = false)
     {
         _tenant = tenant ?? throw new ArgumentNullException(nameof(tenant));
 
@@ -229,10 +249,9 @@ public sealed class GatewayDatabase : IDisposable
             // The original exception is deliberately NOT kept as an InnerException: the whole point is that
             // its message must not survive to be written by anything downstream. The type name is preserved
             // in the redacted message, which is what a diagnosis actually needs.
-            string boundedConn;
             try
             {
-                boundedConn = WithBoundedPool(pgConn!, DefaultMaxPoolSize);
+                _boundedConn = WithBoundedPool(pgConn!, DefaultMaxPoolSize);
             }
             catch (Exception ex)
             {
@@ -243,7 +262,35 @@ public sealed class GatewayDatabase : IDisposable
                     "Its text is deliberately not reproduced here - the parser's own message can echo part of " +
                     "the string, which may carry credentials. Check " + PostgresConnectionEnvVar + " and restart.");
             }
+        }
+        else
+        {
+            _path = string.IsNullOrWhiteSpace(dbPath) ? CcStorage.GatewayDb() : dbPath!;
+        }
 
+        // Default is the historical behaviour: construct and connect in one step. Every caller that
+        // does not say otherwise - the desktop pairing store, and every test that asserts this
+        // constructor throws on an unreachable or unmigratable database - keeps exactly that.
+        if (!deferOpen)
+            Open();
+    }
+
+    /// <summary>
+    /// Connect and migrate. Idempotent: a second call after a successful open does nothing, so a caller
+    /// that cannot easily tell whether the constructor already opened may call it safely.
+    ///
+    /// SEPARATED FROM CONSTRUCTION so the hosted Gateway can bind its listener first. Everything about
+    /// the failure behaviour is unchanged - the same bounded retry window, the same fail-loud throw when
+    /// the window is spent - because the outage was never caused by giving up too early. It was caused
+    /// by doing this work while the platform was still waiting for a port.
+    /// </summary>
+    public void Open()
+    {
+        if (_factory is not null)
+            return;
+
+        if (_usePostgres)
+        {
             FileLog.Write($"[GatewayDatabase] Open: provider=Postgres target={_path}");
 
             // Retry the open for a bounded window rather than treating one refusal as a dead database.
@@ -261,7 +308,7 @@ public sealed class GatewayDatabase : IDisposable
                 try
                 {
                     var services = new ServiceCollection();
-                    services.AddPooledDbContextFactory<GatewayDbContext>(o => o.UseNpgsql(boundedConn, npg =>
+                    services.AddPooledDbContextFactory<GatewayDbContext>(o => o.UseNpgsql(_boundedConn!, npg =>
                     {
                         npg.MigrationsAssembly("CcDirector.Gateway.Migrations.Postgres");
                         npg.MigrationsHistoryTable("__EFMigrationsHistory", "gateway");
@@ -340,8 +387,6 @@ public sealed class GatewayDatabase : IDisposable
             }
         }
 
-        _path = string.IsNullOrWhiteSpace(dbPath) ? CcStorage.GatewayDb() : dbPath!;
-
         FileLog.Write($"[GatewayDatabase] Open: provider=Sqlite path={_path}");
         try
         {
@@ -413,13 +458,30 @@ public sealed class GatewayDatabase : IDisposable
     /// stamps the context so the global query filter and every write scope to it. The caller disposes it
     /// (it returns to the pool).
     /// </summary>
+    /// <summary>
+    /// True once <see cref="Open"/> has connected and migrated. False between construction and Open on the
+    /// deferred path - the window in which the hosted Gateway is LISTENING but cannot yet serve data, which
+    /// is exactly what /healthz reports as not-ready so the deploy's warm-up waits instead of swapping onto
+    /// a Gateway that would answer errors.
+    /// </summary>
+    public bool IsOpen => _factory is not null;
+
+    // Every context factory goes through this. Before Open() the fields are null, and a bare null-deref
+    // would surface as a NullReferenceException somewhere far from the cause; a caller that arrives during
+    // the open window deserves to be told what is actually happening.
+    private IDbContextFactory<GatewayDbContext> RequireOpen()
+        => _factory ?? throw new InvalidOperationException(
+            "The Gateway database is not open yet. The listener binds before the database is connected so "
+            + "that a slow database cannot stop the site from starting; requests that need data must wait "
+            + "for /healthz to report ready.");
+
     public GatewayDbContext CreateContext()
     {
         var tenant = _tenant.Current;
         if (!tenant.IsValid)
             throw new ArgumentException("A valid TenantId is required.", nameof(tenant));
 
-        var ctx = _factory.CreateDbContext();
+        var ctx = RequireOpen().CreateDbContext();
         ctx.ActiveTenant = tenant.Value;
         return ctx;
     }
@@ -440,7 +502,7 @@ public sealed class GatewayDatabase : IDisposable
         if (!tenant.IsValid)
             throw new ArgumentException("A valid TenantId is required.", nameof(tenant));
 
-        var ctx = _factory.CreateDbContext();
+        var ctx = RequireOpen().CreateDbContext();
         ctx.ActiveTenant = tenant.Value;
         return ctx;
     }
@@ -464,7 +526,7 @@ public sealed class GatewayDatabase : IDisposable
     /// </summary>
     public GatewayDbContext CreateUnscopedContext()
     {
-        var ctx = _factory.CreateDbContext();
+        var ctx = RequireOpen().CreateDbContext();
         ctx.ActiveTenant = null;
         return ctx;
     }
@@ -473,7 +535,8 @@ public sealed class GatewayDatabase : IDisposable
     {
         if (_disposed) return;
         _disposed = true;
-        _provider.Dispose();
+        // Null when the database was constructed with deferOpen and Open() never ran (or threw).
+        _provider?.Dispose();
         // Release the underlying SQLite connections so a test can delete the database file. SQLite-only:
         // the Postgres path has no local file to release and Npgsql pooling is managed by the provider.
         if (!_usePostgres)

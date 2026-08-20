@@ -130,12 +130,30 @@ public sealed class GatewayStartFailureTerminationTests
     }
 
     [Fact]
-    public void TheGatewayStoreConstructor_BoundsItsPoolAndRedactsItsFailures()
+    public void TheGatewayStoreConstructor_BoundsItsPool()
     {
-        // Scoped to the CONSTRUCTOR, which is where both calls belong. Moving either into a helper that
-        // nothing calls would keep a type-wide scan green.
+        // Scoped to the CONSTRUCTOR because that is where the pool bound belongs: it is part of PARSING the
+        // connection string, which still happens at construction even now that connecting does not. Moving
+        // it into a helper that nothing calls would keep a type-wide scan green, which is why this is scoped
+        // to the one method rather than the type.
         var calls = CallsInMethod(typeof(GatewayDatabase), ".ctor");
         Assert.Contains(calls, c => c == "GatewayDatabase::WithBoundedPool");
+    }
+
+    [Fact]
+    public void TheGatewayStoreOpen_RedactsItsFailures()
+    {
+        // Scoped to Open, which is where CONNECTING now happens.
+        //
+        // This assertion used to name the constructor, and it moved with the code rather than being relaxed:
+        // the open was split out of the constructor so the Gateway's listener can bind before any database
+        // work (#2383, #2585). The guard it provides is unchanged and still worth having - every failure on
+        // the connect path must go through DescribeFailure, because the provider's own message can echo part
+        // of the connection string and GatewayService.StartAsync writes ex.Message straight to disk.
+        //
+        // Naming the method that actually owns the call is the whole point of scoping these to one method;
+        // widening this to a type-wide scan to survive the move would have thrown away the guarantee.
+        var calls = CallsInMethod(typeof(GatewayDatabase), "Open");
         Assert.Contains(calls, c => c == "GatewayDatabase::DescribeFailure");
     }
 

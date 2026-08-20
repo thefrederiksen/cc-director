@@ -62,19 +62,50 @@ public sealed class WorkListStore
     /// table is empty. REQUIRED (no silent default).</param>
     /// <exception cref="ArgumentNullException">The database is null.</exception>
     /// <exception cref="ArgumentException">The legacy path is null/empty/whitespace.</exception>
-    public WorkListStore(GatewayDatabase db, string legacyJsonPath)
+    /// <param name="deferInitialize">
+    /// When true the constructor validates arguments and stops; the caller must call
+    /// <see cref="Initialize"/> once the database is open. The Gateway passes true so its listener can bind
+    /// BEFORE any database work - the load below used to sit in front of the bind, and a slow database
+    /// therefore delayed it past the platform's container-start deadline (#2383, #2585).
+    ///
+    /// The caller MUST run Initialize inside the same ambient tenant scope the constructor would have had.
+    /// Nothing is served in the meantime: the readiness gate refuses every request but /healthz.
+    /// </param>
+    public WorkListStore(GatewayDatabase db, string legacyJsonPath, bool deferInitialize = false)
     {
         _db = db ?? throw new ArgumentNullException(nameof(db));
         if (string.IsNullOrWhiteSpace(legacyJsonPath))
             throw new ArgumentException("legacy json path is required", nameof(legacyJsonPath));
         _legacyJsonPath = legacyJsonPath;
 
+        if (!deferInitialize)
+            InitializeCore();
+    }
+
+    /// <summary>
+    /// Run the deferred load. Idempotent, and a no-op for an instance whose constructor already did it.
+    /// </summary>
+    public void Initialize()
+    {
+        if (_initialized) return;
+        InitializeCore();
+    }
+
+    /// <summary>True once the load has run.</summary>
+    public bool IsInitialized => _initialized;
+
+    private bool _initialized;
+
+    private void InitializeCore()
+    {
         lock (_gate)
         {
             ImportLegacyJsonIfNeeded();
             ReleaseStaleClaimsOnLoad();
         }
+        _initialized = true;
     }
+
 
     /// <summary>The outcome of a single-consumer claim attempt.</summary>
     public enum ClaimResult

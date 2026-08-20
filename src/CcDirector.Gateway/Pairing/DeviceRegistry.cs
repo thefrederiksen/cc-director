@@ -55,13 +55,44 @@ public sealed class DeviceRegistry : IDisposable
     /// <param name="db">The host-owned database shared by every Gateway replica.</param>
     /// <param name="storePath">The legacy JSON path used only by the one-time importer.</param>
     /// <param name="isHosted">Whether tenant-bound hosted credential rules must be enforced.</param>
-    public DeviceRegistry(GatewayDatabase db, string? storePath = null, bool isHosted = false)
+    /// <param name="deferInitialize">
+    /// When true the constructor stops after wiring, and the caller must call <see cref="Initialize"/> once
+    /// the database is open. The hosted Gateway passes true because <see cref="InitializeAuthority"/> READS
+    /// THE DATABASE - it runs the one-time import and then decides which credentials are valid - and that
+    /// read used to sit in front of the listener bind. A slow database therefore delayed the bind, and when
+    /// it delayed it past the platform's container-start deadline the platform stopped the SITE, taking the
+    /// healthy container down with it (#2383, #2585).
+    ///
+    /// Nothing is served before Initialize runs: the Gateway's readiness gate answers 503 to every request
+    /// but /healthz until both the database and this authority are up. Binding early is what stops the
+    /// platform from giving up on the site; it is not permission to serve without knowing which device keys
+    /// are valid.
+    /// </param>
+    public DeviceRegistry(GatewayDatabase db, string? storePath = null, bool isHosted = false,
+        bool deferInitialize = false)
     {
         _db = db ?? throw new ArgumentNullException(nameof(db));
         _storePath = ResolveStorePath(storePath);
         _isHosted = isHosted;
+        if (!deferInitialize)
+            InitializeAuthority();
+    }
+
+    /// <summary>
+    /// Run the one-time import and establish which device credentials are authoritative. Idempotent, and a
+    /// no-op for a registry whose constructor already did it.
+    /// </summary>
+    public void Initialize()
+    {
+        if (_initialized)
+            return;
         InitializeAuthority();
     }
+
+    private bool _initialized;
+
+    /// <summary>True once the credential authority has been established.</summary>
+    public bool IsInitialized => _initialized;
 
     /// <summary>The legacy registry path used by the one-time importer.</summary>
     public string StorePath => _storePath;
@@ -480,6 +511,7 @@ public sealed class DeviceRegistry : IDisposable
 
     private void InitializeAuthority()
     {
+        // Set LAST, below, so a throw leaves this false and the readiness gate keeps refusing.
         var import = new DeviceRegistryImporter(_db, _storePath).Import();
 
         using (var ctx = _db.CreateUnscopedContext())
@@ -523,6 +555,8 @@ public sealed class DeviceRegistry : IDisposable
             ArchiveLegacyFile();
 
         FileLog.Write($"[DeviceRegistry] InitializeAuthority: database registry ready, imported={import.ImportedCount}, importSkipped={import.Skipped}");
+
+        _initialized = true;
     }
 
     private void ArchiveLegacyFile()

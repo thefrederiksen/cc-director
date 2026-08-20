@@ -451,6 +451,68 @@ public sealed class GatewayHost : IAsyncDisposable
     private readonly Tenancy.ITenantPass _tenantPass;
     private readonly Data.GatewayDatabase _gatewayDb;
 
+    /// <summary>
+    /// Whether this Gateway may serve anything beyond /healthz: the database is open AND the device
+    /// credential authority has been established. False between the listener binding and the end of the
+    /// startup work that follows it.
+    ///
+    /// Both halves are required and neither implies the other - the database opening is what lets the
+    /// authority be read, and the authority is what makes an authenticated request answerable.
+    /// </summary>
+    /// <summary>
+    /// Open the database and load every store that reads from it at startup. Called by
+    /// <see cref="StartAsync"/> immediately AFTER the listener binds, and idempotent so a caller that
+    /// cannot easily tell whether startup has run may call it safely.
+    ///
+    /// WHY IT IS A NAMED STEP RATHER THAN INLINE IN StartAsync. All of this used to happen during
+    /// construction, in front of the bind, which is what let a slow database delay the bind past the
+    /// platform's container-start deadline and make it stop the SITE - taking the healthy container with it
+    /// (#2383, #2585). Naming the step keeps the ordering visible, lets a test bring a host to a usable
+    /// state without binding a port, and means there is ONE definition of "the startup database work"
+    /// rather than a copy in every caller that needs it.
+    /// </summary>
+    internal void EnsureStoresReady()
+    {
+        FileLog.Write("[GatewayHost] listener bound; opening the database");
+        _gatewayDb.Open();
+        FileLog.Write("[GatewayHost] database open");
+
+        // Every store that LOADS FROM THE DATABASE AT STARTUP, initialised here rather than in the
+        // constructor so none of it stands in front of the listener bind.
+        //
+        // INSIDE THE SYSTEM SCOPE, and that is not decoration. The constructor did this work inside
+        // _hostedTenant.Enter(TenantId.System), and three of these stores CAPTURE the ambient tenant as
+        // the partition that owns the shared library (skills, workflows, workflow runs). Initialising
+        // them out here without re-entering that scope would capture whatever tenant happened to be
+        // ambient and put the shared library in the WRONG PARTITION - silently, and visible only later
+        // as one account seeing another's library. The scope is re-entered for exactly the span the
+        // constructor had.
+        //
+        // Until every one of these returns, the readiness gate refuses every request but /healthz.
+        using (_hostedTenant?.Enter(Core.Tenancy.TenantId.System))
+        {
+            Devices.Initialize();
+            _workLists.Initialize();
+            _cronJobs.Initialize();
+            _skills.Initialize();
+            _workflows.Initialize();
+            _workflowRuns.Initialize();
+            _instructionsStore.Initialize();
+        }
+
+        FileLog.Write("[GatewayHost] startup stores loaded; now serving");
+    }
+
+    internal bool IsReadyToServe()
+        => _gatewayDb.IsOpen
+        && Devices.IsInitialized
+        && _workLists.IsInitialized
+        && _cronJobs.IsInitialized
+        && _skills.IsInitialized
+        && _workflows.IsInitialized
+        && _workflowRuns.IsInitialized
+        && _instructionsStore.IsInitialized;
+
     /// <summary>The typed per-tenant runtime settings resolver. Every caller supplies the tenant explicitly;
     /// an unset override returns only the operator global default.</summary>
     internal Settings.TenantSettingsResolver TenantSettingsResolver => _tenantSettingsResolver;
@@ -1125,10 +1187,20 @@ public sealed class GatewayHost : IAsyncDisposable
             _tenantContext = new Core.Tenancy.SingleTenantContext();
         }
 
-        _gatewayDb = new Data.GatewayDatabase(_tenantContext);
+        // deferOpen: the listener must bind BEFORE any database work. Connecting and migrating used to sit
+        // in front of the bind, so a slow database pushed the bind past the platform's container-start
+        // deadline, the platform concluded no port would ever be bound, and it stopped the SITE - tearing
+        // down the healthy container serving beside it. That is the 2 and 12 August 2026 outages (#2383,
+        // #2585), and shortening the wait only ever made it less likely. StartAsync opens it immediately
+        // after the bind; configuration faults still throw here, because waiting cannot fix those.
+        _gatewayDb = new Data.GatewayDatabase(_tenantContext, deferOpen: true);
         // MTR-14B: the shared EF database is now the device registry authority. The legacy JSON path is
         // supplied only to the one-time importer; no runtime authentication or mutation reads or writes it.
-        Devices = new Pairing.DeviceRegistry(_gatewayDb, devicesPath, GatewayHostedMode.IsHosted);
+        // deferInitialize: establishing the credential authority READS the database, and that read used to
+        // sit in front of the listener bind. StartAsync initialises it immediately after the database opens,
+        // and the readiness gate refuses everything but /healthz until it has.
+        Devices = new Pairing.DeviceRegistry(_gatewayDb, devicesPath, GatewayHostedMode.IsHosted,
+            deferInitialize: true);
         // Remove-the-network-port phase 1b: the per-session credential registry. A Director registers one key
         // per session over the tunnel it already holds, and an agent inside that session authenticates as the
         // session rather than with its Director's account-wide key. Same database and the same stored-hash
@@ -1188,17 +1260,17 @@ public sealed class GatewayHost : IAsyncDisposable
         // Named work lists persist across a Gateway restart (issue #301) in the worklists table (stale
         // claims released on load). The path argument is the LEGACY worklists.json, imported once on first
         // upgrade then renamed aside. Tests MUST pass an isolated path so they never touch the real legacy file.
-        _workLists = new WorkListStore(_gatewayDb, workListsPath ?? Path.Combine(CcStorage.Root(), "worklists.json"));
+        _workLists = new WorkListStore(_gatewayDb, workListsPath ?? Path.Combine(CcStorage.Root(), "worklists.json"), deferInitialize: true);
         // The workflow catalog (Workflows mission, phase 1): persisted in the workflows tables, the
         // shipped built-ins seeded/upgraded at construction. No legacy JSON - the previous catalog was
         // compiled-in C# literals, so there is nothing on disk to import.
-        _workflows = new Workflows.WorkflowStore(_gatewayDb);
+        _workflows = new Workflows.WorkflowStore(_gatewayDb, deferInitialize: true);
         // Workflow runs (phase 4, issue #1771): built after the catalog store so the built-ins a run
         // pins are already seeded.
-        _workflowRuns = new Workflows.WorkflowRunStore(_gatewayDb);
+        _workflowRuns = new Workflows.WorkflowRunStore(_gatewayDb, deferInitialize: true);
         // The central skill library: persisted in the skills tables, the shipped built-ins
         // seeded/upgraded at construction. Nothing is deployed to any machine - agents fetch.
-        _skills = new Skills.SkillStore(_gatewayDb);
+        _skills = new Skills.SkillStore(_gatewayDb, deferInitialize: true);
         // The governance event ledger (issue #1771, spine item 2): append-only session/run transitions on
         // the EF data layer, so a Gateway restart never loses a recorded transition.
         _governanceEvents = new Governance.GovernanceEventLedger(_gatewayDb);
@@ -1244,7 +1316,7 @@ public sealed class GatewayHost : IAsyncDisposable
         // Editable/versioned wingman instructions (issue #537) now persist in the wingman_instructions table
         // of the EF data layer. The path argument is the LEGACY wingman-instructions.json, imported once on
         // first upgrade then renamed aside. Tests MUST pass an isolated path so they never touch the real file.
-        _instructionsStore = new Wingman.WingmanInstructionsStore(_gatewayDb, wingmanInstructionsPath ?? Path.Combine(CcStorage.Root(), "wingman-instructions.json"));
+        _instructionsStore = new Wingman.WingmanInstructionsStore(_gatewayDb, wingmanInstructionsPath ?? Path.Combine(CcStorage.Root(), "wingman-instructions.json"), deferInitialize: true);
         // THE SNOOZE CLEAR ON EVICTION IS DELETED, and of the three deletions this is the one that mattered
         // most (inspection 2, finding 1).
         //
@@ -1451,7 +1523,7 @@ public sealed class GatewayHost : IAsyncDisposable
         // (next-run times recomputed on load). The path argument is the LEGACY cronjobs.json, imported once
         // on first upgrade then renamed aside. Tests MUST pass an isolated path so they never touch the real
         // legacy file.
-        _cronJobs = new CronJobStore(_gatewayDb, cronJobsPath ?? Path.Combine(CcStorage.Root(), "cronjobs.json"));
+        _cronJobs = new CronJobStore(_gatewayDb, cronJobsPath ?? Path.Combine(CcStorage.Root(), "cronjobs.json"), deferInitialize: true);
         // Cron run history + the firing engine (epic #479, #483). The engine resolves each due job's
         // target Director from the registry and starts a session over the shared client (the same
         // path the work-list runner uses). The background sweep timer is started in StartAsync. The path
@@ -2529,6 +2601,42 @@ public sealed class GatewayHost : IAsyncDisposable
 
         _app.UseForwardedHeaders();
 
+        // THE READINESS GATE. Nothing but /healthz is served until the database is open AND the device
+        // credential authority has been established.
+        //
+        // This exists because the listener now binds BEFORE that work, which is the fix for the deploy
+        // outages (#2383, #2585): the database open used to sit in front of the bind, so a slow database
+        // pushed the bind past the platform's container-start deadline, the platform decided no port would
+        // ever appear, and it stopped the SITE - tearing down the healthy container serving beside it.
+        //
+        // Binding early stops the platform giving up on the site. It is NOT permission to serve before the
+        // Gateway knows which device keys are valid, and without this gate that is exactly what would
+        // happen: requests would arrive at an uninitialised credential authority. So every request but the
+        // probe is refused, loudly and cheaply, until both are up.
+        //
+        // FIRST in the pipeline, ahead of auth and the access log: a request that must not be served must
+        // not be authenticated first either, and this decision cannot depend on anything downstream.
+        //
+        // /healthz is the ONE exemption, and it must be - it is what the deploy's warm-up polls and what
+        // the platform's swap gate pings, and it reports the not-ready state itself (503 with
+        // status "starting"), so the swap waits rather than promoting a Gateway that cannot serve.
+        _app.Use(async (ctx, next) =>
+        {
+            var path = ctx.Request.Path.Value ?? "";
+            if (path.Equals("/healthz", StringComparison.OrdinalIgnoreCase) || IsReadyToServe())
+            {
+                await next();
+                return;
+            }
+
+            ctx.Response.StatusCode = StatusCodes.Status503ServiceUnavailable;
+            // Tell a client it is worth coming back, and roughly when. The open is bounded by the database
+            // retry window, so a fixed small hint is honest without promising a time we cannot keep.
+            ctx.Response.Headers.RetryAfter = "5";
+            ctx.Response.ContentType = "application/json; charset=utf-8";
+            await ctx.Response.WriteAsync("{\"error\":\"starting\",\"detail\":\"The Gateway is listening but not ready to serve yet.\"}");
+        });
+
         // Access log + single top-level exception boundary. Every request leaves one
         // line (method, path, status, elapsed, client, host) so a phone-side problem is
         // traceable after the fact. Health polls and favicon are skipped to keep the log
@@ -2710,6 +2818,8 @@ public sealed class GatewayHost : IAsyncDisposable
             gatewayStartedAtUtc: StartedAtUtc,
             // Issue #2161: a delegate - Map runs before the listener binds.
             gatewayPort: () => Port,
+            // Not-ready until the database is open - see the /healthz handler.
+            databaseReady: () => _gatewayDb.IsOpen,
             // Store injection points: hand the phone-recorder ingest (RecordingEndpoints) the host's single
             // key vault + transcription history + audio archive, so it stops newing its own copies.
             recordingKeyVault: _keyVault,
@@ -3466,6 +3576,25 @@ public sealed class GatewayHost : IAsyncDisposable
         MappedEndpoints = Tenancy.HostedRefusalRouteSpace.SelectFinalisedEndpoints(_app);
 
         await _app.StartAsync();
+
+        // THE DATABASE IS OPENED HERE, AFTER THE BIND, and the order is the whole point.
+        //
+        // Until now this ran inside the GatewayDatabase constructor, far above - so on every deploy the new
+        // container connected and migrated while the platform was still waiting for it to listen. A slow
+        // open pushed the bind past the container-start deadline; the platform then stopped the SITE, and
+        // stopping the site tore down the healthy container that was serving traffic beside it. Both the 2
+        // August (38.5s) and 12 August (46.7s) outages were that stop, not the swap.
+        //
+        // Nothing about the failure behaviour changes: the same bounded retry window, and the same loud
+        // throw when it is spent, which GatewayService turns into a Failed state and GatewayWorker turns
+        // into a process exit. What changes is that the platform can already see a listening port while all
+        // of that happens, so a database problem can no longer take the site down with it.
+        //
+        // /healthz answers 503 for the duration, so the deploy's warm-up waits rather than swapping onto a
+        // Gateway that cannot serve data.
+        // The database and every store that loads from it. Named and called here, immediately after the
+        // bind - see EnsureStoresReady for why the order matters.
+        EnsureStoresReady();
 
         // Issue #2161: when the caller asked for an operating-system-assigned port, the number only exists
         // once Kestrel has bound - so read it back from the server itself. This is the whole point of the

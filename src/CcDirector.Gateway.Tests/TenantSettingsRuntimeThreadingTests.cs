@@ -46,6 +46,11 @@ public sealed class TenantSettingsRuntimeThreadingTests : IAsyncLifetime
             authEnabled: false,
             instancesDirectory: _instances,
             workListsPath: Path.Combine(_root, "worklists.json"));
+        // These tests use the host WITHOUT starting it, and the database is no longer opened by the
+        // constructor - StartAsync opens it immediately after the listener binds, so that a slow database
+        // cannot delay the bind and make the platform stop the site (#2383, #2585). Run the same named
+        // startup step here; binding a port is what these tests do not want, not the stores being loaded.
+        _gateway.EnsureStoresReady();
         return Task.CompletedTask;
     }
 

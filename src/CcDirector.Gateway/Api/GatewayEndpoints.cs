@@ -191,7 +191,11 @@ internal static class GatewayEndpoints
         // Director, because the command line reached the fleet through its own Director's loopback port; with
         // that port going away the check has to move to the end still in the path. Null (older callers,
         // tests, a Gateway with the steward switched off) ALLOWS every message, byte-identical to today.
-        Core.Fleet.MessageSteward? messageSteward = null)
+        Core.Fleet.MessageSteward? messageSteward = null,
+        // Whether the database is connected yet (issue #2383's real fix). A delegate, not a bool: Map
+        // runs before the listener binds and the database is opened AFTER it, so the value is not known
+        // here. Null means "assume ready", which is what every self-host and test caller wants.
+        Func<bool>? databaseReady = null)
     {
         // The old issue #1188 "session lock" (423 Locked on human input while a PENDING dictation record
         // existed) was removed deliberately (issue #1308). This is a single-operator tool: a collision
@@ -562,6 +566,29 @@ internal static class GatewayEndpoints
         // ===== REST =====
         app.MapGet("/healthz", () =>
         {
+            // NOT READY UNTIL THE DATABASE IS OPEN, and this is load-bearing rather than cosmetic.
+            //
+            // The listener now binds BEFORE the database is connected, so that a slow database can never
+            // push the bind past the platform's container-start deadline and make it stop the site (#2383,
+            // #2585). That fixes the outage, but it creates a window in which this process is listening and
+            // cannot serve data - and /healthz is what the deploy warms on (it polls staging for a sustained
+            // 200 carrying the new commit) and what the platform's own swap warm-up gate pings. Answering
+            // 200 in that window would hand production to a Gateway that cannot read anything, which is a
+            // worse outage than the one being fixed.
+            //
+            // 503 is the honest answer and it costs nothing: the warm-up simply keeps polling, which is what
+            // a warmed slot swap is for.
+            if (databaseReady is not null && !databaseReady())
+            {
+                return Results.Json(new HealthDto
+                {
+                    Status = "starting",
+                    Version = version,
+                    Commit = Environment.GetEnvironmentVariable("COCKPIT_COMMIT"),
+                    ServerTime = DateTime.UtcNow,
+                }, statusCode: StatusCodes.Status503ServiceUnavailable);
+            }
+
             // The exact commit this image was built from (COCKPIT_COMMIT is baked into the container as an
             // ENV in the Dockerfile). NULL when unstamped (e.g. a local dev run) - HealthDto omits it then.
             // The deploy pipeline polls /healthz until this equals the commit it just shipped: that is the
