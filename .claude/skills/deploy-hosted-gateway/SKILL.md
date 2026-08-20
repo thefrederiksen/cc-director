@@ -103,9 +103,20 @@ starts, five while the old slot stops, and about ten in which Directors show
 yellow and reconnect on their own - both slots share one worker, so starting and
 stopping the spare disturbs production.
 
+**Measured, so you know what normal looks like:** two consecutive healthy deploys
+came in at **6.7s** (2026-08-19, run 32280188992) and **6.6s** (2026-08-20, run
+32321987703) of longest external outage, with the swap window itself at 0.0s both
+times. The second carried the change that moved the database open behind the port
+bind, and it did not shift the number - which is how we know this cost is the slot
+churn on a shared worker, not application startup. So around six or seven seconds
+is what a good deploy costs here. The budget was five, which failed every deploy
+and left the gate unable to tell a normal one from the two below; the owner set it
+to ten on 2026-08-20 - "if the time gets over 10 seconds, then we start dealing
+with it".
+
 **And a deploy can be far worse than that, from a cause the swap number does not
 cover.** On 12 August 2026 one took the live service off the air for **46.7
-seconds** against a five-second budget (issue #2585) - worse than the 38.5-second
+seconds** against what was then a five-second budget (issue #2585) - worse than the 38.5-second
 failure above, and eight days after this section was written to prevent a repeat.
 Neither outage was the cutover. In both, a second container failed its own
 startup, the platform reverted by stopping the SITE, and stopping the site tore
@@ -115,7 +126,7 @@ So if `/healthz` does not answer `200` immediately after the run goes green,
 something went wrong with the hand-off. Say so; do not wait it out.
 
 **A failed run is a report, not a protection.** The watch job fails if the
-external outage exceeds five seconds, and it did fail on 12 August - users were
+external outage exceeds **ten seconds**, and it did fail on 12 August - users were
 dark for 46.7 seconds regardless. A green run means production stayed inside the
 budget; a red one tells you afterwards that it did not. Neither prevents an
 outage, so never present a green run as proof that deploying is free.

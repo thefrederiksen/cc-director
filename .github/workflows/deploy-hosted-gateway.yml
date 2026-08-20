@@ -594,14 +594,32 @@ jobs:
         if: needs.deploy.outputs.readiness_outcome == 'healthy'
         env:
           WATCH_SECONDS: '600'
-          # FIVE, not thirty (issue #2383). A healthy deploy costs about ZERO - runs 30702895726,
-          # 30698993031 and 30679971846 each measured "Longest unavailable stretch: 0.0s" across the
-          # full watch - because the warmed hand-off is what the extra App Service tier was bought for.
-          # So this is not a cost curve to leave slack in: either the hand-off happened and the number
-          # is a rounding error, or it did not and the number is tens of seconds. Thirty sat squarely
-          # in the gap and would have passed a twenty-nine-second outage as a green deploy. Anything
-          # above a couple of seconds means the hand-off did not happen and is worth failing over.
-          MAX_ACCEPTABLE_OUTAGE_SECONDS: '5'
+          # TEN. Owner ruling 2026-08-20: "if the time gets over 10 seconds, then we start dealing
+          # with it."
+          #
+          # This was FIVE, on the reasoning that a healthy deploy costs about zero because three
+          # earlier runs each measured "Longest unavailable stretch: 0.0s". That reasoning conflated
+          # two different numbers, and measurement has since separated them:
+          #
+          #   swap_window_gap_seconds   - the cutover itself. Still 0.0s. The warmed hand-off works.
+          #   external_outage_seconds   - what a caller experiences across the WHOLE watch, which also
+          #                               covers the spare slot starting and the old slot stopping.
+          #                               Both slots share one worker, so that churn disturbs
+          #                               production whether or not the app is quick to boot.
+          #
+          # The zero readings were the first number. The second measured 6.7s on 2026-08-19 (run
+          # 32280188992) and 6.6s on 2026-08-20 (run 32321987703) - two consecutive HEALTHY deploys,
+          # one of them carrying the change that moved the database open behind the port bind, which
+          # did not shift it. So ~6-7s is what a good deploy costs here, not a sign of a failed
+          # hand-off.
+          #
+          # At five, every deploy failed, and a gate that is always red cannot tell 6.6s from the
+          # 38.5s (#2383) and 46.7s (#2585) outages it exists to catch - which is the whole reason
+          # thirty was rejected. Ten passes a normal deploy and still fails those two loudly.
+          #
+          # This is a REPORTING threshold, not a promise: exceeding it fails the run after the fact.
+          # It has never prevented an outage and does not now.
+          MAX_ACCEPTABLE_OUTAGE_SECONDS: '10'
         run: |
           STATE_LOG=/tmp/site-state.log; : > "$STATE_LOG"
           echo "Watching for ${WATCH_SECONDS}s past the swap (the failure window is 2-4 minutes out)..."
