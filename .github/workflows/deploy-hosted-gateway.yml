@@ -153,12 +153,23 @@ jobs:
           fi
           echo "Ref check passed: deploying refs/heads/main at ${{ steps.short.outputs.short }}."
 
-      # 2. GREEN ONLY. Nothing previously checked that the commit being shipped had passing tests -
+      # 2. NOTHING RED. Nothing previously checked that the commit being shipped had passing tests -
       #    a red commit on main was as deployable as a green one. Ask GitHub for this exact commit's
-      #    check runs and refuse unless every completed one succeeded. A commit whose checks have not
-      #    finished is also refused: "not yet known to be good" is not "good", and the deploy can be
-      #    re-run in a few minutes. Queued or in-progress runs are reported so the refusal is
-      #    actionable rather than mysterious.
+      #    check runs and refuse if any COMPLETED one did not pass.
+      #
+      #    A check that has NOT FINISHED is not a refusal, and this step does not wait for one. It
+      #    lists the pending checks and carries on, because a pending check is an absence of
+      #    information rather than evidence of a fault. A commit with no check runs at all is not
+      #    refused either.
+      #
+      #    THIS COMMENT USED TO SAY THE OPPOSITE, for twenty-five days after the code below stopped
+      #    agreeing with it. It claimed a commit whose checks had not finished was "also refused",
+      #    which was true only until #2406 ("stop the gate waiting for CI - refuse a FAILED check,
+      #    never a pending one") landed on 2026-08-02 and left the prose behind. A stale comment
+      #    directly above the code it describes is worse than none: it was read as the contract, and
+      #    it sent deploys to the back of an hour of .NET CI that this step never asked for. The step
+      #    name is the short version - refuse a commit whose checks have FAILED - and the code below
+      #    is the long one. Neither this comment nor the runbook outranks them.
       - name: Refuse to deploy a commit whose checks have FAILED
         env:
           GH_TOKEN: ${{ github.token }}

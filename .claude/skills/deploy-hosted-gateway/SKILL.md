@@ -32,14 +32,27 @@ version numbers, release notes, tags, or the mailing list.
 - **A person authorizes the go-live.** Starting this deploy pushes new code to
   the live service. Get an explicit go from the human before you start it. Do not
   start it on your own initiative.
-- **It will only ship green main.** The run refuses, in seconds and before it
-  touches anything, if it was started against any ref other than `refs/heads/main`,
-  or if the commit being shipped has a check that failed or has not finished. If it
-  refuses for a pending check, wait for continuous integration and start it again. This is the one
-  wait the no-waiting rule (CLAUDE.md 5a) does not cover, and it is not our policy: 5a governs
-  whether a MERGE is held open, while this is the deploy workflow's own refusal to push unverified
-  code to a live service. Since every merge to main now gets its own run that cannot be evicted,
-  that check will actually finish - before, it could be cancelled and then never go green at all.
+- **It ships main, and never a commit whose checks have FAILED.** The run refuses, in
+  seconds and before it touches anything, if it was started against any ref other than
+  `refs/heads/main`, or if a check on the commit being shipped has COMPLETED and did
+  not pass. Both refusals sit ahead of the Azure login and the build, so a refused
+  deploy costs seconds and touches nothing.
+- **A check that has not finished is NOT a refusal, and this deploy does not wait for
+  one.** The run lists the pending checks and carries straight on, because a pending
+  check is an absence of information rather than evidence of a fault. A commit with no
+  checks at all is not refused either. Local verification is the gate; continuous
+  integration is the backstop that reports afterwards. CLAUDE.md 5a says that about
+  MERGES; the workflow reaches the same conclusion on its own account for deploys.
+
+  This bullet said the opposite for twenty-five days, and the cost was real. The
+  wait-for-CI wording was written on 2 August 2026 at 17:06 (#2389); the gate stopped
+  behaving that way at 22:12 the SAME DAY (#2406, "stop the gate waiting for CI -
+  refuse a FAILED check, never a pending one"). The step is even named "Refuse to
+  deploy a commit whose checks have FAILED". Anyone who trusted this page instead of
+  reading the workflow parked a deploy behind an hour of .NET CI that nothing asked
+  for. If this page and
+  `.github/workflows/deploy-hosted-gateway.yml` ever disagree again, the workflow is
+  the truth and this page is the defect.
 - **It does not set up any infrastructure.** The Azure resource group, container
   registry, database connection, and storage are already provisioned and persist
   across deploys. This deploy only: rebuild the image, point the live service at
