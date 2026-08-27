@@ -4495,3 +4495,125 @@ a.banner-btn {
   border: 1px solid var(--border);
   color: var(--text);
 }
+
+/* ===== THE DESKTOP DEVICE FRAME =====
+   Opened on a desktop browser, this app used to stretch to the width of the window: a 680px column of
+   phone UI floating in the middle of a 1900px page, with the fixed bars, the drawer and the sheets
+   spanning the whole window because they are pinned to the VIEWPORT. It is a phone app; on a desktop it
+   should look like a phone.
+
+   So on a wide window with a mouse, #root stops being "the page" and becomes THE DEVICE: a phone-sized
+   box, centred, with the app running inside it exactly as it runs on the phone.
+
+   Gated on `hover: hover` and `pointer: fine` as well as width, and this matters: a large phone in
+   landscape reports well over 900 CSS pixels (an iPhone Pro Max is 932), so a width-only query would put
+   a phone frame on a phone. Only a device with a real pointer gets the frame.
+
+   The three properties that make it work, each of which is load-bearing:
+
+   1. `transform` on #root makes it the CONTAINING BLOCK for every `position: fixed` box in the app. That
+      is what pins the network banner, the full-screen shells, the drawer and the bottom sheets to the
+      DEVICE instead of to the window - without editing a single one of them.
+
+   2. The frame itself NEVER SCROLLS; the page inside it does. A fixed box inside a transformed ancestor
+      scrolls with that ancestor, so if the frame were the scroller the "pinned" bars would slide away
+      the moment you scrolled the roster. The frame is a flex column, the bars hold their height, and the
+      page container is the one box that scrolls.
+
+   3. The bezel is drawn with `box-shadow` rings, NOT a border. A border shrinks the padding box, and the
+      padding box is what the fixed full-screen shells measure `top` and `height` against - so a 10px
+      bezel would push the composer and the key rows 20px out of the bottom of the frame. The shells are
+      unchanged and must stay unchanged: see MobileViewportContractTests.
+
+   --app-vh is redeclared here, on #root, and that is deliberate. It is still ONE variable and one
+   mechanism - the shared hook publishes the window's visible height, which is the truth on a phone, and
+   inside the frame the truth is the frame's height. Every box that sizes itself to the visible screen
+   (.terminal-screen, .assistant-screen) picks the new value up by inheritance with no rule of its own. */
+@media (min-width: 900px) and (hover: hover) and (pointer: fine) {
+  :root {
+    --frame-w: 420px;
+    /* Tall as a phone, but never taller than the window it has to sit in. */
+    --frame-h: min(880px, calc(100dvh - 48px));
+    --frame-radius: 34px;
+  }
+
+  /* The desk the phone is lying on. */
+  html {
+    background: radial-gradient(1000px 700px at 50% -10%, #16203a 0%, #060912 65%);
+  }
+
+  body {
+    /* The network banner is pinned INSIDE the frame now, so the page must not reserve room for it too -
+       that reservation would appear as a gap above the phone. The frame reserves it instead. */
+    padding-top: 0;
+    min-height: 100dvh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: transparent;
+  }
+
+  #root {
+    flex: 0 0 auto;
+    position: relative;
+    width: var(--frame-w);
+    height: var(--frame-h);
+    min-height: 0;
+    /* The frame IS the visible screen. */
+    --app-vh: var(--frame-h);
+    /* Reserves the fixed network banner's height at the top of the device - the job body's padding-top
+       does on the phone. 0px whenever the banner is not on screen, which is nearly always. */
+    padding-top: var(--connbanner-h, 0px);
+    display: flex;
+    flex-direction: column;
+    background: var(--bg);
+    border-radius: var(--frame-radius);
+    overflow: hidden;
+    transform: translateZ(0);
+    box-shadow:
+      0 0 0 1px #2b3350,
+      0 0 0 10px #0a0d17,
+      0 0 0 11px #333b57,
+      0 30px 70px rgba(0, 0, 0, 0.6);
+  }
+
+  /* The one box that scrolls: whichever page container is up. The three selectors are the three shapes a
+     page takes - the app's own .screen, the shared sign-in screen, and the bare unclassed div the
+     device-callback and stale-shell recovery screens render. */
+  #root > .screen,
+  #root > .signin-screen,
+  #root > div:not([class]) {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    scrollbar-width: thin;
+    scrollbar-color: var(--border) transparent;
+  }
+
+  /* ONE offset per screen, the same rule the phone follows. On the phone the roster header shares the
+     page scroller with the bars, so it sticks BELOW them. In the frame the bars are above the scroller
+     entirely, so a header that offset itself again would leave an empty strip exactly one bar tall. */
+  #root > .screen .app-bar {
+    top: 0;
+  }
+
+  /* The in-flow bars keep their measured height; a flex column would otherwise squeeze them. */
+  #root > .voicemode-banner,
+  #root > .recbanner {
+    flex: 0 0 auto;
+  }
+
+  /* The Assistant sizes itself from --app-vh and clips its own overflow - it is a shell, not a page. */
+  #root > .assistant-screen {
+    flex: 0 0 auto;
+    overflow: hidden;
+  }
+
+  /* The bottom sheets cap themselves against the viewport, which is now bigger than the device. Cap them
+     against the device instead, or a tall sheet grows out through the top of the frame and is clipped. */
+  .filter-panel,
+  .snooze-sheet {
+    max-height: calc(var(--frame-h) * 0.92);
+  }
+}
