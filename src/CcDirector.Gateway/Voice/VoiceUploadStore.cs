@@ -326,11 +326,17 @@ public sealed class VoiceUploadStore
         // issue #592): every index 0..totalChunks-1 must be present AND non-empty. A missing OR
         // zero-byte chunk is "incomplete" - the result names the exact indices to re-send and NO
         // assembled clip is produced, so a truncated upload is refused, never transcribed.
+        // ONE stat per chunk, not two. FileInfo caches what it read, so Exists and Length below are the same
+        // observation - which matters here beyond tidiness: this gate's measurement is what the read-back
+        // check compares against, and on a share that can answer two identical stats differently, measuring
+        // with a second call would make the check argue with itself instead of with the read.
         var missing = new List<int>();
+        var measured = new long[totalChunks];
         for (var i = 0; i < totalChunks; i++)
         {
-            var path = ChunkPath(dir, i);
-            if (!File.Exists(path) || new FileInfo(path).Length == 0) missing.Add(i);
+            var info = new FileInfo(ChunkPath(dir, i));
+            if (!info.Exists || info.Length == 0) { missing.Add(i); continue; }
+            measured[i] = info.Length;
         }
         if (missing.Count > 0)
         {
@@ -342,9 +348,16 @@ public sealed class VoiceUploadStore
         for (var i = 0; i < totalChunks; i++)
         {
             var part = await File.ReadAllBytesAsync(ChunkPath(dir, i), ct);
+            // PER CHUNK, not on the total. Comparing only the sum lets two faults cancel out: one chunk
+            // measured 100 reading 0 and another measured 100 reading 200 agree perfectly in aggregate, and
+            // a scrambled recording would sail through into the transcriber. Each chunk is checked against
+            // its own measurement, the moment it is read.
+            var verdict = ReadBackVerdict(uid, i, measured[i], part.LongLength, totalChunks);
+            if (verdict is not null) return verdict.Value;
             assembled.Write(part, 0, part.Length);
         }
         var bytes = assembled.ToArray();
+
         FileLog.Write($"[VoiceUploadStore] Assemble: uploadId={uid} chunks={totalChunks} totalBytes={bytes.Length}");
         return AssembleResult.Ok(bytes);
     }
@@ -524,6 +537,40 @@ public sealed class VoiceUploadStore
             Directory.CreateDirectory(dir);
             Directory.SetLastWriteTimeUtc(dir, DateTime.UtcNow);
         });
+    }
+
+    /// <summary>
+    /// THE READ-BACK CHECK, applied to ONE chunk. The completeness gate in <see cref="AssembleAsync"/>
+    /// measures every chunk and refuses the upload unless all of them are present and non-empty. If the bytes
+    /// we then READ for a chunk do not match that chunk's own measurement, the READ is wrong - not the upload
+    /// - and the difference must never be mistaken for a short or empty recording.
+    ///
+    /// Deliberately per chunk rather than on the assembled total: two faults can cancel out in a sum (one
+    /// chunk measured 100 reading 0, another measured 100 reading 200) and a scrambled recording would then
+    /// pass a total-only check and reach the transcriber.
+    ///
+    /// This is not hypothetical. The hosted Gateway stages uploads on an Azure Files share, and on 2026-08-27
+    /// a chunk that measured 871,724 bytes read back as ZERO twice inside five seconds; the same share
+    /// reported a 177 MB log file as 0 bytes to stat while a full read returned all 177 MB. The caller's
+    /// empty-audio arm responds to an empty assembly by DELETING the staging, so a single bad read was
+    /// enough to throw away audio the user had already uploaded successfully. It only looked survivable
+    /// because the phone still held the on-device copy and pushed the same bytes up a third time.
+    ///
+    /// Returning INCOMPLETE instead puts it back on the path built for exactly this: the client re-sends the
+    /// named chunks, the staged bytes are KEPT, and a transient read costs one retry rather than a recording.
+    /// Null means the read agreed with the measurement and assembly may proceed.
+    ///
+    /// Internal so it can be exercised against a known-bad pair - the trigger is a storage fault that cannot
+    /// be reproduced on a local filesystem, so the decision is tested even though the fault cannot be staged.
+    /// </summary>
+    internal static AssembleResult? ReadBackVerdict(string uid, int index, long measured, long read, int totalChunks)
+    {
+        if (read == measured) return null;
+        FileLog.Write($"[VoiceUploadStore] Assemble: uploadId={uid} READ-BACK MISMATCH on chunk {index} " +
+            $"measured={measured} read={read} - treating as incomplete, staging KEPT");
+        // Every index, not just this one: a read that disagreed with its measurement tells us nothing about
+        // whether the other chunks read correctly, so the whole clip is re-sent rather than half-trusted.
+        return AssembleResult.Incomplete(Enumerable.Range(0, totalChunks).ToList());
     }
 
     /// <summary>

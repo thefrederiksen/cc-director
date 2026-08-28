@@ -51,10 +51,21 @@ const PARKED_TOO_LARGE_MESSAGE =
   "This recording is too long to transcribe right now; it is saved on your device and you can retry it.";
 const PARKED_UNSUPPORTED_FORMAT_MESSAGE =
   "This recording is in a format we can't transcribe right now; it is saved on your device and you can retry it.";
+// The empty-recording line, for a durable copy that was read SUCCESSFULLY and held zero bytes. It says the
+// one thing the old forever-spinner never did: this clip has no audio behind it, so waiting will not
+// deliver it. Retry is still on the strip because that is parked's contract and the copy is still on the
+// device - but a copy that really is empty will simply park again, which is honest, and far better than an
+// amber "still sending" that was never true. A copy that could not be READ is NOT this: that stays held and
+// keeps retrying by itself (DICTATION_HELD_UNREADABLE_MESSAGE), because a failed read says nothing about
+// how long the recording is and parking it would strand audio that is still there.
+const PARKED_EMPTY_RECORDING_MESSAGE =
+  "This recording came back empty on this device, so there was nothing to send. Nothing is in flight - you can retry it, or record it again.";
 
 // The plain saved-and-retryable line for a parked clip, chosen by the allow-listed reason on the record.
 function parkMessage(reason: string | undefined): string {
-  return reason === "unsupported-format" ? PARKED_UNSUPPORTED_FORMAT_MESSAGE : PARKED_TOO_LARGE_MESSAGE;
+  if (reason === "unsupported-format") return PARKED_UNSUPPORTED_FORMAT_MESSAGE;
+  if (reason === "empty-recording") return PARKED_EMPTY_RECORDING_MESSAGE;
+  return PARKED_TOO_LARGE_MESSAGE;
 }
 
 // The dropped-as-stale lines (issue #1590). Plain English, and honest about what happened: the session moved
@@ -64,6 +75,14 @@ const DROPPED_WITH_TRANSCRIPT_MESSAGE =
 const DROPPED_NO_TRANSCRIPT_MESSAGE =
   "The session moved on before this recording arrived, so it wasn't sent. Your recording is saved on your device and you can try again.";
 const UNHEARD_MESSAGE = "Nothing was heard in that recording, so nothing was sent.";
+// The empty-CAPTURE line, for a clip that arrived from the recorder with no bytes in it at all. Deliberately
+// not the unheard sentence above: that one means the server listened and heard no speech, which is a fact
+// about the words. This one means the microphone handed us nothing, which is a fact about the device - so it
+// points at the microphone, because a user whose recordings keep coming back empty needs to know where to
+// look rather than being told twice that they were silent. It says NOTHING WAS SENT in as many words,
+// because the failure it replaces spent an evening claiming the opposite.
+const EMPTY_CAPTURE_MESSAGE =
+  "Recording failed - it captured no audio, so nothing was sent and nothing is being retried. Check the microphone is working and record it again.";
 const SEND_ANYWAY_FAILED_MESSAGE =
   "Couldn't send that just now. Your words are still here - try again.";
 
@@ -153,6 +172,49 @@ export async function backgroundTranscribeAndSend(
   hooks: BackgroundSendHooks = {},
 ): Promise<void> {
   ensureRetryListeners();
+
+  // THE EMPTY-CAPTURE GATE - the root cause, refused at the door.
+  //
+  // DictationRecorder builds its clip with `new Blob(this.chunks, ...)`, and when the recorder delivered no
+  // chunks - the microphone produced nothing, or Send arrived before the first chunk did - that Blob is ZERO
+  // BYTES. Nothing between there and here checked, and all four Send surfaces (the phone's controls, the
+  // Cockpit composer, Voice mode, the Voice tab) hand their capture straight to this function. So an empty
+  // recording was written to the durable queue like any other, and then driven forever: it can never produce
+  // a chunk, so the Gateway can never complete it, so the clip retried for as long as the app was open while
+  // the phone said "Saved - still sending". It also registered a staging directory on the Gateway for every
+  // attempt - a delivery record with no audio behind it, which is the residue this was found through.
+  //
+  // Refusing it HERE rather than in each caller is the point: one gate covers all four surfaces, and it is
+  // the last place before the durable write, so an unsendable clip never enters the queue at all. Nothing is
+  // queued, so there is nothing to retry, nothing to cancel, and no staging on the Gateway.
+  //
+  // IT FAILS LOUDLY AND AT ONCE. The phase is "failed", not "unheard": "unheard" is the quiet grey cousin
+  // that means the server listened and heard no speech, and it renders role="status". This did not reach a
+  // server and is not a fact about the words - the device handed us nothing - so it renders the red
+  // role="alert" strip that never clears itself, and fires the host's onError as well, exactly like the
+  // other case where a clip cannot be queued at all (durable storage missing). The user gets one clear,
+  // immediate, DIFFERENT error instead of an amber "Saved - still sending" that was never true.
+  //
+  // Immediately means immediately: before the decode, before the durable write, before any network work.
+  // Transcription is server-side, so a clip with no bytes has nothing to transcribe and nothing to upload;
+  // there is no outcome worth waiting for and no reason to make the user watch a spinner discover it.
+  // onFailed still runs, so any typed text the dialog cleared comes straight back.
+  //
+  // The client's own empty-audio guard (uploadDictationToSession) stays as the backstop below this one: it
+  // covers the different case of a clip that was queued whole and whose on-device copy later reads back
+  // empty or unreadable. This gate stops the queue being polluted; that one stops a polluted queue looping.
+  if (captured.blob.size === 0) {
+    publishDictationStatus({
+      sessionId,
+      uploadId: crypto.randomUUID(),
+      phase: "failed",
+      retryable: false,
+      error: EMPTY_CAPTURE_MESSAGE,
+    });
+    hooks.onError?.(EMPTY_CAPTURE_MESSAGE);
+    hooks.onFailed?.();
+    return;
+  }
 
   // Decode the clip ONCE here - the screen has already closed, so this is off the critical path - to do
   // two things the Send path previously skipped:
