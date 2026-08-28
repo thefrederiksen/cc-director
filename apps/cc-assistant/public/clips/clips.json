@@ -1,0 +1,26 @@
+[
+  {
+    "id": "wake",
+    "file": "clips/wake.wav",
+    "text": "Wilson, set a timer for ten minutes.",
+    "seconds": 3.1
+  },
+  {
+    "id": "ask",
+    "file": "clips/ask.wav",
+    "text": "How many grams are in an ounce?",
+    "seconds": 2.8
+  },
+  {
+    "id": "list",
+    "file": "clips/list.wav",
+    "text": "Add olive oil and a tin of chopped tomatoes to the shopping list.",
+    "seconds": 5.4
+  },
+  {
+    "id": "music",
+    "file": "clips/music.wav",
+    "text": "Wilson, play the album Rumours by Fleetwood Mac.",
+    "seconds": 3.5
+  }
+]
