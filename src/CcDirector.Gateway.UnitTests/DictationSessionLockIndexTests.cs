@@ -1,0 +1,205 @@
+using CcDirector.Core.Tenancy;
+using CcDirector.Gateway.Voice;
+using Xunit;
+
+namespace CcDirector.Gateway.Tests;
+
+/// <summary>
+/// The session lock is answered from memory, not by re-reading the staging root once per session.
+///
+/// WHAT THESE PIN AND WHY. The lock used to be computed by listing the staging root and reading every
+/// upload's record.json on EVERY call, and it is called once per session by the five-second display-state
+/// fold - so the cost was O(sessions x staged uploads) per pass, and it never fell, because a staging
+/// directory only disappears on the success path. On the hosted Gateway that root is a billed network share
+/// and it measured 5.5 million file opens a day.
+///
+/// The behaviour that matters is therefore twofold and BOTH halves need a test: the answer must still be
+/// correct through every state transition (or the fix is a regression wearing a speed-up), and the hot path
+/// must not go back to disk (or the fix silently rots the first time someone re-adds a read). The last two
+/// tests are the ones that fail if the scan ever comes back.
+/// </summary>
+public sealed class DictationSessionLockIndexTests : IDisposable
+{
+    private readonly string _root = Path.Combine(Path.GetTempPath(), "cc-lockidx-" + Guid.NewGuid().ToString("N"));
+
+    public void Dispose()
+    {
+        try { if (Directory.Exists(_root)) Directory.Delete(_root, true); }
+        catch { /* test cleanup */ }
+    }
+
+    private VoiceUploadStore NewStore() => new(_root, TenantId.Local);
+
+    [Fact]
+    public void MarkPending_LocksTheSession()
+    {
+        var store = NewStore();
+        var id = store.Register(null);
+        store.MarkPending(id, "session-a");
+
+        Assert.True(store.IsSessionLocked("session-a"));
+        Assert.False(store.IsSessionLocked("session-b"));
+    }
+
+    [Theory]
+    [InlineData("delivered")]
+    [InlineData("abandoned")]
+    [InlineData("failed")]
+    public void TerminalAndParkedStates_ReleaseTheLock(string transition)
+    {
+        var store = NewStore();
+        var id = store.Register(null);
+        store.MarkPending(id, "session-a");
+        Assert.True(store.IsSessionLocked("session-a"));
+
+        switch (transition)
+        {
+            case "delivered": store.MarkDelivered(id, submitted: true, movedOn: false, "words"); break;
+            case "abandoned": store.MarkAbandoned(id, "user_abandoned"); break;
+            case "failed": store.MarkFailed(id, "out_of_credits"); break;
+        }
+
+        Assert.False(store.IsSessionLocked("session-a"));
+    }
+
+    [Fact]
+    public void ClearFailed_RelocksTheSession()
+    {
+        var store = NewStore();
+        var id = store.Register(null);
+        store.MarkPending(id, "session-a");
+        store.MarkFailed(id, "transcription_error");
+        Assert.False(store.IsSessionLocked("session-a"));
+
+        Assert.True(store.ClearFailed(id));
+        Assert.True(store.IsSessionLocked("session-a"));
+    }
+
+    [Fact]
+    public void Delete_ReleasesTheLock()
+    {
+        var store = NewStore();
+        var id = store.Register(null);
+        store.MarkPending(id, "session-a");
+
+        store.Delete(id);
+
+        Assert.False(store.IsSessionLocked("session-a"));
+    }
+
+    [Fact]
+    public void OnlyPendingSessionsAreReported()
+    {
+        var store = NewStore();
+        var a = store.Register(null);
+        var b = store.Register(null);
+        var c = store.Register(null);
+        store.MarkPending(a, "session-a");
+        store.MarkPending(b, "session-b");
+        store.MarkPending(c, "session-c");
+        store.MarkDelivered(c, submitted: true, movedOn: false, "done");
+
+        var locked = store.LockedSessionIds();
+
+        Assert.Equal(new[] { "session-a", "session-b" }, locked.OrderBy(x => x).ToArray());
+    }
+
+    /// <summary>
+    /// A cache in front of a durable record must still be right after a restart, which is the one case the
+    /// write path cannot supply: the process that wrote the marker is gone. A brand new store over the same
+    /// directory must therefore read the lock back off disk.
+    /// </summary>
+    [Fact]
+    public void ANewStoreOverTheSameRoot_HydratesTheLockFromDisk()
+    {
+        var first = NewStore();
+        var id = first.Register(null);
+        first.MarkPending(id, "session-a");
+
+        var afterRestart = NewStore();
+
+        Assert.True(afterRestart.IsSessionLocked("session-a"));
+    }
+
+    /// <summary>
+    /// THE COST TEST. Once the partition has been read, the answer comes from memory - so removing the
+    /// record file behind the store's back does NOT change the answer. That is a strange-looking assertion
+    /// on purpose: it is the only way to state "this call did not open a file" as a behaviour rather than as
+    /// a hope, and it goes red the moment someone puts a disk read back on the hot path.
+    /// </summary>
+    [Fact]
+    public void AfterTheFirstRead_TheLockIsAnsweredWithoutTouchingDisk()
+    {
+        var store = NewStore();
+        var id = store.Register(null);
+        store.MarkPending(id, "session-a");
+        Assert.True(store.IsSessionLocked("session-a"));   // hydrates / write-through
+
+        // Reach around the store and delete its durable marker. Nothing legitimate does this; it stands in
+        // for "the disk was not consulted".
+        File.Delete(Path.Combine(_root, id, "record.json"));
+
+        Assert.True(store.IsSessionLocked("session-a"));
+    }
+
+    /// <summary>
+    /// FAIL OPEN, exactly as the disk enumeration did. An unreadable partition must report NO lock rather
+    /// than a lock nobody can clear - a false lock silently refuses the user's typing, which is strictly
+    /// worse than an unenforced one.
+    /// </summary>
+    [Fact]
+    public void AnUnreadableRoot_ReportsNoLock_RatherThanGuessingOne()
+    {
+        var store = NewStore();
+        var id = store.Register(null);
+        store.MarkPending(id, "session-a");
+
+        // A different store over a root that does not exist and was never written: the question is
+        // answerable only from disk, and there is nothing there.
+        var elsewhere = new VoiceUploadStore(
+            Path.Combine(Path.GetTempPath(), "cc-lockidx-empty-" + Guid.NewGuid().ToString("N")), TenantId.Local);
+
+        Assert.False(elsewhere.IsSessionLocked("session-a"));
+        Assert.Empty(elsewhere.LockedSessionIds());
+    }
+
+    /// <summary>
+    /// The cache is keyed by PARTITION ROOT, so it cannot become a hole in the tenant boundary the
+    /// directory layout enforces (issue #1884). One tenant's pending dictation must never lock a session
+    /// read through another tenant's handle.
+    /// </summary>
+    [Fact]
+    public void OneTenantsPendingDictation_DoesNotLockAnotherTenant()
+    {
+        var baseStore = NewStore();
+        var a = baseStore.ForTenant(new TenantId("11111111-1111-1111-1111-111111111111"));
+        var b = baseStore.ForTenant(new TenantId("22222222-2222-2222-2222-222222222222"));
+
+        var id = a.Register(null);
+        a.MarkPending(id, "shared-session-id");
+
+        Assert.True(a.IsSessionLocked("shared-session-id"));
+        Assert.False(b.IsSessionLocked("shared-session-id"));
+    }
+
+    /// <summary>
+    /// Two handles onto the SAME partition share one index, so a transition written through one is seen by
+    /// the other. GatewayHost builds a fresh store with ForTenant for every session of every fold, so if
+    /// these did not agree the lock would flap depending on which handle happened to ask.
+    /// </summary>
+    [Fact]
+    public void TwoHandlesOntoTheSamePartition_AgreeAboutTheLock()
+    {
+        var baseStore = NewStore();
+        var tenant = new TenantId("33333333-3333-3333-3333-333333333333");
+        var writer = baseStore.ForTenant(tenant);
+        var reader = baseStore.ForTenant(tenant);
+
+        var id = writer.Register(null);
+        writer.MarkPending(id, "session-a");
+        Assert.True(reader.IsSessionLocked("session-a"));
+
+        writer.MarkDelivered(id, submitted: true, movedOn: false, "done");
+        Assert.False(reader.IsSessionLocked("session-a"));
+    }
+}

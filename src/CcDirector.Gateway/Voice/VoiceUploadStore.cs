@@ -66,6 +66,10 @@ public sealed class VoiceUploadStore
     // The tenant this instance is bound to. Stamped onto every record written and required to match on
     // every record read.
     private readonly TenantId _tenant;
+    // The pending-dictation cache, keyed by partition root and SHARED with every store this one spawns
+    // through ForTenant, so one Gateway keeps one index across all its tenants. See DictationLockIndex for
+    // why the session lock is answered from memory rather than by re-reading the staging root per session.
+    private readonly DictationLockIndex _lockIndex;
 
     /// <summary>
     /// Stage under an explicit root, bound to ONE tenant.
@@ -85,14 +89,19 @@ public sealed class VoiceUploadStore
     /// <param name="root">The base staging root; the local partition is this directory itself.</param>
     /// <param name="tenant">The partition this store is bound to. Never guessed, never defaulted.</param>
     public VoiceUploadStore(string root, TenantId tenant)
-        : this(PartitionRootFor(root, RequireTenant(tenant)), tenant, root) { }
+        : this(PartitionRootFor(root, RequireTenant(tenant)), tenant, root, new DictationLockIndex()) { }
 
-    private VoiceUploadStore(string root, TenantId tenant, string partitionBase)
+    private VoiceUploadStore(string root, TenantId tenant, string partitionBase, DictationLockIndex lockIndex)
     {
         _root = root;
         _tenant = tenant;
         _partitionBase = partitionBase;
-        Directory.CreateDirectory(_root);
+        _lockIndex = lockIndex;
+        // Through the index so it happens ONCE per root per process. This constructor runs on the read path -
+        // GatewayHost builds a store with ForTenant for every session of every display-state fold - and
+        // against the hosted Gateway's billed file share an unconditional CreateDirectory here was one more
+        // metadata round trip per session every five seconds, for a directory that already exists.
+        _lockIndex.EnsureRoot(_root, () => Directory.CreateDirectory(_root));
     }
 
     /// <summary>The tenant this store instance is bound to.</summary>
@@ -106,7 +115,8 @@ public sealed class VoiceUploadStore
     /// lives inside that tenant's partition, so an upload id from another tenant simply does not exist here -
     /// the isolation is the directory, not a predicate a later edit could forget to apply.
     /// </summary>
-    public VoiceUploadStore ForTenant(TenantId tenant) => new VoiceUploadStore(_partitionBase, tenant);
+    public VoiceUploadStore ForTenant(TenantId tenant) =>
+        new VoiceUploadStore(PartitionRootFor(_partitionBase, RequireTenant(tenant)), tenant, _partitionBase, _lockIndex);
 
     /// <summary>
     /// The single place a tenant is admitted into this type. An unresolved tenant is DENIED here rather than
@@ -413,7 +423,14 @@ public sealed class VoiceUploadStore
                     }
                 });
             }
-            if (removed > 0) FileLog.Write($"[VoiceUploadStore] SweepAbandoned removed={removed} older than {maxAge}");
+            // This sweep deletes staging directories by walking the root rather than through Delete, so the
+            // session-lock cache is dropped wholesale and re-read once on the next question. Only when
+            // something was actually removed: a sweep that deleted nothing changed nothing.
+            if (removed > 0)
+            {
+                _lockIndex.Invalidate(_root);
+                FileLog.Write($"[VoiceUploadStore] SweepAbandoned removed={removed} older than {maxAge}");
+            }
         }
         catch (Exception ex)
         {
@@ -492,8 +509,12 @@ public sealed class VoiceUploadStore
                     }
                 });
             }
+            // Same reason as SweepAbandoned: directories removed by walking the root, not through Delete.
             if (removed > 0)
+            {
+                _lockIndex.Invalidate(_root);
                 FileLog.Write($"[VoiceUploadStore] SweepResolvedTombstones removed={removed} older than {maxAge}");
+            }
         }
         catch (Exception ex)
         {
@@ -607,8 +628,13 @@ public sealed class VoiceUploadStore
                 catch (IOException ex) { FileLog.Write($"[VoiceUploadStore] quarantine {name} skipped: {ex.Message}"); }
                 catch (UnauthorizedAccessException ex) { FileLog.Write($"[VoiceUploadStore] quarantine {name} skipped: {ex.Message}"); }
             }
+            // Moving a directory out of the base root removes it from the PENDING projection just as a delete
+            // would, so the cache is dropped for the same reason the sweeps drop it.
             if (moved > 0)
+            {
+                _lockIndex.Invalidate(_root);
                 FileLog.Write($"[VoiceUploadStore] QuarantineLegacyUploads moved={moved} legacy upload dirs into {QuarantineDirectoryName}");
+            }
         }
         catch (Exception ex)
         {
@@ -652,6 +678,10 @@ public sealed class VoiceUploadStore
         {
             FileLog.Write($"[VoiceUploadStore] Delete uploadId={uid} failed: {ex.Message}");
         }
+        // Outside the try on purpose: the staging directory is gone or was never there, and either way this
+        // upload id holds no lock. Dropping it only when the delete threw no exception would leave a phantom
+        // lock behind exactly when the disk is misbehaving - the case where failing OPEN is the whole point.
+        _lockIndex.Removed(_root, uid);
     }
 
     // ====== durable delivery record (issue #1183) ===================================
@@ -738,21 +768,30 @@ public sealed class VoiceUploadStore
     public bool IsSessionLocked(string sessionId)
     {
         if (string.IsNullOrWhiteSpace(sessionId)) return false;
-        foreach (var rec in EnumeratePendingRecords())
-            if (string.Equals(rec.SessionId, sessionId, StringComparison.OrdinalIgnoreCase)) return true;
-        return false;
+        return LockedSessionIds().Contains(sessionId);
     }
 
     /// <summary>The distinct session ids that currently hold a PENDING dictation (issue #1188).</summary>
     public IReadOnlyCollection<string> LockedSessionIds()
+        // From memory, hydrating from disk at most once per partition per process. A null answer means the
+        // hydration could not read the root, which this path has always reported as NO LOCK rather than
+        // guessing one - see the fail-open note on DictationLockIndex.
+        => _lockIndex.LockedSessions(_root, EnumeratePendingEntries)
+           ?? (IReadOnlyCollection<string>)Array.Empty<string>();
+
+    /// <summary>
+    /// The one disk read behind the session lock: every PENDING record in this partition, paired with its
+    /// upload id. Runs once per partition per process (and again after a sweep invalidates the cache), where
+    /// it used to run once per session every five seconds.
+    /// </summary>
+    private IEnumerable<(string UploadId, string SessionId)> EnumeratePendingEntries()
     {
-        var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var rec in EnumeratePendingRecords())
-            if (!string.IsNullOrWhiteSpace(rec.SessionId)) set.Add(rec.SessionId);
-        return set;
+        foreach (var rec in EnumeratePendingRecordsWithId())
+            if (!string.IsNullOrWhiteSpace(rec.Record.SessionId))
+                yield return (rec.UploadId, rec.Record.SessionId);
     }
 
-    private IEnumerable<DictationDeliveryRecord> EnumeratePendingRecords()
+    private IEnumerable<(string UploadId, DictationDeliveryRecord Record)> EnumeratePendingRecordsWithId()
     {
         string[] dirs;
         try { dirs = Directory.Exists(_root) ? Directory.GetDirectories(_root) : Array.Empty<string>(); }
@@ -777,7 +816,7 @@ public sealed class VoiceUploadStore
             // security boundary; the security boundary on this line is BelongsHere, and THAT one has canaries.
             if (IsPartitionContainer(dir)) continue;
             if (ReadRecordFile(RecordPath(dir)) is { State: DictationDeliveryState.Pending } rec && BelongsHere(rec))
-                yield return rec;
+                yield return (Path.GetFileName(dir.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)), rec);
         }
     }
 
@@ -932,6 +971,11 @@ public sealed class VoiceUploadStore
             try
             {
                 Directory.Delete(dir, recursive: true);
+                // A tombstone is terminal, so the cache already dropped this id when the tombstone was
+                // written. Dropped again anyway: this is the other place a staging directory disappears, and
+                // an entry that cannot be here costs nothing to remove while a future state that CAN be here
+                // would otherwise leave a lock with no directory behind it.
+                _lockIndex.Removed(_root, uid);
                 FileLog.Write($"[VoiceUploadStore] Acknowledge: uploadId={uid} tombstone retired");
                 return true;
             }
@@ -992,6 +1036,14 @@ public sealed class VoiceUploadStore
         var tmp = path + ".tmp";
         File.WriteAllText(tmp, JsonSerializer.Serialize(record with { Tenant = _tenant.Value }, RecordJson));
         File.Move(tmp, path, overwrite: true);
+
+        // Being THE ONE PLACE a record is written makes this also the one place the in-memory session-lock
+        // cache can be kept true, which is why it is updated here and not in each of the five transitions
+        // that reach it: a transition added later cannot forget to do it. AFTER the move, never before - the
+        // cache must only ever claim what is already durable, so a failed write leaves the cache unchanged
+        // and the record and the cache cannot disagree.
+        _lockIndex.RecordWritten(_root, Path.GetFileName(dir.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)),
+            record.SessionId, record.State == DictationDeliveryState.Pending);
     }
 
     // ====== internals ===============================================================
