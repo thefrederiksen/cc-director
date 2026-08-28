@@ -1,0 +1,174 @@
+/* Deliberately plain. This is an instrument for reading numbers off, not a product screen. */
+
+:root {
+  --ink: #101418;
+  --quiet: #5b6572;
+  --line: #d3d8de;
+  --page: #f4f6f8;
+  --panel: #ffffff;
+  --good: #0f7a45;
+  --warn: #8a6100;
+  --bad: #b3261e;
+  color-scheme: light dark;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --ink: #e8ecf1;
+    --quiet: #939da9;
+    --line: #2c333c;
+    --page: #0f1216;
+    --panel: #171c22;
+    --good: #4fbf8b;
+    --warn: #d9a93a;
+    --bad: #ff7a6b;
+  }
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--page);
+  color: var(--ink);
+  font-family: "Cascadia Mono", Consolas, ui-monospace, monospace;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+main {
+  max-width: 900px;
+  margin: 0 auto;
+  padding: 24px 16px 80px;
+}
+
+h1 { font-size: 21px; margin: 0 0 4px; }
+h2 {
+  font-size: 12px;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+  color: var(--quiet);
+  margin: 0 0 12px;
+}
+.sub { margin: 0 0 24px; color: var(--quiet); max-width: 70ch; }
+
+section {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 16px 18px;
+  margin-bottom: 14px;
+}
+
+.row { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end; }
+
+label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 11px;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: var(--quiet);
+}
+
+select, button {
+  font: inherit;
+  font-size: 14px;
+  padding: 7px 10px;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  background: var(--page);
+  color: var(--ink);
+}
+
+button { cursor: pointer; font-weight: 700; }
+button:disabled { opacity: .45; cursor: not-allowed; }
+button.go { background: var(--good); border-color: var(--good); color: #fff; }
+button.stop { background: var(--bad); border-color: var(--bad); color: #fff; }
+select:focus-visible, button:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+
+.status { margin: 10px 0 0; color: var(--quiet); }
+
+.numbers { display: flex; flex-wrap: wrap; gap: 14px; }
+
+.num {
+  flex: 1 1 190px;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.num .k { font-size: 10.5px; letter-spacing: .1em; text-transform: uppercase; color: var(--quiet); }
+.num .v { font-size: 34px; font-weight: 700; font-variant-numeric: tabular-nums; line-height: 1.1; }
+.num .h { font-size: 11.5px; color: var(--quiet); }
+
+.verdict {
+  margin: 14px 0 0;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-left-width: 4px;
+  border-radius: 3px;
+  font-weight: 700;
+}
+.verdict.good { border-left-color: var(--good); color: var(--good); }
+.verdict.warn { border-left-color: var(--warn); color: var(--warn); }
+.verdict.bad  { border-left-color: var(--bad);  color: var(--bad); }
+
+table { border-collapse: collapse; width: 100%; font-size: 13px; }
+th, td {
+  text-align: left;
+  padding: 5px 8px;
+  border-bottom: 1px solid var(--line);
+  vertical-align: top;
+  font-variant-numeric: tabular-nums;
+}
+th {
+  font-size: 10.5px;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  color: var(--quiet);
+  font-weight: 500;
+}
+td.text { font-variant-numeric: normal; width: 45%; }
+tr.slow td { color: var(--bad); }
+em { color: var(--quiet); font-style: normal; opacity: .6; }
+
+.log { list-style: none; margin: 0; padding: 0; }
+.log li { padding: 5px 0; border-bottom: 1px solid var(--line); color: var(--bad); }
+.log li:last-child { border-bottom: none; }
+
+@media (max-width: 640px) {
+  table, thead, tbody, tr, th, td { display: block; }
+  thead { display: none; }
+  tr { border-bottom: 1px solid var(--line); padding: 6px 0; }
+  td { border: none; padding: 1px 0; }
+  td.text { width: auto; }
+}
+
+/* Benchmark panel */
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 6px 16px;
+  margin-top: 12px;
+}
+.check {
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: 13px;
+  color: var(--ink);
+}
+.check input { margin: 0; }
+.status.sent { color: var(--good); font-weight: 700; }
+.log.quiet li { color: var(--quiet); }
+h2.divider {
+  margin: 28px 0 12px;
+  padding-top: 20px;
+  border-top: 1px solid var(--line);
+}

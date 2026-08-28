@@ -1,0 +1,105 @@
+/* The assistant screen. Dark, quiet, one light. Nothing here is meant to be read from across a room
+   except the eye itself. */
+
+.assistant {
+  min-height: 100vh;
+  background: #06070a;
+  color: #e4e7ec;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  padding: 40px 20px 30px;
+  font-family: "Segoe UI", system-ui, -apple-system, Helvetica, Arial, sans-serif;
+}
+
+.eyeWrap { width: 190px; height: 190px; display: grid; place-items: center; }
+
+.eye {
+  width: 100%;
+  aspect-ratio: 1;
+  border-radius: 50%;
+  background:
+    radial-gradient(circle at 50% 50%, #ffe3a8 0%, #ffae52 4.5%, rgba(255,130,40,0) 11%),
+    radial-gradient(circle at 50% 50%, #ff4a28 0%, #e81205 17%, #921104 31%, #360803 43%, #0b0b0e 54%),
+    radial-gradient(circle at 50% 38%, #262a31 58%, #14171c 76%, #04050a 100%);
+  box-shadow: 0 0 var(--bloom, 40px) rgba(255,45,20,var(--bloomA, .18)), inset 0 0 46px rgba(0,0,0,.92);
+  filter: brightness(var(--gain, .45));
+  transition: filter .35s ease, box-shadow .35s ease;
+}
+
+[data-state="off"]       .eye { --gain: .18; --bloom: 0px;  --bloomA: 0; filter: grayscale(1) brightness(.22); }
+[data-state="asleep"]    .eye { --gain: .45; --bloom: 34px; --bloomA: .15; animation: breathe 5s ease-in-out infinite; }
+[data-state="listening"] .eye { --gain: 1.2; --bloom: 92px; --bloomA: .5; }
+[data-state="thinking"]  .eye { --gain: .85; --bloom: 56px; --bloomA: .26; animation: think 1.4s ease-in-out infinite; }
+[data-state="speaking"]  .eye { --gain: 1.0; --bloom: 74px; --bloomA: .4; animation: voice 1.1s ease-in-out infinite; }
+
+@keyframes breathe { 0%,100% { filter: brightness(.36); } 50% { filter: brightness(.58); } }
+@keyframes think   { 0%,100% { filter: brightness(.7); }  50% { filter: brightness(1); } }
+@keyframes voice   { 0% { filter: brightness(.72);} 14%{filter:brightness(1.34);} 28%{filter:brightness(.86);}
+                     46%{filter:brightness(1.2);} 62%{filter:brightness(.78);} 80%{filter:brightness(1.28);}
+                     100%{filter:brightness(.72);} }
+@media (prefers-reduced-motion: reduce) { .eye { animation: none !important; } }
+
+.stateLine { margin: 0; font-size: 15px; letter-spacing: .06em; text-transform: uppercase; color: #ff8a63; }
+.liveLine { margin: 0; min-height: 44px; max-width: 34ch; text-align: center; color: #7a828e; font-size: 15px; }
+
+.assistantButtons { display: flex; gap: 10px; align-items: center; }
+.assistant button {
+  font: inherit; font-size: 14px; font-weight: 600; padding: 10px 20px; border-radius: 999px;
+  border: 1px solid #262d38; background: #0f1319; color: #cdd3dc; cursor: pointer;
+}
+.assistant button.big { padding: 13px 36px; font-size: 16px; }
+.assistant button.go { background: #ff3a1e; border-color: #ff3a1e; color: #140603; }
+.assistant button.stop { background: #262d38; border-color: #38414f; }
+.assistant button:focus-visible { outline: 2px solid #ff3a1e; outline-offset: 3px; }
+
+.settings {
+  width: 100%; max-width: 380px; display: flex; flex-direction: column; gap: 8px;
+  border: 1px solid #1c222b; border-radius: 8px; padding: 16px; background: #0b0e13;
+}
+.settings label { display: flex; flex-direction: column; gap: 6px; font-size: 11px;
+  letter-spacing: .1em; text-transform: uppercase; color: #7a828e; }
+.settings input { font: inherit; font-size: 16px; padding: 10px 12px; border-radius: 6px;
+  border: 1px solid #262d38; background: #06070a; color: #e4e7ec; }
+.settings .advice { margin: 0; color: #ffb44d; font-size: 13.5px; }
+.settings .status { margin: 0; color: #7a828e; font-size: 13px; }
+
+.turns { list-style: none; margin: 8px 0 0; padding: 0; width: 100%; max-width: 460px;
+  display: flex; flex-direction: column; gap: 10px; }
+.turns li { border-top: 1px solid #1c222b; padding-top: 10px; display: flex; flex-direction: column; gap: 3px; }
+.turns .you { color: #7a828e; font-size: 14px; }
+.turns .it { color: #e4e7ec; font-size: 15px; }
+.turns .ms { color: #4a5260; font-size: 11px; font-variant-numeric: tabular-nums; }
+
+.diagLink { background: #06070a; text-align: center; padding: 24px 0 40px; }
+.diagLink button { font: inherit; font-size: 12px; color: #4a5260; background: none;
+  border: none; cursor: pointer; text-decoration: underline; }
+
+/* The evidence panel. A level that moves is the only honest answer to "is it listening". */
+.mic { width: 100%; max-width: 420px; display: flex; flex-direction: column; gap: 6px; align-items: center; }
+.meter {
+  width: 100%; height: 8px; border-radius: 999px; background: #161b23;
+  border: 1px solid #232b36; overflow: hidden;
+}
+.meterFill {
+  height: 100%; background: linear-gradient(90deg, #4fbf8b, #ffb44d 70%, #ff3a1e);
+  transition: width 60ms linear;
+}
+.micLine { margin: 0; font-size: 11.5px; color: #5a626e; text-align: center; font-variant-numeric: tabular-nums; }
+.micNotice { margin: 0; font-size: 12px; color: #ffb44d; text-align: center; }
+
+/* Timers. The reason the screen exists at all, so they are the biggest thing on it. */
+.timers { list-style: none; margin: 6px 0 0; padding: 0; width: 100%; max-width: 420px;
+  display: flex; flex-direction: column; gap: 8px; }
+.timers li { display: flex; align-items: baseline; gap: 12px; justify-content: center; }
+.timers .face { font-size: 46px; font-weight: 700; letter-spacing: -.02em;
+  font-variant-numeric: tabular-nums; color: #ffb44d; line-height: 1; }
+.timers .of { font-size: 13px; color: #5a626e; }
+.timers .up { font-size: 13px; font-weight: 700; letter-spacing: .12em; color: #ff3a1e; }
+.timers li.ringing .face { color: #ff3a1e; animation: flash .7s steps(1,end) infinite; }
+@keyframes flash { 0%,49% { opacity: 1; } 50%,100% { opacity: .25; } }
+@media (prefers-reduced-motion: reduce) { .timers li.ringing .face { animation: none; } }
+.timerWarning { font-size: 11.5px; color: #5a626e; text-align: center; display: block; }
+.timers .tname { color: #ffb44d; font-weight: 700; text-transform: capitalize; }
