@@ -1921,8 +1921,15 @@ async function sha256Hex(bytes: Uint8Array): Promise<string> {
  *  than re-drive forever. EVERYTHING outside this list (network, provider 502/504, busy session, out of
  *  credits) stays retryable/held. Default is retryable; only these reasons are permanent.
  *   - "audio-too-large": the clip is over the provider's per-request byte cap and cannot be split as-sent.
- *   - "unsupported-format": the audio is a format the Gateway cannot decode or split. */
-export type PermanentDictationReason = "audio-too-large" | "unsupported-format";
+ *   - "unsupported-format": the audio is a format the Gateway cannot decode or split.
+ *   - "empty-recording": the on-device copy was read SUCCESSFULLY and contained ZERO BYTES, so there is no
+ *     audio to send. Decided entirely on the device, before any network work - see the empty-audio guard in
+ *     uploadDictationToSession. Permanent because the bytes are the input: re-reading the same empty copy
+ *     produces the same nothing however often it is asked. A read that THROWS is deliberately NOT this - it
+ *     says nothing about the length, so it stays held and retryable
+ *     (DICTATION_HELD_UNREADABLE_MESSAGE). Do not widen this reason to cover it: parking a recording that a
+ *     later read would have recovered strands it, and tells the user it was empty when it was not. */
+export type PermanentDictationReason = "audio-too-large" | "unsupported-format" | "empty-recording";
 
 /** Outcome of one dictation delivery attempt.
  *  - `terminal` true: the server made a final decision (injected the turn, or deliberately dropped it as
@@ -1987,6 +1994,14 @@ export interface DictationUploadArgs {
  *  background driver keeps trying - never "was not transcribed", because it is held, not lost. */
 export const DICTATION_HELD_NO_CONNECTION_MESSAGE =
   "No connection - your recording is saved and will keep trying.";
+
+/** The held line for a recording whose saved copy could not be READ on this attempt - the read threw rather
+ *  than coming back empty. Held, deliberately: a read can fail under browser storage or memory pressure and
+ *  succeed on the next attempt, so this must never claim the recording is empty or gone. A read that comes
+ *  back zero-length IS permanent and takes the parked "empty-recording" path instead; only the throw lands
+ *  here, because a throw tells us nothing about how long the recording is. */
+export const DICTATION_HELD_UNREADABLE_MESSAGE =
+  "Couldn't read the saved recording just now - it is still on your device and delivery will keep trying.";
 
 /** The held line when transcription credits ran out: kept, and it sends once credits are available.
  *  This wording is reachable ONLY from the direct-API `insufficient_credits` state (the Gateway maps
@@ -2060,7 +2075,33 @@ export async function uploadDictationToSession(
   }
 
   // 2. Read the whole clip from the (already durable) on-device copy and plan its bounded chunks.
-  const bytes = new Uint8Array(await args.audio.arrayBuffer());
+  //
+  // THE EMPTY-AUDIO GUARD. planUploadChunks documents that "a zero-length payload yields no ranges (the
+  // caller guards empty audio upstream)" - and until this guard existed, THIS caller did not. A clip whose
+  // on-device copy read back as zero bytes therefore planned NO chunks, uploaded nothing, and sent the
+  // server totalChunks:0, which the complete endpoint correctly refuses with a 400. A 400 is not one of the
+  // allow-listed permanent reasons, so it fell through to the retryable/held arm and the clip re-drove
+  // forever: the phone showed "Saved - still sending" for a recording that could never be sent, and the
+  // Gateway collected a staging directory holding a delivery record and no audio. That residue is how this
+  // was found - three of them registered in one second, none with a single byte behind it.
+  //
+  // ZERO LENGTH AND A FAILED READ ARE NOT THE SAME THING, and collapsing them is a defect of its own.
+  //   - A read that SUCCEEDS and yields zero bytes is permanent: the bytes are the input, and re-reading
+  //     the same empty copy produces the same nothing however many times it is asked.
+  //   - A read that THROWS says nothing about the length. A perfectly good recording can fail to read under
+  //     browser storage or memory pressure and read fine on the next attempt, so parking it would strand a
+  //     recording that automatic delivery would have recovered - and would tell the user "there was nothing
+  //     to send" about audio that is still there. That claim would be false, which is the same sin as the
+  //     "Saved - still sending" it replaced, only in the other direction.
+  // So a throw stays HELD and keeps retrying, with a reason that says what actually happened.
+  let bytes: Uint8Array;
+  try {
+    bytes = new Uint8Array(await args.audio.arrayBuffer());
+  } catch {
+    return held(DICTATION_HELD_UNREADABLE_MESSAGE);
+  }
+  if (bytes.length === 0) return permanent("empty-recording");
+
   const ranges = planUploadChunks(bytes.length, MAX_UPLOAD_CHUNK_BYTES);
   const total = ranges.length;
   const completeBody = {

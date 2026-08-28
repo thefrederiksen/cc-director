@@ -115,6 +115,72 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
+describe("the empty-capture gate (an empty recording must never enter the durable queue)", () => {
+  // The root cause of the forever-spinner. DictationRecorder returns `new Blob(this.chunks, ...)`, which is
+  // ZERO BYTES when the recorder delivered no chunks. Nothing guarded it, so an empty clip was queued like
+  // any other and then re-driven forever - it can never produce a chunk, so the Gateway can never complete
+  // it, and the phone said "Saved - still sending" about a recording that did not exist. Every Send surface
+  // goes through this one function, so this is the one gate that covers all of them.
+  const emptyCapture: CapturedUtterance = { blob: new Blob([]), recordedMs: 1000, prefixText: "" };
+
+  it("refuses a zero-byte capture: nothing is queued, nothing is uploaded, and the user is told", async () => {
+    const onFailed = vi.fn();
+    const onError = vi.fn();
+
+    await backgroundTranscribeAndSend("sid", emptyCapture, { onFailed, onError });
+
+    // Never queued. This is what stops the loop existing at all, rather than stopping it later.
+    expect(savePending).not.toHaveBeenCalled();
+    expect(uploadDictationToSession).not.toHaveBeenCalled();
+    // LOUD, and a different error. "failed" renders the red role="alert" strip that never clears itself;
+    // "unheard" would be the grey role="status" cousin, and "held" is the amber lie this replaces.
+    const status = allDictationStatuses().find((s) => s.sessionId === "sid");
+    expect(status?.phase).toBe("failed");
+    expect(status?.retryable).toBe(false);
+    expect(status?.error).toBe(
+      "Recording failed - it captured no audio, so nothing was sent and nothing is being retried. Check the microphone is working and record it again.",
+    );
+    // The host's own error surface fires too, so the message is not confined to the strip.
+    expect(onError).toHaveBeenCalledWith(status?.error);
+    // Nothing was queued, so any typed text the dialog cleared must come back - same contract as the
+    // no-durable-store path, the other case where the clip is not queued.
+    expect(onFailed).toHaveBeenCalledTimes(1);
+  });
+
+  it("fails IMMEDIATELY - before the decode, the durable write, or any network work", async () => {
+    // The complaint this fixes is not only that it retried, but that it took all evening to say anything.
+    // There is nothing to wait for: transcription is server-side, and a clip with no bytes has nothing to
+    // upload, so the verdict is available on the device at once and is delivered at once.
+    await backgroundTranscribeAndSend("sid", emptyCapture);
+
+    // The status is already published with no timers advanced and no promises pumped beyond the call.
+    expect(allDictationStatuses().find((s) => s.sessionId === "sid")?.phase).toBe("failed");
+    expect(savePending).not.toHaveBeenCalled();
+    expect(uploadDictationToSession).not.toHaveBeenCalled();
+  });
+
+  it("no Gateway staging is ever created for an empty capture, and no timer is left behind", async () => {
+    await backgroundTranscribeAndSend("sid", emptyCapture);
+
+    // The registration that left a delivery record with no audio behind it on the Gateway never happens.
+    expect(uploadDictationToSession).not.toHaveBeenCalled();
+    // And nothing is scheduled: the clip is finished, not waiting.
+    await vi.advanceTimersByTimeAsync(10 * 60 * 1000);
+    expect(uploadDictationToSession).not.toHaveBeenCalled();
+    expect(savePending).not.toHaveBeenCalled();
+  });
+
+  it("a recording WITH audio is untouched by the gate", async () => {
+    // The gate must be exact: one byte is a recording, and it takes the normal durable path.
+    vi.mocked(uploadDictationToSession).mockResolvedValue(SUBMITTED);
+
+    await backgroundTranscribeAndSend("sid", captured);
+
+    expect(savePending).toHaveBeenCalled();
+    expect(uploadDictationToSession).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe("backgroundTranscribeAndSend", () => {
   it("persists the audio to the durable store BEFORE any network work", async () => {
     vi.mocked(uploadDictationToSession).mockResolvedValue(SUBMITTED);
@@ -419,6 +485,38 @@ describe("parking permanently-failed clips (#1184)", () => {
       "This recording is too long to transcribe right now; it is saved on your device and you can retry it.",
     );
     // The forever-loop is gone: advancing well past the hard-retry window triggers no further attempt.
+    const callsBefore = vi.mocked(uploadDictationToSession).mock.calls.length;
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(vi.mocked(uploadDictationToSession).mock.calls.length).toBe(callsBefore);
+  });
+
+  it("an EMPTY recording parks with its own honest sentence, not the too-long one", async () => {
+    // The empty-audio guard (see dictationEmptyAudio.test.ts) returns this outcome. What the user is told
+    // matters as much as the parking: the old behaviour said "Saved - still sending" forever, and the
+    // default park wording would now say the clip is "too long", which is a second wrong answer. It must
+    // say the recording came back empty and that nothing is in flight.
+    vi.mocked(uploadDictationToSession).mockResolvedValue({
+      terminal: false,
+      submitted: false,
+      movedOn: false,
+      transcript: "",
+      permanent: true,
+      permanentReason: "empty-recording",
+    });
+
+    await backgroundTranscribeAndSend("sid", captured);
+
+    const savedId = vi.mocked(savePending).mock.calls[0][0].id;
+    expect(deletePending).not.toHaveBeenCalled();
+    const parkedSave = vi.mocked(savePending).mock.calls.find((c) => c[0].parkedReason);
+    expect(parkedSave?.[0].parkedReason).toBe("empty-recording");
+    const status = statusFor(savedId);
+    expect(status?.phase).toBe("parked");
+    expect(status?.retryable).toBe(true);
+    expect(status?.error).toBe(
+      "This recording came back empty on this device, so there was nothing to send. Nothing is in flight - you can retry it, or record it again.",
+    );
+    // And the forever-loop that started all this is gone.
     const callsBefore = vi.mocked(uploadDictationToSession).mock.calls.length;
     await vi.advanceTimersByTimeAsync(30_000);
     expect(vi.mocked(uploadDictationToSession).mock.calls.length).toBe(callsBefore);
