@@ -544,6 +544,96 @@ public sealed class VoiceUploadStore
         => state is DictationDeliveryState.Delivered or DictationDeliveryState.Abandoned;
 
     /// <summary>
+    /// Abandon PENDING dictations that have shown no activity for <paramref name="maxAge"/>, releasing the
+    /// session lock they hold. Returns how many were expired.
+    ///
+    /// WHY A PENDING RECORD NEEDED A BOUND AT ALL. PENDING is the durable "there are undelivered words here"
+    /// marker, and it deliberately NEVER auto-releases - that is the whole point of issue #1188, and nothing
+    /// here changes it for a live dictation. But nothing released it for a DEAD one either: the record clears
+    /// only when the client delivers or explicitly abandons, so a client that simply never comes back - the
+    /// app closed, the phone replaced, a transcription that failed while the staging disk was full - left the
+    /// marker on disk forever. Seven were found stuck on the hosted Gateway on 2026-08-28, the oldest FIVE
+    /// WEEKS old, each still holding its session locked against human input. A lock nobody alive can clear is
+    /// not durability, it is a session the owner can no longer type into.
+    ///
+    /// IT IS AN ABANDON, NOT A DELETE, AND THAT IS THE POINT. Expiring writes the ordinary ABANDONED
+    /// tombstone through <see cref="MarkAbandoned"/> - the same transition the user's own "give up" button
+    /// takes. So the session unlocks, the heavy chunk bytes are discarded, a small marker survives saying
+    /// WHY, the upload id stays de-duplicated, and the existing tombstone sweep retires the marker later on
+    /// its own schedule. Deleting the directory outright would skip the tombstone and let a late client
+    /// re-drive an upload id the server had forgotten.
+    ///
+    /// AGE IS LAST ACTIVITY, NOT CREATION. It reads the same directory timestamp
+    /// <see cref="EnsureFreshStaging"/> stamps on every register, resume, chunk and assemble, so a client
+    /// that is still working - however slowly, however often it reconnects - keeps pushing its own deadline
+    /// out and is never expired mid-dictation. Only silence ages.
+    ///
+    /// POSITIVELY ADMIT, and re-read INSIDE the gate, exactly as the two sweeps above do: only a canonical
+    /// upload-id directory is a candidate, and the state and age are re-read under the upload's own lock, so
+    /// a delivery landing between the enumeration and the decision wins rather than being overwritten by a
+    /// stale verdict.
+    /// </summary>
+    public int ExpireStalePending(TimeSpan maxAge)
+    {
+        var expired = 0;
+        var cutoff = DateTime.UtcNow - maxAge;
+        try
+        {
+            foreach (var dir in Directory.EnumerateDirectories(_root))
+            {
+                var name = Path.GetFileName(dir.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+                if (!IsCanonicalUploadDirName(name)) continue;
+
+                WithRecordLock(name, () =>
+                {
+                    try
+                    {
+                        if (!Directory.Exists(dir)) return;
+
+                        var record = ReadRecordFile(RecordPath(dir));
+                        // No marker, unreadable, or any state but PENDING: not ours. FAILED is left alone on
+                        // purpose - it holds no session lock (IsPending is false while FAILED) and it is an
+                        // explicit user-retryable pause, so ageing it out would cancel a retry the user was
+                        // offered rather than release a lock nobody can clear.
+                        if (record is not { State: DictationDeliveryState.Pending }) return;
+                        if (!BelongsHere(record)) return;               // another tenant's record: never ours to resolve
+                        if (Directory.GetLastWriteTimeUtc(dir) >= cutoff) return;
+
+                        // The ordinary abandon transition. Re-enters this upload's gate, which is a Monitor
+                        // and therefore reentrant on this thread.
+                        MarkAbandoned(name, StalePendingReason);
+                        expired++;
+                        FileLog.Write($"[VoiceUploadStore] ExpireStalePending abandoned uploadId={name} " +
+                            $"session={record.SessionId} (PENDING with no activity for more than {maxAge}; " +
+                            "its session lock is released)");
+                    }
+                    catch (Exception ex)
+                    {
+                        FileLog.Write($"[VoiceUploadStore] ExpireStalePending dir={dir} failed: {ex.Message}");
+                    }
+                });
+            }
+            // No Invalidate here: MarkAbandoned goes through WriteRecordMarker, which drops each expired id
+            // from the session-lock cache as it is written. Invalidating as well would force a needless
+            // re-read of the whole partition.
+            if (expired > 0)
+                FileLog.Write($"[VoiceUploadStore] ExpireStalePending expired={expired} stale PENDING records older than {maxAge}");
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[VoiceUploadStore] ExpireStalePending failed: {ex.Message}");
+        }
+        return expired;
+    }
+
+    /// <summary>
+    /// The reason stamped on an expired PENDING record. A distinct value, not the user's "user_abandoned":
+    /// an operator reading the tombstone must be able to tell a dictation the USER gave up on from one the
+    /// SERVER timed out, because only the second one means words were taken away from someone.
+    /// </summary>
+    public const string StalePendingReason = "expired_no_activity";
+
+    /// <summary>
     /// Create the staging directory for an upload if it does not exist and stamp its last-activity signal to
     /// now, ATOMICALLY under the upload's gate. This is the one place activity is recorded, so every caller
     /// that represents a live client (register, a resume, a chunk, an assemble) refreshes the same signal the
