@@ -5,6 +5,7 @@ import { watchMicLevel, type MicLevel } from "./micLevel";
 import { judgeEcho, similarity, ECHO_SIMILARITY } from "./echoGuard";
 import { clockFace as clockFaceOf } from "../skills/timerParse";
 import { isSilenceCommand, callIt } from "../skills/timerLogic";
+import { sayWeather, sayNoLocation, sayPlaceNotFound } from "../skills/weather";
 import { useTimers } from "../skills/useTimers";
 
 // The assistant. Say your word, then say the thing.
@@ -25,6 +26,7 @@ interface Turn {
 // sits listening. After it answers it goes straight back to sleep.
 const FOLLOW_UP_MS = 5000;
 const WAKE_WORD_KEY = "cc-assistant.wakeWord";
+const HOME_KEY = "cc-assistant.home";
 
 export function AssistantScreen() {
   const [wakeWord, setWakeWord] = useState(() => {
@@ -40,6 +42,13 @@ export function AssistantScreen() {
   const [problem, setProblem] = useState<string | null>(null);
   const [onDevice, setOnDevice] = useState<boolean | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [home, setHome] = useState(() => {
+    try {
+      return window.localStorage.getItem(HOME_KEY) ?? "";
+    } catch {
+      return "";
+    }
+  });
   // The evidence that it is awake. Without these, a silent room and a dead microphone look identical.
   const [level, setLevel] = useState(0);
   const [micInfo, setMicInfo] = useState<{ label: string; echoCancellation: boolean } | null>(null);
@@ -70,6 +79,14 @@ export function AssistantScreen() {
     stateRef.current = next;
     setState(next);
   }, []);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(HOME_KEY, home);
+    } catch {
+      // Not remembering it is a nuisance, not a failure.
+    }
+  }, [home]);
 
   useEffect(() => {
     try {
@@ -133,6 +150,47 @@ export function AssistantScreen() {
   // The model handles every one of these correctly, including asking how long when no duration was
   // given. A shortcut that is sometimes wrong is worse than a delay that is always right.
 
+  const homeRef = useRef(home);
+  homeRef.current = home;
+
+  /**
+   * Fetch the weather and say it.
+   *
+   * A named place wins over the home town, so asking about London while standing in the kitchen gives
+   * London. With neither, it says it does not know rather than guessing at a city.
+   */
+  const answerWeather = useCallback(async (place: string | null): Promise<string> => {
+    const wanted = place ?? homeRef.current;
+    if (wanted.trim().length === 0) {
+      return sayNoLocation();
+    }
+    try {
+      const response = await fetch(`${import.meta.env.BASE_URL}api/weather`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ place: wanted }),
+      });
+      const body = (await response.json()) as {
+        reading?: Parameters<typeof sayWeather>[0];
+        notFound?: boolean;
+        noLocation?: boolean;
+        error?: string;
+      };
+      if (body.notFound) {
+        return sayPlaceNotFound(wanted);
+      }
+      if (body.noLocation) {
+        return sayNoLocation();
+      }
+      if (!response.ok || !body.reading) {
+        return body.error ?? "I could not get the weather.";
+      }
+      return sayWeather(body.reading);
+    } catch {
+      return "I could not reach the weather service.";
+    }
+  }, []);
+
   /** Carry out one tool the model asked for, and return the sentence describing what happened. */
   const runAction = useCallback((action: { name: string; args: Record<string, unknown> }): string => {
     const t = timersRef.current;
@@ -156,6 +214,9 @@ export function AssistantScreen() {
         return t.stopAll();
       case "list_timers":
         return t.list();
+      case "get_weather":
+        // Handled by the caller, which can wait for the network.
+        return "";
       default:
         return "";
     }
@@ -187,7 +248,18 @@ export function AssistantScreen() {
       // The device did the work, so the device says what happened. The model is never asked to
       // narrate its own tool calls.
       if (body.actions && body.actions.length > 0) {
-        const said = body.actions.map((action) => runAction(action)).filter((line) => line.length > 0);
+        const said: string[] = [];
+        for (const action of body.actions) {
+          if (action.name === "get_weather") {
+            const place = typeof action.args.place === "string" ? action.args.place : null;
+            said.push(await answerWeather(place));
+            continue;
+          }
+          const line = runAction(action);
+          if (line.length > 0) {
+            said.push(line);
+          }
+        }
         const sentence = said.length > 0 ? said.join(" ") : "I could not do that.";
         turnIdRef.current += 1;
         setTurns((previous) =>
@@ -235,7 +307,7 @@ export function AssistantScreen() {
       lastSpokeEndedAtRef.current = Date.now();
       setStateBoth("asleep");
     }
-  }, [runAction, setStateBoth]);
+  }, [answerWeather, runAction, setStateBoth]);
 
   const onHeard = useCallback(
     (text: string, isFinal: boolean) => {
@@ -437,6 +509,15 @@ export function AssistantScreen() {
             <input value={wakeWord} onChange={(e) => setWakeWord(e.target.value)} spellCheck={false} />
           </label>
           {weakness !== null ? <p className="advice">{weakness}</p> : null}
+          <label>
+            Home town, for the weather
+            <input
+              value={home}
+              onChange={(e) => setHome(e.target.value)}
+              placeholder="Toronto"
+              spellCheck={false}
+            />
+          </label>
           <p className="status">
             Listening runs on this device with {engine || "the speech model"}, and the audio never leaves it.
             {onDevice === false ? " The browser's own recogniser is not usable here." : null}
