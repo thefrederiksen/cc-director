@@ -48,6 +48,22 @@ const TOOLS = [
   {
     type: "function",
     function: {
+      name: "get_weather",
+      description: "The weather now. Call this for any question about weather, temperature, rain, or what to wear.",
+      parameters: {
+        type: "object",
+        properties: {
+          place: {
+            type: "string",
+            description: "A town or city, only if they named one. Omit it for where they are.",
+          },
+        },
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "list_timers",
       description: "Say what timers are running and how long is left on each.",
       parameters: { type: "object", properties: {} },
@@ -78,7 +94,7 @@ function describeTimers(timers) {
 const CANNOT_DO = [
   "play music or control speakers",
   "control lights, heating or any other device",
-  "check the weather, news or anything else live",
+  "check the news or anything else live",
   "read or change a calendar, list, message or email",
   "remember anything after this conversation ends",
 ];
@@ -90,7 +106,7 @@ const SYSTEM_PROMPT = [
   "never say what you are about to do, and never offer further help or ask if there is anything else.",
   "Never use lists, headings, markdown or emoji. Say numbers the way a person says them aloud.",
   "YOU CANNOT DO ANY OF THE FOLLOWING: " + CANNOT_DO.join("; ") + ".",
-  "For anything about timers - starting, stopping, or asking what is running - CALL A TOOL. Do not answer in words.",
+  "For anything about timers, or about the weather, CALL A TOOL. Do not answer in words and never invent a temperature.",
   "If you are asked for one of the things you cannot do, say plainly in one short sentence that you cannot do it yet.",
   "NEVER claim to have done something you cannot do. Saying a timer is set when it is not is the",
   "worst mistake you can make.",
