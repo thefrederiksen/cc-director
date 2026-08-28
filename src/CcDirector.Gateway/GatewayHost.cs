@@ -720,6 +720,20 @@ public sealed class GatewayHost : IAsyncDisposable
     // immortal. The ack remains the real retirement path and retires records in seconds; this only catches
     // what the ack has permanently lost.
     private static readonly TimeSpan DictationTombstoneMaxAge = TimeSpan.FromDays(30);
+    // WHY TWENTY-FOUR HOURS, and why it is NOT the thirty days above. That number protects a tombstone,
+    // where keeping too long costs almost nothing. This one bounds a PENDING record, where keeping too long
+    // costs the user their session: PENDING locks the session against human input, so every extra hour is an
+    // hour the owner cannot type into a session that no client is coming back to. The risk is inverted
+    // again, so the number is too.
+    //
+    // It is measured against LAST ACTIVITY, not creation, and every register, resume, chunk and assemble
+    // refreshes it - so this is twenty-four hours of pure SILENCE, not twenty-four hours of dictating. A live
+    // dictation is minutes; a client retrying over a bad connection still touches its staging and pushes its
+    // own deadline out. A day of nothing means the client is gone: the app was closed, the phone replaced, or
+    // the upload died against a full disk (which is exactly how seven of these came to be stuck on hosted on
+    // 2026-08-28, the oldest five weeks old). Generous enough that no returning client is cut off, bounded
+    // enough that a lock nobody can clear lasts a day rather than forever.
+    private static readonly TimeSpan StalePendingMaxAge = TimeSpan.FromHours(24);
     /// <summary>
     /// Test seam: overrides the dictation tombstone sweep schedule (first tick and period). Null in
     /// production, assigned only by tests. It exists for the same reason its voice-turn sibling does - the
@@ -3748,7 +3762,13 @@ public sealed class GatewayHost : IAsyncDisposable
                     _tenantPass.ForEachTenant(() =>
                     {
                         if (_tenantPass.Current is not { } tenant) return; // deny: no scope -> sweep nothing
-                        _dictationUploads.ForTenant(tenant).SweepResolvedTombstones(DictationTombstoneMaxAge);
+                        var uploads = _dictationUploads.ForTenant(tenant);
+                        // Release stale session locks BEFORE retiring tombstones: expiring turns a PENDING
+                        // record into an ABANDONED one, and running it first means the tombstone sweep in the
+                        // same pass can age out anything that was already past both bounds, instead of
+                        // leaving it for the next tick six hours later.
+                        uploads.ExpireStalePending(StalePendingMaxAge);
+                        uploads.SweepResolvedTombstones(DictationTombstoneMaxAge);
                     });
                 }
                 catch (Exception ex) { FileLog.Write($"[GatewayHost] dictation tombstone sweep error: {ex.Message}"); }
@@ -3756,7 +3776,8 @@ public sealed class GatewayHost : IAsyncDisposable
             null, dictationTombstoneSchedule, dictationTombstoneSchedule);
         FileLog.Write($"[GatewayHost] dictation tombstone sweep started: every " +
             $"{dictationTombstoneSchedule.TotalHours:0.###}h, retiring unacknowledged terminal records older " +
-            $"than {DictationTombstoneMaxAge.TotalDays:0.###} days (PENDING is never swept)");
+            $"than {DictationTombstoneMaxAge.TotalDays:0.###} days, and abandoning PENDING records with no " +
+            $"activity for {StalePendingMaxAge.TotalHours:0.###}h so their session lock is released");
 
         // Remove-the-network-port phase 1b: retire lapsed session keys. This is HOUSEKEEPING, and saying so
         // matters - a lapsed key is ALREADY refused, because the expiry is checked on every resolution, so

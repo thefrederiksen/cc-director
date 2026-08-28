@@ -19,9 +19,18 @@ namespace CcDirector.Gateway.Tests;
 ///
 /// WHAT MUST SURVIVE MATTERS MORE THAN WHAT IS REMOVED. This sweep is deliberately not
 /// <see cref="VoiceUploadStore.SweepAbandoned"/>, which deletes any aged upload directory without reading
-/// its state. A PENDING record holds a live session lock and guards audio still owed, and FAILED can be
-/// restored to PENDING by ClearFailed - so age-deleting either would silently unlock a session or drop a
-/// dictation. Those assertions are the point of this test, not the deletion.
+/// its state. FAILED can be restored to PENDING by ClearFailed, and a record still inside its window may yet
+/// be re-driven by its client - so age-deleting either would drop a dictation. Those assertions are the
+/// point of this test, not the deletion.
+///
+/// A STALE PENDING RECORD IS NOW ABANDONED IN PLACE, AND THIS TEST CHANGED TO SAY SO. It used to assert that
+/// an aged PENDING record survived untouched, and that was right while nothing bounded it. It was also how
+/// seven of them came to be stuck on the hosted Gateway on 2026-08-28, the oldest five weeks old, each still
+/// refusing human input on a session nobody could unlock. <see cref="VoiceUploadStore.ExpireStalePending"/>
+/// now abandons one that has been silent past its bound: the directory and its tombstone SURVIVE (so a late
+/// client cannot re-drive the id), the state becomes ABANDONED with a reason that names the server as the
+/// cause, and the session lock is released. A FRESH pending record is still untouchable - that half of the
+/// old contract is unchanged and is asserted below.
 ///
 /// Only the SCHEDULE is compressed. The thirty-day age cut-off is production's own, and the records are aged
 /// into the past on disk, so what runs here is the deployed retention rule rather than a shortened copy.
@@ -70,12 +79,16 @@ public sealed class DictationTombstoneSweepWiringTests : IAsyncLifetime
 
         // ---- everything below must SURVIVE, however old ----
 
-        // PENDING holds a live session lock and audio still owed. Age-deleting it would silently un-orange a
-        // session and drop a dictation that was still coming. This is the assertion that separates this
-        // sweep from the blunt age sweep next door.
-        var pendingOld = WriteRecord(root, "Pending", old);
-        // FAILED is explicitly NOT terminal - ClearFailed can restore it to PENDING.
+        // A PENDING record still inside its silence window holds a live session lock and audio still coming.
+        // Nothing may touch it, however busy the sweep is. This is the assertion that separates this sweep
+        // from the blunt age sweep next door.
+        var pendingFresh = WriteRecord(root, "Pending", DateTime.UtcNow.AddHours(-1));
+        // FAILED is explicitly NOT terminal - ClearFailed can restore it to PENDING - and it holds no session
+        // lock, so the stale-pending expiry must leave it alone too.
         var failedOld = WriteRecord(root, "Failed", old);
+        // A PENDING record that has been SILENT far past its bound. No client is coming back for this, and
+        // until it is resolved its session cannot be typed into. It must be abandoned IN PLACE.
+        var pendingStale = WriteRecord(root, "Pending", old);
         // Inside the window: the client may still legitimately re-drive this id.
         var deliveredFresh = WriteRecord(root, "Delivered", recent);
         // Unreadable: a half-written marker is never proof of anything, so it is left alone.
@@ -101,10 +114,25 @@ public sealed class DictationTombstoneSweepWiringTests : IAsyncLifetime
             "nothing in production is running the tombstone sweep");
         Assert.False(Directory.Exists(abandonedOld), "a stale ABANDONED tombstone was not retired");
 
-        Assert.True(Directory.Exists(pendingOld),
-            "the sweep deleted a PENDING record - that silently unlocks a session and drops audio still owed");
+        Assert.True(Directory.Exists(pendingFresh),
+            "the sweep touched a PENDING record inside its silence window - that unlocks a session and drops " +
+            "audio that was still coming");
+        Assert.Contains("Pending", File.ReadAllText(Path.Combine(pendingFresh, "record.json")));
         Assert.True(Directory.Exists(failedOld),
             "the sweep deleted a FAILED record, which ClearFailed can still restore to PENDING");
+        Assert.Contains("Failed", File.ReadAllText(Path.Combine(failedOld, "record.json")));
+
+        // The stale one is ABANDONED IN PLACE, not deleted: the session unlocks, but the tombstone stays so a
+        // late client cannot re-drive the id, and it names the SERVER as the cause rather than the user.
+        var expiredWithin = await WaitUntilStateIs(pendingStale, "Abandoned", TimeSpan.FromSeconds(20));
+        Assert.True(expiredWithin,
+            $"the running Gateway never released the stale PENDING record at {pendingStale} - nothing in " +
+            "production is expiring them, so its session stays locked against human input forever");
+        Assert.True(Directory.Exists(pendingStale),
+            "the stale PENDING record was DELETED rather than abandoned - the tombstone must survive so a " +
+            "late client cannot re-drive the upload id");
+        Assert.Contains(VoiceUploadStore.StalePendingReason,
+            File.ReadAllText(Path.Combine(pendingStale, "record.json")));
         Assert.True(Directory.Exists(deliveredFresh),
             "the sweep deleted a tombstone inside the retention window, weakening the de-dupe guarantee");
         Assert.True(Directory.Exists(corruptOld),
@@ -127,6 +155,24 @@ public sealed class DictationTombstoneSweepWiringTests : IAsyncLifetime
             $"\"Reason\":null,\"SessionId\":\"{Guid.NewGuid()}\"}}");
         Directory.SetLastWriteTimeUtc(dir, lastWriteUtc);
         return dir;
+    }
+
+    /// <summary>
+    /// Wait for a record to reach a state. Polled rather than asserted once, for the same reason
+    /// <see cref="WaitUntilGone"/> is: the sweep runs on the Gateway's own timer, so the test must wait for
+    /// production to act rather than call anything itself.
+    /// </summary>
+    private static async Task<bool> WaitUntilStateIs(string dir, string state, TimeSpan timeout)
+    {
+        var deadline = DateTime.UtcNow + timeout;
+        var path = Path.Combine(dir, "record.json");
+        while (DateTime.UtcNow < deadline)
+        {
+            try { if (File.ReadAllText(path).Contains($"\"State\":\"{state}\"")) return true; }
+            catch { /* mid-write; try again */ }
+            await Task.Delay(100);
+        }
+        return false;
     }
 
     private static async Task<bool> WaitUntilGone(string dir, TimeSpan timeout)
