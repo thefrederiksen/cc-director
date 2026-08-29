@@ -17,10 +17,11 @@ any kind.
 | **Timers** | Named or not. Start several, stop one by name, stop them all, ask what is running. |
 | **Silence an alarm** | While one is ringing, "stop" or "shut up" works with **no wake word**. |
 | **Weather** | Where you are, or anywhere you name. Needs a home town in settings. |
+| **Look things up** | Anything live or recent: prices, news, results, who holds a job. Takes two or three seconds because it searches the web. |
 | **Interrupt it** | Say the wake word while it is talking and it stops mid-sentence. |
 
-It cannot play music, control anything in the house, read a calendar or a list, search the internet,
-or remember anything between sessions. It says so plainly when asked rather than pretending.
+It cannot play music, control anything in the house, read a calendar or a list, or remember anything
+between sessions. It says so plainly when asked rather than pretending.
 
 ## How a turn works
 
@@ -35,8 +36,12 @@ Three lanes, chosen by how fast each has to be:
 | Lane | Handles | Cost |
 | --- | --- | --- |
 | Instant, local | Silencing a ringing alarm | no network |
-| Model with tools | Timers, weather, anything needing understanding | ~400 ms |
-| Model, plain | Ordinary questions | ~300 ms |
+| Fast model with tools | Timers, weather, ordinary questions | ~200 ms |
+| Search model | Anything live, recent, or the fast model is unsure of | 2-3 s |
+
+The fast model routes by itself: when it decides a question needs looking up it calls the `look_up`
+tool, and the server answers that with a second, slower model that has Groq's built-in web search.
+There is no separate classifier in front, because that would add a round trip to every turn.
 
 ## The rules, and the bugs that produced them
 
@@ -73,8 +78,8 @@ Suppressed speech, recogniser notices and the microphone level are all on screen
 | Source | this directory, on `main` |
 | Deployed | Vercel project `cc-assistant`, scope `soren-frederiksens-projects` |
 | Deploys | automatically, on any merge to `main` that touches this directory |
-| Model | Groq, `openai/gpt-oss-120b`, reasoning effort low |
-| Keys | `GROQ_API_KEY` and `ASSISTANT_MODEL`, Vercel production environment only |
+| Model | Groq, `qwen/qwen3.6-27b` with reasoning off; `openai/gpt-oss-120b` with `browser_search` for look-ups |
+| Keys | `GROQ_API_KEY`, optionally `ASSISTANT_MODEL` and `ASSISTANT_SEARCH_MODEL`, Vercel production environment only |
 | Weather | Open-Meteo, no key needed |
 
 ## Running it
@@ -86,13 +91,23 @@ npm run dev
 
 Then <http://localhost:5183/cc-assistant/>.
 
+The functions under `api/` do not run locally; `vite.config.ts` proxies every `/api` call to the
+deployed copy on Vercel, so the local page has the real brain and the real keys. Set
+`ASSISTANT_API_ORIGIN` to send them somewhere else.
+
 **On a phone the microphone will not work over plain HTTP.** Browsers allow it only on a secure
 connection, and `localhost` is the sole exception, so a LAN address loads the page and then refuses
-the microphone. Put Tailscale in front of it:
+the microphone. Put Tailscale in front of a built copy:
 
 ```
+npm run build
+npx vite preview --port 5183 --host
 tailscale serve --bg --https 8443 http://127.0.0.1:5183
 ```
+
+Then on the phone: <https://soren-north.taildb08ed.ts.net:8443/cc-assistant/>. Tailscale cannot
+proxy straight to Vercel, because it keeps the tailnet name as the Host header and Vercel answers
+`DEPLOYMENT_NOT_FOUND`; the local server in between is what rewrites it.
 
 ## What is in here
 
@@ -122,5 +137,8 @@ Run the tests with `npm test`.
   written on the screen rather than left to be discovered when dinner burns.
 - **Nothing is remembered between sessions** except the wake word and the home town.
 - **Every question costs money.** Small, but a device asked things all day is a running cost.
+- **The Groq account is on the free tier: 8,000 tokens a minute.** A turn costs several hundred, so
+  a burst of questions, or a look-up, can hit the limit; Wilson then says it is rate limited. The
+  Dev tier in the Groq console lifts it.
 - **The first request after a quiet spell takes several seconds**, because the serverless function
   cold-starts. Everything after is 200 to 400 ms.
