@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { matchWakeWord, describeWakeWordWeakness } from "../wakeWord/wakeWordMatcher";
-import { chirp, createListener, localRecognitionReady, speak, stopSpeaking, type Listener } from "./speech";
+import { chirp, createListener, cue, localRecognitionReady, startThinkingTicks, type Listener } from "./speech";
+import { DEFAULT_VOICE, VOICES, speakStreamed, stopVoice, unlockVoice, type VoiceName } from "./voice";
+import { DebugPanel } from "./DebugPanel";
+import { VoiceRing, embedClip, enrolVoice, identifyVoice, loadSpeakerModel, watchSpeakerModel } from "./speakerId";
 import { watchMicLevel, type MicLevel } from "./micLevel";
 import { judgeEcho, similarity, ECHO_SIMILARITY } from "./echoGuard";
 import { clockFace as clockFaceOf } from "../skills/timerParse";
@@ -27,6 +30,35 @@ interface Turn {
 const FOLLOW_UP_MS = 5000;
 const WAKE_WORD_KEY = "cc-assistant.wakeWord";
 const HOME_KEY = "cc-assistant.home";
+const VOICE_KEY = "cc-assistant.voice";
+const OWNER_KEY = "cc-assistant.owner";
+const MODE_KEY = "cc-assistant.mode";
+const WORKLET_URL = `${import.meta.env.BASE_URL}pcm-worklet.js`;
+/** How much of the last few seconds is the command, for identifying the voice. */
+const IDENTIFY_SECONDS = 3.5;
+
+type Mode = "production" | "debug";
+
+// Which screen. ?debug=1 or ?debug=0 wins, then what was chosen last time, then: a PC gets the debug
+// screen and a phone gets the circle, because that is where each is looked at.
+function initialMode(): Mode {
+  try {
+    const wanted = new URLSearchParams(window.location.search).get("debug");
+    if (wanted === "1") {
+      return "debug";
+    }
+    if (wanted === "0") {
+      return "production";
+    }
+    const saved = window.localStorage.getItem(MODE_KEY);
+    if (saved === "debug" || saved === "production") {
+      return saved;
+    }
+    return /Android|iPhone|iPad/i.test(navigator.userAgent) ? "production" : "debug";
+  } catch {
+    return "debug";
+  }
+}
 
 export function AssistantScreen() {
   const [wakeWord, setWakeWord] = useState(() => {
@@ -49,6 +81,35 @@ export function AssistantScreen() {
       return "";
     }
   });
+  const [voice, setVoice] = useState<VoiceName>(() => {
+    try {
+      const saved = window.localStorage.getItem(VOICE_KEY);
+      return (VOICES as readonly string[]).includes(saved ?? "") ? (saved as VoiceName) : DEFAULT_VOICE;
+    } catch {
+      return DEFAULT_VOICE;
+    }
+  });
+  const voiceRef = useRef<VoiceName>(voice);
+  voiceRef.current = voice;
+  // How long the last reply took to make a sound. The number the voice is judged by.
+  const [voiceInfo, setVoiceInfo] = useState<{ firstSoundMs: number; seconds: number } | null>(null);
+  const [mode, setMode] = useState<Mode>(initialMode);
+  // Who this device belongs to: who Wilson assumes is talking until the voice says otherwise.
+  const [owner, setOwner] = useState(() => {
+    try {
+      return window.localStorage.getItem(OWNER_KEY) ?? "";
+    } catch {
+      return "";
+    }
+  });
+  const ownerRef = useRef(owner);
+  ownerRef.current = owner;
+  const [speakerStatus, setSpeakerStatus] = useState("not loaded");
+  const [identified, setIdentified] = useState("nobody yet");
+  const identifiedRef = useRef<{ name: string | null; confidence: number } | null>(null);
+  const ringRef = useRef<VoiceRing | null>(null);
+  // Bumped after every turn so the debug panel re-reads the log.
+  const [logVersion, setLogVersion] = useState(0);
   // The evidence that it is awake. Without these, a silent room and a dead microphone look identical.
   const [level, setLevel] = useState(0);
   const [micInfo, setMicInfo] = useState<{ label: string; echoCancellation: boolean } | null>(null);
@@ -97,6 +158,75 @@ export function AssistantScreen() {
   }, [wakeWord]);
 
   useEffect(() => {
+    try {
+      window.localStorage.setItem(VOICE_KEY, voice);
+    } catch {
+      // Same.
+    }
+  }, [voice]);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(OWNER_KEY, owner);
+      window.localStorage.setItem(MODE_KEY, mode);
+    } catch {
+      // Same.
+    }
+  }, [owner, mode]);
+
+  useEffect(() => watchSpeakerModel((s) => setSpeakerStatus(s.detail)), []);
+
+  /** The name a turn is attributed to: the voice if it was recognised, else the device's owner. */
+  const speakerName = useCallback((): string | null => {
+    const heard = identifiedRef.current;
+    if (heard && heard.name !== null) {
+      return heard.name;
+    }
+    return ownerRef.current.trim().length > 0 ? ownerRef.current.trim() : null;
+  }, []);
+
+  /** The page's half of the turn log: what was actually said, and how fast. Fire and forget. */
+  const reportSpoken = useCallback((turnId: string | null, said: string, by: "model" | "device", spoken: { firstSoundMs: number; seconds: number } | null, extra: Record<string, unknown> = {}) => {
+    const heard = identifiedRef.current;
+    void fetch(`${import.meta.env.BASE_URL}api/turn`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        kind: "spoken",
+        id: turnId,
+        said,
+        by,
+        firstSoundMs: spoken ? spoken.firstSoundMs : null,
+        speechSeconds: spoken ? Number(spoken.seconds.toFixed(2)) : null,
+        identified: heard ? heard.name ?? "unknown" : "not attempted",
+        confidence: heard ? Number(heard.confidence.toFixed(3)) : null,
+        ...extra,
+      }),
+    })
+      .then(() => setLogVersion((v) => v + 1))
+      .catch(() => undefined);
+  }, []);
+
+  // Every spoken reply goes through here. The voice streams from the server and starts within a
+  // quarter of a second; a short rising note marks the instant it does. When it cannot be reached
+  // at all, the failure is shown on screen and sounded, because a silent assistant and a broken one
+  // look the same.
+  const speak = useCallback(async (text: string, onStart?: () => void): Promise<{ firstSoundMs: number; seconds: number } | null> => {
+    try {
+      const spoken = await speakStreamed(text, voiceRef.current, () => {
+        cue("speak");
+        onStart?.();
+      });
+      setVoiceInfo(spoken);
+      return spoken;
+    } catch (error) {
+      cue("fail");
+      setProblem(`The voice failed: ${error instanceof Error ? error.message : String(error)}`);
+      return null;
+    }
+  }, []);
+
+  useEffect(() => {
     void localRecognitionReady("en-US").then(setOnDevice);
   }, []);
 
@@ -119,14 +249,15 @@ export function AssistantScreen() {
       recentlySpokenRef.current = [...recentlySpokenRef.current, sentence].slice(-4);
       speakingRef.current = true;
       setStateBoth("speaking");
-      await speak(sentence);
+      const spoken = await speak(sentence);
       speakingRef.current = false;
       lastSpokeEndedAtRef.current = Date.now();
       followUpUntilRef.current = 0;
       setStateBoth("asleep");
       setLive("");
+      return spoken;
     },
-    [setStateBoth],
+    [setStateBoth, speak],
   );
 
   const timers = useTimers((finished) => {
@@ -165,10 +296,12 @@ export function AssistantScreen() {
       return sayNoLocation();
     }
     try {
+      // `named` tells the service whether a place was actually said. Without one, it may know
+      // better than the saved home town where this person is right now.
       const response = await fetch(`${import.meta.env.BASE_URL}api/weather`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ place: wanted }),
+        body: JSON.stringify({ place: wanted, named: place !== null, home: homeRef.current, speaker: speakerName() }),
       });
       const body = (await response.json()) as {
         reading?: Parameters<typeof sayWeather>[0];
@@ -189,7 +322,7 @@ export function AssistantScreen() {
     } catch {
       return "I could not reach the weather service.";
     }
-  }, []);
+  }, [speakerName]);
 
   /** Carry out one tool the model asked for, and return the sentence describing what happened. */
   const runAction = useCallback((action: { name: string; args: Record<string, unknown> }): string => {
@@ -229,18 +362,24 @@ export function AssistantScreen() {
     busyRef.current = true;
     setStateBoth("thinking");
     const startedAt = Date.now();
+    // Audible thinking, from now until the reply is in hand. A wait that can be heard is a wait;
+    // a silent one is a fault.
+    const stopTicks = startThinkingTicks();
+    let turnId: string | null = null;
 
     try {
       const response = await fetch(`${import.meta.env.BASE_URL}api/talk`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text: question, history: historyRef.current, timers: timersRef.current.snapshot() }),
+        body: JSON.stringify({ text: question, history: historyRef.current, timers: timersRef.current.snapshot(), speaker: speakerName() }),
       });
       const body = (await response.json()) as {
         reply?: string;
         actions?: Array<{ name: string; args: Record<string, unknown> }>;
         error?: string;
+        turnId?: string;
       };
+      turnId = body.turnId ?? null;
       if (!response.ok) {
         throw new Error(body.error ?? `The assistant failed (${response.status}).`);
       }
@@ -266,7 +405,9 @@ export function AssistantScreen() {
           [{ id: turnIdRef.current, you: question, it: sentence, ms: Date.now() - startedAt }, ...previous].slice(0, 30),
         );
         busyRef.current = false;
-        await say(sentence);
+        stopTicks();
+        const spoken = await say(sentence);
+        reportSpoken(turnId, sentence, "device", spoken);
         return;
       }
 
@@ -286,11 +427,13 @@ export function AssistantScreen() {
       );
 
       busyRef.current = false;
+      stopTicks();
       recentlySpokenRef.current = [...recentlySpokenRef.current, body.reply].slice(-4);
       speakingRef.current = true;
-      await speak(body.reply, () => setStateBoth("speaking"));
+      const spoken = await speak(body.reply, () => setStateBoth("speaking"));
       speakingRef.current = false;
       lastSpokeEndedAtRef.current = Date.now();
+      reportSpoken(turnId, body.reply, "model", spoken);
       // STRAIGHT BACK TO SLEEP. It does not keep listening after it has answered. Say the wake word
       // again for the next thing.
       followUpUntilRef.current = 0;
@@ -299,15 +442,48 @@ export function AssistantScreen() {
       setLive("");
     } catch (error) {
       busyRef.current = false;
+      stopTicks();
+      cue("fail");
       const message = error instanceof Error ? error.message : String(error);
       setProblem(message);
+      reportSpoken(turnId, "", "device", null, { error: message });
       speakingRef.current = true;
       await speak("Something went wrong.");
       speakingRef.current = false;
       lastSpokeEndedAtRef.current = Date.now();
       setStateBoth("asleep");
     }
-  }, [answerWeather, runAction, setStateBoth]);
+  }, [answerWeather, reportSpoken, runAction, setStateBoth, speak, speakerName]);
+
+  /**
+   * Who just spoke, from the last few seconds of audio, before the command goes to the brain.
+   * Quick when the model is loaded (tens of milliseconds), and skipped honestly when it is not:
+   * "unknown" costs a little personalisation, a wrong name costs trust.
+   */
+  const identifyThenAsk = useCallback(
+    async (command: string) => {
+      identifiedRef.current = null;
+      const ring = ringRef.current;
+      const clip = ring !== null && ring.running ? ring.recent(IDENTIFY_SECONDS) : null;
+      if (clip !== null) {
+        try {
+          const result = await identifyVoice(await embedClip(clip));
+          identifiedRef.current = { name: result.name, confidence: result.confidence };
+          setIdentified(
+            result.name !== null
+              ? `${result.name} (${result.confidence.toFixed(2)})`
+              : `unknown: ${result.reason ?? "no match"}`,
+          );
+        } catch (error) {
+          setIdentified(`not identified: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      } else {
+        setIdentified("not identified: no audio captured");
+      }
+      await ask(command);
+    },
+    [ask],
+  );
 
   const onHeard = useCallback(
     (text: string, isFinal: boolean) => {
@@ -339,7 +515,7 @@ export function AssistantScreen() {
           }
           speakingRef.current = false;
           lastSpokeEndedAtRef.current = Date.now();
-          stopSpeaking();
+          stopVoice();
           chirp("wake");
           setStateBoth("listening");
           followUpUntilRef.current = Date.now() + FOLLOW_UP_MS;
@@ -363,7 +539,7 @@ export function AssistantScreen() {
             setSuppressed(`Ignored "${text}" - ${decision.reason}`);
             return;
           }
-          void ask(match.command);
+          void identifyThenAsk(match.command);
         } else {
           setStateBoth("listening");
           followUpUntilRef.current = Date.now() + FOLLOW_UP_MS;
@@ -381,10 +557,10 @@ export function AssistantScreen() {
           return;
         }
         setSuppressed(null);
-        void ask(text);
+        void identifyThenAsk(text);
       }
     },
-    [ask, setStateBoth],
+    [identifyThenAsk, setStateBoth],
   );
 
   const start = useCallback(async () => {
@@ -392,6 +568,10 @@ export function AssistantScreen() {
     setNotice(null);
     setResultCount(0);
     setLastHeardAt(null);
+
+    // From the press itself, while the browser still counts this as a user gesture: audio may only
+    // start from one, and the voice's AudioContext has to be made and resumed here or it stays mute.
+    await unlockVoice();
 
     // Open the microphone ourselves first. This is what makes "is it listening" answerable: the meter
     // moves or it does not. It also surfaces a refused permission here, plainly, instead of leaving
@@ -429,8 +609,18 @@ export function AssistantScreen() {
       listenerRef.current = listener;
       listener.start();
       setStateBoth("asleep");
-      // A first utterance primes the voice on some browsers, which otherwise swallow the first reply.
-      void speak(" ");
+
+      // The voice ring runs beside the recogniser so there is audio to identify a speaker from. It
+      // is not allowed to stop the assistant: a ring that will not open is reported, and Wilson
+      // still listens and answers, just without knowing who.
+      try {
+        const ring = new VoiceRing();
+        await ring.start(WORKLET_URL);
+        ringRef.current = ring;
+        void loadSpeakerModel();
+      } catch (error) {
+        setNotice(`No voice identification: ${error instanceof Error ? error.message : String(error)}`);
+      }
     } catch (error) {
       setProblem(error instanceof Error ? error.message : String(error));
       micRef.current?.stop();
@@ -443,7 +633,9 @@ export function AssistantScreen() {
     listenerRef.current = null;
     micRef.current?.stop();
     micRef.current = null;
-    stopSpeaking();
+    void ringRef.current?.stop();
+    ringRef.current = null;
+    stopVoice();
     setStateBoth("off");
     setLive("");
     setLevel(0);
@@ -453,27 +645,65 @@ export function AssistantScreen() {
   useEffect(() => () => {
     listenerRef.current?.stop();
     micRef.current?.stop();
+    void ringRef.current?.stop();
+  }, []);
+
+  /**
+   * Enrol a voice: wait while the person reads the line, take the seconds that just went by, embed
+   * them, and store the result for that name. Needs the assistant started, so the ring is open.
+   */
+  const enrol = useCallback(async (name: string, line: string): Promise<string> => {
+    const ring = ringRef.current;
+    if (ring === null || !ring.running) {
+      throw new Error("press Start first, so the microphone is open");
+    }
+    await loadSpeakerModel();
+    await new Promise((resolve) => window.setTimeout(resolve, 4500));
+    const clip = ring.recent(4);
+    if (clip === null) {
+      throw new Error("nothing but silence was heard; read the line out loud after pressing");
+    }
+    const samples = await enrolVoice(name, await embedClip(clip), line);
+    return `Enrolled for ${name}: ${samples} sample${samples === 1 ? "" : "s"} now.`;
   }, []);
 
   const weakness = describeWakeWordWeakness(wakeWord);
 
   return (
-    <div className="assistant" data-state={state}>
-      <div className="eyeWrap">
+    <div className="assistant" data-state={problem !== null && state === "asleep" ? "error" : state} data-mode={mode}>
+      {/* In the kitchen the circle is the whole interface: tap it to start, tap again to stop. */}
+      <div
+        className="eyeWrap"
+        role={mode === "production" ? "button" : undefined}
+        tabIndex={mode === "production" ? 0 : undefined}
+        aria-label={mode === "production" ? (state === "off" ? "Start Wilson" : "Stop Wilson") : undefined}
+        onClick={mode === "production" ? () => (state === "off" ? void start() : stop()) : undefined}
+        onKeyDown={mode === "production" ? (e) => (e.key === "Enter" || e.key === " " ? (state === "off" ? void start() : stop()) : undefined) : undefined}
+      >
         <div className="eye" />
       </div>
 
       <p className="stateLine">
-        {state === "off" ? "Not listening" : null}
+        {state === "off" ? (mode === "production" ? "Tap to start" : "Not listening") : null}
         {state === "asleep" ? `Say "${wakeWord}"` : null}
         {state === "listening" ? "Listening" : null}
         {state === "thinking" ? "Thinking" : null}
         {state === "speaking" ? "Talking" : null}
       </p>
 
-      <p className="liveLine">{state === "off" ? "" : live}</p>
+      {mode === "production" ? (
+        <p className="heardLine">{state === "listening" || state === "thinking" ? live : ""}</p>
+      ) : (
+        <p className="liveLine">{state === "off" ? "" : live}</p>
+      )}
 
-      {state !== "off" ? (
+      {mode === "production" ? (
+        <button className="cornerButton" onClick={() => setMode("debug")}>
+          debug
+        </button>
+      ) : null}
+
+      {state !== "off" && mode === "debug" ? (
         <div className="mic">
           <div className="meter" aria-label="Microphone level">
             <div className="meterFill" style={{ width: `${Math.min(100, Math.round(level * 220))}%` }} />
@@ -485,24 +715,28 @@ export function AssistantScreen() {
             {" · "}
             {resultCount} results
             {lastHeardAt === null ? " · nothing heard yet" : ` · last heard ${Math.round((Date.now() - lastHeardAt) / 1000)}s ago`}
+            {voiceInfo !== null ? ` · voice ${voice}, first sound ${voiceInfo.firstSoundMs} ms` : ` · voice ${voice}`}
           </p>
           {notice !== null ? <p className="micNotice">{notice}</p> : null}
           {suppressed !== null ? <p className="micNotice">{suppressed}</p> : null}
         </div>
       ) : null}
 
-      <div className="assistantButtons">
-        {state === "off" ? (
-          <button className="big go" onClick={() => void start()}>Start</button>
-        ) : (
-          <button className="big stop" onClick={stop}>Stop</button>
-        )}
-        <button onClick={() => setSettingsOpen((o) => !o)}>{settingsOpen ? "Hide" : "Settings"}</button>
-      </div>
+      {mode === "debug" ? (
+        <div className="assistantButtons">
+          {state === "off" ? (
+            <button className="big go" onClick={() => void start()}>Start</button>
+          ) : (
+            <button className="big stop" onClick={stop}>Stop</button>
+          )}
+          <button onClick={() => setSettingsOpen((o) => !o)}>{settingsOpen ? "Hide" : "Settings"}</button>
+          <button onClick={() => setMode("production")}>Kitchen screen</button>
+        </div>
+      ) : null}
 
       {problem !== null ? <p className="verdict bad">{problem}</p> : null}
 
-      {settingsOpen ? (
+      {settingsOpen && mode === "debug" ? (
         <div className="settings">
           <label>
             Wake word
@@ -518,6 +752,20 @@ export function AssistantScreen() {
               spellCheck={false}
             />
           </label>
+          <label>
+            Voice
+            <select value={voice} onChange={(e) => setVoice(e.target.value as VoiceName)}>
+              {VOICES.map((v) => (
+                <option key={v} value={v}>
+                  {v}
+                </option>
+              ))}
+            </select>
+          </label>
+          <p className="status">
+            Wilson speaks with Orpheus on Groq, voice {voice}, streamed as it is made.
+            {voiceInfo !== null ? ` Last reply: first sound after ${voiceInfo.firstSoundMs} ms, ${voiceInfo.seconds.toFixed(1)} s of speech.` : null}
+          </p>
           <p className="status">
             Listening runs on this device with {engine || "the speech model"}, and the audio never leaves it.
             {onDevice === false ? " The browser's own recogniser is not usable here." : null}
@@ -544,7 +792,7 @@ export function AssistantScreen() {
         </ul>
       ) : null}
 
-      {turns.length > 0 ? (
+      {turns.length > 0 && mode === "debug" ? (
         <ul className="turns">
           {turns.map((t) => (
             <li key={t.id}>
@@ -554,6 +802,17 @@ export function AssistantScreen() {
             </li>
           ))}
         </ul>
+      ) : null}
+
+      {mode === "debug" ? (
+        <DebugPanel
+          owner={owner}
+          onOwnerChange={setOwner}
+          enrol={enrol}
+          speakerStatus={speakerStatus}
+          lastIdentified={identified}
+          version={logVersion}
+        />
       ) : null}
     </div>
   );

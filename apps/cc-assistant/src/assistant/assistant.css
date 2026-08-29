@@ -103,3 +103,51 @@
 @media (prefers-reduced-motion: reduce) { .timers li.ringing .face { animation: none; } }
 .timerWarning { font-size: 11.5px; color: #5a626e; text-align: center; display: block; }
 .timers .tname { color: #ffb44d; font-weight: 700; text-transform: capitalize; }
+
+/* Two screens. Production is the eye and nothing else; debug is everything, and says so. */
+.assistant[data-mode="production"] { gap: 22px; justify-content: center; }
+.assistant[data-mode="production"] .eyeWrap { width: min(62vw, 360px); height: min(62vw, 360px); cursor: pointer; }
+.assistant[data-mode="production"] .stateLine { font-size: 18px; }
+.assistant[data-mode="production"] .cornerButton {
+  position: fixed; right: 14px; bottom: 14px; font-size: 11px; padding: 6px 10px; opacity: .35;
+}
+.assistant[data-mode="production"] .cornerButton:hover, .assistant[data-mode="production"] .cornerButton:focus-visible { opacity: 1; }
+[data-state="error"] .eye { --gain: .9; --bloom: 60px; --bloomA: .35; filter: hue-rotate(-20deg) brightness(.9); }
+.heardLine { margin: 0; color: #cdd3dc; font-size: 16px; max-width: 34ch; text-align: center; min-height: 24px; }
+
+.debug {
+  width: 100%; max-width: 760px; display: flex; flex-direction: column; gap: 14px; margin-top: 16px;
+  border-top: 2px dashed #3a2a12; padding-top: 14px;
+}
+.debugBanner {
+  font-size: 12px; letter-spacing: .14em; text-transform: uppercase; color: #ffb44d;
+  border: 1px solid #5a4110; background: #1c1508; border-radius: 6px; padding: 8px 12px; text-align: center;
+}
+.debugBlock { border: 1px solid #1c222b; border-radius: 8px; padding: 14px 16px; background: #0b0e13; display: flex; flex-direction: column; gap: 8px; }
+.debugBlock h3 { margin: 0; font-size: 12px; letter-spacing: .12em; text-transform: uppercase; color: #7a828e; }
+.debugBlock h4 { margin: 6px 0 0; font-size: 15px; color: #e4e7ec; }
+.debugBlock label { display: flex; flex-direction: column; gap: 4px; font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: #7a828e; }
+.debugBlock input, .debugBlock textarea, .settings select {
+  font: inherit; font-size: 14px; padding: 8px 10px; border-radius: 6px; border: 1px solid #262d38; background: #06070a; color: #e4e7ec;
+}
+.debugBlock textarea { font-family: "Cascadia Mono", Consolas, ui-monospace, monospace; font-size: 13px; line-height: 1.5; resize: vertical; }
+.debugLine { margin: 0; font-size: 13px; color: #7a828e; }
+.debugLine.strong { color: #ffb44d; }
+.debugRow { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.debugBlock button { font-size: 12.5px; padding: 7px 12px; }
+.debugBlock button:disabled { opacity: .4; cursor: default; }
+.dim { color: #4a5260; font-size: 11.5px; }
+.person { border-top: 1px solid #1c222b; padding-top: 8px; display: flex; flex-direction: column; gap: 8px; }
+.profileGrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 8px; }
+.facts { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.facts li { display: flex; gap: 10px; align-items: baseline; font-size: 13.5px; color: #cdd3dc; }
+.facts li span:first-child { flex: 1; }
+.facts button { font-size: 11px; padding: 3px 8px; }
+.log { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 3px; max-height: 420px; overflow: auto;
+  font-family: "Cascadia Mono", Consolas, ui-monospace, monospace; font-size: 12px; }
+.log li { display: grid; grid-template-columns: 62px 92px 1fr; gap: 8px; align-items: baseline; }
+.log .kind { color: #7a828e; }
+.log .kind-turn { color: #4fbf8b; }
+.log .kind-spoken { color: #ffb44d; }
+.log .kind-remembered { color: #9085e9; }
+.log .body { color: #cdd3dc; white-space: pre-wrap; word-break: break-word; }

@@ -186,8 +186,11 @@ export function createListener(language: string, preferLocal: boolean, events: L
   };
 }
 
-/** Say something out loud. Resolves when it has finished, or when it is cut off. */
-export function speak(text: string, onStart?: () => void): Promise<void> {
+/**
+ * The browser's own voice. No longer Wilson's voice (that is voice.ts, streamed from the server);
+ * kept for the diagnostics screens, which compare engines.
+ */
+export function speakWithBrowserVoice(text: string, onStart?: () => void): Promise<void> {
   return new Promise((resolve) => {
     if (typeof speechSynthesis === "undefined") {
       resolve();
@@ -203,11 +206,82 @@ export function speak(text: string, onStart?: () => void): Promise<void> {
   });
 }
 
-/** Stop talking immediately, for when somebody interrupts. */
-export function stopSpeaking(): void {
+/** Stop the browser's voice immediately. */
+export function stopBrowserVoice(): void {
   if (typeof speechSynthesis !== "undefined") {
     speechSynthesis.cancel();
   }
+}
+
+/**
+ * A short sound for a moment that needs marking: the instant speech begins, or a failure.
+ *
+ * "speak" is one quick rising note, a touch lower than the wake chirp so the two are not confused.
+ * "fail" is a low, slightly longer tone. Both local, instant, and quiet.
+ */
+export function cue(kind: "speak" | "fail"): void {
+  try {
+    const context = new AudioContext();
+    const now = context.currentTime;
+    const oscillator = context.createOscillator();
+    const gain = context.createGain();
+    oscillator.type = "sine";
+    if (kind === "speak") {
+      oscillator.frequency.setValueAtTime(520, now);
+      oscillator.frequency.exponentialRampToValueAtTime(780, now + 0.07);
+      gain.gain.setValueAtTime(0, now);
+      gain.gain.linearRampToValueAtTime(0.14, now + 0.01);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + 0.09);
+      oscillator.start(now);
+      oscillator.stop(now + 0.1);
+    } else {
+      oscillator.frequency.setValueAtTime(220, now);
+      oscillator.frequency.exponentialRampToValueAtTime(160, now + 0.25);
+      gain.gain.setValueAtTime(0, now);
+      gain.gain.linearRampToValueAtTime(0.2, now + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + 0.3);
+      oscillator.start(now);
+      oscillator.stop(now + 0.32);
+    }
+    oscillator.connect(gain).connect(context.destination);
+    window.setTimeout(() => void context.close(), 600);
+  } catch {
+    // A missing sound is a cosmetic loss, not a reason to fail a turn.
+  }
+}
+
+/**
+ * The sound of thinking: a soft tick every 700 ms for as long as it runs, so a wait is audibly a
+ * wait and silence never means dead. Returns the function that stops it. On the search path the
+ * wait can be fifteen seconds; without this, that is fifteen seconds of wondering.
+ */
+export function startThinkingTicks(): () => void {
+  let context: AudioContext | null = null;
+  try {
+    context = new AudioContext();
+  } catch {
+    return () => undefined;
+  }
+  const ctx = context;
+  const tick = () => {
+    const now = ctx.currentTime;
+    const oscillator = ctx.createOscillator();
+    const gain = ctx.createGain();
+    oscillator.type = "triangle";
+    oscillator.frequency.value = 1320;
+    gain.gain.setValueAtTime(0, now);
+    gain.gain.linearRampToValueAtTime(0.05, now + 0.005);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.04);
+    oscillator.connect(gain).connect(ctx.destination);
+    oscillator.start(now);
+    oscillator.stop(now + 0.05);
+  };
+  // The first tick waits: a reply that arrives in 200 ms should never tick at all.
+  const interval = window.setInterval(tick, 700);
+  return () => {
+    window.clearInterval(interval);
+    void ctx.close();
+  };
 }
 
 /**

@@ -10,6 +10,15 @@ why, and what the next person has to decide before they can go further. Read the
 It works. It is deployed, it deploys itself on merge, and it does four things: answers questions,
 keeps timers, tells you the weather, and shuts up when told to.
 
+**Update, 29 August, evening.** Wilson now has its own service (`server/wilson.mjs`) and, when it
+runs there, a memory: people with profiles and remembered facts, a per-household soul document,
+resolved place names, and a turn log, all as plain files under `%LOCALAPPDATA%\wilson`. It speaks
+with Orpheus streamed from Groq, ticks while it thinks, and has a kitchen screen (one circle) and a
+debug screen. Voice identification is built (WavLM x-vector in the browser, matching on the
+service) and NOT yet proven: it needs two real voices enrolled in a real browser. Issues #2612 to
+#2622 on the repo are the map. The Vercel deployment has none of the memory: its functions run
+without the service and say so.
+
 Everything below is either a decision that has already been made and should not be relitigated
 without a reason, or a decision nobody has made yet.
 

@@ -84,24 +84,30 @@ Suppressed speech, recogniser notices and the microphone level are all on screen
 
 ## Running it
 
+The real thing is Wilson's own service, which serves the page, runs the functions, and keeps the
+memory. It wants a Groq key, from `GROQ_API_KEY` or a `.env`-style file named by
+`WILSON_CREDENTIALS_FILE`:
+
 ```
 npm install
-npm run dev
+npm run build
+set WILSON_CREDENTIALS_FILE=C:\path\to\credentials.env
+npm run serve
 ```
 
-Then <http://localhost:5183/cc-assistant/>.
+Then <http://localhost:5183/cc-assistant/>. Everything Wilson keeps lands in `%LOCALAPPDATA%\wilson`
+(`WILSON_DATA_DIR` to move it): `household.json`, `soul.md`, `turns.jsonl`, all readable, all
+deletable. Add `?debug=1` to the address for the debug screen or `?debug=0` for the kitchen screen;
+a PC defaults to debug and a phone to the circle, and the choice is remembered.
 
-The functions under `api/` do not run locally; `vite.config.ts` proxies every `/api` call to the
-deployed copy on Vercel, so the local page has the real brain and the real keys. Set
-`ASSISTANT_API_ORIGIN` to send them somewhere else.
+For front-end work without the service, `npm run dev` runs Vite with `/api` proxied to the deployed
+copy on Vercel (set `ASSISTANT_API_ORIGIN` to point it elsewhere). That copy has no memory.
 
 **On a phone the microphone will not work over plain HTTP.** Browsers allow it only on a secure
 connection, and `localhost` is the sole exception, so a LAN address loads the page and then refuses
-the microphone. Put Tailscale in front of a built copy:
+the microphone. Put Tailscale in front of the service:
 
 ```
-npm run build
-npx vite preview --port 5183 --host
 tailscale serve --bg --https 8443 http://127.0.0.1:5183
 ```
 
@@ -113,8 +119,11 @@ proxy straight to Vercel, because it keeps the tailnet name as the Host header a
 
 | File | What it does |
 | --- | --- |
-| `src/assistant/AssistantScreen.tsx` | The app: the loop, the states, the screen |
-| `src/assistant/speech.ts` | Listening and speaking, using what the browser already has |
+| `src/assistant/AssistantScreen.tsx` | The app: the loop, the states, the two screens |
+| `src/assistant/DebugPanel.tsx` | The debug screen: turn log, people and memory, places, soul editor, voice enrolment |
+| `src/assistant/speech.ts` | Listening with the browser's recogniser; chirps, thinking ticks and cues |
+| `src/assistant/voice.ts` | Wilson's voice: the Orpheus stream played as it arrives |
+| `src/assistant/speakerId.ts` | Who is speaking: a voice embedding from the last few seconds of audio |
 | `src/assistant/echoGuard.ts` | Stops it answering its own voice |
 | `src/assistant/micLevel.ts` | Proof the microphone is open, in pixels |
 | `src/skills/timerParse.ts` | Reading durations out of a sentence |
@@ -122,9 +131,14 @@ proxy straight to Vercel, because it keeps the tailnet name as the Host header a
 | `src/skills/useTimers.ts` | The timers themselves, and the alarm |
 | `src/skills/weather.ts` | Turning a reading into words |
 | `src/wakeWord/wakeWordMatcher.ts` | Finding the chosen word in a transcript |
-| `api/talk.js` | The brain, and the tools it can call |
-| `api/weather.js` | Open-Meteo |
+| `api/talk.js` | The brain: soul + rules + memory in, a sentence or a tool call out; `look_up` runs here |
+| `api/speak.js` | The voice: Orpheus on Groq, streamed |
+| `api/weather.js` | Open-Meteo, with misheard names corrected and remembered |
+| `api/turn.js` `api/people.js` `api/soul.js` `api/voice.js` | The log, the people and their memory, the soul document, voice enrolment and matching |
 | `api/result.js` | Where diagnostics reports go |
+| `server/wilson.mjs` | Wilson's own service: serves the page, runs the functions, owns the data |
+| `server/store.mjs` | What Wilson keeps: `household.json`, `soul.md`, `turns.jsonl` |
+| `server/memory.mjs` | What a turn brings in from memory, and what it leaves behind |
 
 Behind the **Diagnostics** link at the bottom of the app are the measurement screens that settled
 which speech model a device should run. They are not the product but they answered real questions.
