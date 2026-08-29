@@ -25,6 +25,15 @@ without the service and say so.
 Everything below is either a decision that has already been made and should not be relitigated
 without a reason, or a decision nobody has made yet.
 
+**Parked, 29 August, afternoon.** The service is stopped and the "Wilson" logon task disabled, on
+Soren's call, because the phone could not open the Tailscale URL
+(https://soren-north.taildb08ed.ts.net:8443/cc-assistant/) even though it answered 200 from every
+check on the PC: curl, a real Chrome window, MagicDNS on, and the phone showing active and direct on
+the tailnet. The phone-side error text was never captured; that is the first thing to get next
+time (DNS failure, timeout, or certificate warning each mean something different). The Vercel
+project was deleted, so the Tailscale URL is the only Wilson. To resume: `Enable-ScheduledTask
+Wilson`, or `npm run serve` here with `WILSON_CREDENTIALS_FILE` set.
+
 ## Decisions already made, and why
 
 **The browser's own recogniser does the listening, not Whisper.** Whisper was measured and works —
