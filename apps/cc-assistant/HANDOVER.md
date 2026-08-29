@@ -42,10 +42,21 @@ application or a push notification from the Gateway, not a cleverer web trick.
 
 ## Decisions nobody has made yet
 
-**Search needs a key, and creating it is a human job.** There are no search keys on this machine.
-Brave Search has a free tier; Tavily and Serper are the alternatives. Every one needs a signup.
-Until somebody creates one, the options are: no search, or a keyless version built on Wikipedia and
-DuckDuckGo instant answers, which handles "who was Ada Lovelace" but is not real web search.
+**Search is done (29 August), and it needed no key.** Groq has web search built into the
+gpt-oss models (`tools: [{ type: "browser_search" }]`), so the `look_up` tool in `api/talk.js` is
+answered by a second call to `openai/gpt-oss-120b` with search on. The fast model decides when to
+call it; there is no classifier in front. Measured: 2-3 seconds for a live price, correct where the
+plain model had invented one. Citation markers are stripped before speech.
+
+**The fast model is now `qwen/qwen3.6-27b`, reasoning off** (was gpt-oss-120b on low). About 200 ms
+a turn and right on arithmetic. Two traps found choosing it, both kept in the code comments:
+gpt-oss on low reasoning can spend the whole token budget thinking and return an empty answer, and
+`qwen/qwen3.8-27b` says "I'm setting a timer" in words instead of calling the tool, every time.
+qwen3.6 did the same one time in three until the prompt said outright that words are not a timer;
+with that line it was eleven for eleven. Any model change must re-run that check.
+
+**The Groq account is on the free tier (8,000 tokens a minute).** That, not the model, was behind
+several failures during testing. The Dev tier is a click in the console and a human decision.
 
 **Knowing who is speaking is three different products and nobody has said which.** They need
 different designs and have very different failure costs:

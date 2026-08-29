@@ -11,6 +11,20 @@ import { VitePWA } from "vite-plugin-pwa";
 // where it lives. Set APP_BASE at build time to move it.
 const appBase = process.env.APP_BASE ?? "/cc-assistant/";
 
+// WHERE THE BRAIN IS WHEN RUNNING LOCALLY. The functions under api/ are Vercel serverless functions
+// and hold the model key; neither vite dev nor vite preview runs them. So a local server forwards
+// every /api call to the deployed copy. changeOrigin rewrites the Host header to the target, which
+// Vercel needs to find the deployment - a proxy that keeps the original Host gets DEPLOYMENT_NOT_FOUND.
+// Set ASSISTANT_API_ORIGIN to point the proxy somewhere else, such as a `vercel dev` on another port.
+const apiOrigin = process.env.ASSISTANT_API_ORIGIN ?? "https://cc-assistant-bice.vercel.app";
+const apiProxy = {
+  [`${appBase}api`]: {
+    target: apiOrigin,
+    changeOrigin: true,
+    rewrite: (path: string) => path.slice(appBase.length - 1),
+  },
+};
+
 export default defineConfig({
   base: appBase,
   server: {
@@ -18,6 +32,12 @@ export default defineConfig({
     // Listen on the network as well as loopback, so a phone can reach it. See the README: the phone
     // ALSO needs the page served over a secure connection or the browser refuses the microphone.
     host: true,
+    proxy: apiProxy,
+  },
+  preview: {
+    port: 5183,
+    host: true,
+    proxy: apiProxy,
   },
   worker: {
     // The speech worker is an ES module because it imports the transformers library.
