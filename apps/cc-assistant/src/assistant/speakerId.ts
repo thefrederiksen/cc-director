@@ -15,7 +15,7 @@
 // afterwards). Until it has loaded, identification reports "not ready" and the turn proceeds without
 // a name, which is the correct answer rather than a guess.
 
-import { startPcmCapture, type PcmCapture, MODEL_SAMPLE_RATE } from "../audio/pcmCapture";
+import { startPcmCapture, type PcmCapture, type PcmChunk, MODEL_SAMPLE_RATE } from "../audio/pcmCapture";
 
 const MODEL_ID = "Xenova/wavlm-base-plus-sv";
 const RING_SECONDS = 8;
@@ -95,6 +95,7 @@ export class VoiceRing {
   private ring = new Float32Array(RING_SECONDS * MODEL_SAMPLE_RATE);
   private filled = 0;
   private lastPeak = 0;
+  private listeners = new Set<(chunk: PcmChunk) => void>();
 
   async start(workletUrl: string): Promise<void> {
     if (this.capture !== null) {
@@ -110,7 +111,18 @@ export class VoiceRing {
       }
       this.filled = Math.min(this.ring.length, this.filled + n);
       this.lastPeak = chunk.peak;
+      for (const listener of this.listeners) {
+        listener(chunk);
+      }
     });
+  }
+
+  /** Hear every chunk as it arrives (the command capture uses this). Returns the unsubscribe. */
+  subscribe(listener: (chunk: PcmChunk) => void): () => void {
+    this.listeners.add(listener);
+    return () => {
+      this.listeners.delete(listener);
+    };
   }
 
   async stop(): Promise<void> {

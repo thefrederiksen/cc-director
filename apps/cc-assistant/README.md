@@ -43,6 +43,18 @@ The fast model routes by itself: when it decides a question needs looking up it 
 tool, and the server answers that with a second, slower model that has Groq's built-in web search.
 There is no separate classifier in front, because that would add a round trip to every turn.
 
+## Ears
+
+Two ways to hear a command, chosen in Settings:
+
+- **cloud** (default): the browser's recogniser hears only the wake word. From there Wilson records
+  from its own microphone until you go quiet (a quarter second of loudness at a time; three quiet
+  quarters end it), sends the clip to Whisper on Groq with the household's names and places as
+  spelling hints, and the words that come back are the command. About 300 ms, four cents an hour of
+  speech. This is the path the kitchen box will use, since a Raspberry Pi has no platform recogniser.
+- **browser**: the platform recogniser's own transcript, as before. Free, instant, and only exists
+  where the OS ships one.
+
 ## The rules, and the bugs that produced them
 
 Every one of these came from something that actually went wrong, and every one is kept as a test so
@@ -133,6 +145,8 @@ proxy straight to Vercel, because it keeps the tailnet name as the Host header a
 | `src/wakeWord/wakeWordMatcher.ts` | Finding the chosen word in a transcript |
 | `api/talk.js` | The brain: soul + rules + memory in, a sentence or a tool call out; `look_up` runs here |
 | `api/speak.js` | The voice: Orpheus on Groq, streamed |
+| `api/hear.js` | The ears: a clip in, Whisper on Groq writes it down, with the household's spellings as hints |
+| `src/assistant/cloudEars.ts` | Recording a command until the person goes quiet, and sending it to be heard |
 | `api/weather.js` | Open-Meteo, with misheard names corrected and remembered |
 | `api/turn.js` `api/people.js` `api/soul.js` `api/voice.js` | The log, the people and their memory, the soul document, voice enrolment and matching |
 | `api/result.js` | Where diagnostics reports go |

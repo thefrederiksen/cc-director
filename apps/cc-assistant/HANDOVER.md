@@ -15,8 +15,11 @@ runs there, a memory: people with profiles and remembered facts, a per-household
 resolved place names, and a turn log, all as plain files under `%LOCALAPPDATA%\wilson`. It speaks
 with Orpheus streamed from Groq, ticks while it thinks, and has a kitchen screen (one circle) and a
 debug screen. Voice identification is built (WavLM x-vector in the browser, matching on the
-service) and NOT yet proven: it needs two real voices enrolled in a real browser. Issues #2612 to
-#2622 on the repo are the map. The Vercel deployment has none of the memory: its functions run
+service) and NOT yet proven: it needs two real voices enrolled in a real browser. Cloud ears (#2620) are in: after the wake word Wilson records the command itself, ends it on
+silence, and Whisper on Groq writes it down with the household's spellings as hints; the browser
+recogniser is left with the wake word only. The endpointing numbers live in `cloudEars.ts` and are
+the first thing to tune if clips end early or late. A local wake-word model for the Pi is the one
+remaining piece of hearing. Issues #2612 to #2622 on the repo are the map. The Vercel deployment has none of the memory: its functions run
 without the service and say so.
 
 Everything below is either a decision that has already been made and should not be relitigated

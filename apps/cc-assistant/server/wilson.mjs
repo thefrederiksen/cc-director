@@ -50,6 +50,15 @@ for (const name of ["talk", "weather", "result", "turn", "soul", "people", "voic
   api[name] = (await import(`file:///${APP.replace(/\\/g, "/")}/api/${name}.js`)).default;
 }
 const speak = (await import(`file:///${APP.replace(/\\/g, "/")}/api/speak.js`)).default;
+const hear = (await import(`file:///${APP.replace(/\\/g, "/")}/api/hear.js`)).default;
+
+function readBytes(req) {
+  return new Promise((resolve) => {
+    const parts = [];
+    req.on("data", (c) => parts.push(c));
+    req.on("end", () => resolve(Buffer.concat(parts)));
+  });
+}
 
 const MIME = {
   ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".json": "application/json", ".wav": "audio/wav",
@@ -93,6 +102,17 @@ http
         }
         res.end();
         console.log(`${new Date().toISOString()} speak ${response.status} first-bytes ${first}ms total ${Date.now() - started}ms ${bytes} bytes`);
+        return;
+      }
+
+      if (url.pathname === `${BASE}/api/hear`) {
+        const bytes = await readBytes(req);
+        const started = Date.now();
+        const response = await hear(new Request("http://localhost" + req.url, { method: req.method, headers: { "content-type": "audio/wav" }, body: bytes }), wilson);
+        const text = await response.text();
+        res.writeHead(response.status, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+        res.end(text);
+        console.log(`${new Date().toISOString()} hear ${response.status} ${Date.now() - started}ms ${bytes.length} bytes`);
         return;
       }
 
