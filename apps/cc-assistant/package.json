@@ -8,6 +8,7 @@
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
+    "serve": "node server/wilson.mjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
   },
