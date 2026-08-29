@@ -4,6 +4,7 @@ import { chirp, createListener, cue, localRecognitionReady, startThinkingTicks, 
 import { DEFAULT_VOICE, VOICES, speakStreamed, stopVoice, unlockVoice, type VoiceName } from "./voice";
 import { DebugPanel } from "./DebugPanel";
 import { VoiceRing, embedClip, enrolVoice, identifyVoice, loadSpeakerModel, watchSpeakerModel } from "./speakerId";
+import { captureUtterance, transcribeClip, type Captured } from "./cloudEars";
 import { watchMicLevel, type MicLevel } from "./micLevel";
 import { judgeEcho, similarity, ECHO_SIMILARITY } from "./echoGuard";
 import { clockFace as clockFaceOf } from "../skills/timerParse";
@@ -33,6 +34,13 @@ const HOME_KEY = "cc-assistant.home";
 const VOICE_KEY = "cc-assistant.voice";
 const OWNER_KEY = "cc-assistant.owner";
 const MODE_KEY = "cc-assistant.mode";
+const EARS_KEY = "cc-assistant.ears";
+
+// How the command is heard. "browser": the platform recogniser's transcript, as before. "cloud":
+// Wilson records the command itself and Whisper on Groq writes it down (the path the kitchen box
+// will use, since a Pi has no platform recogniser). The wake word is heard by the recogniser either
+// way, for now.
+type Ears = "browser" | "cloud";
 const WORKLET_URL = `${import.meta.env.BASE_URL}pcm-worklet.js`;
 /** How much of the last few seconds is the command, for identifying the voice. */
 const IDENTIFY_SECONDS = 3.5;
@@ -104,6 +112,18 @@ export function AssistantScreen() {
   });
   const ownerRef = useRef(owner);
   ownerRef.current = owner;
+  const [ears, setEars] = useState<Ears>(() => {
+    try {
+      return window.localStorage.getItem(EARS_KEY) === "browser" ? "browser" : "cloud";
+    } catch {
+      return "cloud";
+    }
+  });
+  const earsRef = useRef<Ears>(ears);
+  earsRef.current = ears;
+  // What the cloud ears last did: clip length, how it ended, Whisper's time and words.
+  const [earsInfo, setEarsInfo] = useState("");
+  const captureRef = useRef<{ stop(): void } | null>(null);
   const [speakerStatus, setSpeakerStatus] = useState("not loaded");
   const [identified, setIdentified] = useState("nobody yet");
   const identifiedRef = useRef<{ name: string | null; confidence: number } | null>(null);
@@ -169,10 +189,11 @@ export function AssistantScreen() {
     try {
       window.localStorage.setItem(OWNER_KEY, owner);
       window.localStorage.setItem(MODE_KEY, mode);
+      window.localStorage.setItem(EARS_KEY, ears);
     } catch {
       // Same.
     }
-  }, [owner, mode]);
+  }, [owner, mode, ears]);
 
   useEffect(() => watchSpeakerModel((s) => setSpeakerStatus(s.detail)), []);
 
@@ -461,10 +482,10 @@ export function AssistantScreen() {
    * "unknown" costs a little personalisation, a wrong name costs trust.
    */
   const identifyThenAsk = useCallback(
-    async (command: string) => {
+    async (command: string, audio: Float32Array | null = null) => {
       identifiedRef.current = null;
       const ring = ringRef.current;
-      const clip = ring !== null && ring.running ? ring.recent(IDENTIFY_SECONDS) : null;
+      const clip = audio ?? (ring !== null && ring.running ? ring.recent(IDENTIFY_SECONDS) : null);
       if (clip !== null) {
         try {
           const result = await identifyVoice(await embedClip(clip));
@@ -483,6 +504,83 @@ export function AssistantScreen() {
       await ask(command);
     },
     [ask],
+  );
+
+  /**
+   * Cloud ears: record what follows the wake word until the person goes quiet, have Whisper write
+   * it down, take the wake word off the front, and ask. `afterWake` means the clip may hold only the
+   * wake word; then Wilson waits for one more utterance before giving up.
+   */
+  const hearCommand = useCallback(
+    async (afterWake: boolean) => {
+      const ring = ringRef.current;
+      if (ring === null || !ring.running || captureRef.current !== null) {
+        return;
+      }
+      const capture = captureUtterance(ring);
+      captureRef.current = capture;
+      let captured: Captured;
+      try {
+        captured = await capture.done;
+      } finally {
+        captureRef.current = null;
+      }
+      if (stateRef.current !== "listening") {
+        // Stopped, or it fell asleep while we recorded. Nothing to do with the clip.
+        return;
+      }
+      if (!captured.heardSpeech || captured.endedBy === "stopped") {
+        setEarsInfo(`cloud: nothing heard (${captured.endedBy})`);
+        chirp("sleep");
+        setStateBoth("asleep");
+        setLive("");
+        return;
+      }
+      setStateBoth("thinking");
+      let heard;
+      try {
+        heard = await transcribeClip(captured.samples, [wakeWordRef.current, ownerRef.current]);
+      } catch (error) {
+        cue("fail");
+        setProblem(`Hearing failed: ${error instanceof Error ? error.message : String(error)}`);
+        setStateBoth("asleep");
+        setLive("");
+        return;
+      }
+      setEarsInfo(`cloud: ${captured.seconds.toFixed(1)} s clip, ended by ${captured.endedBy}, Whisper ${heard.elapsedMs} ms: "${heard.text}"`);
+      setLive(heard.text);
+      setLastHeardAt(Date.now());
+      const match = matchWakeWord(heard.text, wakeWordRef.current);
+      const command = (match !== null ? match.command : heard.text).trim();
+      if (command.length === 0) {
+        if (afterWake) {
+          // Just the name. Wait for the actual request, once.
+          setStateBoth("listening");
+          followUpUntilRef.current = Date.now() + FOLLOW_UP_MS;
+          void hearCommand(false);
+          return;
+        }
+        chirp("sleep");
+        setStateBoth("asleep");
+        setLive("");
+        return;
+      }
+      // Whisper's own words, and the very clip it heard them in, for identifying the voice.
+      const guard = judgeEcho(command, {
+        speaking: speakingRef.current,
+        lastSpokeEndedAt: lastSpokeEndedAtRef.current,
+        recentlySpoken: recentlySpokenRef.current,
+        now: Date.now(),
+      });
+      if (guard.isEcho) {
+        setSuppressed(`Ignored "${command}" - ${guard.reason}`);
+        setStateBoth("asleep");
+        return;
+      }
+      setSuppressed(null);
+      await identifyThenAsk(command, captured.samples);
+    },
+    [identifyThenAsk, setStateBoth],
   );
 
   const onHeard = useCallback(
@@ -506,6 +604,11 @@ export function AssistantScreen() {
           chirp("wake");
           setStateBoth("listening");
           followUpUntilRef.current = Date.now() + FOLLOW_UP_MS;
+          // With cloud ears, the command is recorded from here and written down by Whisper; the
+          // recogniser's own transcript of it is not used.
+          if (earsRef.current === "cloud" && ringRef.current !== null && ringRef.current.running) {
+            void hearCommand(true);
+          }
         }
         // Interrupting while it talks: saying the word again cuts it off.
         if (stateRef.current === "speaking" && matchWakeWord(text, wakeWordRef.current) !== null) {
@@ -520,6 +623,13 @@ export function AssistantScreen() {
           setStateBoth("listening");
           followUpUntilRef.current = Date.now() + FOLLOW_UP_MS;
         }
+        return;
+      }
+
+      // Cloud ears: final transcripts from the recogniser are not commands. Everything after the wake
+      // is heard by Wilson's own microphone and Whisper (hearCommand). Only the wake word above and
+      // the alarm silencer further up use the recogniser's words.
+      if (earsRef.current === "cloud" && ringRef.current !== null && ringRef.current.running) {
         return;
       }
 
@@ -560,7 +670,7 @@ export function AssistantScreen() {
         void identifyThenAsk(text);
       }
     },
-    [identifyThenAsk, setStateBoth],
+    [hearCommand, identifyThenAsk, setStateBoth],
   );
 
   const start = useCallback(async () => {
@@ -633,6 +743,7 @@ export function AssistantScreen() {
     listenerRef.current = null;
     micRef.current?.stop();
     micRef.current = null;
+    captureRef.current?.stop();
     void ringRef.current?.stop();
     ringRef.current = null;
     stopVoice();
@@ -716,7 +827,9 @@ export function AssistantScreen() {
             {resultCount} results
             {lastHeardAt === null ? " · nothing heard yet" : ` · last heard ${Math.round((Date.now() - lastHeardAt) / 1000)}s ago`}
             {voiceInfo !== null ? ` · voice ${voice}, first sound ${voiceInfo.firstSoundMs} ms` : ` · voice ${voice}`}
+            {` · ears ${ears}`}
           </p>
+          {earsInfo.length > 0 ? <p className="micNotice">{earsInfo}</p> : null}
           {notice !== null ? <p className="micNotice">{notice}</p> : null}
           {suppressed !== null ? <p className="micNotice">{suppressed}</p> : null}
         </div>
@@ -762,6 +875,14 @@ export function AssistantScreen() {
               ))}
             </select>
           </label>
+          <label>
+            Ears
+            <select value={ears} onChange={(e) => setEars(e.target.value as Ears)}>
+              <option value="cloud">cloud: Wilson records, Whisper on Groq writes it down (the kitchen box path)</option>
+              <option value="browser">browser: the platform recogniser's transcript</option>
+            </select>
+          </label>
+          {earsInfo.length > 0 ? <p className="status">{earsInfo}</p> : null}
           <p className="status">
             Wilson speaks with Orpheus on Groq, voice {voice}, streamed as it is made.
             {voiceInfo !== null ? ` Last reply: first sound after ${voiceInfo.firstSoundMs} ms, ${voiceInfo.seconds.toFixed(1)} s of speech.` : null}
