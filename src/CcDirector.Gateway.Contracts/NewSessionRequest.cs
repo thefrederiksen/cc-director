@@ -154,17 +154,20 @@ public sealed class NewSessionRequest
     /// session's <see cref="SessionDto.MissionId"/> and caches the resolved
     /// <see cref="SessionDto.MissionName"/> at birth - the attachment that binds this session into a pod.
     /// The Mission must already exist (create it with POST /missions); an unknown Mission is REJECTED as a
-    /// bad request. Null leaves the session attached to no Mission.
+    /// bad request BY THE GATEWAY, which is the only place that holds missions. Null leaves the session
+    /// attached to no Mission.
     /// </summary>
     public Guid? MissionId { get; set; }
 
     /// <summary>
-    /// Optional resolved display name of the Mission named by <see cref="MissionId"/>. Set by the Gateway
-    /// when it spawns a session into a GATEWAY-NATIVE mission: the Gateway validates the mission against its
-    /// OWN store, then forwards BOTH <see cref="MissionId"/> and this name so the Director stamps the
-    /// attachment directly WITHOUT any local mission-store lookup (the Gateway is the source of truth). Left
-    /// null by a caller hitting a Director's POST /sessions directly for an old Director-store mission, in
-    /// which case the Director resolves the name locally (the transitional bridge in SessionCommandExecutor).
+    /// The resolved display name of the Mission named by <see cref="MissionId"/>, and it travels WITH the
+    /// id rather than instead of it. Set by the Gateway on every spawn into a mission: the Gateway resolves
+    /// and validates the mission against its OWN store inside the caller's tenant - it is the source of
+    /// truth - and forwards BOTH values, so the Director stamps the attachment directly with no lookup of
+    /// its own. The Director holds no mission store, so an id arriving here with a blank name was resolved
+    /// by nobody and the create is REFUSED (issue #2629; there is no local fallback and there must not be
+    /// one - the transitional bridge that used to sit in SessionCommandExecutor consulted a stale
+    /// per-machine file and reported live missions as unknown).
     /// </summary>
     public string? MissionName { get; set; }
 

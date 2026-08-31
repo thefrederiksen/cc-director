@@ -127,12 +127,6 @@ public sealed class ControlApiHost : IAsyncDisposable
         => _gatewayClient?.ListFleetSessionsWithReachabilityAsync(ct);
 
     private TurnSummaryCache? _turnSummaryCache;
-    // Mission records (mission-as-first-class-unit-of-work): a durable, file-backed store with no runtime
-    // dependencies, so it is ready from construction (unlike the caches wired up in StartAsync).
-    // A Director runs on one person's machine and serves one owner, so its store is single-tenant: every
-    // record is Local's, including any written before missions carried an owner (#1039).
-    private readonly Core.Sessions.MissionStore _missionStore =
-        new(filePath: null, adoptUnattributedAs: Core.Tenancy.TenantId.Local);
     private SessionStatusWingman? _statusWingman;
     private ProactiveExplainService? _proactiveExplain;
     private TerminalStateDetector? _terminalStateDetector;
@@ -888,7 +882,7 @@ public sealed class ControlApiHost : IAsyncDisposable
         }
 
         return SessionCommandExecutor.DispatchAsync(_sessionManager, DirectorId, cmd,
-            new SessionCommandServices { ProactiveExplain = _proactiveExplain, TurnSummaryCache = _turnSummaryCache, MissionStore = _missionStore, DirectorVersion = _version, Repositories = _repositoryRegistry, ReapplyGatewayAsync = ReapplyGatewayAsync });
+            new SessionCommandServices { ProactiveExplain = _proactiveExplain, TurnSummaryCache = _turnSummaryCache, DirectorVersion = _version, Repositories = _repositoryRegistry, ReapplyGatewayAsync = ReapplyGatewayAsync });
     }
 
     /// <summary>

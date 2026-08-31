@@ -11,6 +11,13 @@ namespace CcDirector.Gateway.Tests;
 /// <see cref="SessionCommandExecutor"/>: the <c>attach-mission</c> verb stamps a session's MissionId +
 /// cached MissionName (and detaches on a blank id), and a create-time <see cref="NewSessionRequest.MissionId"/>
 /// attaches the new session at spawn. Mirrors the set-role tests in <see cref="SessionCommandExecutorTests"/>.
+///
+/// THE CONTRACT THESE PIN (issue #2629): the mission's ID AND NAME arrive together, because the Gateway -
+/// the only store that holds missions - resolved the mission in the caller's own tenant before sending the
+/// verb. The Director stamps what it was handed and owns no mission store of its own. An id with no name
+/// was never resolved by anybody, and is REFUSED rather than looked up locally: the Director-local store
+/// this code used to consult was a different, per-machine set that nothing writes any more, so consulting
+/// it reported a real, active, listed mission as unknown and took mission-scoped spawning down.
 /// </summary>
 [Collection("DirectorRoot")]
 public sealed class MissionCommandTests
@@ -31,10 +38,8 @@ public sealed class MissionCommandTests
         return (sm, session);
     }
 
-    // The Director's store is single-tenant - one machine, one owner - so every record is Local's (#1039).
-    private static MissionStore NewMissionStore() =>
-        new(Path.Combine(Path.GetTempPath(), $"test_missions_{Guid.NewGuid()}.json"),
-            adoptUnattributedAs: Core.Tenancy.TenantId.Local);
+    // No mission store: the Director has none, and these tests would be lying if they handed it one.
+    private static SessionCommandServices Services() => new();
 
     private static DirectorCommand AttachCommand(string sid, Guid? missionId, string? missionName = null) => new()
     {
@@ -78,35 +83,39 @@ public sealed class MissionCommandTests
         var (sm, session) = NewSession();
         try
         {
-            var store = NewMissionStore();
-            var mission = store.Create(Core.Tenancy.TenantId.Local, "Session Lifecycle");
-            var services = new SessionCommandServices { MissionStore = store };
+            var missionId = Guid.NewGuid();
 
-            var result = await SessionCommandExecutor.DispatchAsync(sm, "dir-A", AttachCommand(session.Id.ToString(), mission.MissionId), services);
+            var result = await SessionCommandExecutor.DispatchAsync(sm, "dir-A",
+                AttachCommand(session.Id.ToString(), missionId, "Session Lifecycle"), Services());
 
             Assert.Equal(DirectorCommandStatus.Ok, result.Status);
-            Assert.Equal(mission.MissionId, session.MissionId);
-            Assert.Equal("Session Lifecycle", session.MissionName); // resolved + cached from the store
+            Assert.Equal(missionId, session.MissionId);
+            Assert.Equal("Session Lifecycle", session.MissionName); // cached from what the Gateway sent
 
             var dto = JsonSerializer.Deserialize<SessionDto>(result.BodyJson ?? "", Json);
             Assert.NotNull(dto);
-            Assert.Equal(mission.MissionId, dto.MissionId);
+            Assert.Equal(missionId, dto.MissionId);
             Assert.Equal("Session Lifecycle", dto.MissionName);
         }
         finally { sm.Dispose(); }
     }
 
+    // Issue #2629: an id with NO name was never resolved by the Gateway, so there is nobody who can say
+    // what it is. Refused, loudly, and with a message that names the real problem - the old behaviour was
+    // to look it up in a stale per-machine store and report a real mission as "unknown".
     [Fact]
-    public async Task AttachMission_UnknownMission_ReturnsBadRequest_Unchanged()
+    public async Task AttachMission_IdWithNoName_IsRefused_AndSaysWhy()
     {
         var (sm, session) = NewSession();
         try
         {
-            var services = new SessionCommandServices { MissionStore = NewMissionStore() };
-
-            var result = await SessionCommandExecutor.DispatchAsync(sm, "dir-A", AttachCommand(session.Id.ToString(), Guid.NewGuid()), services);
+            var result = await SessionCommandExecutor.DispatchAsync(sm, "dir-A",
+                AttachCommand(session.Id.ToString(), Guid.NewGuid()), Services());
 
             Assert.Equal(DirectorCommandStatus.BadRequest, result.Status);
+            Assert.Contains("without its name", result.Error);
+            Assert.Contains("Gateway", result.Error);
+            Assert.DoesNotContain("Create it first", result.Error); // the old lie: it already exists
             Assert.Null(session.MissionId);
             Assert.Null(session.MissionName);
         }
@@ -119,14 +128,13 @@ public sealed class MissionCommandTests
         var (sm, session) = NewSession();
         try
         {
-            var store = NewMissionStore();
-            var mission = store.Create(Core.Tenancy.TenantId.Local, "Session Lifecycle");
-            var services = new SessionCommandServices { MissionStore = store };
+            var missionId = Guid.NewGuid();
 
-            await SessionCommandExecutor.DispatchAsync(sm, "dir-A", AttachCommand(session.Id.ToString(), mission.MissionId), services);
-            Assert.Equal(mission.MissionId, session.MissionId);
+            await SessionCommandExecutor.DispatchAsync(sm, "dir-A",
+                AttachCommand(session.Id.ToString(), missionId, "Session Lifecycle"), Services());
+            Assert.Equal(missionId, session.MissionId);
 
-            var result = await SessionCommandExecutor.DispatchAsync(sm, "dir-A", AttachCommand(session.Id.ToString(), null), services);
+            var result = await SessionCommandExecutor.DispatchAsync(sm, "dir-A", AttachCommand(session.Id.ToString(), null), Services());
 
             Assert.Equal(DirectorCommandStatus.Ok, result.Status);
             Assert.Null(session.MissionId); // cleared -> detached
@@ -141,11 +149,8 @@ public sealed class MissionCommandTests
         var sm = new SessionManager(new Core.Configuration.AgentOptions());
         try
         {
-            var store = NewMissionStore();
-            var mission = store.Create(Core.Tenancy.TenantId.Local, "Session Lifecycle");
-            var services = new SessionCommandServices { MissionStore = store };
-
-            var result = await SessionCommandExecutor.DispatchAsync(sm, "dir-A", AttachCommand(Guid.NewGuid().ToString(), mission.MissionId), services);
+            var result = await SessionCommandExecutor.DispatchAsync(sm, "dir-A",
+                AttachCommand(Guid.NewGuid().ToString(), Guid.NewGuid(), "Session Lifecycle"), Services());
 
             Assert.Equal(DirectorCommandStatus.NotFound, result.Status);
         }
@@ -158,9 +163,8 @@ public sealed class MissionCommandTests
         var sm = new SessionManager(new Core.Configuration.AgentOptions());
         try
         {
-            var services = new SessionCommandServices { MissionStore = NewMissionStore() };
-
-            var result = await SessionCommandExecutor.DispatchAsync(sm, "dir-A", AttachCommand("not-a-guid", Guid.NewGuid()), services);
+            var result = await SessionCommandExecutor.DispatchAsync(sm, "dir-A",
+                AttachCommand("not-a-guid", Guid.NewGuid(), "Session Lifecycle"), Services());
 
             Assert.Equal(DirectorCommandStatus.BadRequest, result.Status);
         }
@@ -170,22 +174,21 @@ public sealed class MissionCommandTests
     // Issue #2387: the GATEWAY path on the attach verb, matching what create already does. A mission is a
     // FLEET record whose source of truth is the Gateway; when the Gateway has resolved it inside the caller's
     // own tenant and sends the NAME with the id, the Director stamps it directly. Proof of "no local lookup":
-    // the id is not in the Director's store - the store is EMPTY - and the attach still succeeds with the
-    // carried name. A local lookup would reject a mission that is real and owned, which is precisely the
-    // failure #1548 fixed on the spawn path.
+    // the Director is given NO mission store at all here, and the attach still succeeds with the carried
+    // name. A local lookup would reject a mission that is real and owned, which is precisely the failure
+    // #1548 fixed on one spawn door and #2629 hit again through the other.
     [Fact]
     public async Task AttachMission_WithMissionNamePresent_StampsDirectly_WithoutStoreLookup()
     {
         var (sm, session) = NewSession();
         try
         {
-            var services = new SessionCommandServices { MissionStore = NewMissionStore() }; // empty store
-            var carriedId = Guid.NewGuid(); // never created in this store
+            var carriedId = Guid.NewGuid();
 
             var result = await SessionCommandExecutor.DispatchAsync(sm, "dir-A",
-                AttachCommand(session.Id.ToString(), carriedId, "Gateway Native Mission"), services);
+                AttachCommand(session.Id.ToString(), carriedId, "Gateway Native Mission"), Services());
 
-            Assert.Equal(DirectorCommandStatus.Ok, result.Status); // NOT rejected despite the empty store
+            Assert.Equal(DirectorCommandStatus.Ok, result.Status); // NOT rejected: nothing local was consulted
             Assert.Equal(carriedId, session.MissionId);
             Assert.Equal("Gateway Native Mission", session.MissionName);
         }
@@ -202,46 +205,42 @@ public sealed class MissionCommandTests
         var (sm, session) = NewSession();
         try
         {
-            var store = NewMissionStore();
-            var first = store.Create(Core.Tenancy.TenantId.Local, "First Mission");
-            var second = store.Create(Core.Tenancy.TenantId.Local, "Second Mission");
-            var services = new SessionCommandServices { MissionStore = store };
+            var first = Guid.NewGuid();
+            var second = Guid.NewGuid();
 
             await SessionCommandExecutor.DispatchAsync(sm, "dir-A",
-                AttachCommand(session.Id.ToString(), first.MissionId), services);
-            Assert.Equal(first.MissionId, session.MissionId);   // the control: it really was on the first
+                AttachCommand(session.Id.ToString(), first, "First Mission"), Services());
+            Assert.Equal(first, session.MissionId);   // the control: it really was on the first
 
             var result = await SessionCommandExecutor.DispatchAsync(sm, "dir-A",
-                AttachCommand(session.Id.ToString(), second.MissionId), services);
+                AttachCommand(session.Id.ToString(), second, "Second Mission"), Services());
 
             Assert.Equal(DirectorCommandStatus.Ok, result.Status);
-            Assert.Equal(second.MissionId, session.MissionId);
+            Assert.Equal(second, session.MissionId);
             Assert.Equal("Second Mission", session.MissionName);  // the cached name moved with the id
         }
         finally { sm.Dispose(); }
     }
 
     // Issue #2387: a REFUSED attach leaves the session on the mission it already had. Without this, a
-    // mistyped mission id would silently detach a correctly-attached session - a failure that looks like
-    // nothing happened until somebody goes looking for the pod.
+    // refusal would silently detach a correctly-attached session - a failure that looks like nothing
+    // happened until somebody goes looking for the pod.
     [Fact]
-    public async Task AttachMission_UnknownMission_LeavesAnExistingAttachmentIntact()
+    public async Task AttachMission_ARefusedAttach_LeavesAnExistingAttachmentIntact()
     {
         var (sm, session) = NewSession();
         try
         {
-            var store = NewMissionStore();
-            var mission = store.Create(Core.Tenancy.TenantId.Local, "Real Mission");
-            var services = new SessionCommandServices { MissionStore = store };
+            var mission = Guid.NewGuid();
 
             await SessionCommandExecutor.DispatchAsync(sm, "dir-A",
-                AttachCommand(session.Id.ToString(), mission.MissionId), services);
+                AttachCommand(session.Id.ToString(), mission, "Real Mission"), Services());
 
             var result = await SessionCommandExecutor.DispatchAsync(sm, "dir-A",
-                AttachCommand(session.Id.ToString(), Guid.NewGuid()), services);
+                AttachCommand(session.Id.ToString(), Guid.NewGuid()), Services()); // no name -> refused
 
             Assert.Equal(DirectorCommandStatus.BadRequest, result.Status);
-            Assert.Equal(mission.MissionId, session.MissionId);
+            Assert.Equal(mission, session.MissionId);
             Assert.Equal("Real Mission", session.MissionName);
         }
         finally { sm.Dispose(); }
@@ -261,7 +260,7 @@ public sealed class MissionCommandTests
         var (sm, session) = NewSession();
         try
         {
-            var services = new SessionCommandServices { MissionStore = NewMissionStore() };
+            var services = Services();
             var missionA = Guid.NewGuid();
             var runA = Guid.NewGuid();
             var missionB = Guid.NewGuid();
@@ -300,7 +299,7 @@ public sealed class MissionCommandTests
         var (sm, session) = NewSession();
         try
         {
-            var services = new SessionCommandServices { MissionStore = NewMissionStore() };
+            var services = Services();
             var chosenRun = Guid.NewGuid();
             var missionA = Guid.NewGuid();
             var missionB = Guid.NewGuid();
@@ -330,7 +329,7 @@ public sealed class MissionCommandTests
         var (sm, session) = NewSession();
         try
         {
-            var services = new SessionCommandServices { MissionStore = NewMissionStore() };
+            var services = Services();
             var mission = Guid.NewGuid();
             var run = Guid.NewGuid();
 
@@ -359,7 +358,7 @@ public sealed class MissionCommandTests
         var (sm, session) = NewSession();
         try
         {
-            var services = new SessionCommandServices { MissionStore = NewMissionStore() };
+            var services = Services();
             var chosenRun = Guid.NewGuid();
 
             await SessionCommandExecutor.DispatchAsync(sm, "dir-A",
@@ -378,7 +377,7 @@ public sealed class MissionCommandTests
     }
 
     [Fact]
-    public async Task AttachMission_WithoutASeatDecision_TouchesTheSeatAtAll()
+    public async Task AttachMission_WithoutASeatDecision_NeverTouchesTheSeatAtAll()
     {
         // The compatibility case, and the one that keeps the two decisions separable: a payload that says
         // nothing about the seat must not clear it. Otherwise every caller that has not been taught about
@@ -386,9 +385,8 @@ public sealed class MissionCommandTests
         var (sm, session) = NewSession();
         try
         {
-            var store = NewMissionStore();
-            var mission = store.Create(Core.Tenancy.TenantId.Local, "Local mission");
-            var services = new SessionCommandServices { MissionStore = store };
+            var services = Services();
+            var mission = Guid.NewGuid();
             var run = Guid.NewGuid();
 
             await SessionCommandExecutor.DispatchAsync(sm, "dir-A",
@@ -396,64 +394,26 @@ public sealed class MissionCommandTests
                 services);
 
             var result = await SessionCommandExecutor.DispatchAsync(sm, "dir-A",
-                AttachCommand(session.Id.ToString(), mission.MissionId), services);
+                AttachCommand(session.Id.ToString(), mission, "Mission B"), services);
 
             Assert.Equal(DirectorCommandStatus.Ok, result.Status);
-            Assert.Equal(mission.MissionId, session.MissionId);
+            Assert.Equal(mission, session.MissionId);
             Assert.Equal(run, session.WorkflowRunId);   // untouched, because nothing asked for it to move
         }
         finally { sm.Dispose(); }
     }
 
-    [Fact]
-    public async Task Create_WithMissionId_AttachesNewSessionAtSpawn()
-    {
-        var sm = new SessionManager(new Core.Configuration.AgentOptions());
-        try
-        {
-            var store = NewMissionStore();
-            var mission = store.Create(Core.Tenancy.TenantId.Local, "Session Lifecycle");
-            var services = new SessionCommandServices { MissionStore = store };
-
-            var command = CreateCommand(new NewSessionRequest
-            {
-                RepoPath = Path.GetTempPath(),
-                Agent = "RawCli",
-                Command = TestShellPath,
-                Name = "mission-create-test",
-                MissionId = mission.MissionId,
-            });
-
-            var result = await SessionCommandExecutor.DispatchAsync(sm, "dir-A", command, services);
-
-            Assert.Equal(DirectorCommandStatus.Ok, result.Status);
-            var dto = JsonSerializer.Deserialize<SessionDto>(result.BodyJson ?? "", Json);
-            Assert.NotNull(dto);
-            Assert.Equal(mission.MissionId, dto.MissionId);
-            Assert.Equal("Session Lifecycle", dto.MissionName);
-
-            Assert.True(Guid.TryParse(dto.SessionId, out var sid));
-            var session = sm.GetSession(sid);
-            Assert.NotNull(session);
-            Assert.Equal(mission.MissionId, session.MissionId);
-            Assert.Equal("Session Lifecycle", session.MissionName);
-        }
-        finally { sm.Dispose(); }
-    }
-
-    // Gateway Cleanup mission (Wave 4b): when the create request carries BOTH a MissionId and a MissionName
-    // (the GATEWAY path - the Gateway already validated the mission against its own store), the Director
-    // stamps the attachment DIRECTLY with no local-store lookup. Proof of "no lookup": the id is NOT in the
-    // store here (in fact the store is EMPTY), yet the create succeeds and stamps the carried name - a local
-    // lookup would have rejected it as unknown.
+    // The create path's GATEWAY contract: the request carries the mission id AND the name the Gateway
+    // resolved, and the Director stamps the attachment directly. Proof that nothing local is consulted:
+    // the Director is given no mission store at all, and the create still succeeds with the carried name.
+    // A local lookup would have rejected a mission that is real, active and owned - the #2629 failure.
     [Fact]
     public async Task Create_WithMissionNamePresent_StampsDirectly_WithoutStoreLookup()
     {
         var sm = new SessionManager(new Core.Configuration.AgentOptions());
         try
         {
-            var services = new SessionCommandServices { MissionStore = NewMissionStore() }; // empty store
-            var carriedId = Guid.NewGuid(); // never created in the store
+            var carriedId = Guid.NewGuid();
 
             var command = CreateCommand(new NewSessionRequest
             {
@@ -465,13 +425,13 @@ public sealed class MissionCommandTests
                 MissionName = "Gateway Native Mission", // resolved+validated by the Gateway already
             });
 
-            var result = await SessionCommandExecutor.DispatchAsync(sm, "dir-A", command, services);
+            var result = await SessionCommandExecutor.DispatchAsync(sm, "dir-A", command, Services());
 
-            Assert.Equal(DirectorCommandStatus.Ok, result.Status); // NOT rejected despite the empty store
+            Assert.Equal(DirectorCommandStatus.Ok, result.Status); // NOT rejected: nothing local was consulted
             var dto = JsonSerializer.Deserialize<SessionDto>(result.BodyJson ?? "", Json);
             Assert.NotNull(dto);
             Assert.Equal(carriedId, dto.MissionId);
-            Assert.Equal("Gateway Native Mission", dto.MissionName); // stamped from the request, not the store
+            Assert.Equal("Gateway Native Mission", dto.MissionName); // stamped from the request
 
             Assert.True(Guid.TryParse(dto.SessionId, out var sid));
             var session = sm.GetSession(sid);
@@ -482,48 +442,15 @@ public sealed class MissionCommandTests
         finally { sm.Dispose(); }
     }
 
-    // Gateway Cleanup mission (Wave 4b): the TRANSITIONAL BRIDGE. When the create request carries a MissionId
-    // but a BLANK MissionName (an old caller hitting the Director's POST /sessions directly for a
-    // Director-store mission), the Director resolves the name from its OWN store - so the stamped name comes
-    // from the store, not the request. Proof: the store name differs from anything on the request.
+    // Issue #2629, at the create verb: a mission id with no name reached this Director because some caller
+    // skipped the Gateway's resolution. It is REFUSED, before the session is created, and the message says
+    // where missions actually live instead of telling the caller to create one that already exists.
     [Fact]
-    public async Task Create_WithMissionNameAbsent_ResolvesNameFromLocalStore()
+    public async Task Create_WithMissionIdButNoName_IsRefused_AndNoSessionIsCreated()
     {
         var sm = new SessionManager(new Core.Configuration.AgentOptions());
         try
         {
-            var store = NewMissionStore();
-            var mission = store.Create(Core.Tenancy.TenantId.Local, "Name From Director Store");
-            var services = new SessionCommandServices { MissionStore = store };
-
-            var command = CreateCommand(new NewSessionRequest
-            {
-                RepoPath = Path.GetTempPath(),
-                Agent = "RawCli",
-                Command = TestShellPath,
-                Name = "bridge-mission-create",
-                MissionId = mission.MissionId,
-                MissionName = null, // blank -> the transitional local-store lookup resolves the name
-            });
-
-            var result = await SessionCommandExecutor.DispatchAsync(sm, "dir-A", command, services);
-
-            Assert.Equal(DirectorCommandStatus.Ok, result.Status);
-            var dto = JsonSerializer.Deserialize<SessionDto>(result.BodyJson ?? "", Json);
-            Assert.NotNull(dto);
-            Assert.Equal(mission.MissionId, dto.MissionId);
-            Assert.Equal("Name From Director Store", dto.MissionName); // resolved from the store
-        }
-        finally { sm.Dispose(); }
-    }
-
-    [Fact]
-    public async Task Create_WithUnknownMissionId_ReturnsBadRequest_NoSessionCreated()
-    {
-        var sm = new SessionManager(new Core.Configuration.AgentOptions());
-        try
-        {
-            var services = new SessionCommandServices { MissionStore = NewMissionStore() };
             var before = sm.ListSessions().Count;
 
             var command = CreateCommand(new NewSessionRequest
@@ -531,13 +458,17 @@ public sealed class MissionCommandTests
                 RepoPath = Path.GetTempPath(),
                 Agent = "RawCli",
                 Command = TestShellPath,
-                Name = "bad-mission",
-                MissionId = Guid.NewGuid(), // never created in the store
+                Name = "unresolved-mission",
+                MissionId = Guid.NewGuid(),
+                MissionName = null, // never resolved by the Gateway
             });
 
-            var result = await SessionCommandExecutor.DispatchAsync(sm, "dir-A", command, services);
+            var result = await SessionCommandExecutor.DispatchAsync(sm, "dir-A", command, Services());
 
             Assert.Equal(DirectorCommandStatus.BadRequest, result.Status);
+            Assert.Contains("without its name", result.Error);
+            Assert.Contains("Gateway", result.Error);
+            Assert.DoesNotContain("Create it first", result.Error); // the old lie: it already exists
             Assert.Equal(before, sm.ListSessions().Count); // rejected before creation - no orphan
         }
         finally { sm.Dispose(); }

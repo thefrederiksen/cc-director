@@ -327,62 +327,12 @@ internal static class MachineEndpoints
 
             StampOriginFromDeviceKey(req, ctx);
 
-            // Gateway Cleanup mission (Wave 4b): a mission-scoped spawn is validated against the Gateway's OWN
-            // mission store (the source of truth) and the resolved NAME is stamped onto the create request, so
-            // the Director stamps the attachment directly with no local-store lookup. Reject an unknown mission
-            // here rather than forwarding it to a Director that no longer owns mission validation.
-            if (req.MissionId is Guid spawnMissionId && missions is not null)
-            {
-                // #1039: resolve the mission in the CALLING tenant. This lookup was by bare id, so naming
-                // another account's mission id here stamped that account's mission NAME - free text a person
-                // typed - onto the caller's own session. It is the same disclosure GET /missions/{mid} was,
-                // reached through the spawn route instead, and the issue does not name it.
-                var mission = missions.Get(tenant, spawnMissionId);
-                if (mission is null)
-                {
-                    FileLog.Write($"[MachineEndpoints] POST /machines/{machine}/sessions: unknown mission {spawnMissionId}");
-                    return Results.BadRequest(new { error = $"unknown mission '{spawnMissionId}'. Create it first with POST /missions." });
-                }
-                req.MissionName = mission.MissionName;
-            }
-
-            // Workflows mission (phase 5b): resolve the seat. An EXPLICIT run id must exist; a
-            // mission-scoped spawn with no explicit run auto-seats onto the mission's newest run (the
-            // one POST /missions opened). The run's workflow id + pinned version ride the create
-            // request so the Director stamps the seat with no lookup of its own - and the seated
-            // session's conduct is pinned to the run's version, never a moving head.
-            Contracts.WorkflowRunDto? seatRun = null;
-            if (workflowRuns is not null)
-            {
-                if (req.WorkflowRunId is Guid explicitRunId)
-                {
-                    seatRun = workflowRuns.Get(explicitRunId);
-                    if (seatRun is null)
-                    {
-                        FileLog.Write($"[MachineEndpoints] POST /machines/{machine}/sessions: unknown workflow run {explicitRunId}");
-                        return Results.BadRequest(new { error = $"unknown workflow run '{explicitRunId}'." });
-                    }
-                }
-                else if (req.MissionId is Guid seatMissionId)
-                {
-                    seatRun = workflowRuns.List(missionId: seatMissionId, limit: 1).FirstOrDefault();
-                }
-
-                if (seatRun is not null && !seatRun.WorkflowEnabled)
-                {
-                    // The owner turned this workflow OFF: no new seats. The spawn proceeds
-                    // unseated - the owner's switch, honestly applied and loudly logged.
-                    FileLog.Write($"[MachineEndpoints] POST /machines/{machine}/sessions: workflow " +
-                                  $"'{seatRun.WorkflowId}' is OFF - spawning UNSEATED");
-                    seatRun = null;
-                }
-                if (seatRun is not null)
-                {
-                    req.WorkflowRunId = seatRun.Id;
-                    req.WorkflowId = seatRun.WorkflowId;
-                    req.WorkflowVersion = seatRun.WorkflowVersion;
-                }
-            }
+            // The mission NAME and the workflow SEAT, resolved in the ONE place both spawn doors share
+            // (issue #2629 - this route and POST /directors/{id}/sessions had drifted, and the Director
+            // door's missing name took mission-scoped spawning down completely).
+            var route = $"POST /machines/{machine}/sessions";
+            if (!SpawnMissionAndSeat.TryResolve(req, tenant, missions, workflowRuns, route, out var seatRun, out var resolveError))
+                return resolveError!;
 
             var (ok, dto, error, _) = await spawner.SpawnOnMachineAsync(machine, req, ct);
             if (!ok || dto is null)
@@ -391,50 +341,8 @@ internal static class MachineEndpoints
                 return Results.Json(new { error = error ?? $"could not start a session on '{machine}'", machine }, statusCode: 502);
             }
 
-            // Record the new session as a run participant - the persisted run-to-session membership
-            // (#1771). The session id is the canonical fleet GUID governance joins effort on. Two
-            // guards, both from inspection findings:
-            //  - Record ONLY when the Director's reply proves the seat actually landed. An older
-            //    Director (rolling upgrade) ignores the seat fields and returns a DTO without them;
-            //    recording membership for a session whose agent never received its conduct would be
-            //    a governance lie.
-            //  - The spawn has already SUCCEEDED; a participant-write failure is reported loudly in
-            //    the log, never converted into an HTTP failure the caller would retry into a second
-            //    session.
-            if (seatRun is not null && workflowRuns is not null && !string.IsNullOrWhiteSpace(dto.SessionId))
-            {
-                if (dto.WorkflowRunId != seatRun.Id)
-                {
-                    FileLog.Write($"[MachineEndpoints] POST /machines/{machine}/sessions: Director did NOT " +
-                                  $"stamp the seat (returned run={dto.WorkflowRunId?.ToString() ?? "none"}; it " +
-                                  "likely predates seated sessions). Session started UNSEATED; no participant recorded.");
-                }
-                else
-                {
-                    try
-                    {
-                        workflowRuns.Patch(seatRun.Id, new Contracts.PatchWorkflowRunRequest
-                        {
-                            AddParticipants = new List<Contracts.WorkflowRunParticipantDto>
-                            {
-                                new()
-                                {
-                                    SessionId = dto.SessionId,
-                                    AgentKind = req.Agent,
-                                    Role = req.Role ?? "",
-                                    Machine = machine,
-                                },
-                            },
-                        });
-                    }
-                    catch (Exception ex)
-                    {
-                        FileLog.Write($"[MachineEndpoints] POST /machines/{machine}/sessions: run-participant " +
-                                      $"record FAILED for session {dto.SessionId} on run {seatRun.Id}: {ex.Message}. " +
-                                      "The session is seated and running; governance is missing this membership row.");
-                    }
-                }
-            }
+            // The run-participant record, in the same shared place the resolution lives.
+            SpawnMissionAndSeat.RecordParticipant(seatRun, workflowRuns, req, dto, machine, route);
 
             FileLog.Write($"[MachineEndpoints] POST /machines/{machine}/sessions: started sid={dto.SessionId}" +
                           (seatRun is null ? "" : $", seated on run {seatRun.Id} ({seatRun.WorkflowId} v{seatRun.WorkflowVersion})"));

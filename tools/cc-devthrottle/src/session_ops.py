@@ -782,7 +782,12 @@ def spawn_session(
     # against Standalone/Manager/Worker/Architect and rejects an unknown value (never a silent drop).
     if role:
         body["role"] = role
-    # Mission attach at spawn: forward the Mission id; the Director resolves+validates it (unknown -> 400).
+    # Mission attach at spawn: forward the Mission id ALONE. The GATEWAY resolves and validates it against
+    # its own store - the only one that holds missions - and sends the Director the resolved name alongside
+    # the id; an unknown mission is a 400 from the Gateway. This tool deliberately does not look a mission
+    # up itself: a second copy of that rule here would be a second thing to get wrong (issue #2629, where
+    # one of the two Gateway spawn routes forwarded the id without the name and the Director, asked to
+    # resolve something it does not hold, called a live mission unknown).
     #
     # INHERITANCE (issue #2387). With no --mission, a session that has a CONTROLLER inherits that
     # controller's mission. Default ON, because the fleet already records the relationship and the case

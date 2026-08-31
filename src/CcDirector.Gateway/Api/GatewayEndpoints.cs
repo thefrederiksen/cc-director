@@ -3106,6 +3106,23 @@ internal static class GatewayEndpoints
 
             FileLog.Write($"[GatewayEndpoints] POST /directors/{id}/sessions: repo={req.RepoPath}, agent={req.Agent}");
 
+            // THE MISSION NAME AND THE WORKFLOW SEAT, resolved here exactly as the machine door resolves
+            // them (issue #2629). This is the door an unqualified `cc-devthrottle session spawn` uses, and
+            // it used to forward the create VERBATIM - so a mission-scoped spawn reached the Director
+            // carrying an id and no name, the Director read that as an old caller naming a mission in its
+            // own stale local store, and refused a mission that was real, active and listed. The seat was
+            // missing too, silently: a session in a mission with none of the conduct the mission pins.
+            //
+            // Both doors now call the SAME resolver, so neither can drift from the other again.
+            var spawnTenant = ResolveReadTenant(ctx, tenantBoundary);
+            if (spawnTenant is null)
+                return Results.Json(new { error = "no tenant is bound to this request" },
+                    statusCode: StatusCodes.Status403Forbidden);
+            var spawnRoute = $"POST /directors/{id}/sessions";
+            if (!SpawnMissionAndSeat.TryResolve(req, spawnTenant.Value, missions, workflowRuns, spawnRoute,
+                    out var seatRun, out var resolveError))
+                return resolveError!;
+
             // Issue #1177 (Phase 1): create rides the target Director's stream. Tunnel-only: a null return
             // means the Director is not connected, and a non-Ok stream result (validation/creation failure)
             // collapses to 502 - both surface as the error below.
@@ -3124,6 +3141,12 @@ internal static class GatewayEndpoints
             }
             if (body is null)
                 return Results.Problem(err ?? "failed", statusCode: StatusCodes.Status502BadGateway);
+
+            // The membership row governance reads, on the same terms as the machine door: recorded only
+            // when the Director's reply proves the seat landed, and never turned into an HTTP failure the
+            // caller would retry into a second session.
+            SpawnMissionAndSeat.RecordParticipant(seatRun, workflowRuns, req, body, d.MachineName ?? "", spawnRoute);
+
             return Results.Json(body, statusCode: 201);
         });
 
