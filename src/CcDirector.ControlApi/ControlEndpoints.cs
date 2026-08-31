@@ -265,8 +265,9 @@ internal static class ControlEndpoints
             Name = s.CustomName,
             Number = s.Number,
             // Mission attachment (mission-as-first-class-unit-of-work): the link + cached display name flow
-            // straight through the Gateway aggregation on the SessionDto; the RESOLVED Mission record lives
-            // in the Director's MissionStore.
+            // straight through the Gateway aggregation on the SessionDto. Both values were STAMPED by what
+            // the create or attach verb carried - the Mission record itself lives at the Gateway, and this
+            // Director holds no mission store to resolve one from (issue #2629).
             MissionId = s.MissionId,
             MissionName = s.MissionName,
             // Workflow seat (Workflows mission, phase 5b): the run this session executes, with its

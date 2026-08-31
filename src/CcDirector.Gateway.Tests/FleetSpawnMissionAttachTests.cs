@@ -21,9 +21,12 @@ namespace CcDirector.Gateway.Tests;
 /// real verb core:
 ///
 ///   * MissionId + MissionName both present (the Gateway path): stamp DIRECTLY, no local lookup -
-///     the local store knowing nothing about the mission must not matter.
-///   * MissionId alone (an old caller): the TEMPORARY local-store bridge resolves it, and an id the
-///     local store does not know is REFUSED loudly rather than silently dropped.
+///     the Director having no mission store of its own must not matter.
+///   * MissionId alone: REFUSED loudly rather than silently dropped, and rather than resolved against
+///     a store that cannot answer. Issue #2629: the temporary local-store bridge that used to sit here
+///     is GONE. It resolved a bare id against a stale per-machine missions.json, so the second spawn
+///     door - POST /directors/{id}/sessions, which forwarded the create verbatim and never stamped the
+///     name - produced "unknown mission" for a mission that was real, active and listed.
 ///   * No mission: no attach, no lookup.
 /// </summary>
 [Collection("DirectorRoot")]
@@ -68,18 +71,18 @@ public sealed class FleetSpawnMissionAttachTests : IDisposable
         CommandArgs = "/k",
     };
 
-    private DirectorCommandResult Spawn(NewSessionRequest body, MissionStore? localStore = null)
+    private DirectorCommandResult Spawn(NewSessionRequest body)
         => SessionCommandExecutor.Create(_sm, "dir-spawn-mission", new DirectorCommand
         {
             CommandId = "cmd-spawn-mission",
             Verb = "create",
             SessionId = "",
             PayloadJson = JsonSerializer.Serialize(body, Json),
-        }, localStore is null ? null : new SessionCommandServices { MissionStore = localStore });
+        }, null);
 
-    private async Task<SessionDto> SpawnOkAndCleanUpAsync(NewSessionRequest body, MissionStore? localStore = null)
+    private async Task<SessionDto> SpawnOkAndCleanUpAsync(NewSessionRequest body)
     {
-        var result = Spawn(body, localStore);
+        var result = Spawn(body);
         Assert.Equal(DirectorCommandStatus.Ok, result.Status);
         var dto = JsonSerializer.Deserialize<SessionDto>(result.BodyJson ?? "{}", Json)!;
         if (dto.SessionId is not null && Guid.TryParse(dto.SessionId, out var id))
@@ -93,8 +96,8 @@ public sealed class FleetSpawnMissionAttachTests : IDisposable
     public async Task Gateway_resolved_mission_attaches_directly_without_any_local_lookup()
     {
         // The Gateway path: id AND name arrive together because the Gateway already resolved the mission
-        // against ITS store. The Director's own store knows nothing about this mission, and that must not
-        // matter - re-resolving locally is the wrong-store defect #1548 was about.
+        // against ITS store. The Director holds no mission store at all, and that must not matter -
+        // re-resolving locally is the wrong-store defect #1548 and #2629 were both about.
         var body = SpawnBody();
         body.MissionId = KnownMissionId;
         body.MissionName = KnownMissionName;
@@ -106,19 +109,22 @@ public sealed class FleetSpawnMissionAttachTests : IDisposable
     }
 
     [Fact]
-    public void Old_caller_with_id_only_and_a_local_store_miss_is_refused_loudly()
+    public void An_id_with_no_name_is_refused_loudly_and_names_the_real_problem()
     {
-        // The transitional bridge: an id-only create resolves against the LOCAL store, and an unknown id
-        // must be refused rather than silently dropping the attach - an unattached session in a pod that
-        // expected it is the quiet version of the same defect.
+        // A create carrying a mission id and no name never passed through the Gateway's resolution, so
+        // nothing on this machine can say what that mission is. Refusing is right - silently dropping the
+        // attach would leave a session outside the pod that expected it, which is the quiet version of the
+        // same defect. What must NOT happen is the old answer: consulting a stale per-machine store and
+        // calling a real mission unknown, then advising the caller to create one that already exists.
         var body = SpawnBody();
         body.MissionId = Guid.NewGuid();
 
-        var result = Spawn(body, new MissionStore(
-            Path.Combine(_root, "missions-empty.json"), adoptUnattributedAs: Core.Tenancy.TenantId.Local));
+        var result = Spawn(body);
 
         Assert.Equal(DirectorCommandStatus.BadRequest, result.Status);
-        Assert.Contains("unknown mission", result.Error);
+        Assert.Contains("without its name", result.Error);
+        Assert.Contains("Gateway", result.Error);
+        Assert.DoesNotContain("Create it first", result.Error);
     }
 
     [Fact]

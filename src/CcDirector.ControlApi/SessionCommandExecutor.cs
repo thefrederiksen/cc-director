@@ -26,9 +26,11 @@ internal sealed class SessionCommandServices
     /// <summary>The turn-summary + goal-assessment cache (setting a wingman goal kicks an assessment).</summary>
     public TurnSummaryCache? TurnSummaryCache { get; init; }
 
-    /// <summary>The Mission record store (attaching a session to a Mission, and honoring a create-time
-    /// MissionId, resolve the Mission's display name through it). Null skips Mission resolution.</summary>
-    public MissionStore? MissionStore { get; init; }
+    // There is deliberately NO mission store here. Missions are a fleet-level record owned by the Gateway,
+    // which resolves one in the caller's own tenant and sends the create/attach verb its NAME alongside its
+    // id; the Director stamps what it was handed. The Director-local store this field used to point at was
+    // a different, per-machine set that nothing wrote any more, and consulting it made a real mission look
+    // unknown (issue #2629). Do not reintroduce it.
 
     /// <summary>
     /// Gateway Cleanup mission, Phase 0 (wave 3): this Director's build version string, so a director-level
@@ -480,40 +482,39 @@ internal static class SessionCommandExecutor
                     $"invalid workflow seat: version {badVersion} is not a published version number.");
         }
 
-        // Mission attach at spawn. Missions are a FLEET-level concept and now live at the Gateway (source of
-        // truth), so the mission name that binds the session into a pod arrives ON the create request:
-        //   * GATEWAY path (MissionId AND MissionName both set): the Gateway already resolved+validated the
-        //     mission against its OWN store, so the Director stamps the attachment DIRECTLY - no local-store
-        //     lookup, no local validation. This is the end state.
-        //   * TRANSITIONAL BRIDGE (MissionId set, MissionName blank): an old caller hitting the Director's
-        //     POST /sessions directly for a Director-store mission. The Director resolves the name from its
-        //     own MissionStore exactly as before, rejecting an unknown mission. This local-lookup bridge is
-        //     TEMPORARY: it is REMOVED when the Gateway Cleanup Phase 1 drops the Director MissionStore, after
-        //     which the Director never resolves a mission name locally and only stamps what create carries.
-        //   * No MissionId: no attach.
-        // Resolved BEFORE creating the session (mirroring the explicit-role check) so an unknown mission never
-        // silently drops. attachMissionId / attachMissionName below carry the values stamped after creation.
+        // Mission attach at spawn. Missions are a FLEET-level concept and live at the Gateway (the source of
+        // truth), so the mission that binds the session into a pod arrives ON the create request, ID AND
+        // NAME TOGETHER: the Gateway resolved and validated it against its own tenant-scoped store before
+        // dispatching, and that resolution IS the authorization. The Director stamps what it was handed -
+        // no local store, no lookup, no second opinion. No MissionId means no attach.
+        //
+        // AN ID WITH NO NAME IS REFUSED, and the message says why (issue #2629). The Director used to
+        // resolve a bare id against its OWN missions.json - a different, per-machine, single-tenant set
+        // that nothing writes any more. So a caller that skipped the Gateway's resolution got a mission
+        // that was real, active and listed by `cc-devthrottle mission list` reported as UNKNOWN, with
+        // advice to create something that already existed. That bridge was documented as temporary from
+        // the day it was written and is now gone: a bare id means the caller bypassed the one place that
+        // can answer, and saying so plainly beats consulting a stale store and guessing.
+        //
+        // Resolved BEFORE creating the session (mirroring the explicit-role check) so a refused mission
+        // never leaves a started session attached to nothing. attachMissionId / attachMissionName below
+        // carry the values stamped after creation.
         Guid? attachMissionId = null;
         string? attachMissionName = null;
         if (req.MissionId is Guid createMissionId)
         {
-            if (!string.IsNullOrWhiteSpace(req.MissionName))
+            if (string.IsNullOrWhiteSpace(req.MissionName))
             {
-                // Gateway path: trust the Gateway's already-validated mission id + name; stamp directly.
-                attachMissionId = createMissionId;
-                attachMissionName = req.MissionName;
+                FileLog.Write($"[SessionCommandExecutor] create REFUSED: mission {createMissionId} arrived " +
+                              "with no name, so it was never resolved by the Gateway");
+                return DirectorCommandResult.Fail(DirectorCommandStatus.BadRequest,
+                    $"mission '{createMissionId}' arrived without its name, so it was not resolved by the " +
+                    "Gateway. Missions live at the Gateway, not on this machine - spawn through the Gateway " +
+                    "(cc-devthrottle session spawn), which resolves the mission and sends its name.");
             }
-            else
-            {
-                // Transitional bridge: resolve the name from the local Director MissionStore. Removed with
-                // the Director MissionStore in Phase 1.
-                var mission = services?.MissionStore?.Get(Core.Tenancy.TenantId.Local, createMissionId);
-                if (mission is null)
-                    return DirectorCommandResult.Fail(DirectorCommandStatus.BadRequest,
-                        $"unknown mission '{createMissionId}'. Create it first with POST /missions.");
-                attachMissionId = mission.MissionId;
-                attachMissionName = mission.MissionName;
-            }
+            // The Gateway resolved this mission inside the caller's own tenant; stamp it.
+            attachMissionId = createMissionId;
+            attachMissionName = req.MissionName;
         }
 
         // RawCli requires a Command; validate before constructing the agent.
@@ -765,20 +766,18 @@ internal static class SessionCommandExecutor
     /// BadRequest. Returns the updated session mapped through the SAME <see cref="ControlEndpoints.Map"/> the
     /// stream snapshot uses. Mirrors <see cref="SetRole"/>.
     ///
-    /// The Mission NAME arrives one of two ways, exactly as it does on the create path (see the mission block
-    /// in <see cref="Create"/>), because a Mission is a FLEET-level record whose source of truth is the
-    /// Gateway and not this machine:
-    ///  * GATEWAY path (MissionId AND MissionName both set): the Gateway resolved the mission against its own
-    ///    TENANT-SCOPED store before sending the verb, and that resolution is the authorization. The Director
-    ///    stamps the attachment directly - no local lookup, no second opinion. This is the end state.
-    ///  * TRANSITIONAL BRIDGE (MissionId set, MissionName blank): an old caller naming a mission in the
-    ///    Director's OWN store. The Director resolves it locally exactly as before. Removed with the Director
-    ///    MissionStore in Gateway Cleanup Phase 1.
+    /// The Mission ID and NAME arrive TOGETHER, exactly as they do on the create path (see the mission
+    /// block in <see cref="Create"/>), because a Mission is a FLEET-level record whose source of truth is
+    /// the Gateway and not this machine. The Gateway resolved the mission against its own TENANT-SCOPED
+    /// store before sending the verb, and that resolution is the authorization; the Director stamps the
+    /// attachment directly - no local lookup, no second opinion. An id with no name is refused, because it
+    /// was never resolved by the only store that can answer.
     ///
-    /// The Director deliberately does NOT re-validate a Gateway-supplied mission against its local store. It
-    /// could not: the local store is a different (single-tenant, per-machine) set, so a mission that is real
-    /// and owned would be rejected here for being absent from the wrong store - which is exactly the failure
-    /// issue #1548 fixed on the spawn path.
+    /// The Director deliberately does NOT re-validate a Gateway-supplied mission locally, and no longer has
+    /// anything to re-validate it against. It could not: the old local store was a different (single-tenant,
+    /// per-machine) set, so a mission that is real and owned was rejected for being absent from the wrong
+    /// store - the failure issue #1548 fixed on the spawn path and issue #2629 hit again through a second
+    /// spawn door.
     /// </summary>
     internal static DirectorCommandResult AttachMission(SessionManager sessionManager, string directorId, DirectorCommand command, SessionCommandServices? services)
     {
@@ -818,24 +817,20 @@ internal static class SessionCommandExecutor
             return DirectorCommandResult.Success(Serialize(ControlEndpoints.Map(session, directorId)));
         }
 
-        if (!string.IsNullOrWhiteSpace(request.MissionName))
+        if (string.IsNullOrWhiteSpace(request.MissionName))
         {
-            // Gateway path: the mission was resolved inside the caller's own tenant; stamp it.
-            session.AttachToMission(missionId, request.MissionName);
-            ApplySeat();
-            FileLog.Write($"[SessionCommandExecutor] attach-mission: session={guid} mission={missionId} (resolved by the Gateway)");
-            return DirectorCommandResult.Success(Serialize(ControlEndpoints.Map(session, directorId)));
+            FileLog.Write($"[SessionCommandExecutor] attach-mission REFUSED: session={guid} mission={missionId} " +
+                          "arrived with no name, so it was never resolved by the Gateway");
+            return DirectorCommandResult.Fail(DirectorCommandStatus.BadRequest,
+                $"mission '{missionId}' arrived without its name, so it was not resolved by the Gateway. " +
+                "Missions live at the Gateway, not on this machine - attach through the Gateway " +
+                "(cc-devthrottle mission attach), which resolves the mission and sends its name.");
         }
 
-        // Transitional bridge. The Director's store is single-tenant - one machine, one owner - so Local is
-        // its whole world.
-        var mission = services?.MissionStore?.Get(Core.Tenancy.TenantId.Local, missionId);
-        if (mission is null)
-            return DirectorCommandResult.Fail(DirectorCommandStatus.BadRequest,
-                $"unknown mission '{missionId}'. Create it first with POST /missions.");
-
-        session.AttachToMission(mission.MissionId, mission.MissionName);
-        FileLog.Write($"[SessionCommandExecutor] attach-mission: session={guid} mission={mission.MissionId}");
+        // The Gateway resolved this mission inside the caller's own tenant; stamp it.
+        session.AttachToMission(missionId, request.MissionName);
+        ApplySeat();
+        FileLog.Write($"[SessionCommandExecutor] attach-mission: session={guid} mission={missionId} (resolved by the Gateway)");
         return DirectorCommandResult.Success(Serialize(ControlEndpoints.Map(session, directorId)));
     }
 

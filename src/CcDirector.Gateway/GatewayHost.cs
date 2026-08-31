@@ -98,13 +98,16 @@ public sealed class GatewayHost : IAsyncDisposable
     public Streaming.RepoHistoryStore RepoHistory { get; }
 
     /// <summary>
-    /// Gateway Cleanup mission (Wave 4b): the Gateway's OWN store of Missions. Missions are a fleet-level
-    /// concept (they span Directors and machines and nest), so the source of truth lives at the Gateway,
-    /// like fleet messaging and scheduling - not on any one Director. Reuses the same JSON-file-backed
-    /// <see cref="Core.Sessions.MissionStore"/> the Director uses, pointed at a Gateway-side file. The
-    /// mission REST endpoints (POST/GET /missions) read and write this, and a mission-scoped spawn
-    /// validates against it before forwarding the create to a Director. The Director's own /missions
-    /// routes stay until a later phase; this is the additive Gateway-native equivalent.
+    /// Gateway Cleanup mission (Wave 4b): the ONLY store of Missions. Missions are a fleet-level concept
+    /// (they span Directors and machines and nest), so the source of truth lives at the Gateway, like fleet
+    /// messaging and scheduling - not on any one Director. It is the JSON-file-backed
+    /// <see cref="Core.Sessions.MissionStore"/>, pointed at a Gateway-side file. The mission REST endpoints
+    /// (POST/GET /missions) read and write this, and every spawn door validates against it and stamps the
+    /// resolved NAME onto the create before forwarding it to a Director.
+    ///
+    /// A Director no longer keeps one at all: the local store, and the create-time bridge that consulted
+    /// it, were removed with issue #2629 after a spawn door that forwarded the id WITHOUT the name sent the
+    /// Director to that stale per-machine file, which reported a live mission as unknown.
     /// </summary>
     public Core.Sessions.MissionStore Missions { get; }
 
