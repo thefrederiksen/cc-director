@@ -64,13 +64,16 @@ are `example@example.com`, `myorg/secret-repo` and
   disk and read again, independently of the scrub run, with zero hits
   (step 10).
 - **The whole test suite passes in that same clean environment**: 52
-  collected, 47 passed, 5 skipped, zero failures (step 12). The five skips
-  are all case-alias arms - tests whose premise is that two spellings name
-  one file - and they are keyed to Windows by platform, because only
-  Windows guarantees that premise; a macOS volume merely usually satisfies
-  it. The hard-link arm of the input-overwrite guard carries no such key
-  and runs here: overwriting the input through a second name for the same
-  file is refused on this machine, proved live in this run.
+  collected, 52 passed, zero skipped, zero failures (step 12). Nothing is
+  assumed from the platform name: the case-alias arms - tests whose
+  premise is that two spellings name one file - measure the volume they
+  actually write to with the same probe the tool uses, and they skip only
+  on a measured answer (the suite step runs with -rs so any skip would be
+  printed with its reason; none appears). On this machine's
+  case-insensitive volume every one of them ran, so the guards on the only
+  unredacted copy of the input - the case-variant arm, the hard-link arm -
+  and the case-colliding-output refusal are all proved live here, not
+  inferred from Windows.
 
 ## What this does NOT prove
 
@@ -357,8 +360,8 @@ IMAGE ../samples/sample-normal.png
   ocr scale 3: 20 words in 5 lines
   HITS: 1
     term='example@example.com' rect=(x=180 y=115 w=220 h=30) scales=1,2,3 ocr_line='Contact address: example@example.com'
-  CANDIDATE /private/tmp/cc-scrub-proof/out/sample-normal-scrubbed.png.g8v9lbyf.tmp (mode=blur pad=4)
-  VERIFY: re-reading /private/tmp/cc-scrub-proof/out/sample-normal-scrubbed.png.g8v9lbyf.tmp
+  CANDIDATE /private/tmp/cc-scrub-proof/out/sample-normal-scrubbed.png.aru8vlyr.tmp (mode=blur pad=4)
+  VERIFY: re-reading /private/tmp/cc-scrub-proof/out/sample-normal-scrubbed.png.aru8vlyr.tmp
     verify scale 1: 19 words in 5 lines
     verify scale 2: 19 words in 5 lines
     verify scale 3: 19 words in 5 lines
@@ -385,8 +388,8 @@ IMAGE ../samples/sample-small-ui.png
   ocr scale 3: 20 words in 6 lines
   HITS: 1
     term='myorg/secret-repo' rect=(x=39 y=76 w=87 h=14) scales=1,2,3 ocr_line='re po myorg/secret-repo'
-  CANDIDATE /private/tmp/cc-scrub-proof/out/sample-small-ui-scrubbed.png.4tbv3ier.tmp (mode=blur pad=4)
-  VERIFY: re-reading /private/tmp/cc-scrub-proof/out/sample-small-ui-scrubbed.png.4tbv3ier.tmp
+  CANDIDATE /private/tmp/cc-scrub-proof/out/sample-small-ui-scrubbed.png.4k1sfa5d.tmp (mode=blur pad=4)
+  VERIFY: re-reading /private/tmp/cc-scrub-proof/out/sample-small-ui-scrubbed.png.4k1sfa5d.tmp
     verify scale 1: 18 words in 6 lines
     verify scale 2: 18 words in 6 lines
     verify scale 3: 18 words in 6 lines
@@ -413,8 +416,8 @@ IMAGE ../samples/sample-glyph.png
   ocr scale 3: 18 words in 4 lines
   HITS: 1
     term='internal-hostname.local' rect=(x=16 y=72 w=237 h=13) scales=1,2,3 ocr_line='https://internal-hostname.local/status/session'
-  CANDIDATE /private/tmp/cc-scrub-proof/out/sample-glyph-scrubbed.png.9t8py99n.tmp (mode=blur pad=4)
-  VERIFY: re-reading /private/tmp/cc-scrub-proof/out/sample-glyph-scrubbed.png.9t8py99n.tmp
+  CANDIDATE /private/tmp/cc-scrub-proof/out/sample-glyph-scrubbed.png.7x90v8yn.tmp (mode=blur pad=4)
+  VERIFY: re-reading /private/tmp/cc-scrub-proof/out/sample-glyph-scrubbed.png.7x90v8yn.tmp
     verify scale 1: 15 words in 3 lines
     verify scale 2: 17 words in 3 lines
     verify scale 3: 17 words in 3 lines
@@ -528,7 +531,7 @@ tests/test_cc_scrub.py::test_a_read_over_the_megapixel_budget_is_refused_before_
 tests/test_cc_scrub.py::test_the_megapixel_budget_must_be_at_least_one PASSED [ 36%]
 tests/test_cc_scrub.py::test_an_image_too_big_for_the_engine_is_refused_before_it_is_read PASSED [ 38%]
 tests/test_cc_scrub.py::test_refuses_to_overwrite_the_input_image PASSED [ 40%]
-tests/test_cc_scrub.py::test_refuses_to_overwrite_the_input_addressed_in_a_different_case SKIPPED [ 42%]
+tests/test_cc_scrub.py::test_refuses_to_overwrite_the_input_addressed_in_a_different_case PASSED [ 42%]
 tests/test_cc_scrub.py::test_refuses_to_overwrite_the_input_reached_through_a_hard_link PASSED [ 44%]
 tests/test_cc_scrub.py::test_a_missing_terms_file_names_the_example_to_copy PASSED [ 46%]
 tests/test_cc_scrub.py::test_the_shipped_example_denylist_parses PASSED  [ 48%]
@@ -538,9 +541,9 @@ tests/test_cc_scrub.py::test_word_ranges_match_code_points_for_plain_text PASSED
 tests/test_cc_scrub.py::test_a_denylist_term_that_can_never_match_is_refused PASSED [ 55%]
 tests/test_cc_scrub.py::test_term_validation_follows_the_normalisation_actually_in_force PASSED [ 57%]
 tests/test_cc_scrub.py::test_two_inputs_that_would_share_one_output_are_refused PASSED [ 59%]
-tests/test_cc_scrub.py::test_two_inputs_whose_stems_differ_only_in_case_are_refused SKIPPED [ 61%]
-tests/test_cc_scrub.py::test_collision_detection_does_not_depend_on_the_host_normcase SKIPPED [ 63%]
-tests/test_cc_scrub.py::test_the_case_probe_answers_from_the_filesystem_and_cleans_up SKIPPED [ 65%]
+tests/test_cc_scrub.py::test_two_inputs_whose_stems_differ_only_in_case_are_refused PASSED [ 61%]
+tests/test_cc_scrub.py::test_collision_detection_does_not_depend_on_the_host_normcase PASSED [ 63%]
+tests/test_cc_scrub.py::test_the_case_probe_answers_from_the_filesystem_and_cleans_up PASSED [ 65%]
 tests/test_cc_scrub.py::test_the_case_probe_refuses_to_guess_when_it_cannot_be_created PASSED [ 67%]
 tests/test_cc_scrub.py::test_an_output_directory_that_cannot_be_created_exits_two PASSED [ 69%]
 tests/test_cc_scrub.py::test_pad_box_grows_outwards_to_whole_pixels PASSED [ 71%]
@@ -555,17 +558,11 @@ tests/test_cc_scrub.py::test_merge_hits_unions_overlapping_rectangles_of_one_ter
 tests/test_cc_scrub.py::test_merge_hits_keeps_different_terms_apart PASSED [ 88%]
 tests/test_cc_scrub.py::test_gather_inputs_skips_already_scrubbed_files PASSED [ 90%]
 tests/test_cc_scrub.py::test_gather_inputs_rejects_a_missing_path PASSED [ 92%]
-tests/test_cc_scrub.py::test_is_same_file_sees_through_a_case_variant_of_an_existing_path SKIPPED [ 94%]
+tests/test_cc_scrub.py::test_is_same_file_sees_through_a_case_variant_of_an_existing_path PASSED [ 94%]
 tests/test_cc_scrub.py::test_is_same_file_compares_canonically_when_the_target_is_not_created_yet PASSED [ 96%]
 tests/test_cc_scrub.py::test_is_same_file_says_no_to_two_genuinely_different_files PASSED [ 98%]
 tests/test_cc_scrub.py::test_output_path_defaults_to_the_scrubbed_name_beside_the_input PASSED [100%]
 
-=========================== short test summary info ============================
-SKIPPED [1] tests/test_cc_scrub.py:486: this arm needs a case-insensitive filesystem; Windows always is, a POSIX host may not be
-SKIPPED [1] tests/test_cc_scrub.py:612: this arm needs a case-insensitive filesystem; Windows always is, a POSIX host may not be
-SKIPPED [1] tests/test_cc_scrub.py:629: this arm needs a case-insensitive filesystem; Windows always is, a POSIX host may not be
-SKIPPED [1] tests/test_cc_scrub.py:653: this arm needs a case-insensitive filesystem; Windows always is, a POSIX host may not be
-SKIPPED [1] tests/test_cc_scrub.py:773: case-insensitive path aliasing is a Windows filesystem property
-======================== 47 passed, 5 skipped in 3.08s =========================
+============================== 52 passed in 3.08s ==============================
 [exit 0]
 ```
