@@ -357,6 +357,32 @@ def test_a_passing_scripted_run_publishes_the_candidate(
 
 # ------------------------------------------- joining and coordinate mapping
 
+def test_folding_finds_a_misread_term_and_no_fold_misses_it():
+    """The fold-versus-miss property, proved without a real engine.
+
+    The live-engine test above can only demonstrate the miss where the
+    recognizer actually misreads the sample, which is a property of that
+    engine on that platform - Vision reads the same sample cleanly, so the
+    second half is asserted on Windows only there. The property itself is not
+    platform specific, so it is proved here instead, deterministically and
+    everywhere, by feeding the matcher the misread directly: the engine
+    returned the leading 'i' of 'internal' as a 't'.
+
+    Folded, the term is found. Unfolded, it is not. That pair is the whole
+    argument for glyph folding and it must be held down on every platform,
+    not only on the one whose engine happens to make the mistake.
+    """
+    misread = "https:/ftnternal-hostname.local/status/session"
+    backend = ScriptedBackend([[word(misread, 10, 20, 300, 12, line=0)]])
+    ocr_pass = cli.ocr_image(Image.new("RGB", (400, 60)), 1, "en", backend)
+
+    folded = cli.find_hits(ocr_pass, [gen_samples.TERM_HOST], True)
+    assert len(folded) == 1
+    assert folded[0].box == (10.0, 20.0, 310.0, 32.0)
+
+    assert cli.find_hits(ocr_pass, [gen_samples.TERM_HOST], False) == []
+
+
 def test_a_term_split_across_adjacent_words_on_one_line_is_joined():
     """Three OCR words, one term, one rectangle spanning all three."""
     backend = ScriptedBackend([[

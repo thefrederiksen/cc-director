@@ -322,7 +322,7 @@ portable fallback engine and none will be added.
 
 ```
 python gen_samples.py samples     # draw the synthetic test images
-python -m pytest tests/ -q        # 49 tests
+python -m pytest tests/ -q        # 50 tests
 ```
 
 The integration tests drive the **real recognizer** over the generated
