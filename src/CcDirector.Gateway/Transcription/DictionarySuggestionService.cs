@@ -32,8 +32,8 @@ namespace CcDirector.Gateway.Transcription;
 /// </summary>
 public sealed class DictionarySuggestionService
 {
-    /// <summary>The most-recent transcripts mined per scan. Bounds the mining cost; the store's own 30-day /
-    /// 10,000-row retention (issue #509) already bounds what exists, and the newest slice is the relevant one
+    /// <summary>The most-recent transcripts mined per scan. Bounds the mining cost; the store's own 90-day /
+    /// 30,000-row retention already bounds what exists, and the newest slice is the relevant one
     /// for "what is the model getting wrong lately".</summary>
     public const int MaxTranscriptsMined = 5_000;
 

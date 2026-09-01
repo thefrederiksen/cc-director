@@ -18,6 +18,23 @@ public sealed class TranscriptStoreTests
     private static readonly DateTime Base = new(2026, 7, 24, 12, 0, 0, DateTimeKind.Utc);
 
     [Fact]
+    public void ProductionRetention_MatchesSessionHistory_AndTheCapDoesNotUndercutIt()
+    {
+        // Owner decision, 2026-09-01: every per-tenant record the Gateway keeps ages out on the SAME
+        // 90-day clock. Pinning the transcript window TO the history window means neither can be
+        // changed alone without this test naming the drift.
+        Assert.Equal(CcDirector.Gateway.History.SessionHistorySweep.Retention, TranscriptStore.RetentionWindow);
+        Assert.Equal(TimeSpan.FromDays(90), TranscriptStore.RetentionWindow);
+
+        // The cap must not silently undercut the window: the heaviest real tenant measured
+        // (2026-09-01) writes ~133 transcripts a day, so 90 days needs ~12,000 rows of headroom.
+        // A 10,000 cap would quietly turn "90 days" into ~75 for exactly the tenant the window
+        // is most about.
+        Assert.True(TranscriptStore.MaxTranscriptsPerTenant >= 133 * 90 * 2,
+            $"MaxTranscriptsPerTenant ({TranscriptStore.MaxTranscriptsPerTenant}) leaves less than 2x headroom over the measured heaviest tenant across the retention window");
+    }
+
+    [Fact]
     public void Append_PersistsRawAndCleanedAndMetadata()
     {
         using var h = new GatewayDbTestHarness();

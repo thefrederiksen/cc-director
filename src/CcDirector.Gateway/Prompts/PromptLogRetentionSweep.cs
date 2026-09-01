@@ -6,7 +6,7 @@ namespace CcDirector.Gateway.Prompts;
 /// The prompt log's retention window and its enforcement (CR-3b, devthrottle_internal issue #1180).
 /// Before this sweep existed the log said "retention is unbounded" out loud, which for a store of
 /// customer prompt text was the finding, not a feature. Now the log sits on the same footing as the
-/// other bounded stores (turn-review 7 days, session history 90 days, dictation transcripts 30 days,
+/// other bounded stores (turn-review 7 days, session history 90 days, dictation transcripts 90 days,
 /// voice-turn archives 24 hours): a window, and a sweep that makes the window true.
 ///
 /// This sweep does NOT ride the <see cref="Tenancy.TenantScopedSweep"/> seam, on purpose: that seam
