@@ -1,0 +1,19 @@
+# cc-scrub denylist - EXAMPLE ONLY.
+#
+# Copy this file to terms.txt beside it and put your own terms in that copy.
+# terms.txt is listed in this folder's .gitignore and must never be
+# committed: a real denylist is a list of the exact strings you are trying
+# to keep out of public screenshots, so committing it publishes them.
+#
+# One term per line. '#' starts a comment. Matching is case-insensitive and
+# by substring, so 'myorg' also hits 'myorg/secret-repo'. Punctuation and
+# spaces are ignored on both sides, so a term split across OCR words still
+# matches.
+#
+# Keep terms specific. Glyph folding (on by default) deliberately
+# over-matches, so a two or three character term will hit far more than you
+# intended.
+
+example@example.com
+myorg/secret-repo
+internal-hostname.local

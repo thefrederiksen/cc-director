@@ -169,6 +169,14 @@
       "requirements": ["Windows", ".NET runtime", "OPENAI_API_KEY"]
     },
     {
+      "name": "cc-scrub",
+      "category": "media",
+      "type": "python",
+      "description": "Find denylisted text in screenshots with the operating system's own OCR engine and destroy it",
+      "built": false,
+      "requirements": []
+    },
+    {
       "name": "cc-image",
       "category": "media",
       "type": "python",
