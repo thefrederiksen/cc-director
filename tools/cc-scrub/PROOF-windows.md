@@ -56,9 +56,12 @@ all deliberately fake.
 - **The outputs really are clean.** Each published file is re-opened from
   disk and read again, independently of the scrub run, with zero hits
   (step 16).
-- **The whole test suite passes in that same clean environment**: 50 tests,
-  none skipped, including the three end-to-end scrub-and-verify cases
-  (step 18).
+- **The whole test suite passes in that same clean environment**: 52 tests,
+  NONE SKIPPED, including the three end-to-end scrub-and-verify cases
+  (step 18). It is run with `-rs`, so a skip would be printed with its
+  reason - a skip nobody prints reads exactly like a pass. The arms that
+  need a volume on which two spellings name one file measure that on the
+  directory they write to; on this volume all of them run.
 
 ## What this does NOT prove
 
@@ -374,8 +377,8 @@ IMAGE D:/cc-scrub-proof/samples/sample-normal.png
   ocr scale 3: 20 words in 5 lines
   HITS: 1
     term='example@example.com' rect=(x=182 y=122 w=213 h=20) scales=1,2,3 ocr_line='Contact address: example@example.com'
-  CANDIDATE D:\cc-scrub-proof\out\sample-normal-scrubbed.png.t_jm9lgk.tmp (mode=blur pad=4)
-  VERIFY: re-reading D:\cc-scrub-proof\out\sample-normal-scrubbed.png.t_jm9lgk.tmp
+  CANDIDATE D:\cc-scrub-proof\out\sample-normal-scrubbed.png.gg7r876f.tmp (mode=blur pad=4)
+  VERIFY: re-reading D:\cc-scrub-proof\out\sample-normal-scrubbed.png.gg7r876f.tmp
     verify scale 1: 19 words in 5 lines
     verify scale 2: 19 words in 5 lines
     verify scale 3: 19 words in 5 lines
@@ -402,8 +405,8 @@ IMAGE D:/cc-scrub-proof/samples/sample-small-ui.png
   ocr scale 3: 18 words in 6 lines
   HITS: 1
     term='myorg/secret-repo' rect=(x=41 y=78 w=84 h=10) scales=2,3 ocr_line='repo myorg/secret-repo'
-  CANDIDATE D:\cc-scrub-proof\out\sample-small-ui-scrubbed.png.5o_khszz.tmp (mode=blur pad=4)
-  VERIFY: re-reading D:\cc-scrub-proof\out\sample-small-ui-scrubbed.png.5o_khszz.tmp
+  CANDIDATE D:\cc-scrub-proof\out\sample-small-ui-scrubbed.png.2gpixx5y.tmp (mode=blur pad=4)
+  VERIFY: re-reading D:\cc-scrub-proof\out\sample-small-ui-scrubbed.png.2gpixx5y.tmp
     verify scale 1: 16 words in 5 lines
     verify scale 2: 17 words in 6 lines
     verify scale 3: 17 words in 6 lines
@@ -430,8 +433,8 @@ IMAGE D:/cc-scrub-proof/samples/sample-glyph.png
   ocr scale 3: 17 words in 4 lines
   HITS: 1
     term='internal-hostname.local' rect=(x=18 y=72 w=233 h=10) scales=2,3 ocr_line='https:/ftnternal-hostname.local/status/session'
-  CANDIDATE D:\cc-scrub-proof\out\sample-glyph-scrubbed.png.q8985fsn.tmp (mode=blur pad=4)
-  VERIFY: re-reading D:\cc-scrub-proof\out\sample-glyph-scrubbed.png.q8985fsn.tmp
+  CANDIDATE D:\cc-scrub-proof\out\sample-glyph-scrubbed.png.buzi1foy.tmp (mode=blur pad=4)
+  VERIFY: re-reading D:\cc-scrub-proof\out\sample-glyph-scrubbed.png.buzi1foy.tmp
     verify scale 1: 16 words in 3 lines
     verify scale 2: 17 words in 3 lines
     verify scale 3: 16 words in 3 lines
@@ -491,8 +494,8 @@ IMAGE D:/cc-scrub-proof/samples/sample-normal.png
   ocr scale 3: 20 words in 5 lines
   HITS: 1
     term='example@example.com' rect=(x=182 y=122 w=213 h=20) scales=1,2,3 ocr_line='Contact address: example@example.com'
-  CANDIDATE D:\cc-scrub-proof\out\sample-normal-scrubbed.png.oljnb0q0.tmp (mode=blur pad=4)
-  VERIFY: re-reading D:\cc-scrub-proof\out\sample-normal-scrubbed.png.oljnb0q0.tmp
+  CANDIDATE D:\cc-scrub-proof\out\sample-normal-scrubbed.png.y2gdj9_6.tmp (mode=blur pad=4)
+  VERIFY: re-reading D:\cc-scrub-proof\out\sample-normal-scrubbed.png.y2gdj9_6.tmp
     verify scale 1: 19 words in 5 lines
     verify scale 2: 19 words in 5 lines
     verify scale 3: 19 words in 5 lines
@@ -624,52 +627,56 @@ FATAL: no images found in directory D:/cc-scrub-proof/out
 [exit 2]
 
 === 18. the full test suite, in the same clean environment ===
+(-rs so that anything SKIPPED is printed with its reason, because a
+ skip that is not shown reads exactly like a pass)
 
-$ D:/cc-scrub-proof/venv/Scripts/python.exe -m pytest tests/ -v
+$ D:/cc-scrub-proof/venv/Scripts/python.exe -m pytest tests/ -v -rs
 ============================= test session starts =============================
 platform win32 -- Python 3.11.6, pytest-9.1.1, pluggy-1.6.0 -- D:\cc-scrub-proof\venv\Scripts\python.exe
 cachedir: .pytest_cache
 rootdir: D:\cc-scrub-proof\cc-scrub
 configfile: pyproject.toml
-collecting ... collected 50 items
+collecting ... collected 52 items
 
-tests/test_cc_scrub.py::test_generator_writes_all_four_samples PASSED    [  2%]
-tests/test_cc_scrub.py::test_check_only_finds_the_planted_email_with_coordinates PASSED [  4%]
-tests/test_cc_scrub.py::test_check_only_finds_small_grey_ui_text_only_after_upscaling PASSED [  6%]
-tests/test_cc_scrub.py::test_glyph_confusion_is_caught_by_folding_and_missed_without_it PASSED [  8%]
-tests/test_cc_scrub.py::test_scrub_redacts_and_the_verify_pass_proves_it[sample-normal.png-example@example.com] PASSED [ 10%]
-tests/test_cc_scrub.py::test_scrub_redacts_and_the_verify_pass_proves_it[sample-small-ui.png-myorg/secret-repo] PASSED [ 12%]
-tests/test_cc_scrub.py::test_scrub_redacts_and_the_verify_pass_proves_it[sample-glyph.png-internal-hostname.local] PASSED [ 14%]
-tests/test_cc_scrub.py::test_the_scrubbed_output_is_clean_when_checked_again PASSED [ 16%]
-tests/test_cc_scrub.py::test_a_directory_run_skips_files_already_scrubbed PASSED [ 18%]
-tests/test_cc_scrub.py::test_an_image_with_no_text_is_a_broken_read_not_a_clean_image PASSED [ 20%]
-tests/test_cc_scrub.py::test_a_verify_read_of_zero_words_publishes_nothing_and_exits_two PASSED [ 22%]
-tests/test_cc_scrub.py::test_a_term_surviving_in_the_output_exits_one_and_publishes_nothing PASSED [ 24%]
-tests/test_cc_scrub.py::test_a_passing_scripted_run_publishes_the_candidate PASSED [ 26%]
-tests/test_cc_scrub.py::test_folding_finds_a_misread_term_and_no_fold_misses_it PASSED [ 28%]
-tests/test_cc_scrub.py::test_a_term_split_across_adjacent_words_on_one_line_is_joined PASSED [ 30%]
-tests/test_cc_scrub.py::test_a_term_split_across_two_lines_is_not_joined PASSED [ 32%]
-tests/test_cc_scrub.py::test_a_scaled_read_maps_back_to_native_coordinates_exactly PASSED [ 34%]
-tests/test_cc_scrub.py::test_a_read_over_the_megapixel_budget_is_refused_before_it_is_attempted PASSED [ 36%]
-tests/test_cc_scrub.py::test_the_megapixel_budget_must_be_at_least_one PASSED [ 38%]
-tests/test_cc_scrub.py::test_an_image_too_big_for_the_engine_is_refused_before_it_is_read PASSED [ 40%]
-tests/test_cc_scrub.py::test_refuses_to_overwrite_the_input_image PASSED [ 42%]
-tests/test_cc_scrub.py::test_refuses_to_overwrite_the_input_addressed_in_a_different_case PASSED [ 44%]
-tests/test_cc_scrub.py::test_refuses_to_overwrite_the_input_reached_through_a_hard_link PASSED [ 46%]
-tests/test_cc_scrub.py::test_a_missing_terms_file_names_the_example_to_copy PASSED [ 48%]
-tests/test_cc_scrub.py::test_the_shipped_example_denylist_parses PASSED  [ 50%]
-tests/test_cc_scrub.py::test_bad_scales_are_a_usage_error PASSED         [ 52%]
-tests/test_cc_scrub.py::test_a_denylist_term_that_can_never_match_is_refused PASSED [ 54%]
-tests/test_cc_scrub.py::test_term_validation_follows_the_normalisation_actually_in_force PASSED [ 56%]
-tests/test_cc_scrub.py::test_two_inputs_that_would_share_one_output_are_refused PASSED [ 58%]
-tests/test_cc_scrub.py::test_two_inputs_whose_stems_differ_only_in_case_are_refused PASSED [ 60%]
-tests/test_cc_scrub.py::test_collision_detection_does_not_depend_on_the_host_normcase PASSED [ 62%]
-tests/test_cc_scrub.py::test_the_case_probe_answers_from_the_filesystem_and_cleans_up PASSED [ 64%]
-tests/test_cc_scrub.py::test_the_case_probe_refuses_to_guess_when_it_cannot_be_created PASSED [ 66%]
-tests/test_cc_scrub.py::test_an_output_directory_that_cannot_be_created_exits_two PASSED [ 68%]
-tests/test_cc_scrub.py::test_pad_box_grows_outwards_to_whole_pixels PASSED [ 70%]
-tests/test_cc_scrub.py::test_pad_box_pads_and_clamps_to_the_image PASSED [ 72%]
-tests/test_cc_scrub.py::test_normalise_drops_punctuation_and_case PASSED [ 74%]
+tests/test_cc_scrub.py::test_generator_writes_all_four_samples PASSED    [  1%]
+tests/test_cc_scrub.py::test_check_only_finds_the_planted_email_with_coordinates PASSED [  3%]
+tests/test_cc_scrub.py::test_check_only_finds_small_grey_ui_text_only_after_upscaling PASSED [  5%]
+tests/test_cc_scrub.py::test_glyph_confusion_is_caught_by_folding_and_missed_without_it PASSED [  7%]
+tests/test_cc_scrub.py::test_scrub_redacts_and_the_verify_pass_proves_it[sample-normal.png-example@example.com] PASSED [  9%]
+tests/test_cc_scrub.py::test_scrub_redacts_and_the_verify_pass_proves_it[sample-small-ui.png-myorg/secret-repo] PASSED [ 11%]
+tests/test_cc_scrub.py::test_scrub_redacts_and_the_verify_pass_proves_it[sample-glyph.png-internal-hostname.local] PASSED [ 13%]
+tests/test_cc_scrub.py::test_the_scrubbed_output_is_clean_when_checked_again PASSED [ 15%]
+tests/test_cc_scrub.py::test_a_directory_run_skips_files_already_scrubbed PASSED [ 17%]
+tests/test_cc_scrub.py::test_an_image_with_no_text_is_a_broken_read_not_a_clean_image PASSED [ 19%]
+tests/test_cc_scrub.py::test_a_verify_read_of_zero_words_publishes_nothing_and_exits_two PASSED [ 21%]
+tests/test_cc_scrub.py::test_a_term_surviving_in_the_output_exits_one_and_publishes_nothing PASSED [ 23%]
+tests/test_cc_scrub.py::test_a_passing_scripted_run_publishes_the_candidate PASSED [ 25%]
+tests/test_cc_scrub.py::test_folding_finds_a_misread_term_and_no_fold_misses_it PASSED [ 26%]
+tests/test_cc_scrub.py::test_a_term_split_across_adjacent_words_on_one_line_is_joined PASSED [ 28%]
+tests/test_cc_scrub.py::test_a_term_split_across_two_lines_is_not_joined PASSED [ 30%]
+tests/test_cc_scrub.py::test_a_scaled_read_maps_back_to_native_coordinates_exactly PASSED [ 32%]
+tests/test_cc_scrub.py::test_a_read_over_the_megapixel_budget_is_refused_before_it_is_attempted PASSED [ 34%]
+tests/test_cc_scrub.py::test_the_megapixel_budget_must_be_at_least_one PASSED [ 36%]
+tests/test_cc_scrub.py::test_an_image_too_big_for_the_engine_is_refused_before_it_is_read PASSED [ 38%]
+tests/test_cc_scrub.py::test_refuses_to_overwrite_the_input_image PASSED [ 40%]
+tests/test_cc_scrub.py::test_refuses_to_overwrite_the_input_addressed_in_a_different_case PASSED [ 42%]
+tests/test_cc_scrub.py::test_refuses_to_overwrite_the_input_reached_through_a_hard_link PASSED [ 44%]
+tests/test_cc_scrub.py::test_a_missing_terms_file_names_the_example_to_copy PASSED [ 46%]
+tests/test_cc_scrub.py::test_the_shipped_example_denylist_parses PASSED  [ 48%]
+tests/test_cc_scrub.py::test_bad_scales_are_a_usage_error PASSED         [ 50%]
+tests/test_cc_scrub.py::test_word_ranges_count_utf16_code_units_not_code_points PASSED [ 51%]
+tests/test_cc_scrub.py::test_word_ranges_match_code_points_for_plain_text PASSED [ 53%]
+tests/test_cc_scrub.py::test_a_denylist_term_that_can_never_match_is_refused PASSED [ 55%]
+tests/test_cc_scrub.py::test_term_validation_follows_the_normalisation_actually_in_force PASSED [ 57%]
+tests/test_cc_scrub.py::test_two_inputs_that_would_share_one_output_are_refused PASSED [ 59%]
+tests/test_cc_scrub.py::test_two_inputs_whose_stems_differ_only_in_case_are_refused PASSED [ 61%]
+tests/test_cc_scrub.py::test_collision_detection_does_not_depend_on_the_host_normcase PASSED [ 63%]
+tests/test_cc_scrub.py::test_the_case_probe_answers_from_the_filesystem_and_cleans_up PASSED [ 65%]
+tests/test_cc_scrub.py::test_the_case_probe_refuses_to_guess_when_it_cannot_be_created PASSED [ 67%]
+tests/test_cc_scrub.py::test_an_output_directory_that_cannot_be_created_exits_two PASSED [ 69%]
+tests/test_cc_scrub.py::test_pad_box_grows_outwards_to_whole_pixels PASSED [ 71%]
+tests/test_cc_scrub.py::test_pad_box_pads_and_clamps_to_the_image PASSED [ 73%]
+tests/test_cc_scrub.py::test_normalise_drops_punctuation_and_case PASSED [ 75%]
 tests/test_cc_scrub.py::test_normalise_folds_every_advertised_glyph_class PASSED [ 76%]
 tests/test_cc_scrub.py::test_parse_scales_sorts_and_deduplicates PASSED  [ 78%]
 tests/test_cc_scrub.py::test_parse_scales_rejects_rubbish PASSED         [ 80%]
@@ -684,6 +691,6 @@ tests/test_cc_scrub.py::test_is_same_file_compares_canonically_when_the_target_i
 tests/test_cc_scrub.py::test_is_same_file_says_no_to_two_genuinely_different_files PASSED [ 98%]
 tests/test_cc_scrub.py::test_output_path_defaults_to_the_scrubbed_name_beside_the_input PASSED [100%]
 
-============================= 50 passed in 2.48s ==============================
+============================= 52 passed in 2.47s ==============================
 [exit 0]
 ```

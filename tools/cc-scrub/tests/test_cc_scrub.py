@@ -463,14 +463,32 @@ def test_an_image_too_big_for_the_engine_is_refused_before_it_is_read(
 # The input-overwrite guard is a FILESYSTEM question, not an OCR one, so all
 # three arms are driven with the scripted backend: coupling them to a real
 # recognizer would make them skip on a platform where the guard itself works
-# perfectly well. Only the case-alias arm carries a platform marker, because
-# only that arm's premise - two spellings naming one file - is a property of
-# the filesystem the test happens to be running on. Hard links and
-# os.path.samefile work on Windows and on macOS alike.
-case_insensitive_filesystem_only = pytest.mark.skipif(
-    sys.platform != "win32",
-    reason="this arm needs a case-insensitive filesystem; Windows always is, "
-           "a POSIX host may not be")
+# perfectly well. Hard links and os.path.samefile work on Windows and on
+# macOS alike, so the hard-link arm is gated on nothing.
+#
+# Some arms do need a volume on which two spellings name one file. That is a
+# property of the VOLUME THE TEST WRITES TO, and it is measured there.
+#
+# It must not be keyed on sys.platform, and this file has already made that
+# mistake once: a marker reading `sys.platform != "win32"` skipped four arms
+# on a Mac whose volume is case-insensitive and would have run every one of
+# them, while its reason string said "a POSIX host may not be" and then
+# assumed it was not. The guard those arms cover is the one protecting the
+# only unredacted copy of the input, so it stood unproved there for a reason
+# that was not true - a skip that reads like a pass, which is the same defect
+# these tests exist to catch, one layer down.
+#
+# It also cannot be a marker at all. pytest.mark.skipif is evaluated at
+# collection time, when tmp_path does not exist yet, so a marker could only
+# ever probe some other directory than the one under test. The probe
+# therefore happens inside the test, on its own directory, using the same
+# instrument the tool itself uses.
+def require_case_insensitive(directory):
+    """Skip only on a measured answer from the volume under test."""
+    if not cli.directory_is_case_insensitive(str(directory)):
+        pytest.skip("this arm needs a volume on which two spellings name one "
+                    "file; %s is case-sensitive (measured, not assumed)"
+                    % directory)
 
 
 def test_refuses_to_overwrite_the_input_image(blank_image, terms_file, capsys,
@@ -483,7 +501,6 @@ def test_refuses_to_overwrite_the_input_image(blank_image, terms_file, capsys,
     assert "refusing to overwrite the input image" in out
 
 
-@case_insensitive_filesystem_only
 def test_refuses_to_overwrite_the_input_addressed_in_a_different_case(
         blank_image, terms_file, capsys, monkeypatch):
     """The same file spelled in another case is still the same file.
@@ -491,6 +508,7 @@ def test_refuses_to_overwrite_the_input_addressed_in_a_different_case(
     A string comparison of absolute paths says these two are different and
     would let the scrub overwrite the only unredacted copy of the input.
     """
+    require_case_insensitive(blank_image.parent)
     alias = blank_image.parent / blank_image.name.upper()
 
     # The premise, asserted rather than assumed.
@@ -609,7 +627,6 @@ def test_two_inputs_that_would_share_one_output_are_refused(tmp_path, capsys,
     assert "shot-scrubbed.png" in out
 
 
-@case_insensitive_filesystem_only
 def test_two_inputs_whose_stems_differ_only_in_case_are_refused(
         tmp_path, capsys, terms_file):
     """Shot.png and shot.jpg want Shot-scrubbed.png and shot-scrubbed.png.
@@ -618,6 +635,7 @@ def test_two_inputs_whose_stems_differ_only_in_case_are_refused(
     """
     work = tmp_path / "case-collide"
     work.mkdir()
+    require_case_insensitive(work)
     Image.new("RGB", (60, 40), (255, 255, 255)).save(str(work / "Shot.png"))
     Image.new("RGB", (60, 40), (255, 255, 255)).save(str(work / "shot.jpg"))
 
@@ -626,7 +644,6 @@ def test_two_inputs_whose_stems_differ_only_in_case_are_refused(
     assert "would both be written to" in out
 
 
-@case_insensitive_filesystem_only
 def test_collision_detection_does_not_depend_on_the_host_normcase(
         tmp_path, capsys, terms_file, monkeypatch):
     """The exact defect: normcase is the HOST's rule, not the volume's.
@@ -638,10 +655,12 @@ def test_collision_detection_does_not_depend_on_the_host_normcase(
     be found anyway, because the answer must come from the destination
     directory rather than from the path module.
     """
-    monkeypatch.setattr(os.path, "normcase", lambda path: path)
-
     work = tmp_path / "normcase-collide"
     work.mkdir()
+    require_case_insensitive(work)
+
+    monkeypatch.setattr(os.path, "normcase", lambda path: path)
+
     Image.new("RGB", (60, 40), (255, 255, 255)).save(str(work / "Shot.png"))
     Image.new("RGB", (60, 40), (255, 255, 255)).save(str(work / "shot.jpg"))
 
@@ -650,10 +669,20 @@ def test_collision_detection_does_not_depend_on_the_host_normcase(
     assert "would both be written to" in out
 
 
-@case_insensitive_filesystem_only
 def test_the_case_probe_answers_from_the_filesystem_and_cleans_up(tmp_path):
+    """The instrument, checked against an independent observation.
+
+    No skip and no platform anywhere in here: on any volume the probe's
+    verdict has to match what that directory actually does with two
+    spellings of one name, so the test writes a witness file and looks.
+    """
+    witness = tmp_path / "Witness.txt"
+    witness.write_text("x", encoding="utf-8")
+    observed = os.path.exists(str(tmp_path / "witness.txt"))
+    witness.unlink()
+
     before = sorted(os.listdir(str(tmp_path)))
-    assert cli.directory_is_case_insensitive(str(tmp_path)) is True
+    assert cli.directory_is_case_insensitive(str(tmp_path)) == observed
     assert sorted(os.listdir(str(tmp_path))) == before, "the probe was left behind"
 
 
@@ -769,9 +798,7 @@ def test_gather_inputs_rejects_a_missing_path(tmp_path):
 
 
 def test_is_same_file_sees_through_a_case_variant_of_an_existing_path(tmp_path):
-    if sys.platform != "win32":
-        pytest.skip("case-insensitive path aliasing is a Windows filesystem "
-                    "property")
+    require_case_insensitive(tmp_path)
     real = tmp_path / "shot.png"
     real.write_bytes(b"x")
     alias = tmp_path / "SHOT.PNG"

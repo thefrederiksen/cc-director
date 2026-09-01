@@ -322,13 +322,20 @@ portable fallback engine and none will be added.
 
 ```
 python gen_samples.py samples     # draw the synthetic test images
-python -m pytest tests/ -q        # 50 tests
+python -m pytest tests/ -q        # 52 tests
 ```
 
 The integration tests drive the **real recognizer** over the generated
 samples. On a platform with no backend yet they skip by platform name - never
 by probing whether OCR happens to work, so a broken install on a supported
 platform fails the suite instead of quietly passing it.
+
+A few arms need a volume on which two spellings name one file. That is
+measured on the directory the test writes to, using the same probe the tool
+uses, and never inferred from `sys.platform` - a Mac's default volume is
+case-insensitive, so a platform gate skipped those arms exactly where they
+would have run. Where such an arm skips, the reason names the directory and
+says the answer was measured.
 
 Alongside them the suite carries a `ScriptedBackend`: a deliberate test double
 that implements the seam contract and returns reads written down in the test.
