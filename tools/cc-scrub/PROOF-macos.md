@@ -30,9 +30,13 @@ are `example@example.com`, `myorg/secret-repo` and
   report 135). The final catch is step 9: a flipped rectangle would blur
   the wrong pixels, the term would survive in the output, and the verify
   pass would refuse - it does not.
-- **Line joining is load bearing.** The engine returned the word `repo`
-  split in two as `re po`, and `myorg/secret-repo` still matched because
-  the line is joined before matching (step 6).
+- **Line joining is visible in a live read, though not load bearing for
+  it.** The engine returned the label word `repo` split in two as `re po`
+  (step 6), which shows the joined-line matcher at work on real engine
+  output - but the sensitive term itself came back as one OCR word in that
+  read, so this transcript does not demonstrate that joining was the
+  difference between hit and miss. The property itself is proven
+  deterministically by the scripted-backend joining tests in step 12.
 - **This engine reads every planted term at every scale, native included** -
   each hit is reported as `scales=1,2,3`. On this engine and these samples
   the multi-scale union is redundancy rather than the difference between
@@ -59,11 +63,14 @@ are `example@example.com`, `myorg/secret-repo` and
 - **The outputs really are clean.** Each written file is re-opened from
   disk and read again, independently of the scrub run, with zero hits
   (step 10).
-- **The whole test suite passes in that same clean environment**: 43
-  collected, 40 passed, 3 skipped (step 12). The three skips are the
-  case-insensitive path-aliasing tests, which are keyed to the platform
-  whose filesystem makes that guarantee by default; macOS volumes can be
-  formatted either way, so those assertions are not keyed to `darwin`.
+- **The whole test suite passes in that same clean environment**: 52
+  collected, 47 passed, 5 skipped, zero failures (step 12). The five skips
+  are all case-alias arms - tests whose premise is that two spellings name
+  one file - and they are keyed to Windows by platform, because only
+  Windows guarantees that premise; a macOS volume merely usually satisfies
+  it. The hard-link arm of the input-overwrite guard carries no such key
+  and runs here: overwriting the input through a second name for the same
+  file is refused on this machine, proved live in this run.
 
 ## What this does NOT prove
 
@@ -350,8 +357,8 @@ IMAGE ../samples/sample-normal.png
   ocr scale 3: 20 words in 5 lines
   HITS: 1
     term='example@example.com' rect=(x=180 y=115 w=220 h=30) scales=1,2,3 ocr_line='Contact address: example@example.com'
-  CANDIDATE /private/tmp/cc-scrub-proof/out/sample-normal-scrubbed.png.cnnq34rf.tmp (mode=blur pad=4)
-  VERIFY: re-reading /private/tmp/cc-scrub-proof/out/sample-normal-scrubbed.png.cnnq34rf.tmp
+  CANDIDATE /private/tmp/cc-scrub-proof/out/sample-normal-scrubbed.png.g8v9lbyf.tmp (mode=blur pad=4)
+  VERIFY: re-reading /private/tmp/cc-scrub-proof/out/sample-normal-scrubbed.png.g8v9lbyf.tmp
     verify scale 1: 19 words in 5 lines
     verify scale 2: 19 words in 5 lines
     verify scale 3: 19 words in 5 lines
@@ -378,8 +385,8 @@ IMAGE ../samples/sample-small-ui.png
   ocr scale 3: 20 words in 6 lines
   HITS: 1
     term='myorg/secret-repo' rect=(x=39 y=76 w=87 h=14) scales=1,2,3 ocr_line='re po myorg/secret-repo'
-  CANDIDATE /private/tmp/cc-scrub-proof/out/sample-small-ui-scrubbed.png.xsadbyq3.tmp (mode=blur pad=4)
-  VERIFY: re-reading /private/tmp/cc-scrub-proof/out/sample-small-ui-scrubbed.png.xsadbyq3.tmp
+  CANDIDATE /private/tmp/cc-scrub-proof/out/sample-small-ui-scrubbed.png.4tbv3ier.tmp (mode=blur pad=4)
+  VERIFY: re-reading /private/tmp/cc-scrub-proof/out/sample-small-ui-scrubbed.png.4tbv3ier.tmp
     verify scale 1: 18 words in 6 lines
     verify scale 2: 18 words in 6 lines
     verify scale 3: 18 words in 6 lines
@@ -406,8 +413,8 @@ IMAGE ../samples/sample-glyph.png
   ocr scale 3: 18 words in 4 lines
   HITS: 1
     term='internal-hostname.local' rect=(x=16 y=72 w=237 h=13) scales=1,2,3 ocr_line='https://internal-hostname.local/status/session'
-  CANDIDATE /private/tmp/cc-scrub-proof/out/sample-glyph-scrubbed.png.ctb_9x4l.tmp (mode=blur pad=4)
-  VERIFY: re-reading /private/tmp/cc-scrub-proof/out/sample-glyph-scrubbed.png.ctb_9x4l.tmp
+  CANDIDATE /private/tmp/cc-scrub-proof/out/sample-glyph-scrubbed.png.9t8py99n.tmp (mode=blur pad=4)
+  VERIFY: re-reading /private/tmp/cc-scrub-proof/out/sample-glyph-scrubbed.png.9t8py99n.tmp
     verify scale 1: 15 words in 3 lines
     verify scale 2: 17 words in 3 lines
     verify scale 3: 17 words in 3 lines
@@ -498,56 +505,67 @@ platform darwin -- Python 3.14.6, pytest-9.1.1, pluggy-1.6.0 -- /private/tmp/cc-
 cachedir: .pytest_cache
 rootdir: /private/tmp/cc-scrub-proof/cc-scrub
 configfile: pyproject.toml
-collecting ... collected 43 items
+collecting ... collected 52 items
 
-tests/test_cc_scrub.py::test_generator_writes_all_four_samples PASSED    [  2%]
-tests/test_cc_scrub.py::test_check_only_finds_the_planted_email_with_coordinates PASSED [  4%]
-tests/test_cc_scrub.py::test_check_only_finds_small_grey_ui_text_only_after_upscaling PASSED [  6%]
-tests/test_cc_scrub.py::test_glyph_confusion_is_caught_by_folding_and_missed_without_it PASSED [  9%]
-tests/test_cc_scrub.py::test_scrub_redacts_and_the_verify_pass_proves_it[sample-normal.png-example@example.com] PASSED [ 11%]
-tests/test_cc_scrub.py::test_scrub_redacts_and_the_verify_pass_proves_it[sample-small-ui.png-myorg/secret-repo] PASSED [ 13%]
-tests/test_cc_scrub.py::test_scrub_redacts_and_the_verify_pass_proves_it[sample-glyph.png-internal-hostname.local] PASSED [ 16%]
-tests/test_cc_scrub.py::test_the_scrubbed_output_is_clean_when_checked_again PASSED [ 18%]
-tests/test_cc_scrub.py::test_a_directory_run_skips_files_already_scrubbed PASSED [ 20%]
-tests/test_cc_scrub.py::test_an_image_with_no_text_is_a_broken_read_not_a_clean_image PASSED [ 23%]
-tests/test_cc_scrub.py::test_a_verify_read_of_zero_words_publishes_nothing_and_exits_two PASSED [ 25%]
-tests/test_cc_scrub.py::test_a_term_surviving_in_the_output_exits_one_and_publishes_nothing PASSED [ 27%]
-tests/test_cc_scrub.py::test_a_passing_scripted_run_publishes_the_candidate PASSED [ 30%]
-tests/test_cc_scrub.py::test_a_term_split_across_adjacent_words_on_one_line_is_joined PASSED [ 32%]
-tests/test_cc_scrub.py::test_a_term_split_across_two_lines_is_not_joined PASSED [ 34%]
-tests/test_cc_scrub.py::test_a_scaled_read_maps_back_to_native_coordinates_exactly PASSED [ 37%]
-tests/test_cc_scrub.py::test_an_image_too_big_for_the_engine_is_refused_before_it_is_read PASSED [ 39%]
-tests/test_cc_scrub.py::test_refuses_to_overwrite_the_input_image PASSED [ 41%]
-tests/test_cc_scrub.py::test_refuses_to_overwrite_the_input_addressed_in_a_different_case SKIPPED [ 44%]
-tests/test_cc_scrub.py::test_refuses_to_overwrite_the_input_reached_through_a_hard_link SKIPPED [ 46%]
-tests/test_cc_scrub.py::test_a_missing_terms_file_names_the_example_to_copy PASSED [ 48%]
-tests/test_cc_scrub.py::test_the_shipped_example_denylist_parses PASSED  [ 51%]
-tests/test_cc_scrub.py::test_bad_scales_are_a_usage_error PASSED         [ 53%]
+tests/test_cc_scrub.py::test_generator_writes_all_four_samples PASSED    [  1%]
+tests/test_cc_scrub.py::test_check_only_finds_the_planted_email_with_coordinates PASSED [  3%]
+tests/test_cc_scrub.py::test_check_only_finds_small_grey_ui_text_only_after_upscaling PASSED [  5%]
+tests/test_cc_scrub.py::test_glyph_confusion_is_caught_by_folding_and_missed_without_it PASSED [  7%]
+tests/test_cc_scrub.py::test_scrub_redacts_and_the_verify_pass_proves_it[sample-normal.png-example@example.com] PASSED [  9%]
+tests/test_cc_scrub.py::test_scrub_redacts_and_the_verify_pass_proves_it[sample-small-ui.png-myorg/secret-repo] PASSED [ 11%]
+tests/test_cc_scrub.py::test_scrub_redacts_and_the_verify_pass_proves_it[sample-glyph.png-internal-hostname.local] PASSED [ 13%]
+tests/test_cc_scrub.py::test_the_scrubbed_output_is_clean_when_checked_again PASSED [ 15%]
+tests/test_cc_scrub.py::test_a_directory_run_skips_files_already_scrubbed PASSED [ 17%]
+tests/test_cc_scrub.py::test_an_image_with_no_text_is_a_broken_read_not_a_clean_image PASSED [ 19%]
+tests/test_cc_scrub.py::test_a_verify_read_of_zero_words_publishes_nothing_and_exits_two PASSED [ 21%]
+tests/test_cc_scrub.py::test_a_term_surviving_in_the_output_exits_one_and_publishes_nothing PASSED [ 23%]
+tests/test_cc_scrub.py::test_a_passing_scripted_run_publishes_the_candidate PASSED [ 25%]
+tests/test_cc_scrub.py::test_folding_finds_a_misread_term_and_no_fold_misses_it PASSED [ 26%]
+tests/test_cc_scrub.py::test_a_term_split_across_adjacent_words_on_one_line_is_joined PASSED [ 28%]
+tests/test_cc_scrub.py::test_a_term_split_across_two_lines_is_not_joined PASSED [ 30%]
+tests/test_cc_scrub.py::test_a_scaled_read_maps_back_to_native_coordinates_exactly PASSED [ 32%]
+tests/test_cc_scrub.py::test_a_read_over_the_megapixel_budget_is_refused_before_it_is_attempted PASSED [ 34%]
+tests/test_cc_scrub.py::test_the_megapixel_budget_must_be_at_least_one PASSED [ 36%]
+tests/test_cc_scrub.py::test_an_image_too_big_for_the_engine_is_refused_before_it_is_read PASSED [ 38%]
+tests/test_cc_scrub.py::test_refuses_to_overwrite_the_input_image PASSED [ 40%]
+tests/test_cc_scrub.py::test_refuses_to_overwrite_the_input_addressed_in_a_different_case SKIPPED [ 42%]
+tests/test_cc_scrub.py::test_refuses_to_overwrite_the_input_reached_through_a_hard_link PASSED [ 44%]
+tests/test_cc_scrub.py::test_a_missing_terms_file_names_the_example_to_copy PASSED [ 46%]
+tests/test_cc_scrub.py::test_the_shipped_example_denylist_parses PASSED  [ 48%]
+tests/test_cc_scrub.py::test_bad_scales_are_a_usage_error PASSED         [ 50%]
+tests/test_cc_scrub.py::test_word_ranges_count_utf16_code_units_not_code_points PASSED [ 51%]
+tests/test_cc_scrub.py::test_word_ranges_match_code_points_for_plain_text PASSED [ 53%]
 tests/test_cc_scrub.py::test_a_denylist_term_that_can_never_match_is_refused PASSED [ 55%]
-tests/test_cc_scrub.py::test_term_validation_follows_the_normalisation_actually_in_force PASSED [ 58%]
-tests/test_cc_scrub.py::test_two_inputs_that_would_share_one_output_are_refused PASSED [ 60%]
-tests/test_cc_scrub.py::test_an_output_directory_that_cannot_be_created_exits_two PASSED [ 62%]
-tests/test_cc_scrub.py::test_pad_box_grows_outwards_to_whole_pixels PASSED [ 65%]
-tests/test_cc_scrub.py::test_pad_box_pads_and_clamps_to_the_image PASSED [ 67%]
-tests/test_cc_scrub.py::test_normalise_drops_punctuation_and_case PASSED [ 69%]
-tests/test_cc_scrub.py::test_normalise_folds_every_advertised_glyph_class PASSED [ 72%]
-tests/test_cc_scrub.py::test_parse_scales_sorts_and_deduplicates PASSED  [ 74%]
-tests/test_cc_scrub.py::test_parse_scales_rejects_rubbish PASSED         [ 76%]
-tests/test_cc_scrub.py::test_load_terms_ignores_comments_and_blank_lines PASSED [ 79%]
-tests/test_cc_scrub.py::test_load_terms_rejects_an_empty_denylist PASSED [ 81%]
-tests/test_cc_scrub.py::test_merge_hits_unions_overlapping_rectangles_of_one_term PASSED [ 83%]
-tests/test_cc_scrub.py::test_merge_hits_keeps_different_terms_apart PASSED [ 86%]
-tests/test_cc_scrub.py::test_gather_inputs_skips_already_scrubbed_files PASSED [ 88%]
-tests/test_cc_scrub.py::test_gather_inputs_rejects_a_missing_path PASSED [ 90%]
-tests/test_cc_scrub.py::test_is_same_file_sees_through_a_case_variant_of_an_existing_path SKIPPED [ 93%]
-tests/test_cc_scrub.py::test_is_same_file_compares_canonically_when_the_target_is_not_created_yet PASSED [ 95%]
-tests/test_cc_scrub.py::test_is_same_file_says_no_to_two_genuinely_different_files PASSED [ 97%]
+tests/test_cc_scrub.py::test_term_validation_follows_the_normalisation_actually_in_force PASSED [ 57%]
+tests/test_cc_scrub.py::test_two_inputs_that_would_share_one_output_are_refused PASSED [ 59%]
+tests/test_cc_scrub.py::test_two_inputs_whose_stems_differ_only_in_case_are_refused SKIPPED [ 61%]
+tests/test_cc_scrub.py::test_collision_detection_does_not_depend_on_the_host_normcase SKIPPED [ 63%]
+tests/test_cc_scrub.py::test_the_case_probe_answers_from_the_filesystem_and_cleans_up SKIPPED [ 65%]
+tests/test_cc_scrub.py::test_the_case_probe_refuses_to_guess_when_it_cannot_be_created PASSED [ 67%]
+tests/test_cc_scrub.py::test_an_output_directory_that_cannot_be_created_exits_two PASSED [ 69%]
+tests/test_cc_scrub.py::test_pad_box_grows_outwards_to_whole_pixels PASSED [ 71%]
+tests/test_cc_scrub.py::test_pad_box_pads_and_clamps_to_the_image PASSED [ 73%]
+tests/test_cc_scrub.py::test_normalise_drops_punctuation_and_case PASSED [ 75%]
+tests/test_cc_scrub.py::test_normalise_folds_every_advertised_glyph_class PASSED [ 76%]
+tests/test_cc_scrub.py::test_parse_scales_sorts_and_deduplicates PASSED  [ 78%]
+tests/test_cc_scrub.py::test_parse_scales_rejects_rubbish PASSED         [ 80%]
+tests/test_cc_scrub.py::test_load_terms_ignores_comments_and_blank_lines PASSED [ 82%]
+tests/test_cc_scrub.py::test_load_terms_rejects_an_empty_denylist PASSED [ 84%]
+tests/test_cc_scrub.py::test_merge_hits_unions_overlapping_rectangles_of_one_term PASSED [ 86%]
+tests/test_cc_scrub.py::test_merge_hits_keeps_different_terms_apart PASSED [ 88%]
+tests/test_cc_scrub.py::test_gather_inputs_skips_already_scrubbed_files PASSED [ 90%]
+tests/test_cc_scrub.py::test_gather_inputs_rejects_a_missing_path PASSED [ 92%]
+tests/test_cc_scrub.py::test_is_same_file_sees_through_a_case_variant_of_an_existing_path SKIPPED [ 94%]
+tests/test_cc_scrub.py::test_is_same_file_compares_canonically_when_the_target_is_not_created_yet PASSED [ 96%]
+tests/test_cc_scrub.py::test_is_same_file_says_no_to_two_genuinely_different_files PASSED [ 98%]
 tests/test_cc_scrub.py::test_output_path_defaults_to_the_scrubbed_name_beside_the_input PASSED [100%]
 
 =========================== short test summary info ============================
-SKIPPED [1] tests/test_cc_scrub.py:415: case-insensitive path aliasing is a Windows filesystem property
-SKIPPED [1] tests/test_cc_scrub.py:440: case-insensitive path aliasing is a Windows filesystem property
-SKIPPED [1] tests/test_cc_scrub.py:621: case-insensitive path aliasing is a Windows filesystem property
-======================== 40 passed, 3 skipped in 3.21s =========================
+SKIPPED [1] tests/test_cc_scrub.py:486: this arm needs a case-insensitive filesystem; Windows always is, a POSIX host may not be
+SKIPPED [1] tests/test_cc_scrub.py:612: this arm needs a case-insensitive filesystem; Windows always is, a POSIX host may not be
+SKIPPED [1] tests/test_cc_scrub.py:629: this arm needs a case-insensitive filesystem; Windows always is, a POSIX host may not be
+SKIPPED [1] tests/test_cc_scrub.py:653: this arm needs a case-insensitive filesystem; Windows always is, a POSIX host may not be
+SKIPPED [1] tests/test_cc_scrub.py:773: case-insensitive path aliasing is a Windows filesystem property
+======================== 47 passed, 5 skipped in 3.08s =========================
 [exit 0]
 ```

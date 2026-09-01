@@ -38,7 +38,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import gen_samples
 from src import cli
-from src.ocr_backend import ScrubError
+from src.ocr_backend import ScrubError, _words_with_utf16_ranges
 
 
 # The platforms that have a working OCR backend today. It is a list of
@@ -550,6 +550,30 @@ def test_bad_scales_are_a_usage_error(samples, terms_file, capsys):
 
 
 # --------------------------------------------------------------- unit coverage
+
+def test_word_ranges_count_utf16_code_units_not_code_points():
+    """The macOS backend hands these ranges to NSRange, which indexes
+    NSStrings in UTF-16 code units. A character outside the Basic
+    Multilingual Plane is one Python code point but two UTF-16 units, so
+    counting code points would shift every later word's range by one per
+    such character and the recognizer would return a neighbouring word's
+    rectangle. The grinning-face character below is exactly that case.
+    """
+    text = "\U0001F600 secret word"
+    assert _words_with_utf16_ranges(text) == [
+        ("\U0001F600", 0, 2),   # two code units, one code point
+        ("secret", 3, 6),        # starts at 3, not the code-point offset 2
+        ("word", 10, 4),
+    ]
+
+
+def test_word_ranges_match_code_points_for_plain_text():
+    # Inside the Basic Multilingual Plane the two counts agree, so this
+    # pins the ordinary case the OCR engines actually produce.
+    assert _words_with_utf16_ranges("re po myorg") == [
+        ("re", 0, 2), ("po", 3, 2), ("myorg", 6, 5)]
+    assert _words_with_utf16_ranges("  padded  ") == [("padded", 2, 6)]
+    assert _words_with_utf16_ranges("") == []
 
 def test_a_denylist_term_that_can_never_match_is_refused(
         samples, tmp_path, capsys):
