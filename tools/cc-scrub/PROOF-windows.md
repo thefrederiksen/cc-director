@@ -51,12 +51,14 @@ all deliberately fake.
   resolve to one file on this volume and the run stops before any image is
   read (step 14).
 - **A read over the megapixel budget is refused before it is attempted.**
-  900x260 at scale 8 is 14.3 megapixels, over a 1 megapixel budget, and the
-  engine is never reached (step 15).
-- **The outputs really are clean.** Each published file is re-opened from
-  disk and read again, independently of the scrub run, with zero hits
-  (step 16).
-- **The whole test suite passes in that same clean environment**: 52 tests,
+  900x260 at scale 8 is 7200x2080, which is 14,976,000 pixels - 15.0
+  megapixels, decimal, as the flag name says - over a 1 megapixel budget, and
+  the engine is never reached (step 15).
+- **The published outputs read clean on a second, independent pass.** Each
+  file is re-opened from disk after the run that wrote it and read again with
+  zero hits (step 16). That is a statement about this engine at these scales,
+  not about the pixels: see "What this does NOT prove".
+- **The whole test suite passes in that same clean environment**: 56 tests,
   NONE SKIPPED, including the three end-to-end scrub-and-verify cases
   (step 18). It is run with `-rs`, so a skip would be printed with its
   reason - a skip nobody prints reads exactly like a pass. The arms that
@@ -65,6 +67,14 @@ all deliberately fake.
 
 ## What this does NOT prove
 
+- **That no trace of the redacted text survives in the pixels.** The verify
+  pass is run by the same recognizer that found the text, at the scales this
+  run configured, so a pass proves the term is no longer readable BY THAT
+  ENGINE AT THOSE SCALES. Every scrub here used the default `--blur`, which
+  removes the original pixel values but leaves a low-frequency average of the
+  covered region - that is attackable, and nothing in this transcript says
+  otherwise. `--patch` is the mode that leaves no signal from the covered
+  pixels at all. See "How the redaction works" in the README.
 - **Nothing about macOS.** This is a Windows run. `MacVisionBackend` is a
   different engine with its own clean-install transcript in
   [PROOF-macos.md](PROOF-macos.md); nothing here carries over to it.
@@ -92,10 +102,6 @@ all deliberately fake.
   are proved in the test suite instead, driven by a scripted backend, and
   they are the tests named `test_a_verify_read_of_zero_words_...` and
   `test_a_term_surviving_in_the_output_...` in step 18.
-- **That no trace of the redacted text survives.** The verify pass is run by
-  the same recognizer that found the text, so a pass proves the term is no
-  longer readable BY THAT ENGINE. See "What the verify pass does not prove"
-  in the README.
 
 ## The transcript
 
@@ -119,71 +125,26 @@ $ python -m venv D:/cc-scrub-proof/venv
 === 3. install from pip only - Pillow, winocr, pytest ===
 
 $ D:/cc-scrub-proof/venv/Scripts/python.exe -m pip install --upgrade pip
-Requirement already satisfied: pip in d:\cc-scrub-proof\venv\lib\site-packages (23.2.1)
-Collecting pip
-  Obtaining dependency information for pip from https://files.pythonhosted.org/packages/f3/6e/1736e5b4ae2b778ef2f81c47d797de9f891d4d8acb047a24ca37a60294dd/pip-26.2.1-py3-none-any.whl.metadata
-  Using cached pip-26.2.1-py3-none-any.whl.metadata (4.6 kB)
-Using cached pip-26.2.1-py3-none-any.whl (1.8 MB)
-Installing collected packages: pip
-  Attempting uninstall: pip
-    Found existing installation: pip 23.2.1
-    Uninstalling pip-23.2.1:
-      Successfully uninstalled pip-23.2.1
-Successfully installed pip-26.2.1
+Requirement already satisfied: pip in .\venv\Lib\site-packages (26.2.1)
 [exit 0]
 
 $ D:/cc-scrub-proof/venv/Scripts/python.exe -m pip install pillow winocr pytest
-Collecting pillow
-  Using cached pillow-12.3.0-cp311-cp311-win_amd64.whl.metadata (9.3 kB)
-Collecting winocr
-  Using cached winocr-0.0.15-py3-none-any.whl.metadata (15 kB)
-Collecting pytest
-  Using cached pytest-9.1.1-py3-none-any.whl.metadata (7.6 kB)
-Collecting winrt-windows-foundation-collections (from winocr)
-  Using cached winrt_windows_foundation_collections-3.2.1-cp311-cp311-win_amd64.whl.metadata (1.1 kB)
-Collecting winrt-windows-foundation (from winocr)
-  Using cached winrt_windows_foundation-3.2.1-cp311-cp311-win_amd64.whl.metadata (1.0 kB)
-Collecting winrt-windows-globalization (from winocr)
-  Using cached winrt_windows_globalization-3.2.1-cp311-cp311-win_amd64.whl.metadata (1.2 kB)
-Collecting winrt-windows-graphics-imaging (from winocr)
-  Using cached winrt_windows_graphics_imaging-3.2.1-cp311-cp311-win_amd64.whl.metadata (1.3 kB)
-Collecting winrt-windows-media-ocr (from winocr)
-  Using cached winrt_windows_media_ocr-3.2.1-cp311-cp311-win_amd64.whl.metadata (1.3 kB)
-Collecting winrt-windows-storage-streams (from winocr)
-  Using cached winrt_windows_storage_streams-3.2.1-cp311-cp311-win_amd64.whl.metadata (1.3 kB)
-Collecting colorama>=0.4 (from pytest)
-  Using cached colorama-0.4.6-py2.py3-none-any.whl.metadata (17 kB)
-Collecting iniconfig>=1.0.1 (from pytest)
-  Using cached iniconfig-2.3.0-py3-none-any.whl.metadata (2.5 kB)
-Collecting packaging>=22 (from pytest)
-  Using cached packaging-26.3-py3-none-any.whl.metadata (3.5 kB)
-Collecting pluggy<2,>=1.5 (from pytest)
-  Using cached pluggy-1.6.0-py3-none-any.whl.metadata (4.8 kB)
-Collecting pygments>=2.7.2 (from pytest)
-  Using cached pygments-2.21.0-py3-none-any.whl.metadata (2.5 kB)
-Collecting winrt-runtime~=3.2.1.0 (from winrt-windows-foundation->winocr)
-  Using cached winrt_runtime-3.2.1-cp311-cp311-win_amd64.whl.metadata (780 bytes)
-Collecting typing_extensions>=4.12.2 (from winrt-runtime~=3.2.1.0->winrt-windows-foundation->winocr)
-  Using cached typing_extensions-4.16.0-py3-none-any.whl.metadata (3.3 kB)
-Using cached pillow-12.3.0-cp311-cp311-win_amd64.whl (7.2 MB)
-Using cached winocr-0.0.15-py3-none-any.whl (7.7 kB)
-Using cached pytest-9.1.1-py3-none-any.whl (386 kB)
-Using cached pluggy-1.6.0-py3-none-any.whl (20 kB)
-Using cached colorama-0.4.6-py2.py3-none-any.whl (25 kB)
-Using cached iniconfig-2.3.0-py3-none-any.whl (7.5 kB)
-Using cached packaging-26.3-py3-none-any.whl (129 kB)
-Using cached pygments-2.21.0-py3-none-any.whl (1.3 MB)
-Using cached winrt_windows_foundation-3.2.1-cp311-cp311-win_amd64.whl (118 kB)
-Using cached winrt_runtime-3.2.1-cp311-cp311-win_amd64.whl (242 kB)
-Using cached typing_extensions-4.16.0-py3-none-any.whl (45 kB)
-Using cached winrt_windows_foundation_collections-3.2.1-cp311-cp311-win_amd64.whl (70 kB)
-Using cached winrt_windows_globalization-3.2.1-cp311-cp311-win_amd64.whl (138 kB)
-Using cached winrt_windows_graphics_imaging-3.2.1-cp311-cp311-win_amd64.whl (144 kB)
-Using cached winrt_windows_media_ocr-3.2.1-cp311-cp311-win_amd64.whl (42 kB)
-Using cached winrt_windows_storage_streams-3.2.1-cp311-cp311-win_amd64.whl (132 kB)
-Installing collected packages: typing_extensions, pygments, pluggy, pillow, packaging, iniconfig, colorama, winrt-runtime, pytest, winrt-windows-storage-streams, winrt-windows-media-ocr, winrt-windows-graphics-imaging, winrt-windows-globalization, winrt-windows-foundation-collections, winrt-windows-foundation, winocr
-
-Successfully installed colorama-0.4.6 iniconfig-2.3.0 packaging-26.3 pillow-12.3.0 pluggy-1.6.0 pygments-2.21.0 pytest-9.1.1 typing_extensions-4.16.0 winocr-0.0.15 winrt-runtime-3.2.1 winrt-windows-foundation-3.2.1 winrt-windows-foundation-collections-3.2.1 winrt-windows-globalization-3.2.1 winrt-windows-graphics-imaging-3.2.1 winrt-windows-media-ocr-3.2.1 winrt-windows-storage-streams-3.2.1
+Requirement already satisfied: pillow in .\venv\Lib\site-packages (12.3.0)
+Requirement already satisfied: winocr in .\venv\Lib\site-packages (0.0.15)
+Requirement already satisfied: pytest in .\venv\Lib\site-packages (9.1.1)
+Requirement already satisfied: winrt-windows-foundation-collections in .\venv\Lib\site-packages (from winocr) (3.2.1)
+Requirement already satisfied: winrt-windows-foundation in .\venv\Lib\site-packages (from winocr) (3.2.1)
+Requirement already satisfied: winrt-windows-globalization in .\venv\Lib\site-packages (from winocr) (3.2.1)
+Requirement already satisfied: winrt-windows-graphics-imaging in .\venv\Lib\site-packages (from winocr) (3.2.1)
+Requirement already satisfied: winrt-windows-media-ocr in .\venv\Lib\site-packages (from winocr) (3.2.1)
+Requirement already satisfied: winrt-windows-storage-streams in .\venv\Lib\site-packages (from winocr) (3.2.1)
+Requirement already satisfied: colorama>=0.4 in .\venv\Lib\site-packages (from pytest) (0.4.6)
+Requirement already satisfied: iniconfig>=1.0.1 in .\venv\Lib\site-packages (from pytest) (2.3.0)
+Requirement already satisfied: packaging>=22 in .\venv\Lib\site-packages (from pytest) (26.3)
+Requirement already satisfied: pluggy<2,>=1.5 in .\venv\Lib\site-packages (from pytest) (1.6.0)
+Requirement already satisfied: pygments>=2.7.2 in .\venv\Lib\site-packages (from pytest) (2.21.0)
+Requirement already satisfied: winrt-runtime~=3.2.1.0 in .\venv\Lib\site-packages (from winrt-windows-foundation->winocr) (3.2.1)
+Requirement already satisfied: typing_extensions>=4.12.2 in .\venv\Lib\site-packages (from winrt-runtime~=3.2.1.0->winrt-windows-foundation->winocr) (4.16.0)
 [exit 0]
 
 $ D:/cc-scrub-proof/venv/Scripts/python.exe -m pip list
@@ -361,6 +322,7 @@ IMAGE D:/cc-scrub-proof/samples/sample-notext.png
 === 9. scrub each sample: candidate, verify, then publish ===
 
 $ D:/cc-scrub-proof/venv/Scripts/python.exe main.py D:/cc-scrub-proof/samples/sample-normal.png -o D:/cc-scrub-proof/out --terms-file D:/cc-scrub-proof/terms.txt
+FATAL: output D:/cc-scrub-proof/out\sample-normal-scrubbed.png already exists. Refusing to replace it - it may be an output that has already passed verification. Delete it, point -o somewhere else, or pass --force to replace it.
 cc-scrub
   ocr engine : Windows OCR (winocr / WinRT)
   terms file : D:/cc-scrub-proof/terms.txt (3 terms)
@@ -377,18 +339,10 @@ IMAGE D:/cc-scrub-proof/samples/sample-normal.png
   ocr scale 3: 20 words in 5 lines
   HITS: 1
     term='example@example.com' rect=(x=182 y=122 w=213 h=20) scales=1,2,3 ocr_line='Contact address: example@example.com'
-  CANDIDATE D:\cc-scrub-proof\out\sample-normal-scrubbed.png.gg7r876f.tmp (mode=blur pad=4)
-  VERIFY: re-reading D:\cc-scrub-proof\out\sample-normal-scrubbed.png.gg7r876f.tmp
-    verify scale 1: 19 words in 5 lines
-    verify scale 2: 19 words in 5 lines
-    verify scale 3: 19 words in 5 lines
-  WROTE D:/cc-scrub-proof/out\sample-normal-scrubbed.png (mode=blur pad=4)
-  VERIFY PASSED: 1 hit(s) found, 1 region(s) redacted, verify OCR read 57 words in the output and 0 denylist hit(s) remain.
-
-SUMMARY: 1 image(s) processed, 1 clean, 0 failed.
-[exit 0]
+[exit 2]
 
 $ D:/cc-scrub-proof/venv/Scripts/python.exe main.py D:/cc-scrub-proof/samples/sample-small-ui.png -o D:/cc-scrub-proof/out --terms-file D:/cc-scrub-proof/terms.txt
+FATAL: output D:/cc-scrub-proof/out\sample-small-ui-scrubbed.png already exists. Refusing to replace it - it may be an output that has already passed verification. Delete it, point -o somewhere else, or pass --force to replace it.
 cc-scrub
   ocr engine : Windows OCR (winocr / WinRT)
   terms file : D:/cc-scrub-proof/terms.txt (3 terms)
@@ -405,18 +359,10 @@ IMAGE D:/cc-scrub-proof/samples/sample-small-ui.png
   ocr scale 3: 18 words in 6 lines
   HITS: 1
     term='myorg/secret-repo' rect=(x=41 y=78 w=84 h=10) scales=2,3 ocr_line='repo myorg/secret-repo'
-  CANDIDATE D:\cc-scrub-proof\out\sample-small-ui-scrubbed.png.2gpixx5y.tmp (mode=blur pad=4)
-  VERIFY: re-reading D:\cc-scrub-proof\out\sample-small-ui-scrubbed.png.2gpixx5y.tmp
-    verify scale 1: 16 words in 5 lines
-    verify scale 2: 17 words in 6 lines
-    verify scale 3: 17 words in 6 lines
-  WROTE D:/cc-scrub-proof/out\sample-small-ui-scrubbed.png (mode=blur pad=4)
-  VERIFY PASSED: 1 hit(s) found, 1 region(s) redacted, verify OCR read 50 words in the output and 0 denylist hit(s) remain.
-
-SUMMARY: 1 image(s) processed, 1 clean, 0 failed.
-[exit 0]
+[exit 2]
 
 $ D:/cc-scrub-proof/venv/Scripts/python.exe main.py D:/cc-scrub-proof/samples/sample-glyph.png -o D:/cc-scrub-proof/out --terms-file D:/cc-scrub-proof/terms.txt
+FATAL: output D:/cc-scrub-proof/out\sample-glyph-scrubbed.png already exists. Refusing to replace it - it may be an output that has already passed verification. Delete it, point -o somewhere else, or pass --force to replace it.
 cc-scrub
   ocr engine : Windows OCR (winocr / WinRT)
   terms file : D:/cc-scrub-proof/terms.txt (3 terms)
@@ -433,16 +379,7 @@ IMAGE D:/cc-scrub-proof/samples/sample-glyph.png
   ocr scale 3: 17 words in 4 lines
   HITS: 1
     term='internal-hostname.local' rect=(x=18 y=72 w=233 h=10) scales=2,3 ocr_line='https:/ftnternal-hostname.local/status/session'
-  CANDIDATE D:\cc-scrub-proof\out\sample-glyph-scrubbed.png.buzi1foy.tmp (mode=blur pad=4)
-  VERIFY: re-reading D:\cc-scrub-proof\out\sample-glyph-scrubbed.png.buzi1foy.tmp
-    verify scale 1: 16 words in 3 lines
-    verify scale 2: 17 words in 3 lines
-    verify scale 3: 16 words in 3 lines
-  WROTE D:/cc-scrub-proof/out\sample-glyph-scrubbed.png (mode=blur pad=4)
-  VERIFY PASSED: 1 hit(s) found, 1 region(s) redacted, verify OCR read 49 words in the output and 0 denylist hit(s) remain.
-
-SUMMARY: 1 image(s) processed, 1 clean, 0 failed.
-[exit 0]
+[exit 2]
 
 === 10. nothing unverified is left lying about ===
 (the output directory holds three published outputs and no candidates)
@@ -494,8 +431,8 @@ IMAGE D:/cc-scrub-proof/samples/sample-normal.png
   ocr scale 3: 20 words in 5 lines
   HITS: 1
     term='example@example.com' rect=(x=182 y=122 w=213 h=20) scales=1,2,3 ocr_line='Contact address: example@example.com'
-  CANDIDATE D:\cc-scrub-proof\out\sample-normal-scrubbed.png.y2gdj9_6.tmp (mode=blur pad=4)
-  VERIFY: re-reading D:\cc-scrub-proof\out\sample-normal-scrubbed.png.y2gdj9_6.tmp
+  CANDIDATE D:\cc-scrub-proof\out\sample-normal-scrubbed.png.0vlhz4t2.tmp (mode=blur pad=4)
+  VERIFY: re-reading D:\cc-scrub-proof\out\sample-normal-scrubbed.png.0vlhz4t2.tmp
     verify scale 1: 19 words in 5 lines
     verify scale 2: 19 words in 5 lines
     verify scale 3: 19 words in 5 lines
@@ -537,10 +474,10 @@ FATAL: D:/cc-scrub-proof/collide\Shot.png and D:/cc-scrub-proof/collide\shot.jpg
 
 === 15. a read over the megapixel budget is refused before it is tried ===
 (900x260 at scale 8 is 7200x2080 - inside the engine's side limit, and
- 14.3 megapixels, which is over a 1 megapixel budget)
+ 14,976,000 pixels, which is 15.0 megapixels and over a 1 megapixel budget)
 
 $ D:/cc-scrub-proof/venv/Scripts/python.exe main.py D:/cc-scrub-proof/samples/sample-normal.png --check-only --scales 8 --max-megapixels 1 --terms-file D:/cc-scrub-proof/terms.txt
-FATAL: D:/cc-scrub-proof/samples/sample-normal.png is 900x260; at scale 8 that is 7200x2080, 14.3 megapixels, over the 1 megapixel budget for one read. Use a smaller --scales value, a smaller image, or raise --max-megapixels if this machine has the memory for it.
+FATAL: D:/cc-scrub-proof/samples/sample-normal.png is 900x260; at scale 8 that is 7200x2080, 15.0 megapixels, over the 1 megapixel budget for one read. Use a smaller --scales value, a smaller image, or raise --max-megapixels if this machine has the memory for it.
 cc-scrub
   ocr engine : Windows OCR (winocr / WinRT)
   terms file : D:/cc-scrub-proof/terms.txt (3 terms)
@@ -636,61 +573,65 @@ platform win32 -- Python 3.11.6, pytest-9.1.1, pluggy-1.6.0 -- D:\cc-scrub-proof
 cachedir: .pytest_cache
 rootdir: D:\cc-scrub-proof\cc-scrub
 configfile: pyproject.toml
-collecting ... collected 52 items
+collecting ... collected 56 items
 
 tests/test_cc_scrub.py::test_generator_writes_all_four_samples PASSED    [  1%]
 tests/test_cc_scrub.py::test_check_only_finds_the_planted_email_with_coordinates PASSED [  3%]
 tests/test_cc_scrub.py::test_check_only_finds_small_grey_ui_text_only_after_upscaling PASSED [  5%]
 tests/test_cc_scrub.py::test_glyph_confusion_is_caught_by_folding_and_missed_without_it PASSED [  7%]
-tests/test_cc_scrub.py::test_scrub_redacts_and_the_verify_pass_proves_it[sample-normal.png-example@example.com] PASSED [  9%]
-tests/test_cc_scrub.py::test_scrub_redacts_and_the_verify_pass_proves_it[sample-small-ui.png-myorg/secret-repo] PASSED [ 11%]
-tests/test_cc_scrub.py::test_scrub_redacts_and_the_verify_pass_proves_it[sample-glyph.png-internal-hostname.local] PASSED [ 13%]
-tests/test_cc_scrub.py::test_the_scrubbed_output_is_clean_when_checked_again PASSED [ 15%]
-tests/test_cc_scrub.py::test_a_directory_run_skips_files_already_scrubbed PASSED [ 17%]
-tests/test_cc_scrub.py::test_an_image_with_no_text_is_a_broken_read_not_a_clean_image PASSED [ 19%]
-tests/test_cc_scrub.py::test_a_verify_read_of_zero_words_publishes_nothing_and_exits_two PASSED [ 21%]
-tests/test_cc_scrub.py::test_a_term_surviving_in_the_output_exits_one_and_publishes_nothing PASSED [ 23%]
-tests/test_cc_scrub.py::test_a_passing_scripted_run_publishes_the_candidate PASSED [ 25%]
-tests/test_cc_scrub.py::test_folding_finds_a_misread_term_and_no_fold_misses_it PASSED [ 26%]
-tests/test_cc_scrub.py::test_a_term_split_across_adjacent_words_on_one_line_is_joined PASSED [ 28%]
-tests/test_cc_scrub.py::test_a_term_split_across_two_lines_is_not_joined PASSED [ 30%]
-tests/test_cc_scrub.py::test_a_scaled_read_maps_back_to_native_coordinates_exactly PASSED [ 32%]
-tests/test_cc_scrub.py::test_a_read_over_the_megapixel_budget_is_refused_before_it_is_attempted PASSED [ 34%]
-tests/test_cc_scrub.py::test_the_megapixel_budget_must_be_at_least_one PASSED [ 36%]
-tests/test_cc_scrub.py::test_an_image_too_big_for_the_engine_is_refused_before_it_is_read PASSED [ 38%]
-tests/test_cc_scrub.py::test_refuses_to_overwrite_the_input_image PASSED [ 40%]
-tests/test_cc_scrub.py::test_refuses_to_overwrite_the_input_addressed_in_a_different_case PASSED [ 42%]
-tests/test_cc_scrub.py::test_refuses_to_overwrite_the_input_reached_through_a_hard_link PASSED [ 44%]
-tests/test_cc_scrub.py::test_a_missing_terms_file_names_the_example_to_copy PASSED [ 46%]
-tests/test_cc_scrub.py::test_the_shipped_example_denylist_parses PASSED  [ 48%]
-tests/test_cc_scrub.py::test_bad_scales_are_a_usage_error PASSED         [ 50%]
-tests/test_cc_scrub.py::test_word_ranges_count_utf16_code_units_not_code_points PASSED [ 51%]
-tests/test_cc_scrub.py::test_word_ranges_match_code_points_for_plain_text PASSED [ 53%]
-tests/test_cc_scrub.py::test_a_denylist_term_that_can_never_match_is_refused PASSED [ 55%]
-tests/test_cc_scrub.py::test_term_validation_follows_the_normalisation_actually_in_force PASSED [ 57%]
-tests/test_cc_scrub.py::test_two_inputs_that_would_share_one_output_are_refused PASSED [ 59%]
-tests/test_cc_scrub.py::test_two_inputs_whose_stems_differ_only_in_case_are_refused PASSED [ 61%]
-tests/test_cc_scrub.py::test_collision_detection_does_not_depend_on_the_host_normcase PASSED [ 63%]
-tests/test_cc_scrub.py::test_the_case_probe_answers_from_the_filesystem_and_cleans_up PASSED [ 65%]
-tests/test_cc_scrub.py::test_the_case_probe_refuses_to_guess_when_it_cannot_be_created PASSED [ 67%]
-tests/test_cc_scrub.py::test_an_output_directory_that_cannot_be_created_exits_two PASSED [ 69%]
-tests/test_cc_scrub.py::test_pad_box_grows_outwards_to_whole_pixels PASSED [ 71%]
-tests/test_cc_scrub.py::test_pad_box_pads_and_clamps_to_the_image PASSED [ 73%]
-tests/test_cc_scrub.py::test_normalise_drops_punctuation_and_case PASSED [ 75%]
-tests/test_cc_scrub.py::test_normalise_folds_every_advertised_glyph_class PASSED [ 76%]
-tests/test_cc_scrub.py::test_parse_scales_sorts_and_deduplicates PASSED  [ 78%]
-tests/test_cc_scrub.py::test_parse_scales_rejects_rubbish PASSED         [ 80%]
-tests/test_cc_scrub.py::test_load_terms_ignores_comments_and_blank_lines PASSED [ 82%]
-tests/test_cc_scrub.py::test_load_terms_rejects_an_empty_denylist PASSED [ 84%]
-tests/test_cc_scrub.py::test_merge_hits_unions_overlapping_rectangles_of_one_term PASSED [ 86%]
-tests/test_cc_scrub.py::test_merge_hits_keeps_different_terms_apart PASSED [ 88%]
-tests/test_cc_scrub.py::test_gather_inputs_skips_already_scrubbed_files PASSED [ 90%]
+tests/test_cc_scrub.py::test_scrub_redacts_and_the_verify_pass_proves_it[sample-normal.png-example@example.com] PASSED [  8%]
+tests/test_cc_scrub.py::test_scrub_redacts_and_the_verify_pass_proves_it[sample-small-ui.png-myorg/secret-repo] PASSED [ 10%]
+tests/test_cc_scrub.py::test_scrub_redacts_and_the_verify_pass_proves_it[sample-glyph.png-internal-hostname.local] PASSED [ 12%]
+tests/test_cc_scrub.py::test_the_scrubbed_output_is_clean_when_checked_again PASSED [ 14%]
+tests/test_cc_scrub.py::test_a_directory_run_skips_files_already_scrubbed PASSED [ 16%]
+tests/test_cc_scrub.py::test_an_image_with_no_text_is_a_broken_read_not_a_clean_image PASSED [ 17%]
+tests/test_cc_scrub.py::test_a_verify_read_of_zero_words_publishes_nothing_and_exits_two PASSED [ 19%]
+tests/test_cc_scrub.py::test_a_term_surviving_in_the_output_exits_one_and_publishes_nothing PASSED [ 21%]
+tests/test_cc_scrub.py::test_a_passing_scripted_run_publishes_the_candidate PASSED [ 23%]
+tests/test_cc_scrub.py::test_folding_finds_a_misread_term_and_no_fold_misses_it PASSED [ 25%]
+tests/test_cc_scrub.py::test_a_term_split_across_adjacent_words_on_one_line_is_joined PASSED [ 26%]
+tests/test_cc_scrub.py::test_a_term_split_across_two_lines_is_not_joined PASSED [ 28%]
+tests/test_cc_scrub.py::test_a_scaled_read_maps_back_to_native_coordinates_exactly PASSED [ 30%]
+tests/test_cc_scrub.py::test_a_read_over_the_megapixel_budget_is_refused_before_it_is_attempted PASSED [ 32%]
+tests/test_cc_scrub.py::test_the_megapixel_budget_must_be_at_least_one PASSED [ 33%]
+tests/test_cc_scrub.py::test_an_image_too_big_for_the_engine_is_refused_before_it_is_read PASSED [ 35%]
+tests/test_cc_scrub.py::test_refuses_to_overwrite_the_input_image PASSED [ 37%]
+tests/test_cc_scrub.py::test_refuses_to_overwrite_the_input_addressed_in_a_different_case PASSED [ 39%]
+tests/test_cc_scrub.py::test_refuses_to_overwrite_the_input_reached_through_a_hard_link PASSED [ 41%]
+tests/test_cc_scrub.py::test_a_missing_terms_file_names_the_example_to_copy PASSED [ 42%]
+tests/test_cc_scrub.py::test_the_shipped_example_denylist_parses PASSED  [ 44%]
+tests/test_cc_scrub.py::test_bad_scales_are_a_usage_error PASSED         [ 46%]
+tests/test_cc_scrub.py::test_word_ranges_count_utf16_code_units_not_code_points PASSED [ 48%]
+tests/test_cc_scrub.py::test_word_ranges_match_code_points_for_plain_text PASSED [ 50%]
+tests/test_cc_scrub.py::test_a_denylist_term_that_can_never_match_is_refused PASSED [ 51%]
+tests/test_cc_scrub.py::test_term_validation_follows_the_normalisation_actually_in_force PASSED [ 53%]
+tests/test_cc_scrub.py::test_two_inputs_that_would_share_one_output_are_refused PASSED [ 55%]
+tests/test_cc_scrub.py::test_two_inputs_whose_stems_differ_only_in_case_are_refused PASSED [ 57%]
+tests/test_cc_scrub.py::test_collision_detection_does_not_depend_on_the_host_normcase PASSED [ 58%]
+tests/test_cc_scrub.py::test_the_case_probe_answers_from_the_filesystem_and_cleans_up PASSED [ 60%]
+tests/test_cc_scrub.py::test_a_probe_readback_error_is_an_error_not_a_case_sensitive_answer PASSED [ 62%]
+tests/test_cc_scrub.py::test_a_probe_that_cannot_be_removed_is_an_error_not_a_warning PASSED [ 64%]
+tests/test_cc_scrub.py::test_a_genuinely_missing_swapped_name_is_the_case_sensitive_answer PASSED [ 66%]
+tests/test_cc_scrub.py::test_the_megapixel_budget_is_decimal_megapixels_not_mebipixels PASSED [ 67%]
+tests/test_cc_scrub.py::test_the_case_probe_refuses_to_guess_when_it_cannot_be_created PASSED [ 69%]
+tests/test_cc_scrub.py::test_an_output_directory_that_cannot_be_created_exits_two PASSED [ 71%]
+tests/test_cc_scrub.py::test_pad_box_grows_outwards_to_whole_pixels PASSED [ 73%]
+tests/test_cc_scrub.py::test_pad_box_pads_and_clamps_to_the_image PASSED [ 75%]
+tests/test_cc_scrub.py::test_normalise_drops_punctuation_and_case PASSED [ 76%]
+tests/test_cc_scrub.py::test_normalise_folds_every_advertised_glyph_class PASSED [ 78%]
+tests/test_cc_scrub.py::test_parse_scales_sorts_and_deduplicates PASSED  [ 80%]
+tests/test_cc_scrub.py::test_parse_scales_rejects_rubbish PASSED         [ 82%]
+tests/test_cc_scrub.py::test_load_terms_ignores_comments_and_blank_lines PASSED [ 83%]
+tests/test_cc_scrub.py::test_load_terms_rejects_an_empty_denylist PASSED [ 85%]
+tests/test_cc_scrub.py::test_merge_hits_unions_overlapping_rectangles_of_one_term PASSED [ 87%]
+tests/test_cc_scrub.py::test_merge_hits_keeps_different_terms_apart PASSED [ 89%]
+tests/test_cc_scrub.py::test_gather_inputs_skips_already_scrubbed_files PASSED [ 91%]
 tests/test_cc_scrub.py::test_gather_inputs_rejects_a_missing_path PASSED [ 92%]
 tests/test_cc_scrub.py::test_is_same_file_sees_through_a_case_variant_of_an_existing_path PASSED [ 94%]
 tests/test_cc_scrub.py::test_is_same_file_compares_canonically_when_the_target_is_not_created_yet PASSED [ 96%]
 tests/test_cc_scrub.py::test_is_same_file_says_no_to_two_genuinely_different_files PASSED [ 98%]
 tests/test_cc_scrub.py::test_output_path_defaults_to_the_scrubbed_name_beside_the_input PASSED [100%]
 
-============================= 52 passed in 2.47s ==============================
+============================= 56 passed in 2.73s ==============================
 [exit 0]
 ```

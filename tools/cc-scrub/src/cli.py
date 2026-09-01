@@ -36,6 +36,11 @@ SCRUBBED_MARK = "-scrubbed"
 
 # A ceiling on the pixels ONE scaled read may ask for, in megapixels.
 #
+# Megapixels here means 1,000,000 pixels, the decimal unit the flag name and
+# the documentation say. It was implemented as 1024*1024 - mebipixels - so a
+# documented 192 megapixel ceiling actually admitted 201,326,592 pixels, and
+# a genuine 200 megapixel image passed under it.
+#
 # The engine's limit on the longest side is not a limit on area: a square
 # input just under that limit, read at scale 3, is about 268 megapixels -
 # roughly 800 MB of RGB data for the scaled copy alone, before the resize's
@@ -186,7 +191,7 @@ def check_scales_fit(size, scales, backend, label,
     DEFAULT_MAX_MEGAPIXELS.
     """
     width, height = size
-    budget = max_megapixels * 1024 * 1024
+    budget = max_megapixels * 1000000
     for scale in scales:
         scaled_width, scaled_height = width * scale, height * scale
         if max(scaled_width, scaled_height) > backend.max_image_dimension:
@@ -204,7 +209,7 @@ def check_scales_fit(size, scales, backend, label,
                 "value, a smaller image, or raise --max-megapixels if this "
                 "machine has the memory for it."
                 % (label, width, height, scale, scaled_width, scaled_height,
-                   pixels / float(1024 * 1024), max_megapixels))
+                   pixels / 1000000.0, max_megapixels))
 
 
 def ocr_image(image, scale, lang, backend,
@@ -404,9 +409,21 @@ def _median_colour(region):
 def _destroy(region):
     """Mosaic the region down to a handful of cells, then blur it smooth.
 
-    Downsampling throws the pixels away outright, so the text is not merely
-    hard to read - the information is gone. The Gaussian pass on top only
+    What this does, and what it does not do, stated exactly - because this
+    is the sentence someone leans on when deciding whether to publish.
+
+    The original pixel values are not present in the output. Downsampling to
+    a handful of cells discards them, and the Gaussian pass on top only
     removes the blocky edges.
+
+    What remains is a low-frequency AVERAGE of the covered region. That is
+    not nothing, and it is not proof against a determined recovery attempt:
+    recovering text from a mosaic is a documented attack when the alphabet is
+    small, and a Gaussian blur is a linear low-pass filter, not an eraser.
+
+    For anything leaving the organisation, --patch is the mode to use. It
+    paints an opaque solid colour over the region and leaves no signal from
+    the covered pixels at all.
     """
     width, height = region.size
     cells_x = max(1, width // 14)
@@ -715,22 +732,52 @@ def directory_is_case_insensitive(directory):
             "treats two spellings of a name as one file: %s. Refusing to "
             "guess, because guessing wrong lets one output silently replace "
             "another." % (directory, exc))
+    # os.path.exists is not usable here. It swallows every OSError and
+    # returns False, and False is the answer that switches the
+    # output-collision check OFF - so a permission error, an I/O error or a
+    # race read as "case-sensitive" and let one output overwrite another.
+    # That is the failure this whole check exists to prevent, arriving
+    # through the check itself.
+    #
+    # Exactly one error is an answer: FileNotFoundError, which is what a
+    # case-sensitive volume genuinely looks like. Every other error is a
+    # broken instrument and stops the run.
+    answer = None
+    read_error = None
     try:
         swapped = os.path.join(directory,
                                os.path.basename(probe).swapcase())
-        if not os.path.exists(swapped):
-            return False
-        return os.path.samefile(swapped, probe)
-    except OSError as exc:
-        raise ScrubError(
-            "cannot read back the case probe in %s: %s. Refusing to guess."
-            % (directory, exc))
-    finally:
         try:
-            os.remove(probe)
-        except OSError as exc:
-            sys.stderr.write("WARNING: could not remove the case probe %s: "
-                             "%s\n" % (probe, exc))
+            os.stat(swapped)
+        except FileNotFoundError:
+            answer = False
+        else:
+            answer = os.path.samefile(swapped, probe)
+    except OSError as exc:
+        read_error = exc
+
+    remove_error = None
+    try:
+        os.remove(probe)
+    except OSError as exc:
+        remove_error = exc
+
+    if read_error is not None:
+        raise ScrubError(
+            "cannot read back the case probe %s: %s. Refusing to guess, "
+            "because guessing case-sensitive would switch the "
+            "output-collision check off and let one result overwrite "
+            "another.%s"
+            % (probe, read_error,
+               "" if remove_error is None else
+               " The probe could not be removed either (%s) and is still "
+               "there." % remove_error))
+    if remove_error is not None:
+        raise ScrubError(
+            "the case probe %s could not be removed: %s. Refusing to return a "
+            "verdict from a directory that is not behaving as this check "
+            "assumes." % (probe, remove_error))
+    return answer
 
 
 def plan_outputs(sources, out_option):

@@ -686,6 +686,104 @@ def test_the_case_probe_answers_from_the_filesystem_and_cleans_up(tmp_path):
     assert sorted(os.listdir(str(tmp_path))) == before, "the probe was left behind"
 
 
+def _explode_on_the_probe(monkeypatch, name, error):
+    """Make one os call fail for the case probe only, and nothing else.
+
+    The probe's own name is mixed case and the readback looks it up with the
+    case swapped, so the match has to be case-insensitive to catch both
+    spellings.
+    """
+    original = getattr(os, name)
+
+    def exploding(path, *args, **kwargs):
+        if "ccscrubcase" in str(path).lower():
+            raise error
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, name, exploding)
+
+
+def test_a_probe_readback_error_is_an_error_not_a_case_sensitive_answer(
+        tmp_path, monkeypatch):
+    """The fail-open case: an unreadable probe must not answer 'sensitive'.
+
+    os.path.exists swallows OSError and returns False, so a permission
+    error, an I/O error or a race used to be classified as case-sensitive -
+    which is the answer that switches the output-collision check OFF and
+    lets one result overwrite another. Only a genuine not-found means
+    case-sensitive; every other error is exit 2.
+    """
+    _explode_on_the_probe(monkeypatch, "stat",
+                          PermissionError(13, "permission denied"))
+    with pytest.raises(ScrubError) as caught:
+        cli.directory_is_case_insensitive(str(tmp_path))
+    assert "Refusing to guess" in str(caught.value)
+
+
+def test_a_probe_that_cannot_be_removed_is_an_error_not_a_warning(
+        tmp_path, monkeypatch):
+    """A verdict returned after a failed cleanup is a verdict from a
+    directory that is not behaving as the check assumes."""
+    _explode_on_the_probe(monkeypatch, "remove",
+                          PermissionError(13, "permission denied"))
+    with pytest.raises(ScrubError) as caught:
+        cli.directory_is_case_insensitive(str(tmp_path))
+    assert "could not be removed" in str(caught.value)
+
+
+def test_a_genuinely_missing_swapped_name_is_the_case_sensitive_answer(
+        tmp_path, monkeypatch):
+    """FileNotFoundError is the one error that IS an answer.
+
+    Everything else is an instrument failure, but a swapped name that
+    honestly is not there is exactly what a case-sensitive volume looks
+    like, so it must come back False rather than raise.
+    """
+    _explode_on_the_probe(monkeypatch, "stat",
+                          FileNotFoundError(2, "no such file"))
+    assert cli.directory_is_case_insensitive(str(tmp_path)) is False
+
+
+def test_the_megapixel_budget_is_decimal_megapixels_not_mebipixels():
+    """The number is pinned, not the direction.
+
+    --max-megapixels 1 must mean 1,000,000 pixels. Read as mebipixels it
+    meant 1,048,576, so a documented 192 megapixel ceiling actually admitted
+    201,326,592 pixels - a true 200 megapixel image passing under a 192
+    megapixel limit.
+    """
+    backend = ScriptedBackend([], max_image_dimension=100000)
+
+    # Exactly one million pixels is inside a one megapixel budget.
+    cli.check_scales_fit((1000, 1000), [1], backend, "image", 1)
+
+    # A thousand more is not.
+    with pytest.raises(ScrubError) as caught:
+        cli.check_scales_fit((1000, 1001), [1], backend, "image", 1)
+    assert "over the 1 megapixel budget" in str(caught.value)
+
+    # 1024x1024 is 1,048,576 pixels. Under the mebipixel reading that was
+    # exactly at the limit and passed; it is over a decimal megapixel.
+    with pytest.raises(ScrubError):
+        cli.check_scales_fit((1024, 1024), [1], backend, "image", 1)
+
+    # And the scaled arithmetic is decimal too: 500x500 at scale 2 is one
+    # million pixels exactly.
+    cli.check_scales_fit((500, 500), [2], backend, "image", 1)
+    with pytest.raises(ScrubError):
+        cli.check_scales_fit((500, 501), [2], backend, "image", 1)
+
+    # The PRINTED figure is pinned, not just the direction, because a fix
+    # can reach the comparison and miss the message. 900x260 at scale 8 is
+    # 7200x2080, which is 14,976,000 pixels: 15.0 true megapixels, and 14.3
+    # if the unit were mebipixels. This is the same arithmetic the proof
+    # transcript prints.
+    with pytest.raises(ScrubError) as caught:
+        cli.check_scales_fit((900, 260), [8], backend, "image", 1)
+    assert "15.0 megapixels" in str(caught.value)
+    assert "14.3" not in str(caught.value)
+
+
 def test_the_case_probe_refuses_to_guess_when_it_cannot_be_created(tmp_path):
     missing = tmp_path / "no-such-directory"
     with pytest.raises(ScrubError) as caught:

@@ -190,12 +190,24 @@ of a fractional rectangle is left uncovered, and only then is `--pad` applied
 (default 4 pixels). Then:
 
 - **`--blur`** (default) mosaics the region down to a handful of cells and
-  scales it back with NEAREST, which throws the pixels away outright, then
-  smooths the blocks with a Gaussian pass at radius `max(6, height/2)`. The
-  text is not merely hard to read - the information is gone.
+  scales it back with NEAREST, then smooths the blocks with a Gaussian pass
+  at radius `max(6, height/2)`. The original pixel values are not present in
+  the output - the downsampling discards them. **What remains is a
+  low-frequency average of the covered region**, which is not nothing:
+  recovering text from a mosaic is a documented attack when the alphabet is
+  small, and a Gaussian blur is a linear low-pass filter, not an eraser. This
+  mode is not proof against a determined recovery attempt.
 - **`--patch`** fills a rounded rectangle with the region's per-channel
   median colour, which is its background colour, so the redaction reads as a
-  deliberate one rather than a black bar.
+  deliberate one rather than a black bar. Because it paints an opaque solid
+  colour, **no signal from the covered pixels survives at all.**
+
+**For anything leaving the organisation, use `--patch`.** It is the only one
+of the two that leaves nothing behind to attack. `--blur` remains the default
+because it is the right choice for the common case of tidying an internal
+screenshot, where the redaction should still read as part of the picture -
+but the choice of default is a judgement about the common case, not a claim
+that the two modes are equally strong.
 
 ## How the verify pass works
 
@@ -236,19 +248,24 @@ The verify pass is run by the **same recognizer that found the text in the
 first place**. That is true of every backend, on every platform, and it is a
 property of the design rather than a defect in any one engine.
 
-So a pass proves that *this engine* can no longer read the term in the
-written file. It does not prove that no trace of the text survives in the
-pixels. A different engine, a better one, or the same one at a scale this run
-did not try, is not what was asked.
+So a pass proves that *this engine*, at *the scales this run configured*,
+can no longer read the term in the written file. It does not prove that no
+trace of the text survives in the pixels. A different engine, a better one,
+or the same one at a scale this run did not try, is not what was asked.
 
-Two things follow, and neither of them weakens what the tool actually does:
+Three things follow:
 
 - **The rectangle is the engine's own estimate of where the text is**, and
   nothing guarantees it is tight around the glyphs. `--pad` is the margin over
   it and it defaults to 4 pixels; `--pad 0` removes the only margin there is.
-- **What is inside the rectangle really is destroyed.** `--blur` mosaics the
-  region down and scales it back with NEAREST, which throws the pixels away
-  outright - that claim is not hedged by anything in this section.
+- **What is inside the rectangle is covered, and how well depends on the
+  mode.** `--blur` removes the original pixel values but leaves a
+  low-frequency average of the region, which is attackable. `--patch` leaves
+  no signal from the covered pixels at all. See
+  [How the redaction works](#how-the-redaction-works).
+- **The verify pass cannot tell those two apart.** It asks the recognizer
+  whether it can still read the term, and the recognizer says no to both. A
+  pass is not a statement about how recoverable the covered pixels are.
 
 There is deliberately no "safety margin" beyond `--pad`. A number nobody has
 measured, added to look careful, would be a guess presented as a guarantee.
@@ -322,7 +339,7 @@ portable fallback engine and none will be added.
 
 ```
 python gen_samples.py samples     # draw the synthetic test images
-python -m pytest tests/ -q        # 52 tests
+python -m pytest tests/ -q        # 56 tests
 ```
 
 The integration tests drive the **real recognizer** over the generated
@@ -369,12 +386,18 @@ inferred from a hit count.
 - **`--check-only` is a linter, not a guarantee.** It reports what the OCR can
   see. It cannot report sensitive text the OCR cannot read, which is why the
   scrub path always re-reads its own output.
-- **The verify pass uses the same engine that found the text**, on every
-  platform, so it proves the term is no longer readable *by that engine* -
-  not that no trace survives. The rectangle it redacts is that engine's own
-  estimate of where the text is and is not guaranteed tight; `--pad` (default
-  4) is the only margin over it, and `--pad 0` removes it. See
+- **The verify pass uses the same engine that found the text**, at the scales
+  the run configured, on every platform. It proves the term is no longer
+  readable *by that engine at those scales* - not that no trace survives. The
+  rectangle it redacts is that engine's own estimate of where the text is and
+  is not guaranteed tight; `--pad` (default 4) is the only margin over it, and
+  `--pad 0` removes it. See
   [What the verify pass does not prove](#what-the-verify-pass-does-not-prove).
+- **`--blur` is not proof against a determined recovery attempt.** It removes
+  the original pixel values but what remains is a low-frequency average of the
+  covered region; depixelation attacks on text from a small alphabet are
+  documented, and a Gaussian is a linear filter. Use `--patch` for anything
+  leaving the organisation.
 - **Case aliasing is the aliasing the output-collision check covers.** The
   destination directory is probed for it directly. Other ways a filesystem can
   make two names one file - Unicode normalisation, for one - are not probed
