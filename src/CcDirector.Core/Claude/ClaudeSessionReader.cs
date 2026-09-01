@@ -220,11 +220,112 @@ public static class ClaudeSessionReader
 
     /// <summary>
     /// Get the path to the .jsonl file for a Claude session.
+    ///
+    /// THE TRANSCRIPT FOLLOWS THE AGENT'S WORKING DIRECTORY, NOT THE SESSION'S START FOLDER. Claude Code files
+    /// a transcript under the project folder named for the directory the agent is working in - and that
+    /// directory can change mid-session. When the agent enters a Claude Code worktree (the EnterWorktree
+    /// tool, which makes <c>.claude\worktrees\&lt;name&gt;</c> its new working directory), Claude Code MOVES the
+    /// whole transcript into the worktree's own project folder. The file keeps its name - the Claude session
+    /// id, a GUID - but it is no longer where this Director first found it.
+    ///
+    /// Before this, the path was computed from the repository path alone, so every reader in the Director
+    /// (turns, chat, history, the compaction marker, resume checks) went on opening the start folder and
+    /// answered "transcript not found" for the rest of the session's life. Observed 1 September 2026 on
+    /// session 111: the agent entered a worktree at 15:13 UTC, and from then on the hosted Gateway's every
+    /// narration attempt - one per 45-second sweep, for hours - came back <c>no_jsonl</c> from a Director
+    /// that was looking in the wrong folder while the live transcript sat one folder over. The phone read
+    /// "Voice did not arrive after 19m". The Director's own session record even held the correct path,
+    /// reported by the hook; this helper never consulted it, and neither did its ten callers.
+    ///
+    /// So the lookup is now BY IDENTITY: the start folder is checked first because it is right for every
+    /// session that has not moved, and when the file is not there, the projects root is scanned for the one
+    /// folder that holds <c>&lt;id&gt;.jsonl</c>. A GUID is unique, so a hit is that session's transcript, not
+    /// a guess. A relocation is remembered per session id so the scan happens once, not on every read. When
+    /// no folder holds the file, the start-folder path is returned unchanged, so every "not found at ..."
+    /// message still names the place the caller expected.
     /// </summary>
     public static string GetJsonlPath(string claudeSessionId, string repoPath)
+        => LocateJsonl(ClaudeProjectsPath, claudeSessionId, GetProjectFolder(repoPath));
+
+    /// <summary>(projects root, Claude session id) -> the folder-relocated transcript path already found for
+    /// it, so a session that moved once is not re-scanned for on every read. Keyed by root as well as id so a
+    /// test tree and the real tree can never answer for each other.</summary>
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, string> RelocatedTranscripts =
+        new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>(projects root, Claude session id) -> when a scan last found NOTHING, so a transcript that is
+    /// genuinely absent (most often a brand-new session Claude Code has not written to yet) does not cost a
+    /// full scan on every 45-second read. The start folder is still checked first on every call, so a file
+    /// that appears where it is expected is seen at once; only the discovery of a RELOCATION waits out this
+    /// window.</summary>
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, DateTime> TranscriptScanMissedAt =
+        new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>How long a scan that found nothing is trusted before the projects root is scanned again.</summary>
+    internal static readonly TimeSpan RescanAfterMiss = TimeSpan.FromSeconds(30);
+
+    /// <summary>
+    /// The lookup behind <see cref="GetJsonlPath"/>, with the projects root injected so it is tested against
+    /// a temporary tree rather than this machine's real <c>~/.claude/projects</c>.
+    /// </summary>
+    /// <param name="projectsRoot">The <c>~/.claude/projects</c> directory.</param>
+    /// <param name="claudeSessionId">The transcript's file name without the extension (a GUID).</param>
+    /// <param name="startFolderName">The project folder named for the directory the session STARTED in.</param>
+    internal static string LocateJsonl(string projectsRoot, string claudeSessionId, string startFolderName)
     {
-        var projectFolder = GetProjectFolderPath(repoPath);
-        return Path.Combine(projectFolder, $"{claudeSessionId}.jsonl");
+        var fileName = $"{claudeSessionId}.jsonl";
+        var expected = Path.Combine(projectsRoot, startFolderName, fileName);
+        if (File.Exists(expected)) return expected;
+        if (string.IsNullOrWhiteSpace(claudeSessionId)) return expected;   // nothing to look for by name
+
+        var key = projectsRoot + "|" + claudeSessionId;
+        if (RelocatedTranscripts.TryGetValue(key, out var remembered) && File.Exists(remembered))
+            return remembered;
+        if (TranscriptScanMissedAt.TryGetValue(key, out var missedAt) && DateTime.UtcNow - missedAt < RescanAfterMiss)
+            return expected;
+
+        // Every project folder that holds a transcript of this name. Ordinarily zero or one; more than one
+        // would mean the same GUID was written under two folders, which Claude Code does not do - if it ever
+        // happens the newest write is the live transcript and the fact is logged so it is not silent.
+        //
+        // The enumeration is guarded because it races the file system: a folder can vanish between being
+        // listed and being probed, and the root itself can be removed or become unreadable under us. Such
+        // a failure is logged and answered exactly as "not found" is - the start-folder path - so a caller
+        // that has always received a path keeps receiving one instead of an exception it never handled.
+        List<string> found;
+        try
+        {
+            found = Directory.Exists(projectsRoot)
+                ? Directory.EnumerateDirectories(projectsRoot)
+                    .Select(dir => Path.Combine(dir, fileName))
+                    .Where(File.Exists)
+                    .OrderByDescending(File.GetLastWriteTimeUtc)
+                    .ToList()
+                : new List<string>();
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            FileLog.Write($"[ClaudeSessionReader] GetJsonlPath: scanning {projectsRoot} for {fileName} FAILED: {ex.Message} - answering the start-folder path {expected}");
+            TranscriptScanMissedAt[key] = DateTime.UtcNow;
+            return expected;
+        }
+        if (found.Count == 0)
+        {
+            TranscriptScanMissedAt[key] = DateTime.UtcNow;
+            return expected;
+        }
+        TranscriptScanMissedAt.TryRemove(key, out _);
+
+        var located = found[0];
+        if (found.Count > 1)
+            FileLog.Write($"[ClaudeSessionReader] GetJsonlPath: {found.Count} folders hold {fileName}; using the newest write {located}");
+        if (RelocatedTranscripts.TryAdd(key, located))
+            FileLog.Write($"[ClaudeSessionReader] GetJsonlPath: transcript {fileName} is not in its start folder "
+                        + $"{Path.GetDirectoryName(expected)}; the agent's working directory moved (a Claude Code worktree, most likely) "
+                        + $"and the transcript moved with it. Reading it from {located}");
+        else
+            RelocatedTranscripts[key] = located;
+        return located;
     }
 
     /// <summary>
