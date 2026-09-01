@@ -1,9 +1,25 @@
 """Tests for cc-scrub.
 
-The OCR tests run the tool end to end over the synthetic samples that
-gen_samples.py draws - there is no mocked recognizer anywhere, because a
-mocked one would prove nothing about the engine this tool actually depends
-on.
+Two kinds of test, on purpose.
+
+The INTEGRATION tests run the tool end to end over the synthetic samples
+that gen_samples.py draws, against the REAL recognizer for this platform.
+They are what proves the tool works with the engine it actually depends on,
+and they skip by platform name where no backend exists yet - never by
+probing whether OCR happens to work, so a broken install on a supported
+platform fails them instead of quietly passing.
+
+The CONTROLLED tests drive a ScriptedBackend: a deliberate test double
+implementing the OCR seam contract, unreachable from get_backend() and never
+shipped. It exists because parts of the tool cannot be reached with a real
+engine at all - no screenshot makes a recognizer read zero words from a file
+it has just read words from, and none reliably leaves a redacted term
+readable - and those are precisely the arms that must never rot. It also
+lets the coordinate mapping and the word joining be asserted as exact
+numbers rather than inferred from a hit count.
+
+Neither kind substitutes for the other, and the double never stands in for
+the engine in a test about the engine.
 
 Run from this tool's directory:
 
@@ -378,6 +394,32 @@ def test_a_scaled_read_maps_back_to_native_coordinates_exactly():
     assert box == (31 / 3.0, 62 / 3.0, 91 / 3.0, 25 / 3.0)
 
 
+def test_a_read_over_the_megapixel_budget_is_refused_before_it_is_attempted(
+        blank_image, terms_file, capsys, monkeypatch):
+    """Passing the side limit says nothing about the allocation.
+
+    200x100 at scale 20 is 4000x2000 - well inside a 10000 px side limit, and
+    8 megapixels, which is over a 1 megapixel budget. The engine must never
+    be reached and the resize must never be attempted.
+    """
+    backend = ScriptedBackend([], max_image_dimension=10000)
+    code, out = run_scripted(capsys, monkeypatch, backend,
+                             blank_image, "--check-only", "--scales", "20",
+                             "--max-megapixels", "1",
+                             "--terms-file", terms_file)
+    assert code == 2
+    assert "over the 1 megapixel budget for one read" in out
+    assert backend.calls == [], "the engine was called on an oversized read"
+
+
+def test_the_megapixel_budget_must_be_at_least_one(blank_image, terms_file,
+                                                   capsys):
+    code, out = run(capsys, blank_image, "--check-only",
+                    "--max-megapixels", "0", "--terms-file", terms_file)
+    assert code == 2
+    assert "--max-megapixels must be at least 1" in out
+
+
 def test_an_image_too_big_for_the_engine_is_refused_before_it_is_read(
         blank_image, terms_file, capsys, monkeypatch):
     """Refused off the header, at scale 1, without touching the engine."""
@@ -392,68 +434,73 @@ def test_an_image_too_big_for_the_engine_is_refused_before_it_is_read(
 
 # ------------------------------------------------------------- usage and rules
 
-@requires_ocr
-def test_refuses_to_overwrite_the_input_image(samples, terms_file, tmp_path,
-                                              capsys):
-    target = tmp_path / "sample-normal.png"
-    target.write_bytes((samples / "sample-normal.png").read_bytes())
-    code, out = run(capsys, target, "-o", target, "--terms-file", terms_file)
+# The input-overwrite guard is a FILESYSTEM question, not an OCR one, so all
+# three arms are driven with the scripted backend: coupling them to a real
+# recognizer would make them skip on a platform where the guard itself works
+# perfectly well. Only the case-alias arm carries a platform marker, because
+# only that arm's premise - two spellings naming one file - is a property of
+# the filesystem the test happens to be running on. Hard links and
+# os.path.samefile work on Windows and on macOS alike.
+case_insensitive_filesystem_only = pytest.mark.skipif(
+    sys.platform != "win32",
+    reason="this arm needs a case-insensitive filesystem; Windows always is, "
+           "a POSIX host may not be")
+
+
+def test_refuses_to_overwrite_the_input_image(blank_image, terms_file, capsys,
+                                              monkeypatch):
+    backend = ScriptedBackend([HIT_WORDS])
+    code, out = run_scripted(capsys, monkeypatch, backend,
+                             blank_image, "-o", blank_image,
+                             "--scales", "1", "--terms-file", terms_file)
     assert code == 2
     assert "refusing to overwrite the input image" in out
 
 
-# Path aliasing is a filesystem property, not an OCR one. This skip is keyed
-# to the platform whose filesystem is case-insensitive by default, never to a
-# probe of whether the alias happened to resolve - and the test asserts its
-# own premise, so if the alias ever stops naming the same file the test fails
-# instead of quietly proving nothing.
-windows_paths_only = pytest.mark.skipif(
-    sys.platform != "win32",
-    reason="case-insensitive path aliasing is a Windows filesystem property")
-
-
-@requires_ocr
-@windows_paths_only
+@case_insensitive_filesystem_only
 def test_refuses_to_overwrite_the_input_addressed_in_a_different_case(
-        samples, terms_file, tmp_path, capsys):
+        blank_image, terms_file, capsys, monkeypatch):
     """The same file spelled in another case is still the same file.
 
     A string comparison of absolute paths says these two are different and
     would let the scrub overwrite the only unredacted copy of the input.
     """
-    target = tmp_path / "sample-normal.png"
-    target.write_bytes((samples / "sample-normal.png").read_bytes())
-    alias = tmp_path / "SAMPLE-NORMAL.PNG"
+    alias = blank_image.parent / blank_image.name.upper()
 
     # The premise, asserted rather than assumed.
-    assert os.path.abspath(str(target)) != os.path.abspath(str(alias))
+    assert os.path.abspath(str(blank_image)) != os.path.abspath(str(alias))
     assert os.path.exists(str(alias))
-    assert os.path.samefile(str(target), str(alias))
+    assert os.path.samefile(str(blank_image), str(alias))
 
-    before = target.read_bytes()
-    code, out = run(capsys, target, "-o", alias, "--terms-file", terms_file)
+    before = blank_image.read_bytes()
+    backend = ScriptedBackend([HIT_WORDS])
+    code, out = run_scripted(capsys, monkeypatch, backend,
+                             blank_image, "-o", alias, "--force",
+                             "--scales", "1", "--terms-file", terms_file)
     assert code == 2
     assert "refusing to overwrite the input image" in out
-    assert target.read_bytes() == before, "the input image was modified"
+    assert blank_image.read_bytes() == before, "the input image was modified"
 
 
-@requires_ocr
-@windows_paths_only
 def test_refuses_to_overwrite_the_input_reached_through_a_hard_link(
-        samples, terms_file, tmp_path, capsys):
-    """A hard link is a second name for one file, not a second file."""
-    target = tmp_path / "sample-normal.png"
-    target.write_bytes((samples / "sample-normal.png").read_bytes())
-    link = tmp_path / "link-to-sample.png"
-    os.link(str(target), str(link))
+        blank_image, terms_file, tmp_path, capsys, monkeypatch):
+    """A hard link is a second name for one file, not a second file.
 
-    assert os.path.samefile(str(target), str(link))
+    No platform marker: os.link and os.path.samefile both work on Windows and
+    on macOS, so this arm must run on both.
+    """
+    link = tmp_path / "link-to-input.png"
+    os.link(str(blank_image), str(link))
+    assert os.path.samefile(str(blank_image), str(link))
 
-    before = target.read_bytes()
-    code, out = run(capsys, target, "-o", link, "--terms-file", terms_file)
+    before = blank_image.read_bytes()
+    backend = ScriptedBackend([HIT_WORDS])
+    code, out = run_scripted(capsys, monkeypatch, backend,
+                             blank_image, "-o", link, "--force",
+                             "--scales", "1", "--terms-file", terms_file)
     assert code == 2
     assert "refusing to overwrite the input image" in out
-    assert target.read_bytes() == before, "the input image was modified"
+    assert blank_image.read_bytes() == before, "the input image was modified"
 
 
 def test_a_missing_terms_file_names_the_example_to_copy(samples, capsys):
@@ -510,6 +557,61 @@ def test_two_inputs_that_would_share_one_output_are_refused(tmp_path, capsys,
     assert code == 2
     assert "would both be written to" in out
     assert "shot-scrubbed.png" in out
+
+
+@case_insensitive_filesystem_only
+def test_two_inputs_whose_stems_differ_only_in_case_are_refused(
+        tmp_path, capsys, terms_file):
+    """Shot.png and shot.jpg want Shot-scrubbed.png and shot-scrubbed.png.
+
+    Those two names are one file wherever the volume is case-insensitive.
+    """
+    work = tmp_path / "case-collide"
+    work.mkdir()
+    Image.new("RGB", (60, 40), (255, 255, 255)).save(str(work / "Shot.png"))
+    Image.new("RGB", (60, 40), (255, 255, 255)).save(str(work / "shot.jpg"))
+
+    code, out = run(capsys, work, "--terms-file", terms_file)
+    assert code == 2
+    assert "would both be written to" in out
+
+
+@case_insensitive_filesystem_only
+def test_collision_detection_does_not_depend_on_the_host_normcase(
+        tmp_path, capsys, terms_file, monkeypatch):
+    """The exact defect: normcase is the HOST's rule, not the volume's.
+
+    os.path.normcase lower-cases on Windows and is the identity function on
+    POSIX, so a lexical comparison built on it stops detecting anything on a
+    case-insensitive volume under a POSIX host - which is a normal Mac. This
+    test makes normcase the identity function and requires the collision to
+    be found anyway, because the answer must come from the destination
+    directory rather than from the path module.
+    """
+    monkeypatch.setattr(os.path, "normcase", lambda path: path)
+
+    work = tmp_path / "normcase-collide"
+    work.mkdir()
+    Image.new("RGB", (60, 40), (255, 255, 255)).save(str(work / "Shot.png"))
+    Image.new("RGB", (60, 40), (255, 255, 255)).save(str(work / "shot.jpg"))
+
+    code, out = run(capsys, work, "--terms-file", terms_file)
+    assert code == 2
+    assert "would both be written to" in out
+
+
+@case_insensitive_filesystem_only
+def test_the_case_probe_answers_from_the_filesystem_and_cleans_up(tmp_path):
+    before = sorted(os.listdir(str(tmp_path)))
+    assert cli.directory_is_case_insensitive(str(tmp_path)) is True
+    assert sorted(os.listdir(str(tmp_path))) == before, "the probe was left behind"
+
+
+def test_the_case_probe_refuses_to_guess_when_it_cannot_be_created(tmp_path):
+    missing = tmp_path / "no-such-directory"
+    with pytest.raises(ScrubError) as caught:
+        cli.directory_is_case_insensitive(str(missing))
+    assert "Refusing to guess" in str(caught.value)
 
 
 def test_an_output_directory_that_cannot_be_created_exits_two(

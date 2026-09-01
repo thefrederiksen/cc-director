@@ -41,6 +41,7 @@ Python 3.14.6 with Pillow 12.3.0 and pyobjc 12.2.2; see
 python main.py <image-or-dir> [-o <out>] [--terms-file terms.txt]
                [--check-only] [--patch|--blur] [--force]
                [--pad N] [--scales 1,2,3] [--lang en] [--no-fold]
+               [--max-megapixels N]
 ```
 
 Common runs:
@@ -78,10 +79,20 @@ When there are no hits, no output file is written at all.
   be one that has already passed verification, so replacing it is a decision
   you make on purpose. Delete it, point `-o` elsewhere, or pass `--force`.
 - **Two inputs that want one output.** Names are built from the input's stem,
-  so `shot.png` and `shot.jpg` both want `shot-scrubbed.png` - and on a
-  case-insensitive filesystem so do `Shot.png` and `shot.png`. Every
-  destination is worked out before any image is read, and a collision stops
-  the run rather than letting the second result quietly replace the first.
+  so `shot.png` and `shot.jpg` both want `shot-scrubbed.png` - and wherever
+  the volume treats two spellings as one file, so do `Shot.png` and
+  `shot.jpg`. Every destination is worked out before any image is read, and a
+  collision stops the run rather than letting the second result quietly
+  replace the first.
+
+  Whether two spellings are one file is answered by the **destination
+  directory**, probed once per directory: a probe file is created under a
+  mixed-case name, looked up with its case swapped, and removed again. It is
+  not answered by `os.path.normcase`, which is the *host's* rule - it
+  lower-cases on Windows and is the identity function on POSIX, so a lexical
+  comparison would silently stop detecting anything on a case-insensitive
+  volume under a POSIX host, which is the normal state of a Mac. A probe that
+  cannot be created or read back is exit 2, never an assumption.
 
 Directory input picks up `.png`, `.jpg`, `.jpeg`, `.bmp` and skips anything
 already named `*-scrubbed.*`, so re-running a folder picks up the same inputs
@@ -93,7 +104,7 @@ each time (and then refuses to replace the outputs unless you pass `--force`).
 | ---- | ------- |
 | 0    | work done and proved, or `--check-only` found nothing |
 | 1    | denylist hits remain readable in an output, or `--check-only` found hits |
-| 2    | broken instrument or usage error - OCR unavailable, unreadable image, zero text read, an image too big for the engine, an output that already exists, two inputs colliding on one output, an unmatchable denylist term, a failed write, bad arguments |
+| 2    | broken instrument or usage error - OCR unavailable, unreadable image, zero text read, an image too big for the engine or over the megapixel budget, an output that already exists, two inputs colliding on one output, an unmatchable denylist term, a failed write, bad arguments |
 
 `--check-only` is the linter: it prints every hit with its coordinates,
 changes nothing, and exits 1 if there is anything to scrub. Point it at a
@@ -131,9 +142,15 @@ survive: `!!!` folds onto `lll` and can match, and with `--no-fold` it cannot.
    as `scales=2,3`. Every scale always runs and the hits are unioned. This is
    not a fallback chain - different scales misread the same text in
    different ways, and the union is what makes detection reliable. Every
-   scale, scale 1 included, is measured against the engine's limit on the
-   longest side before the image is decoded, so an image too big to read is
-   refused by name rather than failing inside the engine.
+   scale, scale 1 included, is measured before the image is decoded against
+   two limits: the engine's limit on the longest side, and a budget on the
+   pixels one scaled read may ask for (`--max-megapixels`, default 192).
+   Passing the side limit says nothing about the allocation - a square input
+   just under a 16383 px side limit is about 268 megapixels, roughly 800 MB
+   of RGB data for the scaled copy alone - so an image too big to read is
+   refused by name rather than taken as far as the allocation. The default
+   allows the sizes people actually scrub: a 4K screenshot at scale 3 is 75
+   megapixels, a 5K one is 132.
 2. **Line joining.** Each OCR line is concatenated into one string with a map
    back to the word each character came from, so a term split across
    adjacent OCR words still matches and the covering words' rectangles are
@@ -213,6 +230,29 @@ Three ways it refuses to certify a run:
 In both failure cases nothing is published: the candidate is removed and the
 destination is untouched.
 
+### What the verify pass does not prove
+
+The verify pass is run by the **same recognizer that found the text in the
+first place**. That is true of every backend, on every platform, and it is a
+property of the design rather than a defect in any one engine.
+
+So a pass proves that *this engine* can no longer read the term in the
+written file. It does not prove that no trace of the text survives in the
+pixels. A different engine, a better one, or the same one at a scale this run
+did not try, is not what was asked.
+
+Two things follow, and neither of them weakens what the tool actually does:
+
+- **The rectangle is the engine's own estimate of where the text is**, and
+  nothing guarantees it is tight around the glyphs. `--pad` is the margin over
+  it and it defaults to 4 pixels; `--pad 0` removes the only margin there is.
+- **What is inside the rectangle really is destroyed.** `--blur` mosaics the
+  region down and scales it back with NEAREST, which throws the pixels away
+  outright - that claim is not hedged by anything in this section.
+
+There is deliberately no "safety margin" beyond `--pad`. A number nobody has
+measured, added to look careful, would be a guess presented as a guarantee.
+
 ## The OCR seam
 
 All the platform-specific code lives in [`src/ocr_backend.py`](src/ocr_backend.py)
@@ -282,7 +322,7 @@ portable fallback engine and none will be added.
 
 ```
 python gen_samples.py samples     # draw the synthetic test images
-python -m pytest tests/ -q        # 43 tests
+python -m pytest tests/ -q        # 49 tests
 ```
 
 The integration tests drive the **real recognizer** over the generated
@@ -322,6 +362,16 @@ inferred from a hit count.
 - **`--check-only` is a linter, not a guarantee.** It reports what the OCR can
   see. It cannot report sensitive text the OCR cannot read, which is why the
   scrub path always re-reads its own output.
+- **The verify pass uses the same engine that found the text**, on every
+  platform, so it proves the term is no longer readable *by that engine* -
+  not that no trace survives. The rectangle it redacts is that engine's own
+  estimate of where the text is and is not guaranteed tight; `--pad` (default
+  4) is the only margin over it, and `--pad 0` removes it. See
+  [What the verify pass does not prove](#what-the-verify-pass-does-not-prove).
+- **Case aliasing is the aliasing the output-collision check covers.** The
+  destination directory is probed for it directly. Other ways a filesystem can
+  make two names one file - Unicode normalisation, for one - are not probed
+  for.
 - **The engine is not deterministic across operating system versions.** The
   hit counts in `PROOF-windows.md` were produced on one machine; re-run the
   proof rather than assuming the numbers.

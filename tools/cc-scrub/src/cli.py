@@ -34,6 +34,21 @@ from .ocr_backend import ScrubError, get_backend
 IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg", ".bmp")
 SCRUBBED_MARK = "-scrubbed"
 
+# A ceiling on the pixels ONE scaled read may ask for, in megapixels.
+#
+# The engine's limit on the longest side is not a limit on area: a square
+# input just under that limit, read at scale 3, is about 268 megapixels -
+# roughly 800 MB of RGB data for the scaled copy alone, before the resize's
+# own working set and before the engine takes its copy. That allocation is
+# not a read the tool can perform; it is a way to bring the machine down.
+#
+# The default allows the sizes people actually scrub - a 4K screenshot at
+# scale 3 is 75 megapixels, a 5K one is 132 - and refuses the pathological
+# case by name. It is a guard, not a measurement of this machine, so it is
+# exposed as --max-megapixels for a caller who genuinely needs more and has
+# the memory for it.
+DEFAULT_MAX_MEGAPIXELS = 192
+
 TOOL_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DEFAULT_TERMS_FILE = os.path.join(TOOL_ROOT, "terms.txt")
 EXAMPLE_TERMS_FILE = os.path.join(TOOL_ROOT, "terms.example.txt")
@@ -155,16 +170,23 @@ class OcrPass(object):
         self.word_count = word_count
 
 
-def check_scales_fit(size, scales, backend, label):
-    """Refuse before reading if any scale would exceed the engine's limit.
+def check_scales_fit(size, scales, backend, label,
+                     max_megapixels=DEFAULT_MAX_MEGAPIXELS):
+    """Refuse before reading if any scale is beyond the engine or the budget.
 
-    Scale 1 is checked too. It used to be exempt, on the assumption that a
-    native image is always small enough - which is not true. An oversized
-    screenshot reached the engine unchecked and failed there, after the
-    whole file had been decoded into memory, instead of failing here
-    deterministically and by name.
+    Two separate limits, both checked at every scale including scale 1.
+    Scale 1 used to be exempt, on the assumption that a native image is
+    always small enough - which is not true. An oversized screenshot reached
+    the engine unchecked and failed there, after the whole file had been
+    decoded into memory, instead of failing here deterministically and by
+    name.
+
+    The side limit is the engine's own. The area limit is ours, because
+    passing the side limit says nothing about the allocation: see
+    DEFAULT_MAX_MEGAPIXELS.
     """
     width, height = size
+    budget = max_megapixels * 1024 * 1024
     for scale in scales:
         scaled_width, scaled_height = width * scale, height * scale
         if max(scaled_width, scaled_height) > backend.max_image_dimension:
@@ -174,19 +196,34 @@ def check_scales_fit(size, scales, backend, label):
                 "a smaller image."
                 % (label, width, height, scale, scaled_width, scaled_height,
                    backend.name, backend.max_image_dimension))
+        pixels = scaled_width * scaled_height
+        if pixels > budget:
+            raise ScrubError(
+                "%s is %dx%d; at scale %d that is %dx%d, %.1f megapixels, over "
+                "the %d megapixel budget for one read. Use a smaller --scales "
+                "value, a smaller image, or raise --max-megapixels if this "
+                "machine has the memory for it."
+                % (label, width, height, scale, scaled_width, scaled_height,
+                   pixels / float(1024 * 1024), max_megapixels))
 
 
-def ocr_image(image, scale, lang, backend):
+def ocr_image(image, scale, lang, backend,
+              max_megapixels=DEFAULT_MAX_MEGAPIXELS):
     """OCR image upscaled by 'scale'; return an OcrPass with rects at scale 1.
 
     Small grey UI text is invisible to the engine at native resolution, so
     the image is enlarged with LANCZOS before the read and every rectangle
     is divided back down afterwards.
     """
-    check_scales_fit(image.size, [scale], backend, "the image")
+    check_scales_fit(image.size, [scale], backend, "the image", max_megapixels)
     if scale != 1:
         width, height = image.size[0] * scale, image.size[1] * scale
-        scaled = image.resize((width, height), Image.LANCZOS)
+        try:
+            scaled = image.resize((width, height), Image.LANCZOS)
+        except (MemoryError, OSError, ValueError) as exc:
+            raise ScrubError(
+                "cannot enlarge the image to %dx%d for the scale %d read: %s"
+                % (width, height, scale, exc))
     else:
         scaled = image
 
@@ -194,6 +231,11 @@ def ocr_image(image, scale, lang, backend):
         words = backend.recognize(scaled, lang)
     except ScrubError as exc:
         raise ScrubError("at scale %d: %s" % (scale, exc))
+    except MemoryError as exc:
+        raise ScrubError(
+            "ran out of memory in the scale %d read of a %dx%d image: %s. Use "
+            "a smaller --scales value or a smaller image."
+            % (scale, scaled.size[0], scaled.size[1], exc))
 
     lines = []
     current_line = None
@@ -272,7 +314,8 @@ def find_hits(ocr_pass, terms, fold):
     return hits
 
 
-def collect_hits(image, terms, scales, lang, fold, backend):
+def collect_hits(image, terms, scales, lang, fold, backend,
+                 max_megapixels=DEFAULT_MAX_MEGAPIXELS):
     """Run every scale, union the hits, merge overlapping rectangles.
 
     Every scale always runs - this is not a fallback chain. Different
@@ -281,7 +324,7 @@ def collect_hits(image, terms, scales, lang, fold, backend):
     """
     passes = []
     for scale in scales:
-        passes.append(ocr_image(image, scale, lang, backend))
+        passes.append(ocr_image(image, scale, lang, backend, max_megapixels))
 
     total_words = sum(p.word_count for p in passes)
     raw = []
@@ -446,20 +489,22 @@ def process_image(path, out_path, terms, args, backend):
     # Size comes off the header, before the pixels are decoded. An image too
     # big for the engine is refused here rather than after megabytes have
     # been read into memory for a read that could never have happened.
-    check_scales_fit(image.size, args.scales, backend, path)
+    check_scales_fit(image.size, args.scales, backend, path,
+                     args.max_megapixels)
 
     try:
         image.load()
+        image = image.convert("RGB")
     except Exception as exc:
         raise ScrubError("cannot decode image %s: %s" % (path, exc))
-    image = image.convert("RGB")
     print("  size %dx%d  scales %s  fold %s"
           % (image.size[0], image.size[1],
              ",".join(str(s) for s in args.scales),
              "on" if not args.no_fold else "off"))
 
     hits, passes, total_words = collect_hits(
-        image, terms, args.scales, args.lang, not args.no_fold, backend)
+        image, terms, args.scales, args.lang, not args.no_fold, backend,
+        args.max_megapixels)
 
     for ocr_pass in passes:
         print("  ocr scale %d: %d words in %d lines"
@@ -539,10 +584,14 @@ def process_image(path, out_path, terms, args, backend):
         except Exception as exc:
             raise ScrubError("cannot read back the candidate output %s: %s"
                              % (temp_path, exc))
-        verify_image = verify_image.convert("RGB")
+        try:
+            verify_image = verify_image.convert("RGB")
+        except Exception as exc:
+            raise ScrubError("cannot decode the candidate output %s: %s"
+                             % (temp_path, exc))
         remaining, verify_passes, verify_words = collect_hits(
             verify_image, terms, args.scales, args.lang, not args.no_fold,
-            backend)
+            backend, args.max_megapixels)
         verify_image.close()
         for ocr_pass in verify_passes:
             print("    verify scale %d: %d words in %d lines"
@@ -634,22 +683,84 @@ def output_path_for(source, out_option, many):
     return out_option
 
 
+def directory_is_case_insensitive(directory):
+    """Ask the directory itself whether two spellings are one file.
+
+    A probe file is created under a deliberately mixed-case name, the same
+    name is looked up with its case swapped, and the filesystem's answer is
+    taken. The probe is always removed again.
+
+    This exists because os.path.normcase is the HOST's rule, not the
+    destination's. On Windows it lower-cases and on POSIX it is the identity
+    function, so a lexical comparison silently stops detecting anything on a
+    case-insensitive volume mounted under a POSIX host - which is the normal
+    state of a Mac. The question is about the volume the outputs land on, so
+    it is asked there.
+
+    It is not answerable without touching the disk, and it is not guessed: a
+    probe that cannot be created or cannot be read back is an error, never
+    an assumption of case sensitivity.
+
+    This covers case aliasing, which is the aliasing that output names built
+    from input stems actually run into. It is not a general test for every
+    way a filesystem can make two names one file.
+    """
+    try:
+        handle, probe = tempfile.mkstemp(prefix="ccScrubCase", suffix=".Probe",
+                                         dir=directory)
+        os.close(handle)
+    except OSError as exc:
+        raise ScrubError(
+            "cannot probe the output directory %s to find out whether it "
+            "treats two spellings of a name as one file: %s. Refusing to "
+            "guess, because guessing wrong lets one output silently replace "
+            "another." % (directory, exc))
+    try:
+        swapped = os.path.join(directory,
+                               os.path.basename(probe).swapcase())
+        if not os.path.exists(swapped):
+            return False
+        return os.path.samefile(swapped, probe)
+    except OSError as exc:
+        raise ScrubError(
+            "cannot read back the case probe in %s: %s. Refusing to guess."
+            % (directory, exc))
+    finally:
+        try:
+            os.remove(probe)
+        except OSError as exc:
+            sys.stderr.write("WARNING: could not remove the case probe %s: "
+                             "%s\n" % (probe, exc))
+
+
 def plan_outputs(sources, out_option):
     """Map every input to its output up front, and refuse any collision.
 
     Output names are built from the input's STEM, so shot.png and shot.jpg
-    both want shot-scrubbed.png - and on a case-insensitive filesystem so do
-    Shot.png and shot.png. Left alone, the second run silently overwrites
-    the first and the summary reports two images cleaned when only one
-    survived. Every destination is therefore worked out before any image is
-    read, and a collision stops the run instead of destroying a result.
+    both want shot-scrubbed.png - and on a filesystem that treats two
+    spellings as one file, so do Shot.png and shot.jpg. Left alone, the
+    second result silently overwrites the first and the summary reports two
+    images cleaned when only one survived. Every destination is therefore
+    worked out before any image is read, and a collision stops the run
+    instead of destroying a result.
+
+    Whether two spellings are one file is decided by the destination
+    directory, asked once per directory - never by the host's normcase,
+    which is the identity function on POSIX and would make this check do
+    nothing at all on a case-insensitive Mac volume.
     """
     many = len(sources) > 1
     plan = []
     claimed = {}
+    insensitive = {}
     for source in sources:
         destination = output_path_for(source, out_option, many)
-        key = os.path.normcase(os.path.abspath(destination))
+        directory = os.path.dirname(os.path.abspath(destination))
+        if directory not in insensitive:
+            insensitive[directory] = directory_is_case_insensitive(directory)
+        key = os.path.abspath(destination)
+        if insensitive[directory]:
+            key = key.lower()
         if key in claimed:
             raise ScrubError(
                 "%s and %s would both be written to %s. Rename one input, "
@@ -699,6 +810,11 @@ def build_parser():
                              "input, which is always refused)")
     parser.add_argument("--pad", type=int, default=4,
                         help="pixels of padding around each hit (default 4)")
+    parser.add_argument("--max-megapixels", type=int,
+                        default=DEFAULT_MAX_MEGAPIXELS,
+                        help="ceiling on the pixels one scaled read may ask "
+                             "for, in megapixels (default %d)"
+                             % DEFAULT_MAX_MEGAPIXELS)
     parser.add_argument("--scales", default="1,2,3",
                         help="OCR upscale factors, comma separated "
                              "(default 1,2,3)")
@@ -719,6 +835,8 @@ def main(argv):
         args.scales = parse_scales(args.scales)
         if args.pad < 0:
             raise ScrubError("--pad cannot be negative")
+        if args.max_megapixels < 1:
+            raise ScrubError("--max-megapixels must be at least 1")
         terms = load_terms(args.terms_file)
         validate_terms(terms, not args.no_fold)
         sources = gather_inputs(args.target)
