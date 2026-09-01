@@ -27,11 +27,15 @@ namespace CcDirector.Gateway.Transcription;
 /// <see cref="GatewayDatabase.CreateContext()"/>. A <see cref="TenantId"/> cannot be blank by construction, so
 /// a row can never be attributed to the wrong tenant.
 ///
-/// RETENTION, per tenant: a transcript is kept until it is either older than <see cref="RetentionWindow"/> (30
-/// days) or pushed past the newest <see cref="MaxTranscriptsPerTenant"/> (10,000) for that tenant, whichever
-/// bites first - about 10 MB of text per tenant maximum. Retention is THROTTLED so it does not run on every
-/// write (it runs on the first append per tenant per process and then every <see cref="RetentionCheckEvery"/>
-/// appends), which bounds the overshoot to the cap plus at most one check interval.
+/// RETENTION, per tenant: a transcript is kept until it is either older than <see cref="RetentionWindow"/> (90
+/// days, matching session_history's <c>SessionHistorySweep.Retention</c> so every per-tenant record the
+/// Gateway keeps ages out on the same clock) or pushed past the newest <see cref="MaxTranscriptsPerTenant"/>
+/// (30,000) for that tenant, whichever bites first - about 30 MB of text per tenant maximum. The cap is sized
+/// so the WINDOW is what normally bites: the heaviest real tenant measured (2026-09-01) writes ~133 transcripts
+/// a day, ~12,000 in 90 days - a 10,000 cap would silently cut their "90 days" to ~75. Retention is THROTTLED
+/// so it does not run on every write (it runs on the first append per tenant per process and then every
+/// <see cref="RetentionCheckEvery"/> appends), which bounds the overshoot to the cap plus at most one check
+/// interval.
 ///
 /// Threading: the Gateway is a single writer; every operation runs under this store's write lock over a fresh
 /// pooled context. A write failure is SWALLOWED-AND-LOGGED by the caller (the transcription-service hook), so
@@ -40,12 +44,14 @@ namespace CcDirector.Gateway.Transcription;
 /// </summary>
 public sealed class TranscriptStore
 {
-    /// <summary>How long a transcript is kept before age-trim removes it. Tunable constant (issue #509).</summary>
-    public static readonly TimeSpan RetentionWindow = TimeSpan.FromDays(30);
+    /// <summary>How long a transcript is kept before age-trim removes it. 90 days, the same clock as
+    /// session_history (owner decision, 2026-09-01; was 30 days from issue #509).</summary>
+    public static readonly TimeSpan RetentionWindow = TimeSpan.FromDays(90);
 
     /// <summary>The maximum transcripts kept per tenant; older rows beyond this are count-trimmed. About 1 KB
-    /// of text per utterance, so the cap is roughly 10 MB per tenant. Tunable constant (issue #509).</summary>
-    public const int MaxTranscriptsPerTenant = 10_000;
+    /// of text per utterance, so the cap is roughly 30 MB per tenant - sized so the 90-day window, not the
+    /// cap, is what normally bites (see the class doc for the measurement).</summary>
+    public const int MaxTranscriptsPerTenant = 30_000;
 
     /// <summary>Retention runs every this-many appends per tenant (plus the first append per tenant per
     /// process), so it does not run on every write. Bounds the overshoot to the cap plus one interval.</summary>

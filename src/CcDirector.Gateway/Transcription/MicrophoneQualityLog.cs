@@ -21,8 +21,10 @@ namespace CcDirector.Gateway.Transcription;
 /// microphone's name. It exists to answer "which of my microphones is bad", which needs no recording
 /// of what was said.
 ///
-/// RETENTION: 30 days, matching the transcript-text window and the Transcription Health history, so
-/// the product keeps ONE answer to how long it holds on to anything derived from a user's voice.
+/// RETENTION: 30 days, matching the Transcription Health history. (It no longer matches the
+/// transcript-text window: the owner moved dictation transcripts to 90 days on 2026-09-01 to sit on
+/// the same clock as session history. These quality MEASUREMENTS carry no text of what was said, and
+/// nothing argued for holding them longer, so they keep the shorter window.)
 /// </summary>
 public sealed class MicrophoneQualityLog
 {
