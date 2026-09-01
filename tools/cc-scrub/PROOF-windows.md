@@ -19,7 +19,7 @@ all deliberately fake.
   executable, no tesseract, no subprocess. Pillow 12.3.0, winocr 0.0.15 and
   their winrt wheels, on Python 3.11.6, Windows 10.0.26200.9278.
 - **check-only finds each planted term and prints its coordinates**, and
-  exits 1 while leaving the image untouched (steps 6).
+  exits 1 while leaving the image untouched (step 6).
 - **Multi-scale reading is load bearing.** The 10 px grey line in
   `sample-small-ui.png` is reported as `scales=2,3`: the recognizer cannot
   resolve it at native resolution and only reads it once the image is
@@ -33,15 +33,25 @@ all deliberately fake.
 - **An image with no text is a broken read, not a clean image.**
   `sample-notext.png` reads zero words at every scale and the tool exits 2
   refusing to call it scrubbed (step 8).
+- **Nothing unverified is ever published.** Each scrub writes a `.tmp`
+  CANDIDATE beside the destination, verifies THAT file, and only then renames
+  it onto the `*-scrubbed.png` name (step 9). After three scrubs the output
+  directory holds exactly three published files and no candidates (step 10).
 - **The verify pass is presence shaped.** Each scrub prints
   `VERIFY PASSED: 1 hit(s) found, 1 region(s) redacted, verify OCR read N
-  words in the output and 0 denylist hit(s) remain` - and the N is asserted
-  to be non-zero, so a verify instrument that reads nothing cannot certify
-  anything (step 9).
-- **The outputs really are clean.** Each written file is re-opened from disk
-  and read again, independently of the scrub run, with zero hits (step 10).
-- **The whole test suite passes in that same clean environment**: 25 tests,
-  including the three end-to-end scrub-and-verify cases (step 12).
+  words in the output and 0 denylist hit(s) remain` - and N is checked as a
+  number, so a verify instrument that reads nothing cannot certify anything.
+- **An existing output is not replaced by accident.** Re-running the same
+  scrub exits 2 and names the file; `--force` is how you say you meant it
+  (steps 11 and 12).
+- **The input is never a legal destination, in any spelling.** Addressing the
+  same file as `shot.png` and `SHOT.PNG` is refused - and refused even with
+  `--force`, because that would destroy the only unredacted copy (step 13).
+- **The outputs really are clean.** Each published file is re-opened from
+  disk and read again, independently of the scrub run, with zero hits
+  (step 14).
+- **The whole test suite passes in that same clean environment**: 43 tests,
+  including the three end-to-end scrub-and-verify cases (step 16).
 
 ## What this does NOT prove
 
@@ -58,6 +68,12 @@ all deliberately fake.
   chrome.
 - **Nothing about a packaged executable.** cc-scrub is run from source here.
   It has no PyInstaller build and is not in the shipped tool bundle.
+- **The two verify FAILURE arms are not in this transcript.** No real
+  screenshot makes an engine read zero words from a file it has just read
+  words from, and none reliably leaves a redacted term readable. Those arms
+  are proved in the test suite instead, driven by a scripted backend, and
+  they are the tests named `test_a_verify_read_of_zero_words_...` and
+  `test_a_term_surviving_in_the_output_...` in step 16.
 
 ## The transcript
 
@@ -320,7 +336,7 @@ IMAGE D:/cc-scrub-proof/samples/sample-notext.png
   ocr scale 3: 0 words in 0 lines
 [exit 2]
 
-=== 9. scrub each sample and let the verify pass rule on it ===
+=== 9. scrub each sample: candidate, verify, then publish ===
 
 $ D:/cc-scrub-proof/venv/Scripts/python.exe main.py D:/cc-scrub-proof/samples/sample-normal.png -o D:/cc-scrub-proof/out --terms-file D:/cc-scrub-proof/terms.txt
 cc-scrub
@@ -339,11 +355,12 @@ IMAGE D:/cc-scrub-proof/samples/sample-normal.png
   ocr scale 3: 20 words in 5 lines
   HITS: 1
     term='example@example.com' rect=(x=182 y=122 w=213 h=20) scales=1,2,3 ocr_line='Contact address: example@example.com'
-  WROTE D:/cc-scrub-proof/out\sample-normal-scrubbed.png (mode=blur pad=4)
-  VERIFY: re-reading D:/cc-scrub-proof/out\sample-normal-scrubbed.png
+  CANDIDATE D:\cc-scrub-proof\out\sample-normal-scrubbed.png.__1cl6r7.tmp (mode=blur pad=4)
+  VERIFY: re-reading D:\cc-scrub-proof\out\sample-normal-scrubbed.png.__1cl6r7.tmp
     verify scale 1: 19 words in 5 lines
     verify scale 2: 19 words in 5 lines
     verify scale 3: 19 words in 5 lines
+  WROTE D:/cc-scrub-proof/out\sample-normal-scrubbed.png (mode=blur pad=4)
   VERIFY PASSED: 1 hit(s) found, 1 region(s) redacted, verify OCR read 57 words in the output and 0 denylist hit(s) remain.
 
 SUMMARY: 1 image(s) processed, 1 clean, 0 failed.
@@ -366,11 +383,12 @@ IMAGE D:/cc-scrub-proof/samples/sample-small-ui.png
   ocr scale 3: 18 words in 6 lines
   HITS: 1
     term='myorg/secret-repo' rect=(x=41 y=78 w=84 h=10) scales=2,3 ocr_line='repo myorg/secret-repo'
-  WROTE D:/cc-scrub-proof/out\sample-small-ui-scrubbed.png (mode=blur pad=4)
-  VERIFY: re-reading D:/cc-scrub-proof/out\sample-small-ui-scrubbed.png
+  CANDIDATE D:\cc-scrub-proof\out\sample-small-ui-scrubbed.png.v4rhn78t.tmp (mode=blur pad=4)
+  VERIFY: re-reading D:\cc-scrub-proof\out\sample-small-ui-scrubbed.png.v4rhn78t.tmp
     verify scale 1: 16 words in 5 lines
     verify scale 2: 17 words in 6 lines
     verify scale 3: 17 words in 6 lines
+  WROTE D:/cc-scrub-proof/out\sample-small-ui-scrubbed.png (mode=blur pad=4)
   VERIFY PASSED: 1 hit(s) found, 1 region(s) redacted, verify OCR read 50 words in the output and 0 denylist hit(s) remain.
 
 SUMMARY: 1 image(s) processed, 1 clean, 0 failed.
@@ -393,17 +411,101 @@ IMAGE D:/cc-scrub-proof/samples/sample-glyph.png
   ocr scale 3: 17 words in 4 lines
   HITS: 1
     term='internal-hostname.local' rect=(x=18 y=72 w=233 h=10) scales=2,3 ocr_line='https:/ftnternal-hostname.local/status/session'
-  WROTE D:/cc-scrub-proof/out\sample-glyph-scrubbed.png (mode=blur pad=4)
-  VERIFY: re-reading D:/cc-scrub-proof/out\sample-glyph-scrubbed.png
+  CANDIDATE D:\cc-scrub-proof\out\sample-glyph-scrubbed.png.8k2vatg9.tmp (mode=blur pad=4)
+  VERIFY: re-reading D:\cc-scrub-proof\out\sample-glyph-scrubbed.png.8k2vatg9.tmp
     verify scale 1: 16 words in 3 lines
     verify scale 2: 17 words in 3 lines
     verify scale 3: 16 words in 3 lines
+  WROTE D:/cc-scrub-proof/out\sample-glyph-scrubbed.png (mode=blur pad=4)
   VERIFY PASSED: 1 hit(s) found, 1 region(s) redacted, verify OCR read 49 words in the output and 0 denylist hit(s) remain.
 
 SUMMARY: 1 image(s) processed, 1 clean, 0 failed.
 [exit 0]
 
-=== 10. re-check every scrubbed output - nothing left to find ===
+=== 10. nothing unverified is left lying about ===
+(the output directory holds three published outputs and no candidates)
+
+$ ls -1 D:/cc-scrub-proof/out
+sample-glyph-scrubbed.png
+sample-normal-scrubbed.png
+sample-small-ui-scrubbed.png
+[exit 0]
+
+=== 11. an existing output is not replaced by accident ===
+
+$ D:/cc-scrub-proof/venv/Scripts/python.exe main.py D:/cc-scrub-proof/samples/sample-normal.png -o D:/cc-scrub-proof/out --terms-file D:/cc-scrub-proof/terms.txt
+FATAL: output D:/cc-scrub-proof/out\sample-normal-scrubbed.png already exists. Refusing to replace it - it may be an output that has already passed verification. Delete it, point -o somewhere else, or pass --force to replace it.
+cc-scrub
+  ocr engine : Windows OCR (winocr / WinRT)
+  terms file : D:/cc-scrub-proof/terms.txt (3 terms)
+    - example@example.com
+    - myorg/secret-repo
+    - internal-hostname.local
+  images     : 1
+  mode       : blur
+
+IMAGE D:/cc-scrub-proof/samples/sample-normal.png
+  size 900x260  scales 1,2,3  fold on
+  ocr scale 1: 20 words in 5 lines
+  ocr scale 2: 20 words in 5 lines
+  ocr scale 3: 20 words in 5 lines
+  HITS: 1
+    term='example@example.com' rect=(x=182 y=122 w=213 h=20) scales=1,2,3 ocr_line='Contact address: example@example.com'
+[exit 2]
+
+=== 12. --force is how you say you meant it ===
+
+$ D:/cc-scrub-proof/venv/Scripts/python.exe main.py D:/cc-scrub-proof/samples/sample-normal.png -o D:/cc-scrub-proof/out --force --terms-file D:/cc-scrub-proof/terms.txt
+cc-scrub
+  ocr engine : Windows OCR (winocr / WinRT)
+  terms file : D:/cc-scrub-proof/terms.txt (3 terms)
+    - example@example.com
+    - myorg/secret-repo
+    - internal-hostname.local
+  images     : 1
+  mode       : blur
+
+IMAGE D:/cc-scrub-proof/samples/sample-normal.png
+  size 900x260  scales 1,2,3  fold on
+  ocr scale 1: 20 words in 5 lines
+  ocr scale 2: 20 words in 5 lines
+  ocr scale 3: 20 words in 5 lines
+  HITS: 1
+    term='example@example.com' rect=(x=182 y=122 w=213 h=20) scales=1,2,3 ocr_line='Contact address: example@example.com'
+  CANDIDATE D:\cc-scrub-proof\out\sample-normal-scrubbed.png.vxlw9_jr.tmp (mode=blur pad=4)
+  VERIFY: re-reading D:\cc-scrub-proof\out\sample-normal-scrubbed.png.vxlw9_jr.tmp
+    verify scale 1: 19 words in 5 lines
+    verify scale 2: 19 words in 5 lines
+    verify scale 3: 19 words in 5 lines
+  WROTE D:/cc-scrub-proof/out\sample-normal-scrubbed.png (mode=blur pad=4)
+  VERIFY PASSED: 1 hit(s) found, 1 region(s) redacted, verify OCR read 57 words in the output and 0 denylist hit(s) remain.
+
+SUMMARY: 1 image(s) processed, 1 clean, 0 failed.
+[exit 0]
+
+=== 13. the input is never a legal destination, in any spelling ===
+
+$ D:/cc-scrub-proof/venv/Scripts/python.exe main.py D:/cc-scrub-proof/shot.png -o D:/cc-scrub-proof/SHOT.PNG --force --terms-file D:/cc-scrub-proof/terms.txt
+FATAL: refusing to overwrite the input image D:/cc-scrub-proof/shot.png (the output path D:/cc-scrub-proof/SHOT.PNG is the same file)
+cc-scrub
+  ocr engine : Windows OCR (winocr / WinRT)
+  terms file : D:/cc-scrub-proof/terms.txt (3 terms)
+    - example@example.com
+    - myorg/secret-repo
+    - internal-hostname.local
+  images     : 1
+  mode       : blur
+
+IMAGE D:/cc-scrub-proof/shot.png
+  size 900x260  scales 1,2,3  fold on
+  ocr scale 1: 20 words in 5 lines
+  ocr scale 2: 20 words in 5 lines
+  ocr scale 3: 20 words in 5 lines
+  HITS: 1
+    term='example@example.com' rect=(x=182 y=122 w=213 h=20) scales=1,2,3 ocr_line='Contact address: example@example.com'
+[exit 2]
+
+=== 14. re-check every published output - nothing left to find ===
 
 $ D:/cc-scrub-proof/venv/Scripts/python.exe main.py D:/cc-scrub-proof/out/sample-normal-scrubbed.png --check-only --terms-file D:/cc-scrub-proof/terms.txt
 cc-scrub
@@ -468,7 +570,7 @@ IMAGE D:/cc-scrub-proof/out/sample-glyph-scrubbed.png
 SUMMARY: 1 image(s) processed, 1 clean, 0 failed.
 [exit 0]
 
-=== 11. a folder holding only outputs is an empty input set ===
+=== 15. a folder holding only outputs is an empty input set ===
 (the *-scrubbed suffix is skipped by design, which is what makes
  re-running a folder safe - the tool says so rather than doing nothing)
 
@@ -476,7 +578,7 @@ $ D:/cc-scrub-proof/venv/Scripts/python.exe main.py D:/cc-scrub-proof/out --chec
 FATAL: no images found in directory D:/cc-scrub-proof/out
 [exit 2]
 
-=== 12. the full test suite, in the same clean environment ===
+=== 16. the full test suite, in the same clean environment ===
 
 $ D:/cc-scrub-proof/venv/Scripts/python.exe -m pytest tests/ -v
 ============================= test session starts =============================
@@ -484,34 +586,52 @@ platform win32 -- Python 3.11.6, pytest-9.1.1, pluggy-1.6.0 -- D:\cc-scrub-proof
 cachedir: .pytest_cache
 rootdir: D:\cc-scrub-proof\cc-scrub
 configfile: pyproject.toml
-collecting ... collected 25 items
+collecting ... collected 43 items
 
-tests/test_cc_scrub.py::test_generator_writes_all_four_samples PASSED    [  4%]
-tests/test_cc_scrub.py::test_check_only_finds_the_planted_email_with_coordinates PASSED [  8%]
-tests/test_cc_scrub.py::test_check_only_finds_small_grey_ui_text_only_after_upscaling PASSED [ 12%]
-tests/test_cc_scrub.py::test_glyph_confusion_is_caught_by_folding_and_missed_without_it PASSED [ 16%]
-tests/test_cc_scrub.py::test_scrub_redacts_and_the_verify_pass_proves_it[sample-normal.png-example@example.com] PASSED [ 20%]
-tests/test_cc_scrub.py::test_scrub_redacts_and_the_verify_pass_proves_it[sample-small-ui.png-myorg/secret-repo] PASSED [ 24%]
-tests/test_cc_scrub.py::test_scrub_redacts_and_the_verify_pass_proves_it[sample-glyph.png-internal-hostname.local] PASSED [ 28%]
-tests/test_cc_scrub.py::test_the_scrubbed_output_is_clean_when_checked_again PASSED [ 32%]
-tests/test_cc_scrub.py::test_a_directory_run_skips_files_already_scrubbed PASSED [ 36%]
-tests/test_cc_scrub.py::test_an_image_with_no_text_is_a_broken_read_not_a_clean_image PASSED [ 40%]
-tests/test_cc_scrub.py::test_refuses_to_overwrite_the_input_image PASSED [ 44%]
+tests/test_cc_scrub.py::test_generator_writes_all_four_samples PASSED    [  2%]
+tests/test_cc_scrub.py::test_check_only_finds_the_planted_email_with_coordinates PASSED [  4%]
+tests/test_cc_scrub.py::test_check_only_finds_small_grey_ui_text_only_after_upscaling PASSED [  6%]
+tests/test_cc_scrub.py::test_glyph_confusion_is_caught_by_folding_and_missed_without_it PASSED [  9%]
+tests/test_cc_scrub.py::test_scrub_redacts_and_the_verify_pass_proves_it[sample-normal.png-example@example.com] PASSED [ 11%]
+tests/test_cc_scrub.py::test_scrub_redacts_and_the_verify_pass_proves_it[sample-small-ui.png-myorg/secret-repo] PASSED [ 13%]
+tests/test_cc_scrub.py::test_scrub_redacts_and_the_verify_pass_proves_it[sample-glyph.png-internal-hostname.local] PASSED [ 16%]
+tests/test_cc_scrub.py::test_the_scrubbed_output_is_clean_when_checked_again PASSED [ 18%]
+tests/test_cc_scrub.py::test_a_directory_run_skips_files_already_scrubbed PASSED [ 20%]
+tests/test_cc_scrub.py::test_an_image_with_no_text_is_a_broken_read_not_a_clean_image PASSED [ 23%]
+tests/test_cc_scrub.py::test_a_verify_read_of_zero_words_publishes_nothing_and_exits_two PASSED [ 25%]
+tests/test_cc_scrub.py::test_a_term_surviving_in_the_output_exits_one_and_publishes_nothing PASSED [ 27%]
+tests/test_cc_scrub.py::test_a_passing_scripted_run_publishes_the_candidate PASSED [ 30%]
+tests/test_cc_scrub.py::test_a_term_split_across_adjacent_words_on_one_line_is_joined PASSED [ 32%]
+tests/test_cc_scrub.py::test_a_term_split_across_two_lines_is_not_joined PASSED [ 34%]
+tests/test_cc_scrub.py::test_a_scaled_read_maps_back_to_native_coordinates_exactly PASSED [ 37%]
+tests/test_cc_scrub.py::test_an_image_too_big_for_the_engine_is_refused_before_it_is_read PASSED [ 39%]
+tests/test_cc_scrub.py::test_refuses_to_overwrite_the_input_image PASSED [ 41%]
+tests/test_cc_scrub.py::test_refuses_to_overwrite_the_input_addressed_in_a_different_case PASSED [ 44%]
+tests/test_cc_scrub.py::test_refuses_to_overwrite_the_input_reached_through_a_hard_link PASSED [ 46%]
 tests/test_cc_scrub.py::test_a_missing_terms_file_names_the_example_to_copy PASSED [ 48%]
-tests/test_cc_scrub.py::test_the_shipped_example_denylist_parses PASSED  [ 52%]
-tests/test_cc_scrub.py::test_bad_scales_are_a_usage_error PASSED         [ 56%]
-tests/test_cc_scrub.py::test_normalise_drops_punctuation_and_case PASSED [ 60%]
-tests/test_cc_scrub.py::test_normalise_folds_the_glyph_classes PASSED    [ 64%]
-tests/test_cc_scrub.py::test_parse_scales_sorts_and_deduplicates PASSED  [ 68%]
-tests/test_cc_scrub.py::test_parse_scales_rejects_rubbish PASSED         [ 72%]
-tests/test_cc_scrub.py::test_load_terms_ignores_comments_and_blank_lines PASSED [ 76%]
-tests/test_cc_scrub.py::test_load_terms_rejects_an_empty_denylist PASSED [ 80%]
-tests/test_cc_scrub.py::test_merge_hits_unions_overlapping_rectangles_of_one_term PASSED [ 84%]
-tests/test_cc_scrub.py::test_merge_hits_keeps_different_terms_apart PASSED [ 88%]
-tests/test_cc_scrub.py::test_gather_inputs_skips_already_scrubbed_files PASSED [ 92%]
-tests/test_cc_scrub.py::test_gather_inputs_rejects_a_missing_path PASSED [ 96%]
+tests/test_cc_scrub.py::test_the_shipped_example_denylist_parses PASSED  [ 51%]
+tests/test_cc_scrub.py::test_bad_scales_are_a_usage_error PASSED         [ 53%]
+tests/test_cc_scrub.py::test_a_denylist_term_that_can_never_match_is_refused PASSED [ 55%]
+tests/test_cc_scrub.py::test_term_validation_follows_the_normalisation_actually_in_force PASSED [ 58%]
+tests/test_cc_scrub.py::test_two_inputs_that_would_share_one_output_are_refused PASSED [ 60%]
+tests/test_cc_scrub.py::test_an_output_directory_that_cannot_be_created_exits_two PASSED [ 62%]
+tests/test_cc_scrub.py::test_pad_box_grows_outwards_to_whole_pixels PASSED [ 65%]
+tests/test_cc_scrub.py::test_pad_box_pads_and_clamps_to_the_image PASSED [ 67%]
+tests/test_cc_scrub.py::test_normalise_drops_punctuation_and_case PASSED [ 69%]
+tests/test_cc_scrub.py::test_normalise_folds_every_advertised_glyph_class PASSED [ 72%]
+tests/test_cc_scrub.py::test_parse_scales_sorts_and_deduplicates PASSED  [ 74%]
+tests/test_cc_scrub.py::test_parse_scales_rejects_rubbish PASSED         [ 76%]
+tests/test_cc_scrub.py::test_load_terms_ignores_comments_and_blank_lines PASSED [ 79%]
+tests/test_cc_scrub.py::test_load_terms_rejects_an_empty_denylist PASSED [ 81%]
+tests/test_cc_scrub.py::test_merge_hits_unions_overlapping_rectangles_of_one_term PASSED [ 83%]
+tests/test_cc_scrub.py::test_merge_hits_keeps_different_terms_apart PASSED [ 86%]
+tests/test_cc_scrub.py::test_gather_inputs_skips_already_scrubbed_files PASSED [ 88%]
+tests/test_cc_scrub.py::test_gather_inputs_rejects_a_missing_path PASSED [ 90%]
+tests/test_cc_scrub.py::test_is_same_file_sees_through_a_case_variant_of_an_existing_path PASSED [ 93%]
+tests/test_cc_scrub.py::test_is_same_file_compares_canonically_when_the_target_is_not_created_yet PASSED [ 95%]
+tests/test_cc_scrub.py::test_is_same_file_says_no_to_two_genuinely_different_files PASSED [ 97%]
 tests/test_cc_scrub.py::test_output_path_defaults_to_the_scrubbed_name_beside_the_input PASSED [100%]
 
-============================= 25 passed in 2.54s ==============================
+============================= 43 passed in 2.90s ==============================
 [exit 0]
 ```

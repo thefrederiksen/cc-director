@@ -28,7 +28,7 @@ implemented yet - see [Per-operating-system notes](#per-operating-system-notes).
 
 ```
 python main.py <image-or-dir> [-o <out>] [--terms-file terms.txt]
-               [--check-only] [--patch|--blur]
+               [--check-only] [--patch|--blur] [--force]
                [--pad N] [--scales 1,2,3] [--lang en] [--no-fold]
 ```
 
@@ -39,18 +39,42 @@ python main.py shot.png                  # scrub one image next to itself
 python main.py shots -o out/             # scrub a whole folder into out/
 python main.py shots --check-only        # lint a folder, change nothing
 python main.py shot.png --patch          # opaque patch instead of a blur
+python main.py shots -o out/ --force     # replace outputs already in out/
 ```
 
-The output is always written as `<name>-scrubbed.png`. The input is never
-overwritten; the tool refuses outright if `-o` resolves to the input path.
+### Where the output goes
+
+- No `-o`: beside the input, as `<stem>-scrubbed.png`.
+- `-o` naming a directory, or more than one input: into that directory, as
+  `<stem>-scrubbed.png`.
+- `-o` naming a file with exactly one input: **that file, verbatim** - the
+  name and the suffix are yours. The file is still written as PNG data.
+
+`-o` pointed at a path that does not exist yet is treated as an output *file*
+name, which is what you want for a single image and not what you want for a
+folder. Create the folder first.
+
 When there are no hits, no output file is written at all.
 
-Directory input picks up `.png`, `.jpg`, `.jpeg`, `.bmp` and skips anything
-already named `*-scrubbed.*`, so re-running a folder is safe.
+### What the tool refuses to write over
 
-`-o` pointed at a directory that does not exist yet is treated as an output
-*file* name, which is what you want for a single image and not what you want
-for a folder. Create the folder first.
+- **The input, always.** If the output resolves to the input file the run
+  stops. That check asks the operating system whether the two paths are the
+  same file, so a different letter case, a hard link, a symbolic link or a
+  junction is caught, not just an identical spelling. `--force` does not
+  lift this - it would destroy the only unredacted copy.
+- **An existing output, unless you say so.** An existing `*-scrubbed.png` may
+  be one that has already passed verification, so replacing it is a decision
+  you make on purpose. Delete it, point `-o` elsewhere, or pass `--force`.
+- **Two inputs that want one output.** Names are built from the input's stem,
+  so `shot.png` and `shot.jpg` both want `shot-scrubbed.png` - and on a
+  case-insensitive filesystem so do `Shot.png` and `shot.png`. Every
+  destination is worked out before any image is read, and a collision stops
+  the run rather than letting the second result quietly replace the first.
+
+Directory input picks up `.png`, `.jpg`, `.jpeg`, `.bmp` and skips anything
+already named `*-scrubbed.*`, so re-running a folder picks up the same inputs
+each time (and then refuses to replace the outputs unless you pass `--force`).
 
 ### Exit codes
 
@@ -58,7 +82,7 @@ for a folder. Create the folder first.
 | ---- | ------- |
 | 0    | work done and proved, or `--check-only` found nothing |
 | 1    | denylist hits remain readable in an output, or `--check-only` found hits |
-| 2    | broken instrument or usage error - OCR unavailable, unreadable image, zero text read, bad arguments |
+| 2    | broken instrument or usage error - OCR unavailable, unreadable image, zero text read, an image too big for the engine, an output that already exists, two inputs colliding on one output, an unmatchable denylist term, a failed write, bad arguments |
 
 `--check-only` is the linter: it prints every hit with its coordinates,
 changes nothing, and exits 1 if there is anything to scrub. Point it at a
@@ -78,6 +102,13 @@ excludes it. What ships instead is
 (`example@example.com`, `myorg/secret-repo`, `internal-hostname.local`) are
 deliberately fake. Copy it to `terms.txt` and put your terms in the copy.
 
+A term with nothing left after normalisation - all punctuation, or all
+non-ASCII - is an error, not a warning. Such a term would be counted in the
+banner and then skipped in the matcher, so a run could report "no hits
+against 6 terms" having actually checked five. The check is made under the
+normalisation actually in force, because folding changes which characters
+survive: `!!!` folds onto `lll` and can match, and with `--no-fold` it cannot.
+
 ## How matching works
 
 1. **OCR at several scales.** The image is read once per factor in
@@ -88,16 +119,19 @@ deliberately fake. Copy it to `terms.txt` and put your terms in the copy.
    fragment at scale 1 and only resolves at 2 and 3, so the hit is reported
    as `scales=2,3`. Every scale always runs and the hits are unioned. This is
    not a fallback chain - different scales misread the same text in
-   different ways, and the union is what makes detection reliable.
+   different ways, and the union is what makes detection reliable. Every
+   scale, scale 1 included, is measured against the engine's limit on the
+   longest side before the image is decoded, so an image too big to read is
+   refused by name rather than failing inside the engine.
 2. **Line joining.** Each OCR line is concatenated into one string with a map
    back to the word each character came from, so a term split across
    adjacent OCR words still matches and the covering words' rectangles are
    unioned into one hit rectangle. Joining happens within a line only.
-3. **Normalisation.** Both the term and the OCR text are lowercased and
-   stripped of everything that is not `a-z0-9`. That is what absorbs the
-   punctuation and the spaces the engine injects into a URL - it returns
-   `https : / /example. ai/path/session_011` for a line whose pixels read
-   `https://example.ai/path/session_011`.
+3. **Normalisation.** Both the term and the OCR text are lowercased, then
+   folded (step 4), then stripped of everything that is not `a-z0-9`. The
+   stripping is what absorbs the punctuation and the spaces the engine
+   injects into a URL - it returns `https : / /example. ai/path/session_011`
+   for a line whose pixels read `https://example.ai/path/session_011`.
 4. **Glyph folding** (on by default, `--no-fold` turns it off). Characters
    that share a shape are folded to one representative on both sides:
    `o0`, `li1tj!|`, `s5`, `z2`, `b8`, `g9`. Small anti-aliased interface text
@@ -108,6 +142,12 @@ deliberately fake. Copy it to `terms.txt` and put your terms in the copy.
    `https:/ftnternal-hostname.local/...`, found with folding, reported as
    `HITS: 0` with `--no-fold`.
 
+   Folding happens *before* the non-alphanumeric characters are dropped, and
+   the order is load bearing. Two members of the `l` class, `!` and `|`, are
+   not alphanumeric: filtering first threw them away instead of folding them,
+   so two of the six advertised folds did nothing at all and an engine that
+   read `internal` as `!nternal` produced a false negative.
+
    Folding deliberately over-matches in the safe direction: the worst case is
    a few extra blurred pixels, and every hit is printed with its coordinates
    and its source line so it can be checked by eye.
@@ -116,7 +156,10 @@ deliberately fake. Copy it to `terms.txt` and put your terms in the copy.
 
 ## How the redaction works
 
-Each hit rectangle is padded by `--pad` pixels (default 4) and then:
+Each hit rectangle arrives as floats. Every edge is first grown outwards to a
+whole pixel - floor the left and top, ceil the right and bottom - so no part
+of a fractional rectangle is left uncovered, and only then is `--pad` applied
+(default 4 pixels). Then:
 
 - **`--blur`** (default) mosaics the region down to a handful of cells and
   scales it back with NEAREST, which throws the pixels away outright, then
@@ -129,9 +172,16 @@ Each hit rectangle is padded by `--pad` pixels (default 4) and then:
 ## How the verify pass works
 
 The verify pass is mandatory and it is not a re-read of anything held in
-memory. After the output is saved, the tool opens the **output file from
-disk**, runs the same multi-scale OCR and the same matcher over it, and only
-then decides.
+memory. The redacted image is written to a **candidate file on disk**, beside
+where the output will go; the tool then opens that file, runs the same
+multi-scale OCR and the same matcher over it, and only then decides.
+
+Nothing unverified ever appears under the authoritative `*-scrubbed` name. On
+success the candidate is published with a single atomic rename onto the same
+volume. On failure the candidate is deleted and any existing output is left
+exactly as it was - a run that fails is not allowed to destroy a result that
+passed. Writing straight to the final name and checking afterwards gets both
+of those wrong.
 
 The pass condition is a presence, never an absence:
 
@@ -146,8 +196,11 @@ Three ways it refuses to certify a run:
   hit with coordinates, exit 1.
 - **The original OCR read zero words** - that is a broken read, never a clean
   image, so the tool refuses to call it scrubbed. Exit 2.
-- **The verify OCR read zero words from the output** - the instrument itself
-  is broken and proves nothing. Exit 2.
+- **The verify OCR read zero words from the candidate** - the instrument
+  itself is broken and proves nothing. Exit 2.
+
+In both failure cases nothing is published: the candidate is removed and the
+destination is untouched.
 
 ## The OCR seam
 
@@ -194,9 +247,9 @@ not resolve. Its limit on the longest side is what `--scales` is bounded by,
 and the tool says so by name rather than silently skipping a scale.
 
 **macOS** - `MacVisionBackend`, Apple's Vision text recognizer
-(`VNRecognizeTextRequest`). **Implemented by the macOS backend** - it is
-present in `ocr_backend.py` today and raises on construction, naming exactly
-what it needs to return. It is deliberately loud rather than a stub that
+(`VNRecognizeTextRequest`). **In progress on this branch.** It is present in
+`ocr_backend.py` today and raises on construction, naming exactly what it
+needs to return. It is deliberately loud rather than a stub that
 returns an empty word list, because an empty word list looks exactly like a
 clean screenshot, which is the one failure this tool must never produce. The
 macOS proof is recorded separately when that backend lands.
@@ -208,15 +261,24 @@ portable fallback engine and none will be added.
 
 ```
 python gen_samples.py samples     # draw the synthetic test images
-python -m pytest tests/ -q        # 25 tests, end to end over those images
+python -m pytest tests/ -q        # 43 tests
 ```
 
-The tests drive the real recognizer over the generated samples. Nothing is
-mocked: a mocked engine would prove nothing about the engine this tool
-actually depends on. On a platform with no backend yet the OCR tests skip by
-platform name - never by probing whether OCR happens to work, so a broken
-install on a supported platform fails the suite instead of quietly passing
-it.
+The integration tests drive the **real recognizer** over the generated
+samples. On a platform with no backend yet they skip by platform name - never
+by probing whether OCR happens to work, so a broken install on a supported
+platform fails the suite instead of quietly passing it.
+
+Alongside them the suite carries a `ScriptedBackend`: a deliberate test double
+that implements the seam contract and returns reads written down in the test.
+It is test tooling, not a runtime fallback - `get_backend()` cannot reach it
+and it never ships. It exists because the verify pass's failure arms cannot be
+reached with a real engine: no screenshot makes a recognizer read zero words
+from a file it has just read words from, and none reliably leaves a redacted
+term readable. Those arms are the ones that must never rot, so they are driven
+directly - along with the exact scale-to-native coordinate mapping and the
+adjacent-word joining, both of which are asserted as numbers rather than
+inferred from a hit count.
 
 ## Known limits
 
@@ -231,9 +293,11 @@ it.
   heavily-kerned text may need a higher `--scales` value; the ceiling is the
   engine's own limit on the longest side.
 - **Glyph folding can over-match.** Short terms are the risk - a two or three
-  character term after folding will hit far more than intended. Keep terms
-  specific, read the printed hits, and use `--no-fold` if an exact match is
-  wanted.
+  character term after folding will hit far more than intended. `|` and `!`
+  fold onto `l`, so a run of table borders or box drawing normalises to a run
+  of `l`s. That is over-matching in the safe direction - the cost is a few
+  extra blurred pixels, and every hit is printed - but keep terms specific,
+  read the printed hits, and use `--no-fold` if an exact match is wanted.
 - **`--check-only` is a linter, not a guarantee.** It reports what the OCR can
   see. It cannot report sensitive text the OCR cannot read, which is why the
   scrub path always re-reads its own output.
