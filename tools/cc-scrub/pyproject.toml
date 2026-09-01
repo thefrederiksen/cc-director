@@ -18,6 +18,7 @@ dependencies = [
 # The OCR engine is the operating system's own, so the binding is per platform
 # and is selected by the marker, never by a runtime fallback.
 windows = ["winocr>=0.0.15; sys_platform == 'win32'"]
+macos = ["pyobjc-framework-Vision>=12.2; sys_platform == 'darwin'"]
 dev = ["pytest>=7.0.0"]
 
 [project.scripts]

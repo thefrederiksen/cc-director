@@ -25,11 +25,11 @@ from src import cli
 from src.ocr_backend import ScrubError
 
 
-# The platforms that have a working OCR backend today. macOS joins this
-# tuple when MacVisionBackend is implemented. It is a list of platforms and
-# NOT a probe of whether OCR happens to work: on a supported platform a
-# missing or broken engine must fail these tests, not quietly skip them.
-SUPPORTED_PLATFORMS = ("win32",)
+# The platforms that have a working OCR backend today. It is a list of
+# platforms and NOT a probe of whether OCR happens to work: on a supported
+# platform a missing or broken engine must fail these tests, not quietly
+# skip them.
+SUPPORTED_PLATFORMS = ("win32", "darwin")
 
 requires_ocr = pytest.mark.skipif(
     sys.platform not in SUPPORTED_PLATFORMS,
@@ -158,21 +158,28 @@ def test_check_only_finds_small_grey_ui_text_only_after_upscaling(
 @requires_ocr
 def test_glyph_confusion_is_caught_by_folding_and_missed_without_it(
         samples, terms_file, capsys):
-    """The host name comes back with its leading l-shaped glyph as a t.
+    """The host name must match with folding on, whatever the engine read.
 
-    Folded, it matches; unfolded, it does not. That pair is the whole
-    argument for glyph folding, so both halves are asserted here.
+    On Windows the recognizer returns the leading l-shaped glyph as a t, so
+    the second half of this test demonstrates the miss: unfolded, the term
+    is not found. Vision on macOS reads this sample cleanly at every scale,
+    so the miss cannot be demonstrated there and that half is asserted on
+    Windows only. The fold-versus-miss property itself is proven
+    deterministically on every platform by the controlled test backend,
+    which feeds the matcher a synthetic misread; this test is the live
+    engine smoke pass on top of that.
     """
     folded_code, folded = run(capsys, samples / "sample-glyph.png",
                               "--check-only", "--terms-file", terms_file)
     assert folded_code == 1
     assert "term='%s'" % gen_samples.TERM_HOST in folded
 
-    exact_code, exact = run(capsys, samples / "sample-glyph.png",
-                            "--check-only", "--no-fold",
-                            "--terms-file", terms_file)
-    assert exact_code == 0
-    assert "HITS: 0" in exact
+    if sys.platform == "win32":
+        exact_code, exact = run(capsys, samples / "sample-glyph.png",
+                                "--check-only", "--no-fold",
+                                "--terms-file", terms_file)
+        assert exact_code == 0
+        assert "HITS: 0" in exact
 
 
 # ------------------------------------------------------------------ scrub pass

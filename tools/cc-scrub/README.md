@@ -12,6 +12,8 @@ launches no subprocess at all.
 
 ## Install
 
+On Windows:
+
 ```
 python -m pip install Pillow winocr
 ```
@@ -21,8 +23,17 @@ WinRT. There is no installer and no .exe. Proved on Python 3.11.6 with
 Pillow 12.3.0 and winocr 0.0.15; see [PROOF-windows.md](PROOF-windows.md) for
 the full clean-install transcript.
 
-On macOS the engine is Apple's Vision text recognizer. That backend is not
-implemented yet - see [Per-operating-system notes](#per-operating-system-notes).
+On macOS:
+
+```
+python -m pip install Pillow pyobjc-framework-Vision
+```
+
+`pyobjc-framework-Vision` is a pip wheel that binds the Vision text
+recognizer built into macOS, and it pulls in the Quartz and Foundation
+bindings it needs. There is no installer and no external engine. Proved on
+Python 3.14.6 with Pillow 12.3.0 and pyobjc 12.2.2; see
+[PROOF-macos.md](PROOF-macos.md) for the full clean-install transcript.
 
 ## Use
 
@@ -246,13 +257,23 @@ installed recognizer languages and names them in the error if `--lang` does
 not resolve. Its limit on the longest side is what `--scales` is bounded by,
 and the tool says so by name rather than silently skipping a scale.
 
-**macOS** - `MacVisionBackend`, Apple's Vision text recognizer
-(`VNRecognizeTextRequest`). **In progress on this branch.** It is present in
-`ocr_backend.py` today and raises on construction, naming exactly what it
-needs to return. It is deliberately loud rather than a stub that
-returns an empty word list, because an empty word list looks exactly like a
-clean screenshot, which is the one failure this tool must never produce. The
-macOS proof is recorded separately when that backend lands.
+**macOS** - `MacVisionBackend`, the Vision text recognizer built into the
+operating system (`VNRecognizeTextRequest`, accurate recognition level),
+reached through the `pyobjc-framework-Vision` pip wheel. Implemented and
+proved; see [PROOF-macos.md](PROOF-macos.md). The image goes to the
+recognizer as an in-memory CGImage - no temporary file, no subprocess. The
+recognizer reports rectangles normalized to 0..1 and measured from the
+bottom-left corner; the backend converts them to the seam's top-left pixel
+coordinates and asks the recognizer itself for each word's rectangle within
+its line. Language correction is off on purpose: correction rewrites what
+was read toward dictionary words, and the strings this tool hunts -
+addresses, host names, repository paths - are exactly the ones a dictionary
+does not hold. This engine reads small text noticeably better than the
+Windows one: it reads the 11 px glyph sample cleanly at every scale, which
+is why the unfolded-miss half of the glyph test asserts on Windows only.
+`--lang` tags resolve against the recognizer's supported list (`en` names
+`en-US`); a tag that names no supported language stops the run and prints
+the full list. The longest side accepted is 16384 px.
 
 **Anything else** - `get_backend()` raises, naming the platform. There is no
 portable fallback engine and none will be added.

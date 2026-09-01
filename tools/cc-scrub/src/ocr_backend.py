@@ -108,28 +108,163 @@ class WindowsOcrBackend(OcrBackend):
         return words
 
 
-class MacVisionBackend(OcrBackend):
-    """Apple's Vision text recognizer. NOT IMPLEMENTED YET.
+def _words_with_offsets(text):
+    """Split text on whitespace; return (word, start offset) pairs.
 
-    The macOS backend is deliberately present and deliberately loud. It is
-    not a stub that returns nothing - a backend that returned an empty word
-    list would look exactly like a clean screenshot, which is the one
-    failure this tool must never produce.
+    The offsets are what let the backend ask the recognizer for the exact
+    rectangle of each word inside its line, so this must not use split(),
+    which throws the positions away.
+    """
+    words = []
+    start = None
+    for index, ch in enumerate(text):
+        if ch.isspace():
+            if start is not None:
+                words.append((text[start:index], start))
+                start = None
+        elif start is None:
+            start = index
+    if start is not None:
+        words.append((text[start:], start))
+    return words
+
+
+class MacVisionBackend(OcrBackend):
+    """The text recognizer built into macOS, reached through pyobjc wheels.
+
+    pyobjc-framework-Vision is a pip wheel that binds the Vision framework
+    the operating system already ships (VNRecognizeTextRequest, accurate
+    recognition level). No external executable is installed, required or
+    looked for - in particular this tool never calls tesseract, even on a
+    machine where one happens to be present. It launches no subprocess at
+    all: the PIL image is handed to the recognizer as an in-memory CGImage,
+    never through a temporary file.
+
+    Vision reports text line by line, with every rectangle normalized to
+    0..1 and measured from the BOTTOM-left corner. This backend converts to
+    the seam's top-left pixel coordinates, asks the recognizer itself for
+    each word's rectangle within its line (boundingBoxForRange), and stamps
+    all words of one observation with that observation's index as 'line',
+    which is what keeps the matcher's adjacent-word joining alive.
     """
 
-    name = "macOS Vision text recognizer"
+    name = "macOS Vision text recognizer (pyobjc)"
 
     def __init__(self):
-        raise ScrubError(
-            "the macOS OCR backend is not implemented yet. cc-scrub needs a "
-            "MacVisionBackend that recognises text with Apple's Vision "
-            "framework (VNRecognizeTextRequest, accurate recognition level) "
-            "through a pip-installable binding, and returns one dictionary "
-            "per word with keys text, x, y, w, h in top-left pixel "
-            "coordinates of the image it was handed, plus 'line' set to the "
-            "index of the recognised line the word came from. It must also "
-            "set max_image_dimension to the engine's real limit. Until that "
-            "exists, run cc-scrub on Windows.")
+        try:
+            import Vision
+            import Quartz
+            from Foundation import NSData
+        except ImportError as exc:
+            raise ScrubError(
+                "the Vision binding is not installed (%s). Fix: python -m "
+                "pip install pyobjc-framework-Vision (it pulls in Quartz and "
+                "the Foundation binding with it). These are pip wheels that "
+                "bind the text recognizer built into macOS; there is no "
+                "installer and no external engine." % exc)
+        self._vision = Vision
+        self._quartz = Quartz
+        self._nsdata = NSData
+        # Vision publishes no numeric input limit of its own. Its
+        # recognizer runs on the graphics device, and the largest texture
+        # side every Mac that can run this framework accepts is 16384
+        # pixels, so that is the honest ceiling on what can be handed in
+        # without the framework resampling it behind our back.
+        self.max_image_dimension = 16384
+
+    def _cg_image(self, image):
+        """Build an in-memory CGImage from a PIL image. No temporary file."""
+        rgb = image.convert("RGB")
+        width, height = rgb.size
+        raw = rgb.tobytes()
+        data = self._nsdata.dataWithBytes_length_(raw, len(raw))
+        provider = self._quartz.CGDataProviderCreateWithCFData(data)
+        cg_image = self._quartz.CGImageCreate(
+            width, height, 8, 24, width * 3,
+            self._quartz.CGColorSpaceCreateDeviceRGB(),
+            self._quartz.kCGImageAlphaNone,
+            provider, None, False,
+            self._quartz.kCGRenderingIntentDefault)
+        if cg_image is None:
+            raise ScrubError(
+                "could not build a CGImage from the %dx%d input" % (width, height))
+        return cg_image
+
+    def _resolve_language(self, request, lang):
+        """Turn a tag like 'en' into the recognizer's own tags, or fail.
+
+        This is tag resolution, not a fallback: 'en' names the language the
+        recognizer spells 'en-US', and a tag that names no supported
+        language at all stops the run with the full supported list.
+        """
+        supported, error = request.supportedRecognitionLanguagesAndReturnError_(None)
+        if supported is None:
+            raise ScrubError(
+                "Vision would not report its supported recognition "
+                "languages: %s" % error)
+        tags = [str(tag) for tag in supported]
+        matches = [tag for tag in tags
+                   if tag == lang or tag.split("-")[0] == lang]
+        if not matches:
+            raise ScrubError(
+                "Vision does not support recognition language '%s'. "
+                "Supported: %s" % (lang, ", ".join(tags)))
+        return matches
+
+    def recognize(self, image, lang):
+        width, height = image.size
+        vision = self._vision
+
+        request = vision.VNRecognizeTextRequest.alloc().init()
+        request.setRecognitionLevel_(
+            vision.VNRequestTextRecognitionLevelAccurate)
+        # Language correction rewrites what was read toward dictionary
+        # words. The strings this tool hunts are exactly the ones a
+        # dictionary does not hold - addresses, host names, repository
+        # paths - so the raw read is the honest one, and glyph folding
+        # above this seam is the designed answer to misread glyphs.
+        request.setUsesLanguageCorrection_(False)
+        request.setRecognitionLanguages_(self._resolve_language(request, lang))
+
+        handler = vision.VNImageRequestHandler.alloc().initWithCGImage_options_(
+            self._cg_image(image), None)
+        success, error = handler.performRequests_error_([request], None)
+        if not success:
+            raise ScrubError(
+                "Vision text recognition failed for language '%s': %s"
+                % (lang, error))
+        observations = request.results()
+        if observations is None:
+            raise ScrubError(
+                "Vision reported success for language '%s' but returned no "
+                "results object. That is a broken read." % lang)
+
+        words = []
+        for index, observation in enumerate(observations):
+            candidates = observation.topCandidates_(1)
+            if not candidates:
+                raise ScrubError(
+                    "Vision observation %d carries no text candidate. That "
+                    "is a broken read." % index)
+            candidate = candidates[0]
+            text = str(candidate.string())
+            for word_text, offset in _words_with_offsets(text):
+                box_observation, box_error = candidate.boundingBoxForRange_error_(
+                    (offset, len(word_text)), None)
+                if box_observation is None:
+                    raise ScrubError(
+                        "Vision would not give a rectangle for word '%s' of "
+                        "line '%s': %s" % (word_text, text, box_error))
+                box = box_observation.boundingBox()
+                words.append({
+                    "text": word_text,
+                    "x": float(box.origin.x * width),
+                    "y": float((1.0 - box.origin.y - box.size.height) * height),
+                    "w": float(box.size.width * width),
+                    "h": float(box.size.height * height),
+                    "line": index,
+                })
+        return words
 
 
 def get_backend():
