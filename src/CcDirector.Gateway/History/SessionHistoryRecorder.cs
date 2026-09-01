@@ -200,8 +200,13 @@ public sealed class SessionHistoryRecorder
                 if (_firstPromptHandled.ContainsKey(memoKey)) continue;
                 var first = group.OrderBy(r => r.TsUtc).First();
                 var line = SessionHistoryFold.FirstPromptLine(first.Text);
+                // The PROMPT'S OWN claimed timestamp, judged by the SAME rule the prompt log applies at
+                // the door, so the two cannot disagree about how old a record is. Ingest retries records
+                // it previously failed to deliver, so this can be an old prompt arriving late - possibly
+                // one the member has since erased - and the store refuses it in that case.
                 if (line is not null)
-                    _store.SetFirstPrompt(group.Key, line);
+                    _store.SetFirstPrompt(group.Key, line,
+                        Prompts.GatewayPromptLog.ClaimedMaterialTimeUtc(first));
                 _firstPromptHandled[memoKey] = 1;
             }
         }

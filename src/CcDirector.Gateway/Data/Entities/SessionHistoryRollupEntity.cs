@@ -34,4 +34,22 @@ public sealed class SessionHistoryRollupEntity : TenantScopedEntity
     public int Attempts { get; set; }
 
     public DateTime ComputedAtUtc { get; set; }
+
+    /// <summary>
+    /// When the session summaries this paragraph was written from were READ. Not the same as
+    /// <see cref="ComputedAtUtc"/>, which is when the finished paragraph was saved - the model call sits
+    /// between them.
+    ///
+    /// It exists so a row can be judged stale by its MATERIAL rather than by its save time, and it is read
+    /// by <see cref="Gateway.History.SessionHistoryStore.ReadRollups"/>, which never serves a row whose
+    /// material predates the account's erasure. The insert of a cached paragraph cannot be made conditional
+    /// in one portable statement, so a paragraph computed before a delete can be inserted after it; the
+    /// compensating delete normally removes it, but a process that stops in between would leave it. With
+    /// this column that orphan is unreachable rather than merely unlikely - it is never served, and the next
+    /// erasure or the retention prune removes it.
+    /// </summary>
+    /// <remarks>Rows that predate this column carry the default minimum date, so any erasure at all makes
+    /// them unreachable. That is the safe direction and it is deliberate: a paragraph written before this
+    /// column existed cannot prove its material is newer than the member's delete.</remarks>
+    public DateTime MaterialReadAtUtc { get; set; }
 }

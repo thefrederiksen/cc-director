@@ -3,6 +3,7 @@ using System;
 using CcDirector.Gateway.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 
 #nullable disable
@@ -10,9 +11,11 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 namespace CcDirector.Gateway.Data.Migrations
 {
     [DbContext(typeof(GatewayDbContext))]
-    partial class GatewayDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260802141655_RollupMaterialReadTime")]
+    partial class RollupMaterialReadTime
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder.HasAnnotation("ProductVersion", "9.0.2");
@@ -771,9 +774,6 @@ namespace CcDirector.Gateway.Data.Migrations
                         .IsRequired()
                         .HasColumnType("TEXT");
 
-                    b.Property<string>("DirectorVersion")
-                        .HasColumnType("TEXT");
-
                     b.Property<DateTime?>("EndedAtUtc")
                         .HasColumnType("TEXT");
 
@@ -784,9 +784,6 @@ namespace CcDirector.Gateway.Data.Migrations
                         .HasColumnType("TEXT");
 
                     b.Property<string>("FirstPromptLine")
-                        .HasColumnType("TEXT");
-
-                    b.Property<DateTime>("FirstSeenAtUtc")
                         .HasColumnType("TEXT");
 
                     b.Property<long?>("InputCharacterCount")
@@ -922,44 +919,6 @@ namespace CcDirector.Gateway.Data.Migrations
                     b.HasIndex("TenantId", "DayUtc");
 
                     b.ToTable("session_history_rollups", (string)null);
-                });
-
-            modelBuilder.Entity("CcDirector.Gateway.Data.Entities.SessionKeyEntity", b =>
-                {
-                    b.Property<string>("TenantId")
-                        .HasColumnType("TEXT");
-
-                    b.Property<string>("SessionId")
-                        .HasColumnType("TEXT");
-
-                    b.Property<string>("DirectorId")
-                        .IsRequired()
-                        .HasColumnType("TEXT");
-
-                    b.Property<DateTime>("ExpiresAtUtc")
-                        .HasColumnType("TEXT");
-
-                    b.Property<DateTime>("IssuedAtUtc")
-                        .HasColumnType("TEXT");
-
-                    b.Property<string>("KeyHash")
-                        .IsRequired()
-                        .HasColumnType("TEXT");
-
-                    b.Property<DateTime?>("RevokedAtUtc")
-                        .HasColumnType("TEXT");
-
-                    b.Property<string>("RevokedReason")
-                        .HasColumnType("TEXT");
-
-                    b.HasKey("TenantId", "SessionId");
-
-                    b.HasIndex("ExpiresAtUtc");
-
-                    b.HasIndex("KeyHash")
-                        .IsUnique();
-
-                    b.ToTable("session_keys", (string)null);
                 });
 
             modelBuilder.Entity("CcDirector.Gateway.Data.Entities.SessionSpendEntity", b =>
@@ -1324,54 +1283,6 @@ namespace CcDirector.Gateway.Data.Migrations
                     b.HasIndex("TenantId");
 
                     b.ToTable("tenant_settings", (string)null);
-                });
-
-            modelBuilder.Entity("CcDirector.Gateway.Data.Entities.TrialExtensionEntity", b =>
-                {
-                    b.Property<Guid>("Id")
-                        .HasColumnType("TEXT")
-                        .HasColumnName("id");
-
-                    b.Property<string>("Actor")
-                        .IsRequired()
-                        .HasColumnType("TEXT")
-                        .HasColumnName("actor");
-
-                    b.Property<string>("MemberEmail")
-                        .HasColumnType("TEXT")
-                        .HasColumnName("member_email");
-
-                    b.Property<DateTime>("NewExpiresAtUtc")
-                        .HasColumnType("TEXT")
-                        .HasColumnName("new_expires_at_utc");
-
-                    b.Property<DateTime>("PreviousExpiresAtUtc")
-                        .HasColumnType("TEXT")
-                        .HasColumnName("previous_expires_at_utc");
-
-                    b.Property<string>("Reason")
-                        .IsRequired()
-                        .HasColumnType("TEXT")
-                        .HasColumnName("reason");
-
-                    b.Property<DateTime>("RecordedUtc")
-                        .HasColumnType("TEXT")
-                        .HasColumnName("recorded_utc");
-
-                    b.Property<DateTime>("StartedAtUtc")
-                        .HasColumnType("TEXT")
-                        .HasColumnName("started_at_utc");
-
-                    b.Property<string>("Subject")
-                        .IsRequired()
-                        .HasColumnType("TEXT")
-                        .HasColumnName("subject");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("Subject");
-
-                    b.ToTable("trial_extensions", (string)null);
                 });
 
             modelBuilder.Entity("CcDirector.Gateway.Data.Entities.WingmanInstructionEntity", b =>

@@ -149,6 +149,11 @@ public sealed class GatewayDbContext : DbContext
     /// #2194) - computed once in the background sweep, never on page load.</summary>
     public DbSet<SessionHistoryRollupEntity> SessionHistoryRollups => Set<SessionHistoryRollupEntity>();
 
+    /// <summary>When each tenant last erased their prompt history (<c>prompt_erasure_watermarks</c>) - the
+    /// stamp the prompt-derived writers compare their material against, so a computation that began before
+    /// a delete cannot commit after it. See <see cref="PromptErasureWatermarkEntity"/>.</summary>
+    public DbSet<PromptErasureWatermarkEntity> PromptErasureWatermarks => Set<PromptErasureWatermarkEntity>();
+
     /// <summary>Per-tenant setting overrides (<c>tenant_settings</c>, issue #2017) - the per-tenant home the
     /// AI / voice / car-mode / notification settings needed before they could be served on the hosted Gateway.
     /// Tenant-scoped: an absent row means "no override" and the typed resolver returns the operator global
@@ -488,6 +493,15 @@ public sealed class GatewayDbContext : DbContext
             b.HasIndex(e => new { e.TenantId, e.DayUtc });
         });
 
+        modelBuilder.Entity<PromptErasureWatermarkEntity>(b =>
+        {
+            b.ToTable("prompt_erasure_watermarks");
+            // The tenant IS the key: one watermark per account, or none if they never deleted. No natural
+            // key to scope, unlike the two tables above - this row is about the account, not about anything
+            // the caller named, so there is nothing to collide on.
+            b.HasKey(e => e.TenantId);
+        });
+
         modelBuilder.Entity<AccountHostedAiSpendEntity>(b =>
         {
             b.ToTable("account_hosted_ai_spend");
@@ -818,6 +832,7 @@ public sealed class GatewayDbContext : DbContext
         ApplyTenantScope<SkillPlacementStateEntity>(modelBuilder);
         ApplyTenantScope<SessionHistoryEntity>(modelBuilder);
         ApplyTenantScope<SessionHistoryRollupEntity>(modelBuilder);
+        ApplyTenantScope<PromptErasureWatermarkEntity>(modelBuilder);
 
         ApplyCommonSubsetConventions(modelBuilder);
 

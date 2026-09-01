@@ -78,13 +78,26 @@ public sealed class SessionHistorySummarizer
         {
             ct.ThrowIfCancellationRequested();
             var isPartial = string.Equals(row.EndingKind, SessionHistoryEndings.Interrupted, StringComparison.Ordinal);
+            // The moment this pass STARTED. Declared OUT here so the failure writer in the catch below
+            // carries it too: that writer is guarded by the same watermark predicate as the success
+            // writer, and a value it cannot see would mean the guard could not be applied to it.
+            // It is also the honest stand-in when a transcript turns out to be empty - there is no
+            // material to date in that case, and the write carries no member content at all.
+            var passStartedUtc = DateTime.UtcNow;
+            var materialReadAtUtc = passStartedUtc;
             try
             {
                 var transcript = BuildTranscript(tenant, row);
+                // THE AGE OF THE MATERIAL, not the moment it was read. A read time is honestly recent even
+                // when every record behind it is pre-delete, which is exactly how an erased summary came
+                // back: erase stamps and clears, the files are deleted a moment later, and a summariser
+                // starting inside that gap reads the still-present old records. The store refuses this
+                // write when the account erased at or after the OLDEST record it is made of.
+                materialReadAtUtc = transcript.OldestMaterialUtc ?? passStartedUtc;
                 if (transcript.TotalChars < MinCharsForModelCall)
                 {
                     _store.StoreGeneratedSummary(row.SessionId, SessionHistorySummaryKinds.None, isPartial,
-                        summaryText: null, null, null, null, null, null);
+                        summaryText: null, null, null, null, null, null, materialReadAtUtc);
                     settled++;
                     continue;
                 }
@@ -95,14 +108,14 @@ public sealed class SessionHistorySummarizer
                 if (parsed is null)
                 {
                     FileLog.Write($"[SessionHistorySummarizer] unparseable model reply for session={row.SessionId}");
-                    _store.NoteSummaryFailure(row.SessionId);
+                    _store.NoteSummaryFailure(row.SessionId, materialReadAtUtc);
                     settled++;
                     continue;
                 }
 
                 _store.StoreGeneratedSummary(row.SessionId, SessionHistorySummaryKinds.Generated, isPartial,
                     parsed.Summary, parsed.WhatWasBuilt, parsed.LeftUnverified,
-                    parsed.Branches, parsed.PullRequests, parsed.Commits);
+                    parsed.Branches, parsed.PullRequests, parsed.Commits, materialReadAtUtc);
                 settled++;
             }
             catch (OperationCanceledException)
@@ -112,7 +125,7 @@ public sealed class SessionHistorySummarizer
             catch (Exception ex)
             {
                 FileLog.Write($"[SessionHistorySummarizer] summarise FAILED for session={row.SessionId}: {ex.Message}");
-                _store.NoteSummaryFailure(row.SessionId);
+                _store.NoteSummaryFailure(row.SessionId, materialReadAtUtc);
                 settled++;
             }
         }
@@ -127,6 +140,11 @@ public sealed class SessionHistorySummarizer
     public async Task<int> RefreshRollupsAsync(TenantId tenant, DateTime fromDayUtc, DateTime toDayUtc,
         int maxRollups, CancellationToken ct)
     {
+        // Stamped BEFORE the inputs are read, for the same reason as the per-session pass: everything this
+        // pass saves is made of the session summaries read on the next line, and if the member erases their
+        // prompts while the model is writing the paragraph, the store refuses the save rather than
+        // recreating a deleted row out of pre-delete text.
+        var materialReadAtUtc = DateTime.UtcNow;
         var groups = RollupGroups(_store.ReadRange(fromDayUtc.Date, toDayUtc.Date.AddDays(1).AddTicks(-1)),
             fromDayUtc.Date, toDayUtc.Date);
         if (groups.Count == 0) return 0;
@@ -156,7 +174,7 @@ public sealed class SessionHistorySummarizer
                 var text = reply.Text?.Trim();
                 if (string.IsNullOrWhiteSpace(text))
                     throw new InvalidOperationException("the model returned an empty roll-up");
-                _store.SaveRollup(group.RepoKey, group.Day, text, group.InputHash, attempts, DateTime.UtcNow);
+                _store.SaveRollup(group.RepoKey, group.Day, text, group.InputHash, attempts, DateTime.UtcNow, materialReadAtUtc);
                 written++;
             }
             catch (OperationCanceledException)
@@ -166,7 +184,7 @@ public sealed class SessionHistorySummarizer
             catch (Exception ex)
             {
                 FileLog.Write($"[SessionHistorySummarizer] roll-up FAILED for {group.RepoKey} {group.Day:yyyy-MM-dd}: {ex.Message}");
-                _store.SaveRollup(group.RepoKey, group.Day, summaryText: null, group.InputHash, attempts + 1, DateTime.UtcNow);
+                _store.SaveRollup(group.RepoKey, group.Day, summaryText: null, group.InputHash, attempts + 1, DateTime.UtcNow, materialReadAtUtc);
                 written++;
             }
         }
@@ -215,7 +233,18 @@ public sealed class SessionHistorySummarizer
 
     // ----- prompts and parsing -----
 
-    private sealed record Transcript(string Text, int TotalChars);
+    /// <summary>
+    /// A session's transcript, plus <paramref name="OldestMaterialUtc"/> - the timestamp of the OLDEST record
+    /// it is made of, or null when it is made of nothing.
+    ///
+    /// That field is the round-three correction. The summariser used to carry the moment it READ the log,
+    /// and a read time says nothing about the age of what was read: a summariser that starts after an
+    /// erasure has stamped but before the prompt FILES are deleted reads pre-delete records and stamps an
+    /// honestly recent time, so its summary was accepted and the erased words came back after the request
+    /// had already returned success. Judging by the oldest record closes it, because that value moves with
+    /// the material rather than with the clock.
+    /// </summary>
+    private sealed record Transcript(string Text, int TotalChars, DateTime? OldestMaterialUtc);
 
     private Transcript BuildTranscript(TenantId tenant, SessionHistoryEntity row)
     {
@@ -228,6 +257,9 @@ public sealed class SessionHistorySummarizer
             .Where(r => string.Equals(r.SessionId, row.SessionId, StringComparison.OrdinalIgnoreCase))
             .OrderBy(r => r.TsUtc)
             .ToList();
+        // The OLDEST record decides, not the newest and not the clock: a summary made of ten fresh records
+        // and one pre-delete record still contains the pre-delete one.
+        DateTime? oldestMaterialUtc = records.Count == 0 ? null : records[0].TsUtc;
 
         var sb = new StringBuilder();
         foreach (var r in records)
@@ -238,13 +270,13 @@ public sealed class SessionHistorySummarizer
         }
         var full = sb.ToString();
         if (full.Length <= MaxTranscriptChars)
-            return new Transcript(full, full.Length);
+            return new Transcript(full, full.Length, oldestMaterialUtc);
 
         // Keep the opening (what was asked) and the tail (how it ended); elide the middle loudly.
         const int head = MaxTranscriptChars / 3;
         var tail = MaxTranscriptChars - head;
         var elided = full[..head] + "\n\n[... transcript elided for length ...]\n\n" + full[^tail..];
-        return new Transcript(elided, full.Length);
+        return new Transcript(elided, full.Length, oldestMaterialUtc);
     }
 
     private static string SessionPrompt(SessionHistoryEntity row, string transcript)

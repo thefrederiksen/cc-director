@@ -289,7 +289,7 @@ public sealed class OmittedTenantBoundaryFailClosedTests : IAsyncLifetime
             r => r.Text == LocalSecretPrompt); // the disclosure claim below is meaningless if the seed failed
 
         await using (var unwired = await Host.StartAsync(_tenant,
-            app => PromptEndpoints.Map(app, log, tenantBoundary: null!)))
+            app => PromptEndpoints.Map(app, log, tenantBoundary: null!, historyStore: null)))
         {
             var (status, body) = await Get(unwired.Http, "/prompts");
             AssertRefusal(status, body);
@@ -299,7 +299,7 @@ public sealed class OmittedTenantBoundaryFailClosedTests : IAsyncLifetime
         // Positive companion: the wired twin reads the SAME log through its own partition - served, and
         // still not the Local partition's text.
         await using var wired = await Host.StartAsync(_tenant,
-            app => PromptEndpoints.Map(app, log, tenantBoundary: WiredBoundary()));
+            app => PromptEndpoints.Map(app, log, tenantBoundary: WiredBoundary(), historyStore: null));
         var (wiredStatus, wiredBody) = await Get(wired.Http, "/prompts");
         Assert.Equal(HttpStatusCode.OK, wiredStatus);
         Assert.Equal(0, JsonDocument.Parse(wiredBody).RootElement.GetProperty("count").GetInt32());

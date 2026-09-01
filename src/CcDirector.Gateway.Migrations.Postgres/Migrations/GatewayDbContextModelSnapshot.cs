@@ -656,6 +656,22 @@ namespace CcDirector.Gateway.Migrations.Postgres.Migrations
                     b.ToTable("mission_notes", "gateway");
                 });
 
+            modelBuilder.Entity("CcDirector.Gateway.Data.Entities.PromptErasureWatermarkEntity", b =>
+                {
+                    b.Property<string>("TenantId")
+                        .HasColumnType("text")
+                        .HasColumnName("tenant_id");
+
+                    b.Property<DateTime>("ErasedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.HasKey("TenantId");
+
+                    b.HasIndex("TenantId");
+
+                    b.ToTable("prompt_erasure_watermarks", "gateway");
+                });
+
             modelBuilder.Entity("CcDirector.Gateway.Data.Entities.PushSubscriptionEntity", b =>
                 {
                     b.Property<string>("TenantId")
@@ -786,6 +802,9 @@ namespace CcDirector.Gateway.Migrations.Postgres.Migrations
                     b.Property<string>("FirstPromptLine")
                         .HasColumnType("text");
 
+                    b.Property<DateTime>("FirstSeenAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
                     b.Property<long?>("InputCharacterCount")
                         .HasColumnType("bigint");
 
@@ -906,6 +925,9 @@ namespace CcDirector.Gateway.Migrations.Postgres.Migrations
                     b.Property<string>("InputHash")
                         .IsRequired()
                         .HasColumnType("text");
+
+                    b.Property<DateTime>("MaterialReadAtUtc")
+                        .HasColumnType("timestamp with time zone");
 
                     b.Property<string>("SummaryText")
                         .HasColumnType("text");

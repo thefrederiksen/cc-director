@@ -1104,7 +1104,12 @@ public sealed class GatewayHost : IAsyncDisposable
             ? new Stats.LateStatsObservers(StatsStore)
             : null;
         InputStatsHandle = OpenInputStats(inputStatsPath, _hostedStatsObservers);
-        _promptLog = new Prompts.GatewayPromptLog(promptLogPath);
+        // The prompt log refuses material older than the account's erasure, and it asks the history store
+        // for that watermark THROUGH A DELEGATE, resolved at call time: the log is built here, long before
+        // the database, and a null field captured now would be a permanently open door. The tenant is
+        // passed explicitly because the ingest path does not enter the ambient scope.
+        _promptLog = new Prompts.GatewayPromptLog(promptLogPath,
+            tenant => _sessionHistory?.PromptErasureWatermarkUtc(tenant));
         // The self-host fleet concurrency record, which is the only one constructed eagerly. A hosted
         // Gateway never constructs it, so gateway-concurrency-stats.json is never written on that path -
         // see the SessionConcurrency property for the incident that makes writing it there unacceptable -
@@ -3538,7 +3543,7 @@ public sealed class GatewayHost : IAsyncDisposable
         // wanting history reads GET /prompts. It lives here, not on a Director, because the Gateway is
         // what the whole fleet reports to - so the history is already present rather than scattered
         // across machines - and because the Gateway is what moves to the server.
-        Prompts.PromptEndpoints.Map(_app, _promptLog, _tenantBoundary, _sessionHistoryRecorder);
+        Prompts.PromptEndpoints.Map(_app, _promptLog, _tenantBoundary, _sessionHistory, _sessionHistoryRecorder);
 
         // Work history (issue #2194): the range report, the flat session records, and the seal verb.
         History.HistoryEndpoints.Map(_app, _sessionHistory, _tenantBoundary);

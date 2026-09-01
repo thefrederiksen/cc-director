@@ -19,9 +19,9 @@ namespace CcDirector.Gateway.Prompts;
 ///   else to begin with.
 ///
 /// The Director captures and pushes (it is the only thing that sees a prompt at all, and the only thing
-/// that knows whether it was typed or spoken and from which surface). It keeps NO copy - this is the
-/// single copy. Same shape as the existing stats spine, where the Director observes and
-/// GatewayInputStatsAggregator holds.
+/// that knows whether it was typed or spoken and from which surface). This is the SERVICE-SIDE copy and
+/// the only prompt log DevThrottle holds. Same shape as the existing stats spine, where the Director
+/// observes and GatewayInputStatsAggregator holds.
 ///
 /// One JSON line per message in a daily file: base/prompt-log/conversation-yyyyMMdd.jsonl.
 ///
@@ -87,10 +87,20 @@ public sealed class GatewayPromptLog
     private object GateFor(TenantId tenant) => _gates.GetOrAdd(tenant, static _ => new object());
 
     /// <param name="directory">Override the log directory (tests). Defaults to the per-user location.</param>
-    public GatewayPromptLog(string? directory = null)
+    /// <summary>
+    /// <paramref name="erasureWatermarkUtc"/> answers "when did this account last erase its prompt
+    /// history", and <see cref="Append"/> refuses material older than that. It is a delegate rather than a
+    /// store reference because this class is a FILE store and has no database of its own; the Gateway wires
+    /// it to the history store, and a caller with no database at all (the self-host-only test harnesses)
+    /// passes null, which means no erasure is known and nothing is refused.
+    /// </summary>
+    public GatewayPromptLog(string? directory = null, Func<TenantId, DateTime?>? erasureWatermarkUtc = null)
     {
         _directory = string.IsNullOrWhiteSpace(directory) ? DefaultDirectory() : directory;
+        _erasureWatermarkUtc = erasureWatermarkUtc;
     }
+
+    private readonly Func<TenantId, DateTime?>? _erasureWatermarkUtc;
 
     /// <summary>The Gateway's prompt-log directory.</summary>
     public static string DefaultDirectory() => CcStorage.PromptLog();
@@ -143,6 +153,45 @@ public sealed class GatewayPromptLog
         return combined;
     }
 
+    /// <summary>
+    /// The time the CALLER claims this record's material dates from - used for the admission decision, and
+    /// deliberately NOT clamped.
+    ///
+    /// This replaces a <c>min(TsUtc, receivedAt)</c> clamp and a comment claiming the clamp "cannot refuse
+    /// anything legitimate". That claim was FALSE and the inspection was right to say so: min() keeps the
+    /// caller's value whenever it is the older one, so a Director whose clock runs BEHIND has its genuinely
+    /// new prompts dated into the past and refused.
+    ///
+    /// The honest position, stated rather than engineered around: the only evidence the Gateway has about
+    /// whether material existed before an erasure is what the caller says about it, and neither direction
+    /// of a wrong clock can be corrected from here.
+    ///
+    ///  - A caller claiming its material is OLD is believed, because that claim is against its interest and
+    ///    refusing is the direction that cannot resurrect anything. A clock running behind therefore loses
+    ///    prompts from the log until it is corrected. Nothing is destroyed: the prompt is still on the
+    ///    member's machine, the refusal is logged with a count, and a corrected clock re-delivers.
+    ///  - A caller claiming its material is NEW is admitted, and a clock running ahead can therefore walk an
+    ///    old retried record past an erasure. That is the limit named in the wording and in
+    ///    <see cref="PromptErasureWatermarkEntity"/>, and it is why the Director-side erasure exists as
+    ///    separate work.
+    ///
+    /// The receipt time is still used - for the FILE DAY (see <see cref="FileDayUtc"/>) and by the derived
+    /// writers - because those are decisions about OUR storage rather than about the member's history.
+    /// </summary>
+    public static DateTime ClaimedMaterialTimeUtc(PromptRecord record) => record.TsUtc;
+
+    /// <summary>
+    /// Which daily file a record lands in: its own day, CLAMPED to our receipt day.
+    ///
+    /// Retention deletes by the date parsed out of the file NAME, so an unclamped caller timestamp a year in
+    /// the future produces a file that survives a year past the published maximum - the caller choosing our
+    /// retention. Clamping only ever pulls a future-dated file back to today; a record honestly dated in the
+    /// past keeps its own day, so ranged reads over past days are unchanged and its file ages out earlier
+    /// rather than later.
+    /// </summary>
+    public static DateTime FileDayUtc(PromptRecord record, DateTime receivedAtUtc)
+        => record.TsUtc.Date < receivedAtUtc.Date ? record.TsUtc.Date : receivedAtUtc.Date;
+
     /// <summary>The daily file a message at <paramref name="utcNow"/> lands in, for one tenant.</summary>
     public string FileFor(TenantId tenant, DateTime utcNow)
         => Path.Combine(DirectoryFor(tenant), $"conversation-{utcNow:yyyyMMdd}.jsonl");
@@ -150,6 +199,11 @@ public sealed class GatewayPromptLog
     /// <summary>
     /// Append messages pushed by a Director, into that Director's tenant partition. Returns how many were
     /// written. Never throws: a logging failure must not fail the Director's push.
+    ///
+    /// This method drops records whose claimed material time is at or before this tenant's erasure
+    /// watermark, and writes the rest. It does that here, at the door, rather than relying on every
+    /// later reader of the log to make the same check: the Director retries records the Gateway did not
+    /// accept, so a batch can arrive well after it was captured.
     /// </summary>
     public int Append(TenantId tenant, IEnumerable<PromptRecord> records)
     {
@@ -158,18 +212,38 @@ public sealed class GatewayPromptLog
         var written = 0;
         try
         {
-            // Group by day so a batch spanning midnight (or a backfill spanning months) lands in the
-            // right daily files rather than all in today's.
-            foreach (var day in records.GroupBy(r => r.TsUtc.Date))
+            var receivedAtUtc = DateTime.UtcNow;
+            var kept = records as IReadOnlyList<PromptRecord> ?? records.ToList();
+
+            // The whole decide-and-write sequence is inside this tenant's gate, and so is DeleteAll. The
+            // watermark used to be read outside the gate and the append made separately, so the two could
+            // interleave within one instance. The gate is per instance and does not span processes.
+            lock (gate)
             {
-                var lines = day.Select(r => JsonSerializer.Serialize(r, JsonOpts)).ToList();
-                var path = FileFor(tenant, day.Key);
-                lock (gate)
+                var erasedAtUtc = _erasureWatermarkUtc?.Invoke(tenant);
+                if (erasedAtUtc is { } erased)
                 {
+                    var admitted = kept.Where(r => ClaimedMaterialTimeUtc(r) > erased).ToList();
+                    if (admitted.Count != kept.Count)
+                        FileLog.Write($"[GatewayPromptLog] Append REFUSED {kept.Count - admitted.Count} record(s) dated at or before this account's erasure: tenant={tenant.ToLogString()}");
+                    if (admitted.Count == 0) return 0;
+                    kept = admitted;
+                }
+
+                // Group by day so a batch spanning midnight (or a backfill spanning months) lands in the
+                // right daily files rather than all in today's - but the day is CLAMPED to our own receipt
+                // date. Retention deletes by the date in the file NAME, so a caller timestamp far in the
+                // future would otherwise create a file that ages out long after the published maximum. The
+                // clamp only pulls such a file back to today; an honestly past-dated record still lands in
+                // its own day and is still swept on time.
+                foreach (var day in kept.GroupBy(r => FileDayUtc(r, receivedAtUtc)))
+                {
+                    var lines = day.Select(r => JsonSerializer.Serialize(r, JsonOpts)).ToList();
+                    var path = FileFor(tenant, day.Key);
                     Directory.CreateDirectory(directory);
                     File.AppendAllLines(path, lines);
+                    written += lines.Count;
                 }
-                written += lines.Count;
             }
         }
         catch (Exception ex)
@@ -240,8 +314,7 @@ public sealed class GatewayPromptLog
     }
 
     /// <summary>
-    /// Delete EVERY daily file in one tenant's partition - the account right-to-erasure. This is the single
-    /// copy (the Director keeps none), so when this returns the tenant's prompt history is gone. Deliberately
+    /// Delete every daily file in one tenant's partition. Deliberately
     /// LOUD on failure, unlike <see cref="Append"/>: a delete the caller believes happened but did not is a
     /// broken promise about customer data, so an IO failure propagates and the endpoint reports it.
     /// Returns how many daily files were removed.

@@ -125,6 +125,21 @@ public sealed class SessionHistoryEntity : TenantScopedEntity
     /// <summary>The last push in which the Gateway observed this session (throttled - see class doc).</summary>
     public DateTime LastSeenUtc { get; set; }
 
+    /// <summary>
+    /// The first moment THIS GATEWAY saw the session - stamped once, by our own clock, when the row is
+    /// created, and never moved afterwards.
+    ///
+    /// It exists because the seal route needs a bound that no caller controls. <see cref="StartedAtUtc"/>
+    /// looks like one and is not: it is the DIRECTOR'S measured start, pushed over the wire, so a caller
+    /// reporting a start after an erasure would be admitted. <see cref="LastSeenUtc"/> is ours but moves
+    /// forward, so a live session would always look newer than any erasure. This is ours AND stable.
+    ///
+    /// Rows that predate this column carry the default minimum date, which makes them unsealable after any
+    /// erasure. That is the safe direction and it is deliberate: a row that cannot say when we first saw it
+    /// cannot prove its farewell was composed after the member's delete.
+    /// </summary>
+    public DateTime FirstSeenAtUtc { get; set; }
+
     /// <summary>The session's last known activity state (Working/Idle/...), refreshed on the same
     /// throttle as <see cref="LastSeenUtc"/>. Display context for ended rows; open rows read live state
     /// from the roster, not from here.</summary>

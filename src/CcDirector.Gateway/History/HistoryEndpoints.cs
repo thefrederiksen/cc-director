@@ -105,9 +105,12 @@ public static class HistoryEndpoints
 
             using (EnterScope(tenant.Value, tenantBoundary))
             {
+                // This endpoint passes NO material time, deliberately. The only value it could supply is
+                // the moment the request arrived, which is a fact about the request rather than about the
+                // prose it carries. What the store compares instead is documented at SealSummary.
                 var sealedOk = store.SealSummary(sessionId, request);
                 if (!sealedOk)
-                    return Results.NotFound(new { error = "no history record for that session" });
+                    return Results.NotFound(new { error = "no history record for that session, or this account erased since" });
                 FileLog.Write($"[HistoryEndpoints] summary sealed: tenant={tenant.Value.ToLogString()}, session={sessionId}");
                 return Results.Ok(new { sealedRecord = true });
             }

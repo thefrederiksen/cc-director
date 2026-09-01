@@ -10,17 +10,9 @@ namespace CcDirector.Gateway.Prompts;
 /// <summary>
 /// The Gateway's prompt-log front door (issue #1551).
 ///
-/// POST /prompts - a Director pushes what it captured. The Director keeps no copy; this is the single
-/// copy, which is why the write is acknowledged with a real count rather than fire-and-forget.
-///
-/// GET /prompts  - anyone asking for history asks here. That is the point of the log living on the
-/// Gateway: it already has the whole fleet's record, so nothing has to go hunting across machines.
-///
-/// GET /prompts/export and DELETE /prompts - the account data rights (CR-3b, devthrottle_internal issue
-/// #1180). Export returns the requesting account's ENTIRE prompt history as a downloadable JSON document;
-/// delete removes every one of that account's daily files. The log is the single copy (the Director keeps
-/// none, and the Gateway makes no backup of it), so the delete IS the erasure - immediate, not queued.
-/// Both are tenant-scoped exactly like the verbs above; neither can name another account's partition.
+/// POST /prompts - a Director pushes what it captured. GET /prompts - anyone asking for history asks
+/// here. GET /prompts/export and DELETE /prompts - the account data rights (CR-3b,
+/// devthrottle_internal issue #1180). All are tenant-scoped; none can name another account's partition.
 ///
 /// TENANT-SCOPED (issue #1848). "The whole fleet's record" means the REQUESTING ACCOUNT'S fleet. Both verbs
 /// resolve the request's tenant from the authenticated device key with the same seam the cockpit read path
@@ -34,6 +26,11 @@ public static class PromptEndpoints
     public static void Map(IEndpointRouteBuilder app, GatewayPromptLog log,
         // REQUIRED, not defaulted (finding CR-7): a forgotten boundary must be a compile error, never Local.
         Tenancy.HostedTenantBoundary? tenantBoundary,
+        // REQUIRED for the same reason, and it is the same failure shape: a forgotten store would leave
+        // DELETE /prompts erasing the files, reporting success, and quietly keeping the derived copy -
+        // which is precisely the defect this parameter exists to close. A caller with no database (the
+        // self-host-only test harnesses) states the absence rather than inheriting it from a default.
+        History.SessionHistoryStore? historyStore,
         History.SessionHistoryRecorder? history = null)
     {
         var store = log ?? throw new ArgumentNullException(nameof(log));
@@ -104,11 +101,30 @@ public static class PromptEndpoints
                 return Results.Json(new { error = "no tenant is bound to this request" },
                     statusCode: StatusCodes.Status403Forbidden);
 
-            // DeleteAll is loud on failure by design: an erasure that half-happened must surface as an
-            // error to the caller (the pipeline's 500), never as a success with rows left behind.
+            // Both halves are loud on failure by design: an erasure that half-happened must surface as an
+            // error to the caller (the pipeline's 500), never as a success with content left behind.
+            //
+            // ORDER MATTERS, and it is derived-copy first. The prompt log is the material the derived copy
+            // is made FROM: erase the copy while the log still stands and the worst case is that the
+            // background sweep re-derives from material the member has not yet asked to be rid of. Delete
+            // the log first and the same failure leaves the copy orphaned - the exact state this work
+            // exists to remove, and now with no source left to prove what it was.
+            //
+            // Order: derived copies first, then the files. If the pair fails half way, the recoverable
+            // state is a copy whose source still exists rather than an orphan with nothing left to prove
+            // what it was.
+            var erased = historyStore is null
+                ? new History.PromptDerivedErasure(0, 0)
+                : EraseDerived(historyStore, tenant.Value, tenantBoundary);
             var deletedFiles = store.DeleteAll(tenant.Value);
-            FileLog.Write($"[PromptEndpoints] DELETE /prompts: tenant={tenant.Value.ToLogString()}, deleted {deletedFiles} daily files");
-            return Results.Ok(new { deletedFiles });
+            FileLog.Write($"[PromptEndpoints] DELETE /prompts: tenant={tenant.Value.ToLogString()}, deleted {deletedFiles} daily files, "
+                + $"cleared {erased.SessionRows} history row(s), deleted {erased.RollupRows} rollup row(s)");
+            return Results.Ok(new
+            {
+                deletedFiles,
+                erasedHistoryRows = erased.SessionRows,
+                deletedHistoryRollups = erased.RollupRows,
+            });
         });
     }
 
@@ -128,6 +144,19 @@ public static class PromptEndpoints
         if (boundary is null || !boundary.IsHosted)
             return null;
         return boundary.ResolveRequestTenant(ctx);
+    }
+
+    /// <summary>
+    /// Erase the derived copies inside the request tenant's ambient scope. Written out rather than
+    /// inlined because the scope is the whole safety property: the store's statements are filtered by the
+    /// AMBIENT tenant, so an erasure run outside the scope would reach whatever tenant happened to be
+    /// current - the failure would be silent, and it would be someone else's data.
+    /// </summary>
+    private static History.PromptDerivedErasure EraseDerived(History.SessionHistoryStore store,
+        TenantId tenant, Tenancy.HostedTenantBoundary? boundary)
+    {
+        using (EnterScope(tenant, boundary))
+            return store.ErasePromptDerived();
     }
 
     /// <summary>Enter the resolved tenant's ambient scope for a database-writing side effect (the

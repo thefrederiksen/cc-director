@@ -22,7 +22,9 @@ namespace CcDirector.Core.Storage;
 ///   and the answer is already there rather than scattered across machines; and it is what moves to the
 ///   server, so the log moves with it.
 ///
-/// The Director keeps NO copy. Whatever the Gateway accepted is the record.
+/// This pipeline retains nothing: whatever the Gateway accepted is the record for THIS store, which is
+/// why an unaccepted message must not be marked done. Nothing here describes what the product as a whole
+/// keeps.
 ///
 /// Trigger: the same one TurnReviewLogger uses - a session flipping to
 /// <see cref="ActivityState.WaitingForInput"/>, i.e. our own detector deciding the agent is done and
@@ -51,7 +53,7 @@ public sealed class ConversationIngestor : IDisposable
     ///
     /// Without it the watermark check is a check-then-act race: an ingest reads AlreadyWritten, pushes
     /// over HTTP, and only marks the messages afterwards - because it must not mark before the Gateway
-    /// accepts (the Director keeps no copy). Two ingests of one source that start inside that window
+    /// accepts - the Director keeps no copy of THIS record). Two ingests of one source that start inside that window
     /// both see "not written", and BOTH push. Every message is duplicated in a Gateway log that appends
     /// blindly and never dedupes. The trigger fires per turn end on a Task.Run, so two quick turn ends
     /// are all it takes.
@@ -370,9 +372,8 @@ public interface IPromptSink
 /// role + text hash - NOT a message index, because agents rewrite and compact their transcripts and an
 /// index would slide.
 ///
-/// This is a watermark, not a log: it holds hashes and never text. The Director keeps no copy of the
-/// conversation; this only records what it has already handed to the Gateway, so a restart cannot
-/// re-push a whole history.
+/// This is a watermark, not a log: it holds hashes and never text. It tracks what has already been
+/// handed to the Gateway, so a restart cannot re-push a whole history.
 ///
 /// Because the file outlives the process, every key written into it must be computable identically by
 /// the NEXT process - see <see cref="ContentHash"/>. Anything seeded per process reads as a miss after
