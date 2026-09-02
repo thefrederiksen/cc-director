@@ -51,16 +51,23 @@ all deliberately fake.
   resolve to one file on this volume and the run stops before any image is
   read (step 14).
 - **A read over the megapixel budget is refused before it is attempted.**
-  900x260 at scale 8 is 7200x2080, which is 14,976,000 pixels - 15.0
-  megapixels, decimal, as the flag name says - over a 1 megapixel budget, and
-  the engine is never reached (step 15).
+  900x260 at scale 8 is 7200x2080, and the message names the exact count:
+  14,976,000 pixels (14.976 megapixels, decimal, as the flag name says) over
+  a 1 megapixel budget, with the engine never reached (step 15). The count
+  leads and the megapixel figure carries three decimals so that a value just
+  over the cap can never print AS the cap.
+- **`--patch` is exercised, not merely mentioned.** The mode recommended for
+  anything leaving the organisation is run end to end and its output
+  re-checked (step 16). An earlier version of this transcript named `--patch`
+  in prose and never ran a single `--patch` command, which certified a mode
+  it had not exercised.
 - **The published outputs read clean on a second, independent pass.** Each
   file is re-opened from disk after the run that wrote it and read again with
-  zero hits (step 16). That is a statement about this engine at these scales,
+  zero hits (step 17). That is a statement about this engine at these scales,
   not about the pixels: see "What this does NOT prove".
-- **The whole test suite passes in that same clean environment**: 60 tests,
+- **The whole test suite passes in that same clean environment**: 68 tests,
   NONE SKIPPED, including the three end-to-end scrub-and-verify cases
-  (step 18). It is run with `-rs`, so a skip would be printed with its
+  (step 19). It is run with `-rs`, so a skip would be printed with its
   reason - a skip nobody prints reads exactly like a pass. The arms that
   need a volume on which two spellings name one file measure that on the
   directory they write to; on this volume all of them run.
@@ -93,7 +100,7 @@ all deliberately fake.
   answers yes - so this transcript exercises the check but cannot demonstrate
   the case it was written for, which is a case-insensitive volume under a
   POSIX host. The regression test for that half neutralises
-  `os.path.normcase` so it runs anywhere, and it is in step 18; a real
+  `os.path.normcase` so it runs anywhere, and it is in step 19; a real
   case-insensitive POSIX volume is verified on the macOS side.
 - **Nothing about other people's Windows builds.** The recognizer is the
   operating system's own and its output is not identical across Windows
@@ -111,7 +118,7 @@ all deliberately fake.
   words from, and none reliably leaves a redacted term readable. Those arms
   are proved in the test suite instead, driven by a scripted backend, and
   they are the tests named `test_a_verify_read_of_zero_words_...` and
-  `test_a_term_surviving_in_the_output_...` in step 18.
+  `test_a_term_surviving_in_the_output_...` in step 19.
 
 ## The transcript
 
@@ -393,8 +400,8 @@ IMAGE D:/cc-scrub-proof/samples/sample-normal.png
   ocr scale 3: 20 words in 5 lines
   HITS: 1
     term='example@example.com' rect=(x=182 y=122 w=213 h=20) scales=1,2,3 ocr_line='Contact address: example@example.com'
-  CANDIDATE D:\cc-scrub-proof\out\sample-normal-scrubbed.png.89hqy8iv.tmp (mode=blur pad=4)
-  VERIFY: re-reading D:\cc-scrub-proof\out\sample-normal-scrubbed.png.89hqy8iv.tmp
+  CANDIDATE D:\cc-scrub-proof\out\sample-normal-scrubbed.png.ubs6jcgv.tmp (mode=blur pad=4)
+  VERIFY: re-reading D:\cc-scrub-proof\out\sample-normal-scrubbed.png.ubs6jcgv.tmp
     verify scale 1: 19 words in 5 lines
     verify scale 2: 19 words in 5 lines
     verify scale 3: 19 words in 5 lines
@@ -421,8 +428,8 @@ IMAGE D:/cc-scrub-proof/samples/sample-small-ui.png
   ocr scale 3: 18 words in 6 lines
   HITS: 1
     term='myorg/secret-repo' rect=(x=41 y=78 w=84 h=10) scales=2,3 ocr_line='repo myorg/secret-repo'
-  CANDIDATE D:\cc-scrub-proof\out\sample-small-ui-scrubbed.png.wl5f5_v6.tmp (mode=blur pad=4)
-  VERIFY: re-reading D:\cc-scrub-proof\out\sample-small-ui-scrubbed.png.wl5f5_v6.tmp
+  CANDIDATE D:\cc-scrub-proof\out\sample-small-ui-scrubbed.png.l50csjte.tmp (mode=blur pad=4)
+  VERIFY: re-reading D:\cc-scrub-proof\out\sample-small-ui-scrubbed.png.l50csjte.tmp
     verify scale 1: 16 words in 5 lines
     verify scale 2: 17 words in 6 lines
     verify scale 3: 17 words in 6 lines
@@ -449,8 +456,8 @@ IMAGE D:/cc-scrub-proof/samples/sample-glyph.png
   ocr scale 3: 17 words in 4 lines
   HITS: 1
     term='internal-hostname.local' rect=(x=18 y=72 w=233 h=10) scales=2,3 ocr_line='https:/ftnternal-hostname.local/status/session'
-  CANDIDATE D:\cc-scrub-proof\out\sample-glyph-scrubbed.png.w1si8l5l.tmp (mode=blur pad=4)
-  VERIFY: re-reading D:\cc-scrub-proof\out\sample-glyph-scrubbed.png.w1si8l5l.tmp
+  CANDIDATE D:\cc-scrub-proof\out\sample-glyph-scrubbed.png.jd18wq6c.tmp (mode=blur pad=4)
+  VERIFY: re-reading D:\cc-scrub-proof\out\sample-glyph-scrubbed.png.jd18wq6c.tmp
     verify scale 1: 16 words in 3 lines
     verify scale 2: 17 words in 3 lines
     verify scale 3: 16 words in 3 lines
@@ -510,8 +517,8 @@ IMAGE D:/cc-scrub-proof/samples/sample-normal.png
   ocr scale 3: 20 words in 5 lines
   HITS: 1
     term='example@example.com' rect=(x=182 y=122 w=213 h=20) scales=1,2,3 ocr_line='Contact address: example@example.com'
-  CANDIDATE D:\cc-scrub-proof\out\sample-normal-scrubbed.png.o4y1gv15.tmp (mode=blur pad=4)
-  VERIFY: re-reading D:\cc-scrub-proof\out\sample-normal-scrubbed.png.o4y1gv15.tmp
+  CANDIDATE D:\cc-scrub-proof\out\sample-normal-scrubbed.png.r6ok7tkm.tmp (mode=blur pad=4)
+  VERIFY: re-reading D:\cc-scrub-proof\out\sample-normal-scrubbed.png.r6ok7tkm.tmp
     verify scale 1: 19 words in 5 lines
     verify scale 2: 19 words in 5 lines
     verify scale 3: 19 words in 5 lines
@@ -556,7 +563,7 @@ FATAL: D:/cc-scrub-proof/collide\Shot.png and D:/cc-scrub-proof/collide\shot.jpg
  14,976,000 pixels, which is 15.0 megapixels and over a 1 megapixel budget)
 
 $ D:/cc-scrub-proof/venv/Scripts/python.exe main.py D:/cc-scrub-proof/samples/sample-normal.png --check-only --scales 8 --max-megapixels 1 --terms-file D:/cc-scrub-proof/terms.txt
-FATAL: D:/cc-scrub-proof/samples/sample-normal.png is 900x260; at scale 8 that is 7200x2080, 15.0 megapixels, over the 1 megapixel budget for one read. Use a smaller --scales value, a smaller image, or raise --max-megapixels if this machine has the memory for it.
+FATAL: D:/cc-scrub-proof/samples/sample-normal.png is 900x260; at scale 8 that is 7200x2080, 14,976,000 pixels (14.976 megapixels), over the 1 megapixel budget for one read. Use a smaller --scales value, a smaller image, or raise --max-megapixels if this machine has the memory for it.
 cc-scrub
   ocr engine : Windows OCR (winocr / WinRT)
   terms file : D:/cc-scrub-proof/terms.txt (3 terms)
@@ -569,7 +576,60 @@ cc-scrub
 IMAGE D:/cc-scrub-proof/samples/sample-normal.png
 [exit 2]
 
-=== 16. re-check every published output - nothing left to find ===
+=== 16. --patch, the mode recommended for anything leaving the org ===
+(the transcript used to MENTION --patch in prose and never run it,
+ which certifies a mode it never exercised)
+
+$ D:/cc-scrub-proof/venv/Scripts/python.exe main.py D:/cc-scrub-proof/samples/sample-normal.png -o D:/cc-scrub-proof/patched --patch --terms-file D:/cc-scrub-proof/terms.txt
+cc-scrub
+  ocr engine : Windows OCR (winocr / WinRT)
+  terms file : D:/cc-scrub-proof/terms.txt (3 terms)
+    - example@example.com
+    - myorg/secret-repo
+    - internal-hostname.local
+  images     : 1
+  mode       : patch
+
+IMAGE D:/cc-scrub-proof/samples/sample-normal.png
+  size 900x260  scales 1,2,3  fold on
+  ocr scale 1: 20 words in 5 lines
+  ocr scale 2: 20 words in 5 lines
+  ocr scale 3: 20 words in 5 lines
+  HITS: 1
+    term='example@example.com' rect=(x=182 y=122 w=213 h=20) scales=1,2,3 ocr_line='Contact address: example@example.com'
+  CANDIDATE D:\cc-scrub-proof\patched\sample-normal-scrubbed.png.qsi5weds.tmp (mode=patch pad=4)
+  VERIFY: re-reading D:\cc-scrub-proof\patched\sample-normal-scrubbed.png.qsi5weds.tmp
+    verify scale 1: 19 words in 5 lines
+    verify scale 2: 19 words in 5 lines
+    verify scale 3: 19 words in 5 lines
+  WROTE D:/cc-scrub-proof/patched\sample-normal-scrubbed.png (mode=patch pad=4)
+  VERIFY PASSED: 1 hit(s) found, 1 region(s) redacted, verify OCR read 57 words in the output and 0 denylist hit(s) remain.
+
+SUMMARY: 1 image(s) processed, 1 clean, 0 failed.
+[exit 0]
+
+$ D:/cc-scrub-proof/venv/Scripts/python.exe main.py D:/cc-scrub-proof/patched/sample-normal-scrubbed.png --check-only --terms-file D:/cc-scrub-proof/terms.txt
+cc-scrub
+  ocr engine : Windows OCR (winocr / WinRT)
+  terms file : D:/cc-scrub-proof/terms.txt (3 terms)
+    - example@example.com
+    - myorg/secret-repo
+    - internal-hostname.local
+  images     : 1
+  mode       : check-only
+
+IMAGE D:/cc-scrub-proof/patched/sample-normal-scrubbed.png
+  size 900x260  scales 1,2,3  fold on
+  ocr scale 1: 19 words in 5 lines
+  ocr scale 2: 19 words in 5 lines
+  ocr scale 3: 19 words in 5 lines
+  HITS: 0
+  CHECK-ONLY: no hits against 3 terms over 57 OCR words.
+
+SUMMARY: 1 image(s) processed, 1 clean, 0 failed.
+[exit 0]
+
+=== 17. re-check every published output - nothing left to find ===
 
 $ D:/cc-scrub-proof/venv/Scripts/python.exe main.py D:/cc-scrub-proof/out/sample-normal-scrubbed.png --check-only --terms-file D:/cc-scrub-proof/terms.txt
 cc-scrub
@@ -634,7 +694,7 @@ IMAGE D:/cc-scrub-proof/out/sample-glyph-scrubbed.png
 SUMMARY: 1 image(s) processed, 1 clean, 0 failed.
 [exit 0]
 
-=== 17. a folder holding only outputs is an empty input set ===
+=== 18. a folder holding only outputs is an empty input set ===
 (the *-scrubbed suffix is skipped by design, which is what makes
  re-running a folder safe - the tool says so rather than doing nothing)
 
@@ -642,7 +702,7 @@ $ D:/cc-scrub-proof/venv/Scripts/python.exe main.py D:/cc-scrub-proof/out --chec
 FATAL: no images found in directory D:/cc-scrub-proof/out
 [exit 2]
 
-=== 18. the full test suite, in the same clean environment ===
+=== 19. the full test suite, in the same clean environment ===
 (-rs so that anything SKIPPED is printed with its reason, because a
  skip that is not shown reads exactly like a pass)
 
@@ -652,69 +712,77 @@ platform win32 -- Python 3.11.6, pytest-9.1.1, pluggy-1.6.0 -- D:\cc-scrub-proof
 cachedir: .pytest_cache
 rootdir: D:\cc-scrub-proof\cc-scrub
 configfile: pyproject.toml
-collecting ... collected 60 items
+collecting ... collected 68 items
 
 tests/test_cc_scrub.py::test_generator_writes_all_four_samples PASSED    [  1%]
-tests/test_cc_scrub.py::test_check_only_finds_the_planted_email_with_coordinates PASSED [  3%]
-tests/test_cc_scrub.py::test_check_only_finds_small_grey_ui_text_only_after_upscaling PASSED [  5%]
-tests/test_cc_scrub.py::test_glyph_confusion_is_caught_by_folding_and_missed_without_it PASSED [  6%]
-tests/test_cc_scrub.py::test_scrub_redacts_and_the_verify_pass_proves_it[sample-normal.png-example@example.com] PASSED [  8%]
-tests/test_cc_scrub.py::test_scrub_redacts_and_the_verify_pass_proves_it[sample-small-ui.png-myorg/secret-repo] PASSED [ 10%]
-tests/test_cc_scrub.py::test_scrub_redacts_and_the_verify_pass_proves_it[sample-glyph.png-internal-hostname.local] PASSED [ 11%]
-tests/test_cc_scrub.py::test_the_scrubbed_output_is_clean_when_checked_again PASSED [ 13%]
-tests/test_cc_scrub.py::test_a_directory_run_skips_files_already_scrubbed PASSED [ 15%]
-tests/test_cc_scrub.py::test_an_image_with_no_text_is_a_broken_read_not_a_clean_image PASSED [ 16%]
-tests/test_cc_scrub.py::test_a_verify_read_of_zero_words_publishes_nothing_and_exits_two PASSED [ 18%]
-tests/test_cc_scrub.py::test_a_term_surviving_in_the_output_exits_one_and_publishes_nothing PASSED [ 20%]
-tests/test_cc_scrub.py::test_a_passing_scripted_run_publishes_the_candidate PASSED [ 21%]
-tests/test_cc_scrub.py::test_folding_finds_a_misread_term_and_no_fold_misses_it PASSED [ 23%]
-tests/test_cc_scrub.py::test_a_term_split_across_adjacent_words_on_one_line_is_joined PASSED [ 25%]
-tests/test_cc_scrub.py::test_a_term_split_across_two_lines_is_not_joined PASSED [ 26%]
-tests/test_cc_scrub.py::test_a_scaled_read_maps_back_to_native_coordinates_exactly PASSED [ 28%]
-tests/test_cc_scrub.py::test_a_read_over_the_megapixel_budget_is_refused_before_it_is_attempted PASSED [ 30%]
-tests/test_cc_scrub.py::test_the_megapixel_budget_must_be_at_least_one PASSED [ 31%]
-tests/test_cc_scrub.py::test_an_image_too_big_for_the_engine_is_refused_before_it_is_read PASSED [ 33%]
-tests/test_cc_scrub.py::test_refuses_to_overwrite_the_input_image PASSED [ 35%]
-tests/test_cc_scrub.py::test_refuses_to_overwrite_the_input_addressed_in_a_different_case PASSED [ 36%]
-tests/test_cc_scrub.py::test_refuses_to_overwrite_the_input_reached_through_a_hard_link PASSED [ 38%]
-tests/test_cc_scrub.py::test_a_missing_terms_file_names_the_example_to_copy PASSED [ 40%]
-tests/test_cc_scrub.py::test_the_shipped_example_denylist_parses PASSED  [ 41%]
-tests/test_cc_scrub.py::test_bad_scales_are_a_usage_error PASSED         [ 43%]
-tests/test_cc_scrub.py::test_word_ranges_count_utf16_code_units_not_code_points PASSED [ 45%]
-tests/test_cc_scrub.py::test_word_ranges_match_code_points_for_plain_text PASSED [ 46%]
-tests/test_cc_scrub.py::test_a_denylist_term_that_can_never_match_is_refused PASSED [ 48%]
-tests/test_cc_scrub.py::test_term_validation_follows_the_normalisation_actually_in_force PASSED [ 50%]
-tests/test_cc_scrub.py::test_two_inputs_that_would_share_one_output_are_refused PASSED [ 51%]
-tests/test_cc_scrub.py::test_two_inputs_whose_stems_differ_only_in_case_are_refused PASSED [ 53%]
-tests/test_cc_scrub.py::test_collision_detection_does_not_depend_on_the_host_normcase PASSED [ 55%]
-tests/test_cc_scrub.py::test_the_case_probe_answers_from_the_filesystem_and_cleans_up PASSED [ 56%]
-tests/test_cc_scrub.py::test_is_same_file_refuses_when_it_cannot_tell_whether_a_path_exists PASSED [ 58%]
-tests/test_cc_scrub.py::test_an_unreadable_output_path_stops_the_run_instead_of_publishing_over_it PASSED [ 60%]
-tests/test_cc_scrub.py::test_an_unreadable_terms_file_is_reported_as_unreadable_not_as_missing PASSED [ 61%]
-tests/test_cc_scrub.py::test_a_candidate_that_cannot_be_removed_warns_and_never_masks_the_failure PASSED [ 63%]
-tests/test_cc_scrub.py::test_a_probe_readback_error_is_an_error_not_a_case_sensitive_answer PASSED [ 65%]
-tests/test_cc_scrub.py::test_a_probe_that_cannot_be_removed_is_an_error_not_a_warning PASSED [ 66%]
-tests/test_cc_scrub.py::test_a_genuinely_missing_swapped_name_is_the_case_sensitive_answer PASSED [ 68%]
-tests/test_cc_scrub.py::test_the_megapixel_budget_is_decimal_megapixels_not_mebipixels PASSED [ 70%]
-tests/test_cc_scrub.py::test_the_case_probe_refuses_to_guess_when_it_cannot_be_created PASSED [ 71%]
-tests/test_cc_scrub.py::test_an_output_directory_that_cannot_be_created_exits_two PASSED [ 73%]
-tests/test_cc_scrub.py::test_pad_box_grows_outwards_to_whole_pixels PASSED [ 75%]
-tests/test_cc_scrub.py::test_pad_box_pads_and_clamps_to_the_image PASSED [ 76%]
-tests/test_cc_scrub.py::test_normalise_drops_punctuation_and_case PASSED [ 78%]
-tests/test_cc_scrub.py::test_normalise_folds_every_advertised_glyph_class PASSED [ 80%]
-tests/test_cc_scrub.py::test_parse_scales_sorts_and_deduplicates PASSED  [ 81%]
-tests/test_cc_scrub.py::test_parse_scales_rejects_rubbish PASSED         [ 83%]
-tests/test_cc_scrub.py::test_load_terms_ignores_comments_and_blank_lines PASSED [ 85%]
-tests/test_cc_scrub.py::test_load_terms_rejects_an_empty_denylist PASSED [ 86%]
-tests/test_cc_scrub.py::test_merge_hits_unions_overlapping_rectangles_of_one_term PASSED [ 88%]
-tests/test_cc_scrub.py::test_merge_hits_keeps_different_terms_apart PASSED [ 90%]
-tests/test_cc_scrub.py::test_gather_inputs_skips_already_scrubbed_files PASSED [ 91%]
-tests/test_cc_scrub.py::test_gather_inputs_rejects_a_missing_path PASSED [ 93%]
+tests/test_cc_scrub.py::test_check_only_finds_the_planted_email_with_coordinates PASSED [  2%]
+tests/test_cc_scrub.py::test_check_only_finds_small_grey_ui_text_only_after_upscaling PASSED [  4%]
+tests/test_cc_scrub.py::test_glyph_confusion_is_caught_by_folding_and_missed_without_it PASSED [  5%]
+tests/test_cc_scrub.py::test_scrub_redacts_and_the_verify_pass_proves_it[sample-normal.png-example@example.com] PASSED [  7%]
+tests/test_cc_scrub.py::test_scrub_redacts_and_the_verify_pass_proves_it[sample-small-ui.png-myorg/secret-repo] PASSED [  8%]
+tests/test_cc_scrub.py::test_scrub_redacts_and_the_verify_pass_proves_it[sample-glyph.png-internal-hostname.local] PASSED [ 10%]
+tests/test_cc_scrub.py::test_the_scrubbed_output_is_clean_when_checked_again PASSED [ 11%]
+tests/test_cc_scrub.py::test_a_directory_run_skips_files_already_scrubbed PASSED [ 13%]
+tests/test_cc_scrub.py::test_an_image_with_no_text_is_a_broken_read_not_a_clean_image PASSED [ 14%]
+tests/test_cc_scrub.py::test_a_verify_read_of_zero_words_publishes_nothing_and_exits_two PASSED [ 16%]
+tests/test_cc_scrub.py::test_a_term_surviving_in_the_output_exits_one_and_publishes_nothing PASSED [ 17%]
+tests/test_cc_scrub.py::test_a_passing_scripted_run_publishes_the_candidate PASSED [ 19%]
+tests/test_cc_scrub.py::test_folding_finds_a_misread_term_and_no_fold_misses_it PASSED [ 20%]
+tests/test_cc_scrub.py::test_a_term_split_across_adjacent_words_on_one_line_is_joined PASSED [ 22%]
+tests/test_cc_scrub.py::test_a_term_split_across_two_lines_is_not_joined PASSED [ 23%]
+tests/test_cc_scrub.py::test_a_scaled_read_maps_back_to_native_coordinates_exactly PASSED [ 25%]
+tests/test_cc_scrub.py::test_a_read_over_the_megapixel_budget_is_refused_before_it_is_attempted PASSED [ 26%]
+tests/test_cc_scrub.py::test_the_megapixel_budget_must_be_at_least_one PASSED [ 27%]
+tests/test_cc_scrub.py::test_an_image_too_big_for_the_engine_is_refused_before_it_is_read PASSED [ 29%]
+tests/test_cc_scrub.py::test_refuses_to_overwrite_the_input_image PASSED [ 30%]
+tests/test_cc_scrub.py::test_refuses_to_overwrite_the_input_addressed_in_a_different_case PASSED [ 32%]
+tests/test_cc_scrub.py::test_refuses_to_overwrite_the_input_reached_through_a_hard_link PASSED [ 33%]
+tests/test_cc_scrub.py::test_a_missing_terms_file_names_the_example_to_copy PASSED [ 35%]
+tests/test_cc_scrub.py::test_the_shipped_example_denylist_parses PASSED  [ 36%]
+tests/test_cc_scrub.py::test_bad_scales_are_a_usage_error PASSED         [ 38%]
+tests/test_cc_scrub.py::test_word_ranges_count_utf16_code_units_not_code_points PASSED [ 39%]
+tests/test_cc_scrub.py::test_word_ranges_match_code_points_for_plain_text PASSED [ 41%]
+tests/test_cc_scrub.py::test_a_denylist_term_that_can_never_match_is_refused PASSED [ 42%]
+tests/test_cc_scrub.py::test_term_validation_follows_the_normalisation_actually_in_force PASSED [ 44%]
+tests/test_cc_scrub.py::test_two_inputs_that_would_share_one_output_are_refused PASSED [ 45%]
+tests/test_cc_scrub.py::test_two_inputs_whose_stems_differ_only_in_case_are_refused PASSED [ 47%]
+tests/test_cc_scrub.py::test_collision_detection_does_not_depend_on_the_host_normcase PASSED [ 48%]
+tests/test_cc_scrub.py::test_the_case_probe_answers_from_the_filesystem_and_cleans_up PASSED [ 50%]
+tests/test_cc_scrub.py::test_patch_covers_the_whole_rectangle_including_its_corners PASSED [ 51%]
+tests/test_cc_scrub.py::test_blur_covers_the_whole_rectangle_including_its_corners PASSED [ 52%]
+tests/test_cc_scrub.py::test_patch_leaves_one_flat_colour_with_no_original_pixel_anywhere PASSED [ 54%]
+tests/test_cc_scrub.py::test_is_same_file_refuses_when_it_cannot_tell_whether_a_path_exists PASSED [ 55%]
+tests/test_cc_scrub.py::test_an_unreadable_output_path_stops_the_run_instead_of_publishing_over_it PASSED [ 57%]
+tests/test_cc_scrub.py::test_an_unreadable_terms_file_is_reported_as_unreadable_not_as_missing PASSED [ 58%]
+tests/test_cc_scrub.py::test_a_dangling_symlink_at_the_destination_is_still_something_to_refuse PASSED [ 60%]
+tests/test_cc_scrub.py::test_a_competing_output_appearing_after_the_check_is_not_clobbered PASSED [ 61%]
+tests/test_cc_scrub.py::test_force_still_replaces_a_competing_output PASSED [ 63%]
+tests/test_cc_scrub.py::test_a_terms_file_that_cannot_be_decoded_is_exit_two_not_a_traceback PASSED [ 64%]
+tests/test_cc_scrub.py::test_the_megapixel_message_never_rounds_back_onto_the_limit PASSED [ 66%]
+tests/test_cc_scrub.py::test_a_candidate_that_cannot_be_removed_warns_and_never_masks_the_failure PASSED [ 67%]
+tests/test_cc_scrub.py::test_a_probe_readback_error_is_an_error_not_a_case_sensitive_answer PASSED [ 69%]
+tests/test_cc_scrub.py::test_a_probe_that_cannot_be_removed_is_an_error_not_a_warning PASSED [ 70%]
+tests/test_cc_scrub.py::test_a_genuinely_missing_swapped_name_is_the_case_sensitive_answer PASSED [ 72%]
+tests/test_cc_scrub.py::test_the_megapixel_budget_is_decimal_megapixels_not_mebipixels PASSED [ 73%]
+tests/test_cc_scrub.py::test_the_case_probe_refuses_to_guess_when_it_cannot_be_created PASSED [ 75%]
+tests/test_cc_scrub.py::test_an_output_directory_that_cannot_be_created_exits_two PASSED [ 76%]
+tests/test_cc_scrub.py::test_pad_box_grows_outwards_to_whole_pixels PASSED [ 77%]
+tests/test_cc_scrub.py::test_pad_box_pads_and_clamps_to_the_image PASSED [ 79%]
+tests/test_cc_scrub.py::test_normalise_drops_punctuation_and_case PASSED [ 80%]
+tests/test_cc_scrub.py::test_normalise_folds_every_advertised_glyph_class PASSED [ 82%]
+tests/test_cc_scrub.py::test_parse_scales_sorts_and_deduplicates PASSED  [ 83%]
+tests/test_cc_scrub.py::test_parse_scales_rejects_rubbish PASSED         [ 85%]
+tests/test_cc_scrub.py::test_load_terms_ignores_comments_and_blank_lines PASSED [ 86%]
+tests/test_cc_scrub.py::test_load_terms_rejects_an_empty_denylist PASSED [ 88%]
+tests/test_cc_scrub.py::test_merge_hits_unions_overlapping_rectangles_of_one_term PASSED [ 89%]
+tests/test_cc_scrub.py::test_merge_hits_keeps_different_terms_apart PASSED [ 91%]
+tests/test_cc_scrub.py::test_gather_inputs_skips_already_scrubbed_files PASSED [ 92%]
+tests/test_cc_scrub.py::test_gather_inputs_rejects_a_missing_path PASSED [ 94%]
 tests/test_cc_scrub.py::test_is_same_file_sees_through_a_case_variant_of_an_existing_path PASSED [ 95%]
-tests/test_cc_scrub.py::test_is_same_file_compares_canonically_when_the_target_is_not_created_yet PASSED [ 96%]
+tests/test_cc_scrub.py::test_is_same_file_compares_canonically_when_the_target_is_not_created_yet PASSED [ 97%]
 tests/test_cc_scrub.py::test_is_same_file_says_no_to_two_genuinely_different_files PASSED [ 98%]
 tests/test_cc_scrub.py::test_output_path_defaults_to_the_scrubbed_name_beside_the_input PASSED [100%]
 
-============================= 60 passed in 2.52s ==============================
+============================= 68 passed in 3.36s ==============================
 [exit 0]
 ```

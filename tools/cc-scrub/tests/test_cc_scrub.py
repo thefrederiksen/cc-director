@@ -27,6 +27,7 @@ Run from this tool's directory:
 """
 
 import os
+import pathlib
 import re
 import sys
 from pathlib import Path
@@ -725,6 +726,60 @@ def _explode_on_path(monkeypatch, name, target, error):
 DENIED = PermissionError(13, "permission denied")
 
 
+# ------------------------------- the redaction modes, at the pixel level
+
+CORNERS = ((0, 0), (19, 0), (0, 19), (19, 19))
+
+
+def _image_with_planted_corners():
+    image = Image.new("RGB", (20, 20), (255, 255, 255))
+    for xy in CORNERS:
+        image.putpixel(xy, (0, 0, 0))
+    return image
+
+
+def test_patch_covers_the_whole_rectangle_including_its_corners():
+    """--patch is documented as leaving no signal from the covered pixels.
+
+    It was drawn with rounded_rectangle, so the corners were never painted
+    and the mode advertised as the safe one was the only one that provably
+    left ORIGINAL pixels inside the hit rectangle. --pad 0 removes the
+    margin that was hiding it.
+    """
+    image = _image_with_planted_corners()
+    hit = cli.Hit("term", (0.0, 0.0, 20.0, 20.0), 1, "line")
+    out = cli.redact(image, [hit], 0, "patch")
+
+    survivors = [xy for xy in CORNERS if out.getpixel(xy) == (0, 0, 0)]
+    assert survivors == [], "original pixels survived at %s" % (survivors,)
+
+
+def test_blur_covers_the_whole_rectangle_including_its_corners():
+    image = _image_with_planted_corners()
+    hit = cli.Hit("term", (0.0, 0.0, 20.0, 20.0), 1, "line")
+    out = cli.redact(image, [hit], 0, "blur")
+
+    survivors = [xy for xy in CORNERS if out.getpixel(xy) == (0, 0, 0)]
+    assert survivors == [], "original pixels survived at %s" % (survivors,)
+
+
+def test_patch_leaves_one_flat_colour_with_no_original_pixel_anywhere():
+    """The stronger statement --patch actually makes: nothing gets through.
+
+    Every pixel of the box is the same colour afterwards, so no signal from
+    what was underneath survives anywhere in it - not merely at the corners.
+    """
+    image = Image.new("RGB", (16, 12), (255, 255, 255))
+    for x in range(16):
+        for y in range(12):
+            image.putpixel((x, y), (x * 15 % 256, y * 20 % 256, 7))
+    hit = cli.Hit("term", (0.0, 0.0, 16.0, 12.0), 1, "line")
+    out = cli.redact(image, [hit], 0, "patch")
+
+    seen = set(out.getpixel((x, y)) for x in range(16) for y in range(12))
+    assert len(seen) == 1, "patch left %d distinct colours in the box" % len(seen)
+
+
 # ------------------------------ an error is never a boolean that permits
 
 def test_is_same_file_refuses_when_it_cannot_tell_whether_a_path_exists(
@@ -790,6 +845,140 @@ def test_an_unreadable_terms_file_is_reported_as_unreadable_not_as_missing(
     assert "terms file not found" not in out
 
 
+def _symlinks_available(directory):
+    """Measured, not assumed: can this process make a symbolic link here?
+
+    Windows needs a privilege or developer mode for this, and macOS does
+    not. The answer is a real capability of this machine, so it is tested
+    rather than inferred from sys.platform - and when it is absent the skip
+    says so with the error the operating system gave.
+    """
+    probe = os.path.join(str(directory), "cc-scrub-symlink-probe")
+    try:
+        os.symlink(os.path.join(str(directory), "no-such-target"), probe)
+    except OSError as exc:
+        return str(exc)
+    os.remove(probe)
+    return None
+
+
+def test_a_dangling_symlink_at_the_destination_is_still_something_to_refuse(
+        blank_image, terms_file, tmp_path, capsys, monkeypatch):
+    """A directory ENTRY exists even when what it points at does not.
+
+    Classification - is this a file, is it a directory - wants a following
+    stat. The existing-output refusal wants to know whether writing would
+    clobber a name, and that is an lstat question. Following stat answered
+    "absent" for a dangling symlink, so a scrub with no --force replaced the
+    link and reported success.
+    """
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    unavailable = _symlinks_available(out_dir)
+    if unavailable is not None:
+        pytest.skip("this machine cannot create symbolic links here: %s"
+                    % unavailable)
+
+    destination = out_dir / "input-scrubbed.png"
+    os.symlink(str(out_dir / "no-such-target.png"), str(destination))
+    assert os.path.lexists(str(destination))
+    assert not os.path.exists(str(destination))
+
+    backend = ScriptedBackend([HIT_WORDS, CLEAN_WORDS])
+    code, out = run_scripted(capsys, monkeypatch, backend,
+                             blank_image, "-o", out_dir,
+                             "--scales", "1", "--terms-file", terms_file)
+    assert code == 2
+    assert "already exists" in out
+    assert os.path.lexists(str(destination)), "the symlink was replaced"
+
+
+class BackendThatCreatesAFileMidRun(ScriptedBackend):
+    """Drops a competing file in during the verify read.
+
+    That is the exact window the existing-output check cannot cover: the
+    check runs before the candidate is written, the publish runs after the
+    candidate is verified, and anything can happen in between.
+    """
+
+    def __init__(self, reads, path, content):
+        ScriptedBackend.__init__(self, reads)
+        self._path = path
+        self._content = content
+
+    def recognize(self, image, lang):
+        result = ScriptedBackend.recognize(self, image, lang)
+        if len(self.calls) == 2:
+            pathlib.Path(self._path).write_bytes(self._content)
+        return result
+
+
+def test_a_competing_output_appearing_after_the_check_is_not_clobbered(
+        blank_image, terms_file, tmp_path, capsys, monkeypatch):
+    """Time of check is not time of use.
+
+    A correct answer at inspection time does not make the caller safe. The
+    publish itself has to be the no-clobber operation, or the window between
+    them is a hole the size of a whole verification pass.
+    """
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    destination = out_dir / "input-scrubbed.png"
+    competitor = b"a verified output that arrived while we were verifying"
+
+    backend = BackendThatCreatesAFileMidRun(
+        [HIT_WORDS, CLEAN_WORDS], str(destination), competitor)
+    code, out = run_scripted(capsys, monkeypatch, backend,
+                             blank_image, "-o", out_dir,
+                             "--scales", "1", "--terms-file", terms_file)
+    assert code == 2
+    assert destination.read_bytes() == competitor, "the competitor was replaced"
+
+
+def test_force_still_replaces_a_competing_output(
+        blank_image, terms_file, tmp_path, capsys, monkeypatch):
+    """--force means what it says, including through that same window."""
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    destination = out_dir / "input-scrubbed.png"
+
+    backend = BackendThatCreatesAFileMidRun(
+        [HIT_WORDS, CLEAN_WORDS], str(destination), b"whatever was there")
+    code, out = run_scripted(capsys, monkeypatch, backend,
+                             blank_image, "-o", out_dir, "--force",
+                             "--scales", "1", "--terms-file", terms_file)
+    assert code == 0
+    assert "VERIFY PASSED" in out
+    assert destination.read_bytes() != b"whatever was there"
+    assert temp_files_in(out_dir) == []
+
+
+def test_a_terms_file_that_cannot_be_decoded_is_exit_two_not_a_traceback(
+        blank_image, tmp_path, capsys):
+    """The guard has to be on the ACTION, not on a preliminary check.
+
+    load_terms asked whether the path is a regular file and then opened it
+    outside any boundary, so invalid UTF-8 escaped as a raw
+    UnicodeDecodeError instead of the documented exit 2 - and so did a
+    permission change between the stat and the open.
+    """
+    terms = tmp_path / "terms.txt"
+    terms.write_bytes(b"alpha\n\xff\xfe not utf-8 at all\n")
+    code, out = run(capsys, blank_image, "--check-only", "--terms-file", terms)
+    assert code == 2
+    assert "cannot read the terms file" in out
+
+
+def test_the_megapixel_message_never_rounds_back_onto_the_limit():
+    """A just-over value printed as the limit itself reads as nonsense."""
+    backend = ScriptedBackend([], max_image_dimension=1000000)
+    with pytest.raises(ScrubError) as caught:
+        cli.check_scales_fit((20000, 9601), [1], backend, "image", 192)
+    message = str(caught.value)
+    assert "192,020,000 pixels" in message
+    assert "192.0 megapixels, over the 192 megapixel budget" not in message
+
+
 def test_a_candidate_that_cannot_be_removed_warns_and_never_masks_the_failure(
         blank_image, terms_file, tmp_path, capsys, monkeypatch):
     """Cleanup is the one place a failure must NOT become the outcome.
@@ -810,6 +999,10 @@ def test_a_candidate_that_cannot_be_removed_warns_and_never_masks_the_failure(
     assert code == 1, "the verify failure must survive the cleanup failure"
     assert "VERIFY FAILED" in out
     assert "could not remove the unpublished candidate" in out
+    # Deliberate, and pinned rather than implied: the candidate is left
+    # behind. It can still contain readable denylisted text, which is why
+    # the warning names it and the README calls the cleanup best effort.
+    assert temp_files_in(out_dir) != [], "the candidate should still be there"
 
 
 def test_a_probe_readback_error_is_an_error_not_a_case_sensitive_answer(
@@ -884,13 +1077,20 @@ def test_the_megapixel_budget_is_decimal_megapixels_not_mebipixels():
 
     # The PRINTED figure is pinned, not just the direction, because a fix
     # can reach the comparison and miss the message. 900x260 at scale 8 is
-    # 7200x2080, which is 14,976,000 pixels: 15.0 true megapixels, and 14.3
-    # if the unit were mebipixels. This is the same arithmetic the proof
+    # 7200x2080, which is 14,976,000 pixels: 14.976 true megapixels, and
+    # 14.3 if the unit were mebipixels. This is the same arithmetic the proof
     # transcript prints.
+    #
+    # This used to pin the string "15.0 megapixels". The count is identical -
+    # the rendering changed, because printing one decimal let a value just
+    # over the cap print AS the cap. The exact count now leads and the
+    # megapixel figure carries three decimals.
     with pytest.raises(ScrubError) as caught:
         cli.check_scales_fit((900, 260), [8], backend, "image", 1)
-    assert "15.0 megapixels" in str(caught.value)
-    assert "14.3" not in str(caught.value)
+    message = str(caught.value)
+    assert "14,976,000 pixels" in message
+    assert "14.976 megapixels" in message
+    assert "14.3 " not in message
 
 
 def test_the_case_probe_refuses_to_guess_when_it_cannot_be_created(tmp_path):

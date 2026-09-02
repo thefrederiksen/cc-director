@@ -1,8 +1,16 @@
 # cc-scrub
 
-Finds denylisted text in screenshots and destroys it, so a screenshot can go
+Finds denylisted text in screenshots and covers it, so a screenshot can go
 into a public video, a documentation site or a website without a manual pixel
 hunt.
+
+**How strongly it is covered depends on the mode, and the default is the
+weaker one.** `--blur` removes the original pixel values but leaves a
+low-frequency average of the region, which is attackable; `--patch` paints an
+opaque colour over the whole rectangle and leaves no signal from the covered
+pixels at all. Use `--patch` for anything leaving the organisation, and read
+[How the redaction works](#how-the-redaction-works) before deciding that a
+blurred screenshot is safe to publish.
 
 Pure Python. Every dependency is a pip wheel. The text recognizer is the
 operating system's own, reached through one seam. No external executable is
@@ -197,10 +205,17 @@ of a fractional rectangle is left uncovered, and only then is `--pad` applied
   recovering text from a mosaic is a documented attack when the alphabet is
   small, and a Gaussian blur is a linear low-pass filter, not an eraser. This
   mode is not proof against a determined recovery attempt.
-- **`--patch`** fills a rounded rectangle with the region's per-channel
-  median colour, which is its background colour, so the redaction reads as a
-  deliberate one rather than a black bar. Because it paints an opaque solid
-  colour, **no signal from the covered pixels survives at all.**
+- **`--patch`** fills the **whole** hit rectangle with the region's
+  per-channel median colour, which is its background colour, so the redaction
+  reads as a deliberate one rather than a black bar. Because it paints an
+  opaque solid colour over every pixel of the box, **no signal from the
+  covered pixels survives at all.**
+
+  It is a plain rectangle and not a rounded one, deliberately. It was drawn
+  rounded, and the corners were therefore never painted - which made the mode
+  documented as the safe one the only one that provably left original pixels
+  inside the hit rectangle. Coverage beats the nicer shape, and a pixel-level
+  test now plants pixels in all four corners and requires that none survives.
 
 **For anything leaving the organisation, use `--patch`.** It is the only one
 of the two that leaves nothing behind to attack. `--blur` remains the default
@@ -216,12 +231,33 @@ memory. The redacted image is written to a **candidate file on disk**, beside
 where the output will go; the tool then opens that file, runs the same
 multi-scale OCR and the same matcher over it, and only then decides.
 
-Nothing unverified ever appears under the authoritative `*-scrubbed` name. On
-success the candidate is published with a single atomic rename onto the same
-volume. On failure the candidate is deleted and any existing output is left
-exactly as it was - a run that fails is not allowed to destroy a result that
-passed. Writing straight to the final name and checking afterwards gets both
-of those wrong.
+Nothing unverified ever appears under the authoritative `*-scrubbed` name,
+and any existing output is left exactly as it was - a run that fails is not
+allowed to destroy a result that passed. Writing straight to the final name
+and checking afterwards gets both of those wrong.
+
+Publishing is one atomic operation on the same volume, and which one depends
+on `--force`:
+
+- **Without `--force`** the candidate is hard-linked onto the destination
+  name, which fails rather than replacing if anything is there. That matters
+  because the "does an output already exist" check runs *before* the
+  candidate is written, and everything since - the write and the whole
+  verification - is a window in which another process can create that file. A
+  correct answer at inspection time does not make the write safe, so the
+  write itself carries the guarantee. On a volume with no hard links this is
+  a loud exit 2, never a silent replace.
+- **With `--force`** it is a rename, which replaces. That is what `--force`
+  asks for.
+
+**Removing the candidate after a failure is best effort.** The tool attempts
+it and, if the removal fails, prints a `WARNING` naming the file it left
+behind and continues - because an exception is usually already in flight at
+that point (the verify failure that stopped the publish) and raising there
+would replace the real reason with a housekeeping complaint. So a `*.tmp`
+candidate can survive next to the output directory, and **a candidate from a
+failed verify can still contain readable denylisted text.** If you see that
+warning, delete the file it names.
 
 The pass condition is a presence, never an absence:
 
@@ -239,8 +275,8 @@ Three ways it refuses to certify a run:
 - **The verify OCR read zero words from the candidate** - the instrument
   itself is broken and proves nothing. Exit 2.
 
-In both failure cases nothing is published: the candidate is removed and the
-destination is untouched.
+In both failure cases nothing is published and the destination is untouched.
+Removal of the candidate is best effort, as above.
 
 ### What the verify pass does not prove
 
@@ -339,7 +375,7 @@ portable fallback engine and none will be added.
 
 ```
 python gen_samples.py samples     # draw the synthetic test images
-python -m pytest tests/ -q        # 60 tests
+python -m pytest tests/ -q        # 68 tests
 ```
 
 The integration tests drive the **real recognizer** over the generated

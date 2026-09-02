@@ -129,8 +129,10 @@ def _notext(path):
 
 def generate(out_dir):
     """Write all four samples into out_dir; return their paths in order."""
-    if not os.path.isdir(out_dir):
-        os.makedirs(out_dir)
+    # makedirs decides for itself rather than an isdir predicate deciding
+    # for it, so this file holds no os.path.exists/isfile/isdir either - the
+    # invariant in the README is true of the whole tool, not just of src/.
+    os.makedirs(out_dir, exist_ok=True)
     return [
         _normal(os.path.join(out_dir, "sample-normal.png")),
         _small_ui(os.path.join(out_dir, "sample-small-ui.png")),

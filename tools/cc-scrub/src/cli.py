@@ -92,8 +92,39 @@ def stat_or_none(path, purpose):
             % (path, purpose, exc))
 
 
+def lstat_or_none(path, purpose):
+    """os.lstat, for questions about the ENTRY rather than about its target.
+
+    stat_or_none follows symbolic links, which is right for classification -
+    is this a file, is this a directory - and wrong for "is there something
+    here that a write would clobber". A DANGLING SYMLINK is the case that
+    separates them: the entry plainly exists, and a following stat raises
+    FileNotFoundError, so the existence question answered "absent" and a run
+    with no --force replaced the link and reported success.
+    """
+    try:
+        return os.lstat(path)
+    except (FileNotFoundError, NotADirectoryError):
+        return None
+    except OSError as exc:
+        raise ScrubError(
+            "cannot inspect the directory entry %s, which is needed to %s: "
+            "%s. Refusing to guess, because an unreadable path is not an "
+            "answer - and here the convenient guess is the one that permits "
+            "the write." % (path, purpose, exc))
+
+
 def path_exists(path, purpose):
+    """Does the TARGET exist? Follows links. For identity questions."""
     return stat_or_none(path, purpose) is not None
+
+
+def entry_exists(path, purpose):
+    """Is there a directory entry here at all? Does not follow links.
+
+    This is the question to ask before writing to a name.
+    """
+    return lstat_or_none(path, purpose) is not None
 
 
 def path_is_directory(path, purpose):
@@ -176,12 +207,20 @@ def load_terms(path):
             "terms file not found: %s. The denylist is your own config and is "
             "never committed; copy %s to %s and put your terms in it."
             % (path, EXAMPLE_TERMS_FILE, DEFAULT_TERMS_FILE))
+    # The boundary goes around the READ. Asking whether the path is a
+    # regular file and then opening it outside any boundary leaves two ways
+    # out: the file can change between the two, and its contents can be
+    # invalid UTF-8, which escaped as a raw UnicodeDecodeError rather than
+    # the documented exit 2.
     terms = []
-    with open(path, "r", encoding="utf-8") as handle:
-        for raw in handle:
-            line = raw.split("#", 1)[0].strip()
-            if line:
-                terms.append(line)
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            for raw in handle:
+                line = raw.split("#", 1)[0].strip()
+                if line:
+                    terms.append(line)
+    except (OSError, UnicodeDecodeError) as exc:
+        raise ScrubError("cannot read the terms file %s: %s" % (path, exc))
     if not terms:
         raise ScrubError("terms file %s has no terms in it" % path)
     return terms
@@ -248,13 +287,17 @@ def check_scales_fit(size, scales, backend, label,
                    backend.name, backend.max_image_dimension))
         pixels = scaled_width * scaled_height
         if pixels > budget:
+            # The exact count leads, and the megapixel figure carries enough
+            # precision that a value just over the cap cannot print AS the
+            # cap: 192,020,000 pixels used to render as "192.0 megapixels,
+            # over the 192 megapixel budget", which reads as nonsense.
             raise ScrubError(
-                "%s is %dx%d; at scale %d that is %dx%d, %.1f megapixels, over "
-                "the %d megapixel budget for one read. Use a smaller --scales "
-                "value, a smaller image, or raise --max-megapixels if this "
-                "machine has the memory for it."
+                "%s is %dx%d; at scale %d that is %dx%d, %s pixels (%.3f "
+                "megapixels), over the %d megapixel budget for one read. Use "
+                "a smaller --scales value, a smaller image, or raise "
+                "--max-megapixels if this machine has the memory for it."
                 % (label, width, height, scale, scaled_width, scaled_height,
-                   pixels / 1000000.0, max_megapixels))
+                   "{:,}".format(pixels), pixels / 1000000.0, max_megapixels))
 
 
 def ocr_image(image, scale, lang, backend,
@@ -489,10 +532,15 @@ def redact(image, hits, pad, mode):
                              % (ascii_safe(hit.term), box))
         region = out.crop(box)
         if mode == "patch":
+            # A PLAIN rectangle, not a rounded one. The contract of this mode
+            # is full coverage of the hit rectangle, and rounded corners are
+            # a cosmetic preference that broke it: the corners were never
+            # painted, so the mode documented as leaving no signal from the
+            # covered pixels was the only one that provably left ORIGINAL
+            # pixels inside the rectangle. Coverage wins over the shape.
             colour = _median_colour(region)
             draw = ImageDraw.Draw(out)
-            radius = max(2, min(8, (box[3] - box[1]) // 2))
-            draw.rounded_rectangle(box, radius=radius, fill=colour)
+            draw.rectangle(box, fill=colour)
         else:
             out.paste(_destroy(region), box)
     return out
@@ -626,7 +674,7 @@ def process_image(path, out_path, terms, args, backend):
 
     # An existing output may be one that has already been verified. Replacing
     # it is a decision the caller makes on purpose, never a side effect.
-    if path_exists(out_path, "tell whether an output is already there") \
+    if entry_exists(out_path, "tell whether an output is already there") \
             and not args.force:
         raise ScrubError(
             "output %s already exists. Refusing to replace it - it may be an "
@@ -696,11 +744,54 @@ def process_image(path, out_path, terms, args, backend):
             print("  NOT PUBLISHED: %s was not written." % out_path)
             return False
 
-        try:
-            os.replace(temp_path, out_path)
-        except OSError as exc:
-            raise ScrubError("cannot publish the verified candidate %s to %s: %s"
-                             % (temp_path, out_path, exc))
+        # The existence check above ran BEFORE the candidate was written, and
+        # everything since - the write, three OCR passes, the matching - is a
+        # window in which something else can put a file at the destination. A
+        # correct answer at inspection time does not make this write safe, so
+        # the write itself has to carry the guarantee.
+        #
+        # os.link is the portable no-clobber publish: it raises
+        # FileExistsError rather than replacing. os.replace is the opposite -
+        # it silently overwrites - so it is used ONLY when --force has asked
+        # for exactly that.
+        if args.force:
+            try:
+                os.replace(temp_path, out_path)
+            except OSError as exc:
+                raise ScrubError(
+                    "cannot publish the verified candidate %s to %s: %s"
+                    % (temp_path, out_path, exc))
+        else:
+            try:
+                os.link(temp_path, out_path)
+            except FileExistsError:
+                raise ScrubError(
+                    "%s appeared while this image was being verified. "
+                    "Refusing to replace it - nothing was published. Re-run, "
+                    "or pass --force if you mean to replace it." % out_path)
+            except OSError as exc:
+                # A volume with no hard links cannot give a no-clobber
+                # publish, and there is no fallback: falling back to
+                # os.replace would silently destroy whatever is at the
+                # destination, which is the entire thing this branch exists
+                # to prevent. It stops here, loudly.
+                raise ScrubError(
+                    "cannot publish %s without replacing whatever is there: "
+                    "%s. The no-clobber publish is a hard link, and this "
+                    "volume does not support one. There is no fallback - "
+                    "replacing is only ever done when --force asks for it. "
+                    "Pass --force if you mean to replace, or write the output "
+                    "to a volume that supports hard links."
+                    % (out_path, exc))
+            # The destination and the candidate are now two names for one
+            # file. Dropping the candidate name leaves exactly the published
+            # one behind.
+            try:
+                os.remove(temp_path)
+            except OSError as exc:
+                sys.stderr.write(
+                    "WARNING: published %s but could not remove the candidate "
+                    "name %s: %s\n" % (out_path, temp_path, exc))
         published = True
         print("  WROTE %s (mode=%s pad=%d)" % (out_path, args.mode, args.pad))
         print("  VERIFY PASSED: %d hit(s) found, %d region(s) redacted, verify "
