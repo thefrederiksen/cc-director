@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>How a rule is created and how it runs</title>
+<title>How a rule is made and how it runs, v2</title>
 <style>
   :root{
     --bg:#0b1020; --surface:#141a2e; --surface-2:#1b2238; --border:#28304a;
@@ -15,239 +15,203 @@
     font:14.5px/1.62 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
   .wrap{max-width:1000px;margin:0 auto;padding:30px 24px 70px}
   h1{font-size:23px;margin:0 0 6px}
-  .lede{color:var(--dim);margin:0 0 26px;max-width:74ch}
+  .lede{color:var(--dim);margin:0 0 22px;max-width:76ch}
   h2{font-size:17px;margin:36px 0 6px;padding-top:20px;border-top:1px solid var(--border)}
   h2:first-of-type{border-top:0;padding-top:0}
-  .sub{color:var(--dim);margin:0 0 16px;max-width:76ch}
-  p{max-width:78ch}
+  .sub{color:var(--dim);margin:0 0 16px;max-width:78ch}
+  p{max-width:80ch}
   .card{background:var(--surface);border:1px solid var(--border);border-radius:9px;
     padding:16px 19px;margin:0 0 13px}
   .card h3{margin:0 0 5px;font-size:14.5px}
   .card p{margin:0;color:var(--dim);font-size:13.5px}
-  .mono{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:12.5px}
-  code{background:var(--code);border:1px solid var(--border);border-radius:4px;
-    padding:1px 6px;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:12.5px}
-
-  /* pipeline */
-  .pipe{display:flex;flex-direction:column;gap:0}
+  code{background:var(--code);border:1px solid var(--border);border-radius:4px;padding:1px 6px;
+    font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:12.5px}
   .step{display:grid;grid-template-columns:118px 1fr;gap:16px;align-items:start}
   .who{padding:13px 0 0}
   .tag{display:inline-block;padding:3px 9px;border-radius:5px;font-size:11px;font-weight:600;
     letter-spacing:.03em;white-space:nowrap}
   .tag.code{background:rgba(59,130,246,.15);color:#93c0fb;border:1px solid rgba(59,130,246,.45)}
-  .tag.model{background:rgba(245,158,11,.14);color:#f6c86a;border:1px solid rgba(245,158,11,.45)}
+  .tag.agent{background:rgba(245,158,11,.14);color:#f6c86a;border:1px solid rgba(245,158,11,.45)}
   .body{background:var(--surface);border:1px solid var(--border);border-radius:9px;
     padding:13px 17px;margin-bottom:9px}
   .body b{display:block;margin-bottom:3px}
   .body span{color:var(--dim);font-size:13.5px}
-  .arrow{grid-column:2;color:var(--dim);font-size:18px;line-height:1;margin:-4px 0 5px 18px}
+  .arrow{grid-column:2;color:var(--dim);font-size:18px;margin:-4px 0 5px 18px}
   .stop{border-color:rgba(52,211,153,.4);background:rgba(52,211,153,.07)}
   .stop b{color:var(--ok)}
   .act{border-color:rgba(241,76,76,.4);background:rgba(241,76,76,.07)}
-
-  table{width:100%;border-collapse:collapse;font-size:13.5px;margin:6px 0 4px}
-  th{text-align:left;color:var(--dim);font-weight:500;font-size:12px;padding:8px 10px;
-    border-bottom:1px solid var(--border)}
-  td{padding:10px;border-bottom:1px solid var(--border);vertical-align:top}
-  tr:last-child td{border-bottom:0}
-  .yes{color:var(--ok)} .no{color:var(--dim)} .maybe{color:var(--warn)}
-  .q{border:1px solid rgba(245,158,11,.45);background:rgba(245,158,11,.07);
-    border-radius:9px;padding:15px 19px;margin:14px 0}
-  .q h3{margin:0 0 6px;font-size:14.5px;color:#f6c86a}
-  .q.settled{border-color:rgba(52,211,153,.45);background:rgba(52,211,153,.07)}
-  .q.settled h3{color:#7fe3bd}
-  .q p{margin:0 0 8px;color:var(--text);font-size:13.5px}
-  .q p:last-child{margin:0}
-  ol{padding-left:20px;max-width:78ch} ol li{margin-bottom:9px}
-  ul{padding-left:20px;max-width:78ch} ul li{margin-bottom:6px;color:var(--dim)}
+  .box{border-radius:9px;padding:15px 19px;margin:14px 0}
+  .box h3{margin:0 0 6px;font-size:14.5px}
+  .box p{margin:0 0 8px;font-size:13.5px} .box p:last-child{margin:0}
+  .box.warn{border:1px solid rgba(245,158,11,.45);background:rgba(245,158,11,.07)}
+  .box.warn h3{color:#f6c86a}
+  .box.ok{border:1px solid rgba(52,211,153,.45);background:rgba(52,211,153,.07)}
+  .box.ok h3{color:#7fe3bd}
+  .box.bad{border:1px solid rgba(241,76,76,.45);background:rgba(241,76,76,.08)}
+  .box.bad h3{color:#f79a9a}
+  ul{padding-left:20px;max-width:80ch} ul li{margin-bottom:7px;color:var(--dim)}
   ul li b{color:var(--text)}
+  .was{color:var(--dim);font-size:13px;border-left:2px solid var(--border);padding-left:13px;
+    margin:10px 0 14px;max-width:76ch}
 </style>
 </head>
 <body>
 <div class="wrap">
 
-<h1>How a rule is created, and how it actually runs</h1>
-<p class="lede">Answering four questions: what a rule can see, who decides, who types, and how you
-make one. Proposal - none of this is built yet. Where something is not settled, it says so.</p>
+<h1>How a rule is made, and how it actually runs</h1>
+<p class="lede">Version 2, after the owner's redesign. A rule is a standing instruction you give in
+English, that an agent works out and then carries out. Proposal - none of it is built.</p>
 
-<h2>The short answer to "is it a language model or code?"</h2>
-<p class="sub">It is both, and the split is the whole design. A model that could type would be a
-model that could invent an instruction you never gave.</p>
+<h2>What changed, and why version 1 was wrong</h2>
+<p class="was"><b>Version 1:</b> you wrote a matching description, you chose the trigger words, and
+you picked an action from a dropdown of six. A model was used for one narrow thing - deciding which
+of your rules a screen matched - and was explicitly forbidden from composing what to type.</p>
 
-<div class="card">
-  <h3>Ordinary code decides whether to ask. A small model decides which rule matches. Ordinary code
-      does the typing.</h3>
-  <p>The model is asked one narrow question and can only answer with the name of one of your rules,
-     or "none". It never produces the text that gets typed. Every character that reaches your session
-     comes from the rule you wrote, exactly as you wrote it.</p>
-</div>
-<p style="color:var(--dim);font-size:13.5px">(It is C#, not Python - it lives in the Gateway,
-which is a .NET service. Nothing here runs on your machine.)</p>
-
-<h2>The path, step by step</h2>
-<p class="sub">This runs when a session STOPS - the moment it goes from working to waiting. Not
-continuously, and never mid-turn.</p>
-
-<div class="pipe">
-
-  <div class="step">
-    <div class="who"><span class="tag code">CODE</span></div>
-    <div class="body"><b>1. A session stops working</b>
-      <span>Its screen is captured and pushed to the Gateway - the thing phase 0 just built. No rule
-      is involved yet.</span></div>
-  </div>
-  <div class="arrow">&darr;</div>
-
-  <div class="step">
-    <div class="who"><span class="tag code">CODE</span></div>
-    <div class="body"><b>2. Is this screen even worth looking at?</b>
-      <span>Has it changed since last time? Is the session actually idle? Has this rule already
-      fired here, or hit its daily limit? Any "no" stops here.</span></div>
-  </div>
-  <div class="arrow">&darr;</div>
-
-  <div class="step">
-    <div class="who"><span class="tag code">CODE</span></div>
-    <div class="body"><b>3. Do any of your watch-words appear?</b>
-      <span>Plain text search. If a rule lists words and none are on the screen, that rule is
-      dropped without ever asking the model. This is the cost control - it is why having rules
-      costs nothing on the thousands of ordinary screens.</span></div>
-  </div>
-  <div class="arrow">&darr;</div>
-
-  <div class="step">
-    <div class="who"><span class="tag code">CODE</span></div>
-    <div class="body stop"><b>Nothing survived - stop. This is the normal outcome.</b>
-      <span>Free. No model was asked. Most turn-ends end here.</span></div>
-  </div>
-  <div class="arrow">&darr;</div>
-
-  <div class="step">
-    <div class="who"><span class="tag model">MODEL</span></div>
-    <div class="body"><b>4. One question, once: which of these rules fits this screen?</b>
-      <span>The model gets the screen and the surviving rules' descriptions. It answers with one
-      rule's name, or "none". <b style="display:inline">One call covers all your rules</b> - not one
-      call per rule - so ten rules cost the same as one.</span></div>
-  </div>
-  <div class="arrow">&darr;</div>
-
-  <div class="step">
-    <div class="who"><span class="tag code">CODE</span></div>
-    <div class="body"><b>5. Look at the screen again, right now</b>
-      <span>Between the model answering and anything being typed, the screen is re-read. If it
-      changed, or a menu appeared that was not expected, the action is abandoned rather than pressed
-      into something new.</span></div>
-  </div>
-  <div class="arrow">&darr;</div>
-
-  <div class="step">
-    <div class="who"><span class="tag code">CODE</span></div>
-    <div class="body act"><b>6. Type your text, verbatim</b>
-      <span>The exact characters from your rule - <code>/model opus</code> - into the composer, the
-      same way the text box on your phone does it. Then record what happened: the screen, the
-      verdict, the keystroke.</span></div>
-  </div>
-
+<div class="box bad">
+  <h3>The part that was not just rigid but dishonest</h3>
+  <p>Version 1 said: "only things a person could have typed into that session - there is no way to
+     run a command of your own", as if the six-item list were a safety boundary.</p>
+  <p><b>It never was.</b> Typing into a coding agent is already unbounded - the session does whatever
+     the typed text asks it to. The dropdown bought the appearance of a limit and none of the
+     substance. A design whose safety story is false is worse than one that states the real bound,
+     because people trust it.</p>
 </div>
 
-<h2>What a rule can see</h2>
-<p class="sub">Always the terminal screen. That was raised as an open question and the owner settled
-it on 2 September - see the box below the table.</p>
+<h2>Making a rule</h2>
+<p class="sub">You say it. It works out the rest and shows you, in your words, before saving.</p>
 
-<table>
-  <thead><tr><th style="width:31%">Input</th><th style="width:16%">Available</th><th>Notes</th></tr></thead>
-  <tbody>
-    <tr><td><b>The terminal screen</b> when the session stopped</td>
-        <td class="yes">Built</td>
-        <td>What phase 0 delivered. It is the only surface every agent shares - pickers, banners and
-            permission prompts appear here and nowhere else.</td></tr>
-    <tr><td><b>The conversation</b> - what the agent actually said</td>
-        <td class="maybe">Exists, not wired</td>
-        <td>Your turn-push work is storing this. A rule could read it. Not designed for.</td></tr>
-    <tr><td><b>How long it has been waiting</b></td>
-        <td class="maybe">Known, not wired</td>
-        <td>Would allow "if it has been stuck 30 minutes, tell me" with no screen reading at all.</td></tr>
-    <tr><td><b>Which agent, repo, machine, mission</b></td>
-        <td class="yes">Known</td>
-        <td>Already usable to scope a rule to some sessions rather than all.</td></tr>
-    <tr><td><b>Token spend, context fullness</b></td>
-        <td class="maybe">Known, not wired</td>
-        <td>Would allow "if this session has burned more than X, stop it".</td></tr>
-    <tr><td><b>Anything on your machine</b></td>
-        <td class="no">Never</td>
-        <td>Rules read state and type text. They do not run commands.</td></tr>
-  </tbody>
-</table>
-
-<div class="q settled">
-  <h3>Settled 2 September: the screen is the only input</h3>
-  <p>This was raised as an open question - whether a rule should also be able to trigger on things
-     that never appear on a screen, like a session stuck for an hour or burning money. The owner's
-     answer: <b>"Let's leave it at just the terminal for now."</b></p>
-  <p>So a rule's condition is a description of a terminal screen and nothing else. The other rows
-     above are kept rather than deleted, because knowing they were considered and deferred is worth
-     more than a shorter table.</p>
-  <p><b>Deferred, not rejected</b> - and it will not be pre-built behind an abstraction "ready for
-     later". A condition type with one possible value is surface a reviewer has to read for behaviour
-     that cannot happen. Build the narrow thing properly; widening a small clean thing later is
-     ordinary work.</p>
+<div class="step">
+  <div class="who"><span class="tag agent">AGENT</span></div>
+  <div class="body"><b>1. You say what you want, in English</b>
+    <span>"If it asks permission to touch something inside the repo it is working in, say yes.
+    Anything outside that, leave it and wake me."</span></div>
+</div>
+<div class="arrow">&darr;</div>
+<div class="step">
+  <div class="who"><span class="tag agent">AGENT</span></div>
+  <div class="body"><b>2. It works out what you meant, and asks when it matters</b>
+    <span>Not a parser. It reads the instruction the way a colleague would, and comes back on the
+    genuinely ambiguous parts - "if it wants to run a command rather than touch a file, same rule?"
+    Guessing here is how a rule ends up doing something you did not ask for.</span></div>
+</div>
+<div class="arrow">&darr;</div>
+<div class="step">
+  <div class="who"><span class="tag agent">AGENT</span></div>
+  <div class="body"><b>3. It builds the cheap trigger for you</b>
+    <span>The words that must be on screen before the rule is even considered -
+    <code>permission</code>, <code>Do you want to</code>, <code>allow</code>. You never think about
+    this; it is engineering, and it is what keeps the rule free on the thousands of screens that are
+    nothing to do with it.</span></div>
+</div>
+<div class="arrow">&darr;</div>
+<div class="step">
+  <div class="who"><span class="tag code">CODE</span></div>
+  <div class="body"><b>4. Saved in dry run, in your own words</b>
+    <span>The rule is stored as the sentence you said, plus what the agent derived from it. Your
+    sentence stays the authority - the derived parts are working notes and can be rebuilt.</span></div>
 </div>
 
-<h2>How you create one</h2>
-<p class="sub">Three ways in, all landing on the same thing.</p>
+<h2>Running a rule</h2>
+<p class="sub">This happens when a session STOPS - the moment it goes from working to waiting. Not
+continuously, not mid-turn.</p>
 
-<ol>
-  <li><b>From a screen that already stopped a session.</b> The main way. You are looking at the
-      stored screen, you press "Make a rule from this", and the model turns that screen into a
-      first-draft description in plain English. You edit it, choose what to do, save. You never have
-      to guess what the terminal said, because it is stored in front of you.</li>
-  <li><b>From scratch.</b> An empty rule. You write the description yourself. Useful when you know
-      the situation but have not hit it yet.</li>
-  <li><b>From a starter rule.</b> Ready-made ones for the situations everybody meets - out of
-      allowance, provider down, waiting on a permission prompt. You pick the action and the fallback
-      model; the description is already written.</li>
-</ol>
-
-<p>Whichever way in, a new rule <b>starts in dry run</b>: it reports what it would have done and
-   types nothing. You promote it to live once you have watched it be right. That is deliberate -
-   the first time a rule presses a key in your work should not be the first time you have seen it
-   make a decision.</p>
-
-<h2>What you write, in full</h2>
-
-<div class="card">
-  <h3>The description - the only part the model reads</h3>
-  <p>Plain English, in your words. "The agent says it has run out of usage or credits for the model
-     it is running, and offers switching models." The model judges the screen against this sentence.
-     Wording that varies between providers still matches, which a keyword search cannot manage.</p>
+<div class="step">
+  <div class="who"><span class="tag code">CODE</span></div>
+  <div class="body"><b>1. A session stops. Its screen is stored.</b>
+    <span>The thing phase 0 built. No rule involved yet.</span></div>
 </div>
-<div class="card">
-  <h3>The watch-words - optional, and purely about cost</h3>
-  <p>If you list them and none appear, the model is never asked. Leave it empty and every screen gets
-     judged, which works and costs more. This is not a filter you have to get right; getting it wrong
-     only costs money, never correctness.</p>
+<div class="arrow">&darr;</div>
+<div class="step">
+  <div class="who"><span class="tag code">CODE</span></div>
+  <div class="body"><b>2. Cheap checks first, all free</b>
+    <span>Has the screen changed? Is the session idle? Is this rule in scope for it? Has it already
+    fired here, or hit its ceiling? Do any of its trigger words appear? Any "no" stops here.</span></div>
 </div>
-<div class="card">
-  <h3>The action - what a person would have typed</h3>
-  <p>Switch model, type this text, notify me, snooze then continue, stop the session, or flag it and
-     wait. Nothing else is offered, and there is no box where you can put a shell command.</p>
+<div class="arrow">&darr;</div>
+<div class="step">
+  <div class="who"><span class="tag code">CODE</span></div>
+  <div class="body stop"><b>Nothing survived. Stop. This is the normal outcome.</b>
+    <span>Free, and it is what happens on almost every turn end.</span></div>
 </div>
-<div class="card">
-  <h3>The limits - not optional</h3>
-  <p>How long before it may act on the same session again, how many times a day, and whether it is
-     live or in dry run. A rule presses keys into running work; it does not get to do that without
-     a ceiling.</p>
+<div class="arrow">&darr;</div>
+<div class="step">
+  <div class="who"><span class="tag agent">AGENT</span></div>
+  <div class="body"><b>3. The agent reads the screen and your instruction together</b>
+    <span>Does this screen actually call for what you asked? It can decline - "this is a permission
+    prompt but for a path outside the repo, so your rule says leave it". Declining is a real outcome
+    and gets recorded like any other.</span></div>
+</div>
+<div class="arrow">&darr;</div>
+<div class="step">
+  <div class="who"><span class="tag agent">AGENT</span></div>
+  <div class="body"><b>4. It works out what to do - it is not choosing from a list</b>
+    <span>The action is derived from your instruction and this particular screen. Where something
+    deterministic is the right tool - parsing a path, comparing it to the repo root, reading a reset
+    time - it writes and runs that as a small piece of code rather than eyeballing it.</span></div>
+</div>
+<div class="arrow">&darr;</div>
+<div class="step">
+  <div class="who"><span class="tag code">CODE</span></div>
+  <div class="body"><b>5. Look again, right now, before anything is pressed</b>
+    <span>The screen is re-read between the decision and the keystroke. Changed? Abandon. This is the
+    one guard that survives from version 1 unaltered, and it is the one that stops a key landing in
+    something that moved.</span></div>
+</div>
+<div class="arrow">&darr;</div>
+<div class="step">
+  <div class="who"><span class="tag code">CODE</span></div>
+  <div class="body act"><b>6. It types, and records everything</b>
+    <span>The screen it saw, what it understood, what it decided and why, what it typed, and what
+    happened next. In dry run it stops one step earlier and records what it would have done.</span></div>
 </div>
 
-<h2>The three things this design refuses to do</h2>
+<h2>So what actually bounds it?</h2>
+<p class="sub">The honest answer, since the action list is not a bound and never was.</p>
+
+<div class="box ok">
+  <h3>Six real limits</h3>
+  <p><b>1. Scope.</b> A rule only ever touches sessions you chose - this agent, this repo, this
+     machine, this mission. Enforced in code, not judgement.</p>
+  <p><b>2. Dry run first, always.</b> A new rule reports and types nothing until you promote it. This
+     is the big one: it puts you between the instruction and its first real use.</p>
+  <p><b>3. A ceiling.</b> A cooldown and a daily cap, per rule per session, both required. An agent
+     in a loop is the worst tail risk there is, and the cap is what makes it finite.</p>
+  <p><b>4. Idle only, and re-read before acting.</b></p>
+  <p><b>5. A full record of every firing</b> - kept, readable, and the reason it is safe to leave
+     running overnight.</p>
+  <p><b>6. Your instruction is the authority.</b> The agent carries out what you wrote. It does not
+     invent goals, widen its own scope, edit its own rule, or write new rules.</p>
+</div>
+
+<div class="box warn">
+  <h3>Limit 6 is the one that would decay quietly</h3>
+  <p>The others fail loudly - a scope bug sends a keystroke somewhere visible, a ceiling bug shows up
+     as a burst. An agent gradually doing a bit more than it was told looks like an agent being
+     helpful, right up until it does not.</p>
+  <p>So that is the one the tests are written against: given an instruction and a screen it does not
+     cover, the agent declines and records why. A rule that never declines has not been shown to have
+     a boundary.</p>
+</div>
+
+<h2>What this does not change</h2>
 <ul>
-  <li><b>The model never writes what gets typed.</b> It picks one of your rules by name, or none.
-      Every keystroke is yours, verbatim. This is the same rule dictation lives under, for the same
-      reason.</li>
-  <li><b>Rules never run commands.</b> Every action is something you could have typed into that
-      session yourself. There is no escape hatch, deliberately.</li>
-  <li><b>Nothing acts on a session that is working.</b> Only on one that has stopped and is waiting -
-      and only after looking at the screen a second time, immediately before pressing anything.</li>
+  <li><b>The screen is still the only input.</b> Your ruling. Waiting time, spend and machine state
+      stay deferred.</li>
+  <li><b>Dictation is untouched.</b> The rule that your spoken words reach the agent unaltered is
+      absolute and has nothing to do with this. That rule exists so YOUR words are not rewritten; a
+      rule here is an instruction you gave on purpose, and carrying it out is the whole job.</li>
+  <li><b>Nothing runs on your machine.</b> This is the Gateway, in C#, with the agent called from
+      there.</li>
+</ul>
+
+<h2>Still open</h2>
+<ul>
+  <li><b>A middle state between dry run and live</b> - it acts, but only after you tap a
+      notification. Probably worth having.</li>
+  <li><b>"Carry on with what you were doing"</b> may be two instructions, not one: recovering a
+      session and resuming its work are different acts.</li>
+  <li><b>Undo.</b> Some actions cannot be taken back. The record says what happened; it does not
+      reverse it, and that gap deserves a real answer.</li>
 </ul>
 
 </div>
