@@ -1,5 +1,9 @@
+using CcDirector.Core.Tenancy;
 using CcDirector.Gateway.Contracts;
+using CcDirector.Gateway.Pairing;
 using CcDirector.Gateway.Screens;
+using CcDirector.Gateway.Tenancy;
+using CcDirector.Gateway.Tests.Data;
 using Xunit;
 
 namespace CcDirector.Gateway.UnitTests.Screens;
@@ -11,12 +15,17 @@ namespace CcDirector.Gateway.UnitTests.Screens;
 /// per-session cap that trims at write time, refusal of a push that disagrees with itself, seven-day
 /// retention that leaves live rows alone, and a capture time that survives the round trip.
 ///
-/// WHAT THESE RESULTS DO AND DO NOT SAY, and it travels with every one of them. They run on
-/// <see cref="ScreenStoreTestDb"/>, whose tables are built from the mapped MODEL because the mission's
-/// migration slot is held elsewhere - so they are proven against the model, not against the migrated
-/// schema, and every row here needs one confirming run once the migration lands. And they seed the store
-/// BY HAND: not one of them drives the Director capture through the sink and the hub, so they say the
-/// store behaves correctly WHEN HANDED a screen, and nothing about who hands it one.
+/// WHAT THESE RESULTS DO AND DO NOT SAY, and it travels with every one of them. The store's own rows run
+/// on <see cref="ScreenStoreTestDb"/>, whose tables are built from the mapped MODEL rather than by the
+/// migration. That was once a real gap; it is now a narrow one, because the <c>session_screens</c>
+/// migration exists on this branch and the model and the migration are known to AGREE - a disagreement is
+/// exactly what EF's pending-model-changes check reports, and every database-backed test in this suite
+/// opens a migrated <see cref="CcDirector.Gateway.Data.GatewayDatabase"/> through that check and passes.
+/// The sweep row below opens one directly.
+///
+/// The limit that does remain: these seed the store BY HAND. Not one of them drives the Director capture
+/// through the sink and the hub, so they say the store behaves correctly WHEN HANDED a screen, and nothing
+/// about who hands it one.
 /// </summary>
 public sealed class SessionScreenStoreTests : IDisposable
 {
@@ -225,20 +234,39 @@ public sealed class SessionScreenStoreTests : IDisposable
         Assert.Equal(0, store.PurgeOlderThan(Now.AddDays(-7)));
     }
 
-    // THE SWEEP'S OWN RETURN IS NOT ASSERTED HERE, AND THE REASON IS NOT A CHOICE.
-    //
-    // SessionScreenSweep takes a HostedTenantBoundary and a TenantRegistry. Both need a real
-    // GatewayDatabase - the boundary through DeviceRegistry, the registry directly - and on this branch a
-    // real GatewayDatabase CANNOT BE OPENED AT ALL: SessionScreenEntity is in the mapped model with no
-    // migration behind it, so Database.Migrate() throws PendingModelChangesWarning before any test runs.
-    // A sweep test written now would not be a red that says something about the sweep; it would be one more
-    // instance of the branch-wide red the held migration slot causes.
-    //
-    // What is asserted instead is the store call the sweep makes - PurgeOlderThan above, with both its
-    // arms, 1 and then 0. When the migration lands, the missing assertion is
-    // SessionScreenSweep.SweepAsync returning 1 for a screen older than SessionScreenSweep.Retention and
-    // then 0 on a second pass, with the fresher screen surviving both. Until then it is BLOCKED, and this
-    // comment is here so nobody records the store-level test as if it had covered the sweep.
+    [Fact]
+    public async Task SweepAsync_RemovesScreensPastTheSevenDayRetention_AndReturnsHowManyItRemoved()
+    {
+        // PurgeOlderThan above proves the store's cut. This proves the thing that actually RUNS it in the
+        // Gateway, and that it reports a NUMBER rather than reporting that a method was called - the number
+        // is what a proof run quotes. The two rows sit either side of the seven-day retention: eight days
+        // goes, six days is the control and stays.
+        //
+        // Self-host boundary, so the body runs exactly once under the local tenant and the tenant census is
+        // never enumerated; the registry is here because the base requires one, not because it is read.
+        using var registryDb = new GatewayDbTestHarness();
+        var store = Store();
+        store.Append("d1", Push(Now.AddDays(-8), "expired"), Now.AddDays(-8));
+        store.Append("d1", Push(Now.AddDays(-6), "live"), Now.AddDays(-6));
+        var sweep = new SessionScreenSweep(
+            new HostedTenantBoundary(new SingleTenantContext(), new DeviceRegistry()),
+            new TenantRegistry(registryDb.Open()),
+            store,
+            () => Now);
+
+        var removed = await sweep.SweepAsync();
+
+        Assert.Equal(1, removed);
+        Assert.Equal(1, Count(store, "s1"));
+        var survivor = store.ReadLatest("s1");
+        Assert.NotNull(survivor);
+        Assert.Equal(Now.AddDays(-6), survivor.CapturedAtUtc);
+        Assert.Equal(new[] { "live" }, survivor.Grid.Rows);
+        // And the return is a count and not a constant: a second pass with nothing left to expire answers 0,
+        // and the six-day row is still there afterwards.
+        Assert.Equal(0, await sweep.SweepAsync());
+        Assert.Equal(new[] { "live" }, store.ReadLatest("s1")!.Grid.Rows);
+    }
 
     [Fact]
     public void Append_ACaptureTimeWithSubMillisecondTicks_IsStored_AndFoundAgainByReadLatest()
