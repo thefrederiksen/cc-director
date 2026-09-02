@@ -72,7 +72,17 @@ public sealed class SessionScreenStore
         ArgumentNullException.ThrowIfNull(db);
     }
 
-    private SessionScreenStore(Func<GatewayDbContext> context)
+    /// <summary>
+    /// Build the store over an arbitrary context source. INTERNAL, and it has exactly one caller with a
+    /// reason: the live Postgres provider proof drives this store against the proof container, whose context
+    /// is built on Npgsql directly rather than through a <see cref="GatewayDatabase"/>, so that the store's
+    /// idempotency can be asserted on the provider the hosted Gateway actually runs.
+    ///
+    /// It is NOT a way to avoid the migration. The seam that did that - a schema built from the mapped model
+    /// with <c>EnsureCreated</c>, which existed only while the fleet-wide migration slot was held - has been
+    /// deleted, and every in-process screen test now opens a real migrated database.
+    /// </summary>
+    internal SessionScreenStore(Func<GatewayDbContext> context)
     {
         _context = context ?? throw new ArgumentNullException(nameof(context));
     }
