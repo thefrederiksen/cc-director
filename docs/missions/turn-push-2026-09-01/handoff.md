@@ -3,24 +3,27 @@
 Read `brief.md` first. This note is the compact state a fresh seat needs; it is rewritten at every
 boundary, never appended to.
 
-- **Branch:** `mission/turn-push`, worktree `D:\ReposFred\devthrottle-turn-push`, cut from `b71baccbf`.
+- **Branch:** `mission/turn-push`, worktree `D:\ReposFred\devthrottle-turn-push`.
 - **Issue:** thefrederiksen/devthrottle#2638.
-- **Phase 0 (the store): done, three Codex passes.** Tables `session_turns` (key tenant, session,
-  generation key, ordinal) and `session_turn_heads` (one per session: current generation key + source
-  text + start, contiguous watermark, agent facts, history state, `Revision` concurrency token).
-  Migrations `AddSessionTurns` on both providers, snapshots in sync. `SessionTurnStore`: validated batch,
-  one transaction per push with one retry on a lost race, idempotent rows, paged contiguous watermark,
-  generation switch only when strictly later (millisecond precision on both sides, ties by key), whole-
-  session retention judged on the head and race-free, aged rows of left generations dropped. Retention
-  wired into `SessionHistorySweep`. Contracts `PushedTurn` / `TurnPushBatch` / `TurnWatermark`.
-  Thirty-one store tests. Local gate green.
-- **Next: Phase 1.** `DirectorHub.PushTurns(sequence, TurnPushBatch)` bound to the tenant and Director
-  like `PushDelta`, writes through `SessionTurnStore.Append`, returns the `TurnWatermark`; `Hello`
-  answers `WatermarksFor(directorId)` on `GatewayCapabilities`. Director side: `TurnPusher` in
-  `CcDirector.ControlApi` reading through `SessionHistoryReader.Read`; generation = resolved transcript
-  path (Claude) or the session id (others); `GenerationStartedUtc` = when the Director first saw that
-  source this process lifetime; triggers: the Director's own Working-to-Waiting edge (where
-  `NotifyDelta` fires in `ControlApiHost`), pointer change, reconnect backfill from the Hello watermarks,
-  a slow safety sweep. `HistoryState` computed on the Director at push time (`HistoryStateDeriver`).
-  Batches of at most `SessionTurnStore.MaxBatchSize`.
-- **Not proven yet:** anything live. No reader uses the rows until Phase 2.
+- **Phase 0 (the store): MERGED** to main as pull request 2640. `session_turns` + `session_turn_heads`,
+  migrations on both providers, `SessionTurnStore` (validated batches, one transaction per push with a
+  retry on a lost race, idempotent rows, paged contiguous watermark, generation switch only to a strictly
+  later source with a deterministic tie-break, whole-session retention). Thirty-one tests.
+- **Phase 1 (the Director pushes, the Gateway stores): built, green, four Codex passes.**
+  - Gateway: `DirectorHub.PushTurns(sequence, batch)` writes through the store under the bound tenant and
+    Director and answers the watermark; `Hello` returns this Director's watermarks on `GatewayCapabilities`.
+  - Director: `TurnPushBuilder.Snapshot` reads a session's conversation through the ONE resolver
+    (`SessionHistoryReader`, pointer-first), resolving the path once and using it for the generation, the
+    messages and the history state. `TurnPusher` keeps per-session state under a lock, pushes bounded
+    batches from the watermark, stamps each new source strictly later than the last (so a stale read can
+    never outrank the current source), reconciles fully on Hello, retires state safely against the sweep,
+    and hands outstanding work to a fresh call rather than leaving it for the sweep.
+  - Stream client: `PushTurnsAsync`, `GatewaySupports`, an `onHello` callback, capabilities cleared when
+    the connection drops. Triggers: the Director's own Working-to-Waiting/Idle edge, any-to-Exited,
+    session creation, Hello, and a one-minute safety sweep.
+  - Twenty-eight pusher tests plus three hub tests. Local gate green; the parked run was in progress at
+    the time of writing.
+- **Next: Phase 2** - serve `GET /sessions/{sid}/history` from the store, fold `HistoryState` on the
+  Gateway, and remove `history` from `TunnelCatchAllDispatch`.
+- **Not proven:** anything live. No reader uses the stored rows until Phase 2, so nothing a person sees
+  has changed yet.

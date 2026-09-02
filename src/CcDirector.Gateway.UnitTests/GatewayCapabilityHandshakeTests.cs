@@ -127,7 +127,7 @@ public class GatewayCapabilityHandshakeTests
             HubMethods = new List<string>
             {
                 "Hello", "RegisterSessionKey", "RevokeSessionKey",
-                "PushSnapshot", "PushDelta", "PushRepoSnapshot",
+                "PushSnapshot", "PushDelta", "PushRepoSnapshot", "PushTurns",
             },
         });
 
@@ -157,7 +157,7 @@ public class GatewayCapabilityHandshakeTests
             HubMethods = new List<string>
             {
                 "Hello", "RegisterSessionKey", "RevokeSessionKey",
-                "PushSnapshot", "PushDelta", "PushRepoSnapshot",
+                "PushSnapshot", "PushDelta", "PushRepoSnapshot", "PushTurns",
             },
         });
 
