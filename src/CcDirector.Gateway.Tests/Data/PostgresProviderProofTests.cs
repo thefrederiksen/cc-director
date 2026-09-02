@@ -382,10 +382,13 @@ public sealed class PostgresProviderProofTests
     /// rather than inferred from the model: the screen store is idempotent on its natural key, and it draws
     /// the line between "the same session" and "a different one" in the same place SQLite does.
     ///
-    /// The store is keyed (tenant, session, captured-at) so a Director re-sending a capture after a
-    /// reconnect stores ONE row. That guarantee is only as good as the database agreeing with SQLite about
-    /// which session ids are equal - which is what COLLATE "C" is for, and why this column shipping with no
-    /// collation was a real defect rather than a tidiness one.
+    /// The store is keyed (tenant, session, captured-at, director) so the SAME Director re-sending a capture
+    /// after a reconnect stores ONE row - and so two Directors capturing one session id at one instant keep
+    /// both, which the key could not express before inspection 01's finding 3. That guarantee is only as
+    /// good as the database agreeing with SQLite about which session ids are equal - which is what
+    /// COLLATE "C" is for, and why this column shipping with no collation was a real defect rather than a
+    /// tidiness one. Both appends below use the SAME Director, so the Director is held constant and the
+    /// session id is the only thing varying.
     ///
     /// Two halves, and the second is the one that discriminates. The same id twice must be ONE row - but so
     /// it would be under any collation, so on its own that says nothing about collation. Two ids differing

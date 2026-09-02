@@ -1151,9 +1151,10 @@ internal static class GatewayWingmanVoiceEndpoint
     {
         // The LIVE screen grid is the ONLY read that decides the verdict (rows + cursor + alternate-screen
         // flag come from one atomic Director snapshot).
-        // Terminal Rules (issue #2644): the store answers when it can PROVE it still describes that
-        // terminal, the tunnel otherwise, and a read neither can answer is UNREADABLE - which arrives as a
-        // null grid and fails closed exactly as an unanswered tunnel pull always did.
+        // Terminal Rules (issue #2644): a live read always asks the owning Director, and a read it cannot
+        // answer is UNREADABLE - which arrives as a null grid and fails closed exactly as an unanswered
+        // tunnel pull always did. The screen store is never consulted for this question; see
+        // GatewayScreenReader for why.
         var read = await screens.ReadLiveAsync(route, sid, ct);
         var grid = read.Grid;
         if (grid is null)

@@ -1066,11 +1066,11 @@ public sealed class WingmanVoiceService
         ScreenGridResponse? screenGrid = null;
         if (_screens is not null)
         {
-            // Terminal Rules (issue #2644): narration runs AT TURN END, which is exactly the moment the
-            // store holds a screen for this session, so this is the round trip the store was built to
-            // remove. ReadLiveAsync still falls to the tunnel whenever it cannot prove the stored screen
-            // is current, and an unreadable screen comes back null - the same "narrating without a screen
-            // verdict" this path has always handled.
+            // Terminal Rules (issue #2644): this is a LIVE read and it always asks the owning Director. The
+            // Gateway's screen store is history and is never consulted here - an earlier design served a
+            // stored screen when it believed it was still current, and it could not establish that (see
+            // GatewayScreenReader). An unreadable screen comes back null, which is the same "narrating
+            // without a screen verdict" this path has always handled.
             var read = await _screens.ReadLiveAsync(route, sid, ct);
             screenGrid = read.Grid;
             if (screenGrid is null)

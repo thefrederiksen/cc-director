@@ -100,10 +100,10 @@ internal sealed class GatewaySupervisorEnvironment : ISupervisorEnvironment
         if (route is null) return null;
         try
         {
-            // Terminal Rules (issue #2644): the store answers when it can PROVE the stored screen is still
-            // what is on that terminal, otherwise this is the same tunnel pull it always was. The supervisor
-            // runs at turn end, which is exactly when the store holds a screen, so this is one of the round
-            // trips the store exists to remove.
+            // Terminal Rules (issue #2644): this is a LIVE read and it always asks the owning Director -
+            // the supervisor may ACT on this answer, and the Gateway's screen store holds turn-end history
+            // rather than live truth. An earlier design served a stored screen here when it believed it was
+            // still current; it could not establish that. See GatewayScreenReader.
             var read = await _screens.ReadLiveAsync(route, sessionId, ct).ConfigureAwait(false);
             var grid = read.Grid;
             if (grid is null || !grid.HasGrid) return null;
