@@ -39,12 +39,6 @@ public static class RuleCallValidator
     /// <exception cref="ArgumentNullException">The registry is null.</exception>
     public static RuleCallValidation Validate(RulePrimitiveCall call, RulePrimitiveRegistry registry)
     {
-        // RED PROBE (fix round A, ruling A13). The write-time validator is deliberately NOT WRITTEN at this
-        // commit, so its tests are watched failing against a feature that is not there. The next commit puts
-        // it back. This commit exists so the red is REPRODUCIBLE BY CHECKING IT OUT rather than taken on
-        // trust - the same reason phase 1 left its types-nothing probe in the history.
-        throw new NotImplementedException("the write-time validator is not written yet.");
-#pragma warning disable CS0162
         if (registry is null) throw new ArgumentNullException(nameof(registry));
 
         if (call is null)
@@ -91,7 +85,6 @@ public static class RuleCallValidator
         }
 
         return RuleCallValidation.Ok;
-#pragma warning restore CS0162
     }
 
     /// <summary>Check every call, answering with the FIRST refusal so the reason names one real problem
@@ -99,9 +92,6 @@ public static class RuleCallValidator
     /// <exception cref="ArgumentNullException">The registry is null.</exception>
     public static RuleCallValidation ValidateAll(IEnumerable<RulePrimitiveCall> calls, RulePrimitiveRegistry registry)
     {
-        // RED PROBE (fix round A, ruling A13). See Validate above.
-        throw new NotImplementedException("the write-time validator is not written yet.");
-#pragma warning disable CS0162
         if (registry is null) throw new ArgumentNullException(nameof(registry));
         if (calls is null) return RuleCallValidation.Ok;
 
@@ -111,7 +101,6 @@ public static class RuleCallValidator
             if (!result.IsValid) return result;
         }
         return RuleCallValidation.Ok;
-#pragma warning restore CS0162
     }
 
     /// <summary>What is wrong with one argument, or null when nothing is.</summary>
