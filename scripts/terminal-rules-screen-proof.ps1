@@ -56,6 +56,15 @@ if ($Slot -lt 6) { throw "Slot must be 6 or above - slots 1 to 5 belong to the o
 
 $repo    = Split-Path -Parent $PSScriptRoot
 $stamp   = (Get-Date -Format 'yyyyMMdd-HHmmss')
+# The three lines the turn ENDS on, and the reason there are three of them. Inspection 01, finding 4:
+# this row used to assert only that SOMETHING nonblank had been stored, so replacing every screen's rows
+# with one constant left the whole suite green and this script still printed ROW 4 PROVEN. The rows have
+# to be compared with what was on the terminal, which needs something on that terminal that this run
+# authored and that no constant could be. Three lines rather than one so their ORDER is checked too, and
+# stamped with this run's own stamp so a row left behind by an earlier run cannot satisfy them.
+$markerA = "TR_SCREEN_PROOF_${stamp}_ALPHA"
+$markerB = "TR_SCREEN_PROOF_${stamp}_BRAVO"
+$markerC = "TR_SCREEN_PROOF_${stamp}_CHARLIE"
 $rig     = Join-Path ([System.IO.Path]::GetTempPath()) "screen-proof-$stamp-$([guid]::NewGuid().ToString('N').Substring(0,8))"
 $gwRoot  = Join-Path $rig 'gw-root'
 $dirRoot = Join-Path $rig 'dir-root'
@@ -449,7 +458,11 @@ try {
         # the terminal immediately, which is an honest turn - output while it runs, quiet when it stops,
         # which is exactly the Working then WaitingForInput the capture triggers on.
         Invoke-Gw "/sessions/$sid/prompt" 'POST' @{
-            text      = "echo TERMINAL_RULES_SCREEN_PROOF_$stamp & dir /s /b C:\Windows\System32"
+            # The flood comes FIRST and the markers LAST, deliberately. The flood is what makes the
+            # Director's submit verifier see a turn at all (it wants 2048 bytes inside eight beats); the
+            # markers have to be the last thing printed, or they scroll off and the captured turn-end
+            # screen - which is the screen this row is about - would not contain them.
+            text      = "dir /s /b C:\Windows\System32 & echo $markerA & echo $markerB & echo $markerC"
             timeoutMs = 120000
         } | Out-Null
         Say 'prompt accepted'
@@ -535,6 +548,33 @@ try {
     $readerLinesBefore = $readerUp.Count
 
     # ---- now take the machine away -----------------------------------------
+    # THE TERMINAL'S OWN TEXT, read while the machine is still up and through a DIFFERENT path from the
+    # one the capture took: this is the Director's raw buffer over the "buffer" verb, where the capture is
+    # a parser grid snapshot pushed over "PushScreen". Comparing the stored rows against it is what makes
+    # the row a claim about CONTENT rather than about a row existing. Taken now because in a moment there
+    # will be no machine to ask.
+    $terminalFile = Join-Path $results 'terminal-buffer.txt'
+    try {
+        $buf = Invoke-Gw "/sessions/$sid/buffer?lines=400"
+        if (-not $buf -or [string]::IsNullOrWhiteSpace($buf.Text)) {
+            Fail 'the Director returned an EMPTY terminal buffer, so there is nothing to compare the stored rows against'
+        }
+        Set-Content -Path $terminalFile -Value $buf.Text -Encoding utf8
+        Say "read $($buf.Text.Length) characters of terminal buffer into $terminalFile"
+    } catch {
+        Fail "could not read the session's terminal buffer while the machine was up: $($_.Exception.Message)"
+    }
+    # A PRESENCE check on the instrument itself before it is trusted: the markers this run printed must be
+    # in the terminal's own text. If they are not, the turn did not run the command this row thinks it ran,
+    # and every comparison below would be comparing two wrong things to each other.
+    $terminalText = Get-Content -Path $terminalFile -Raw
+    foreach ($m in @($markerA, $markerB, $markerC)) {
+        if ($terminalText -notmatch [regex]::Escape($m)) {
+            Fail "the marker $m is NOT in the session's own terminal buffer - the proof command did not run as expected"
+        }
+    }
+    Say 'the three run markers are present in the terminal buffer, so the comparison below has a real subject'
+
     Say 'stopping the rig Director - this is the "machine offline" half of the row'
     Stop-RigDirector
     $script:DirectorPid = 0
@@ -585,6 +625,8 @@ try {
     Say 'reading the stored screen back out of the Gateway store, with the machine offline'
     $env:CC_SCREEN_RIG_DB = $gwDb
     $env:CC_SCREEN_RIG_SESSION = $sid
+    $env:CC_SCREEN_RIG_MARKERS = ($markerA + '|' + $markerB + '|' + $markerC)
+    $env:CC_SCREEN_RIG_TERMINAL = $terminalFile
     $rowFile = Join-Path $results 'stored-row.txt'
     $env:CC_SCREEN_RIG_OUT = $rowFile
     $readLog = Join-Path $results 'readback.log'
@@ -612,10 +654,16 @@ try {
     Say 'ROW 4 PROVEN. Chain covered: real TurnReviewLogger capture -> real GatewayScreenSink ->'
     Say 'real PushScreen hub method -> real SessionScreenStore -> real migrated database -> read back'
     Say 'with the owning Director positively observed disconnected.'
+    Say ''
+    Say 'And the rows READ BACK are the rows that were on that terminal: the three lines this run printed'
+    Say 'are in the stored screen, in order, and every nonblank stored row appears in the terminal buffer'
+    Say 'the Director itself reported over a different verb. Both sides are quoted in stored-row.txt.'
 }
 finally {
     Remove-Item Env:\CC_SCREEN_RIG_DB -ErrorAction SilentlyContinue
     Remove-Item Env:\CC_SCREEN_RIG_SESSION -ErrorAction SilentlyContinue
+    Remove-Item Env:\CC_SCREEN_RIG_MARKERS -ErrorAction SilentlyContinue
+    Remove-Item Env:\CC_SCREEN_RIG_TERMINAL -ErrorAction SilentlyContinue
     Remove-Item Env:\CC_SCREEN_RIG_OUT -ErrorAction SilentlyContinue
     Invoke-Teardown
 }

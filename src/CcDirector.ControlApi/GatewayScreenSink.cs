@@ -45,19 +45,34 @@ public sealed class GatewayScreenSink : ITurnEndScreenSink
         FileLog.Write($"[GatewayScreenSink] pushing screen for session={screen.SessionId} "
             + $"capturedAt={screen.CapturedAtUtc:O} rows={screen.Rows.Length} hasGrid={screen.HasGrid} "
             + $"bufferBytes={screen.BufferBytes}");
-        stream.PushScreen(new ScreenPush
-        {
-            SessionId = screen.SessionId,
-            CapturedAtUtc = screen.CapturedAtUtc,
-            Rows = screen.Rows.ToList(),
-            CursorRow = screen.CursorRow,
-            CursorCol = screen.CursorCol,
-            CursorVisible = screen.CursorVisible,
-            IsAlternateScreen = screen.IsAlternateScreen,
-            HasGrid = screen.HasGrid,
-            BufferBytes = screen.BufferBytes,
-            ActivityState = screen.ActivityState,
-            Agent = screen.Agent,
-        });
+        stream.PushScreen(ToPush(screen));
     }
+
+    /// <summary>
+    /// The captured screen as the push the Gateway stores. A NAMED FUNCTION rather than an object
+    /// initialiser inside <see cref="Send"/>, and that is not a style preference - it is inspection 01's
+    /// finding 4. Every screen's rows were replaced here with one constant and the entire Gateway unit
+    /// project stayed green, because nothing anywhere compared what came out of this mapping with what
+    /// went into it: the store's own tests seed the store by hand, and the end-to-end rig only checked
+    /// that SOMETHING nonblank arrived. Pulling the mapping out gives that comparison somewhere to live -
+    /// see <c>GatewayScreenSinkMappingTests</c>, which asserts field-for-field equality and turns that
+    /// exact mutation red in the default gate.
+    ///
+    /// It carries the screen ACROSS and changes nothing. Any transformation added here is a place where
+    /// the terminal's content can differ from the stored row, which is the whole thing being guarded.
+    /// </summary>
+    internal static ScreenPush ToPush(TurnEndScreen screen) => new()
+    {
+        SessionId = screen.SessionId,
+        CapturedAtUtc = screen.CapturedAtUtc,
+        Rows = screen.Rows.ToList(),
+        CursorRow = screen.CursorRow,
+        CursorCol = screen.CursorCol,
+        CursorVisible = screen.CursorVisible,
+        IsAlternateScreen = screen.IsAlternateScreen,
+        HasGrid = screen.HasGrid,
+        BufferBytes = screen.BufferBytes,
+        ActivityState = screen.ActivityState,
+        Agent = screen.Agent,
+    };
 }
