@@ -122,10 +122,14 @@ run.
 
 ## The proofs
 
-The row-by-row plan, with each row's pass condition, is `phase-0-proofs.md`. Rows 0 to 6 are proven;
-row 7 is WITHDRAWN because the fix to finding 1 removed the behaviour it asserted, and it is not
-re-scoped. The evidence for every fix - the red run before it and the green run after - is in
-`fix-round/red-runs/`.
+The row-by-row plan, with each row's pass condition, is `phase-0-proofs.md`. Row 7 is WITHDRAWN because
+the fix to finding 1 removed the behaviour it asserted, and it is not re-scoped.
+
+**Rows 0 to 6 pass, and three of the fix round's six green runs are still PENDING.** The mission was
+stood down from the machine-wide test lock mid-round while a live production outage was fixed, so some
+runs it owes have not been taken. `fix-round/report.md` carries the table of which greens are in hand
+and which are pending, and `fix-round/red-runs/` carries every red run. Nothing here quotes a run that
+was not made.
 
 ### Row 4 - the one the store exists for, proven on a REAL Director
 

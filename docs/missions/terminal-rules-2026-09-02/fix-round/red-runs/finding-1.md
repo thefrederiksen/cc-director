@@ -32,20 +32,20 @@ tunnel connected, its snapshot one second old, and the pushed byte count exactly
 taken at capture, the shipped reader answered the LIVE question from the STORE - and in the second
 case it did so with a row captured by a different Director entirely.
 
-## The green run, after the fix
+## The green run - PENDING
 
-The same assertions, now in the shipped class `GatewayScreenReaderLiveReadTests` against the fixed
-reader (`ReadLiveAsync` takes only the route, so the construction line is shorter; the assertions are
-identical):
+**The green side of this finding is NOT in hand and is not quoted here.**
 
-```
-dotnet test src/CcDirector.Gateway.UnitTests/CcDirector.Gateway.UnitTests.csproj \
-  --filter "FullyQualifiedName~Screens" --nologo -v q
-Passed!  - Failed: 0, Passed: 24, Skipped: 1, Total: 25
+A green run WAS taken when the fix landed, and it passed: `--filter "FullyQualifiedName~Screens"` gave
+24 passed and 1 skipped, and the full Gateway unit project gave 3,185 passed and 3 skipped. Those runs
+were made at 11:0x-11:3x, BEFORE the provisional migration was deleted and regenerated on the new main
+snapshot at 11:48. A green taken against a migration that no longer exists is not evidence about the
+tree that ships, so those numbers are withdrawn as this finding's green rather than left standing.
 
-dotnet test src/CcDirector.Gateway.UnitTests/CcDirector.Gateway.UnitTests.csproj --nologo -v q
-Passed!  - Failed: 0, Passed: 3185, Skipped: 3, Total: 3188
-```
+Later runs did exercise this class after the regeneration - the full Gateway unit project at 3,259
+passed, and the default local gate - but as suite totals, not as this finding's own quoted run, and the
+newest of them predates the last three commits on the branch.
 
-The one skip is `StoredScreenRigReadTests`, which is gated on a rig database and reports SKIPPED
-without one. A skip is not a pass and the rig script asserts that test actually ran.
+**What is owed:** re-run the filter above and quote it. The mission was stood down from the machine-wide
+test lock mid-round while a production outage was fixed, so this waits on the Architect's clearance. It
+is PENDING, not failed and not assumed.

@@ -3,22 +3,50 @@
 Manager's report on the round ruled by `rulings/r12-the-fix-round.md` and `r13`, answering the six
 findings in `inspection-01.md`.
 
-**Six findings, six answered.** Every one has a test that FAILED against the unfixed code and passes
-against the fixed code, with both runs quoted in `red-runs/`. Nothing has landed on `main` and nothing
-may. A second independent inspection runs after this; phase 0 is not complete and this report does not
-say it is.
+**Six findings, six ANSWERED IN CODE. Three of six have their green run in hand; the rest are PENDING.**
+Every finding has a test that FAILED against the unfixed code, and every red run is quoted in
+`red-runs/`. Nothing has landed on `main` and nothing may. A second independent inspection runs after
+this; phase 0 is not complete and this report does not say it is.
 
-## Read this first: the green runs were taken TWICE, and only the second ones count
+## Read this first: which greens are actually taken, and which are PENDING
 
-The branch was brought onto the new `main` and the migration was regenerated PART WAY THROUGH this
-round, because finding 3 changes the model and every migrated-database test therefore reported EF's
-pending-model-changes warning until the migration was regenerated. That regeneration invalidates the
-green runs taken before it exactly as surely as it would have invalidated later ones: they were made
-against a migration that no longer exists.
+An earlier version of this page said "every finding's green side was re-run afterwards, and the numbers
+quoted below are from AFTER the regeneration". **That sentence was not true, and it is withdrawn.** The
+Architect asked for it to be checked against artifacts rather than reasoned about, and checking found
+three of the six quoting greens taken BEFORE the migration was regenerated.
 
-So every finding's green side was re-run afterwards, and the numbers quoted below are from AFTER the
-regeneration. The RED runs stand as they were taken - a red run against unfixed code is evidence about
-the code and does not depend on which migration was in the tree - and they are not repeated.
+Two things happened mid-round that bear on every green in this report.
+
+**The migration was regenerated at 11:48** (commit `1cb504fb2`), because finding 3 changes the model.
+A green taken before that was taken against a migration that no longer exists, so it is not evidence
+about the tree that ships - exactly as a green taken before a fix is not evidence about the fix.
+
+**The mission was stood down from the machine-wide test lock at 12:55**, mid parked-gate run, because
+that run was queued ahead of the session fixing a live production outage. Nothing may be run until the
+Architect clears it. That is a good reason and it is why several greens below say PENDING rather than
+carrying a number.
+
+| finding | red run | green run |
+|---|---|---|
+| 1 - live read never answered from the store | in hand, quoted | **PENDING** - the one taken predates the regeneration |
+| 2 - the capture's byte mark | in hand, quoted | **PENDING** - the filtered green predates the regeneration; one post-regeneration run of its own test exists on `5a93de2aa` |
+| 3 - the Director in the key | in hand, quoted | **PENDING** - an earlier draft pointed at a file that was never written |
+| 4 - the push mapping and the rig | in hand, quoted (mutation) | in hand, quoted |
+| 5 - the loss boundary | in hand, quoted | in hand, quoted |
+| 6 - the per-session cap | in hand, quoted | in hand, quoted |
+| row 4's rig | in hand, quoted | in hand, quoted, on `f2fbcae9c` |
+
+**And no run of any kind has been taken on the tip commit.** The newest full default gate is on
+`c30c9ff75` (12:25); since then the branch has taken an enum removal, a test hardening and three comment
+changes. Every project still builds - that is checked and is a compiler fact, not a judgement - but a
+gate run on the tip is owed with the rest.
+
+The RED runs stand exactly as they were taken and are not repeated: a red run against unfixed code is
+evidence about the CODE, and does not depend on which migration was in the tree.
+
+**What is owed, in one list, so that clearance leaves only running and quoting:** the default local gate
+on the tip; the filtered runs for findings 1, 2 and 3; the row 4 rig on the tip; and the parked
+`Gateway.Tests` suite, which has never run at all.
 
 ## The six findings
 
@@ -35,9 +63,10 @@ the tunnel could have answered the question itself. The live half never bought a
 by construction. It bought latency on a connection that was already up.
 
 **Red:** `Expected: Tunnel / Actual: Store`, twice, with a stored screen, a connected Director, a
-one-second-old snapshot and equal byte marks. **Green:** the same assertions in
-`GatewayScreenReaderLiveReadTests`. The negative control was REWRITTEN to forbid the stale serve; the
-version that shipped asserted it. Detail in `red-runs/finding-1.md`.
+one-second-old snapshot and equal byte marks. **Green: PENDING** - the run taken when the fix landed
+predates the migration regeneration and is withdrawn rather than quoted. The negative control was
+REWRITTEN to forbid the stale serve; the version that shipped asserted it. Detail in
+`red-runs/finding-1.md`.
 
 ### 2. The capture paired an old parser frame with the new byte total
 
@@ -47,8 +76,10 @@ and the frame are one consistent observation.
 
 **Red:** `Expected: 18 / Actual: 36` - the capture returned a frame reflecting eighteen bytes with a
 mark of thirty-six, the OVERSTATEMENT the shipped comment said was impossible. The bad state was
-established positively before the assertion, and releasing the held writer is the control. **Green:**
-`CaptureMarkDescribesTheCapturedFrameTests`. Detail in `red-runs/finding-2.md`.
+established positively before the assertion, and releasing the held writer is the control.
+**Green: PENDING** - one post-regeneration run of `CaptureMarkDescribesTheCapturedFrameTests` passed on
+commit `5a93de2aa`, but the filtered green this page quoted predates the regeneration. Detail in
+`red-runs/finding-2.md`.
 
 ### 3. The stored row was not bound to the routed Director
 
@@ -62,8 +93,9 @@ directly, the duplicate check compares the Director, both reads break a same-mil
 it carries the explicit `C` collation every caller-supplied natural-key string column here carries.
 
 **Red:** the second Director's append returned false - "already stored" - and its row was lost:
-`Expected: True / Actual: False`. **Green:** both rows stored and readable, with the same-Director
-re-send still one row asserted in the same test. Detail in `red-runs/finding-3.md`.
+`Expected: True / Actual: False`. **Green: PENDING** - the store class was exercised after the
+regeneration only inside suite totals, and an earlier draft of that page pointed at a proof file that
+was never written. Detail in `red-runs/finding-3.md`.
 
 ### 4. The end-to-end proof accepted a mangled transport
 
@@ -141,6 +173,17 @@ Recorded rather than quietly fixed, because they are the same shape as the missi
   because that line was not where the parser expected it. The verdict now rests on an artifact the run
   produced - a file written only on the test's success path, which must name this run's session and this
   run's three markers.
+- **A test runner reported a CRASH that never happened.** The parked `Gateway.Tests` run ended with
+  "The active test run was aborted. Reason: Test host process crashed". It did not crash: the Architect
+  killed it, because it was queued ahead of a live production outage's fix. A tool's stated reason for a
+  failure is evidence about what the tool OBSERVED, never about the cause - and this one was about to be
+  written into a report as a crash, which would have sent the next reader looking for a phantom in the
+  test host.
+- **This report claimed six green runs it did not have.** The sentence saying every green was re-run
+  after the regeneration was written from the shape of the plan rather than from the runs, and three of
+  the six were not. Caught by the Architect asking for it to be checked against artifacts. It is the
+  same defect as the ones this round exists to answer, sitting in the round that answers them, and it is
+  recorded here rather than quietly corrected.
 - **A truncated console view hid a conflict during the rebase**, and its markers were committed into a
   file. The rebase was abandoned and redone as a merge, which resolves the same content once. Recorded
   because the lesson is about reading a truncated view as if it were the whole one, which is the same

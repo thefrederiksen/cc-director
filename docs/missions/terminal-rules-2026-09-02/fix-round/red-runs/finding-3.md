@@ -42,5 +42,17 @@ deterministic; and `DirectorId` gets the explicit `C` collation every caller-sup
 column in this schema carries.
 
 The model change made the migrated-database tests fail with EF's own pending-model-changes warning -
-which is that check working, and is why the migration was regenerated immediately afterwards. The green
-run for this finding is therefore recorded against the REGENERATED migration, in `regenerated-gate.md`.
+which is that check working, and is why the migration was regenerated immediately afterwards.
+
+## The green run - PENDING
+
+**The green side of this finding is NOT in hand and is not quoted here.** An earlier draft of this page
+pointed at a file called `regenerated-gate.md` that was never written; that pointer is removed rather
+than left dangling, because a reference to a proof that does not exist reads exactly like a proof.
+
+The store class WAS exercised after the regeneration, inside the full Gateway unit project (3,259
+passed) and inside the default local gate - but as suite totals on a commit that is no longer the tip,
+not as this finding's own quoted run.
+
+**What is owed:** re-run `--filter "FullyQualifiedName~Append_TwoDirectorsCapturingOneSession"` and the
+whole `Screens` namespace, and quote them. PENDING on the Architect's clearance of the test lock.

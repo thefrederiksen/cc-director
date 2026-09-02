@@ -29,19 +29,22 @@ frame with the new total: the OVERSTATEMENT the shipped comment said was impossi
 The two assertions before it had already passed, so the bad state was positively established rather
 than assumed: the rendezvous subscriber was reached, and the buffer's total really had moved to 36.
 
-## The green run, after the fix
+## The green run - PENDING
 
-The mark is now taken from the parser's own consumed-byte count, read inside the same lock that
-produces the rows.
+**The green side of this finding is NOT in hand and is not quoted here.**
 
-```
-dotnet test src/CcDirector.Core.UnitTests/CcDirector.Core.UnitTests.csproj \
-  --filter "FullyQualifiedName~CaptureMarkDescribesTheCapturedFrame|FullyQualifiedName~TurnEndScreenCapture" --nologo -v q
-Passed!  - Failed: 0, Passed: 4, Skipped: 0, Total: 4
+A green run WAS taken when the fix landed and it passed - 4 passed on the two capture classes, 164
+passed on the whole Core unit project - but at 11:3x, BEFORE the provisional migration was deleted and
+regenerated at 11:48. Those numbers are withdrawn as this finding's green rather than left standing.
 
-dotnet test src/CcDirector.Core.UnitTests/CcDirector.Core.UnitTests.csproj --nologo -v q
-Passed!  - Failed: 0, Passed: 164, Skipped: 0, Total: 164
-```
+This class was re-run once after the regeneration and after the test was hardened (the rendezvous flag
+moved to Interlocked): 1 passed, at 12:42, on commit `5a93de2aa`. That is a real post-regeneration green
+for the finding's own test - but it is a single filtered case on a commit that is no longer the tip, and
+it is recorded as such rather than presented as the finding's proof.
 
 Row 0's own bound assertion - the mark never exceeds the buffer's total - still holds, and is now true
-for a stronger reason: the parser can only have consumed what the buffer already accepted.
+for a stronger reason: the parser can only have consumed what the buffer already accepted. That
+assertion's run is owed with the rest.
+
+**What is owed:** re-run both capture classes and the Core unit project, and quote them. PENDING on the
+Architect's clearance of the test lock.
