@@ -74,6 +74,34 @@ acceptable on the phone if authoring will not fit); anything shared between the 
 and `creating-a-rule.html`'s "Prompt + code" tag both predate `r15` and describe the agent writing
 and running code. They are WRONG. The shipped product says "runs a check we wrote" and names it.
 
+**A9. SEQUENCE FOR EARLY VALUE - added 2026-09-02 after the phase plan was written.** The owner's
+weekly model allowance stood at 82 per cent used, resetting 5 September. A six-phase mission with
+Managers, Workers and independent inspections may not reach its end, and the thing he asked for is
+the DEMONSTRATION, not the polish. So the running order changes: after the store exists, the very
+next thing built is a THIN VERTICAL SLICE straight through to his demonstration - words appear on a
+terminal screen, a rule fires, something is typed automatically - captured as an artifact, even in a
+crude form behind a real store and before any real user interface. A rough demonstration plus an
+honest account of what is unfinished is worth far more to him than four polished phases and no
+demonstration.
+
+Two things follow from that and they are binding:
+
+- **The QA report is an ACCUMULATING FILE, written from the first proof onward**, at
+  `docs/missions/session-rules-2026-09-02/qa-report.md`. It is never written at the end. Each phase
+  appends its own evidence as it is proved, with the exit code and the commit, or the word PENDING.
+  A run that stops early therefore still leaves the owner something true.
+- **Nothing is sequenced on another mission's timing.** The screen-store migration on
+  `mission/terminal-rules` is unlanded and its landing is gated on things outside that mission's
+  control. That mission has given this one priority on the migration slot and will regenerate the
+  model snapshot itself if the two collide. Take the slot; do not wait.
+
+**A10. Sweep the migration slot by PRESENCE ON MAIN, never by difference from the merge base.**
+A squash-merged branch still differs from the merge base and therefore still votes, which reported a
+false holder on the sister mission this afternoon. Fetch with `--prune` and test whether each
+migration is present on `origin/main`. A third holder exists and must be counted: pull request 2379
+carries three migrations from 2 August, open and untouched since 8 August. It is not active, but it
+is a holder, and whoever lands last regenerates.
+
 ---
 
 ## How every phase is proved
@@ -99,8 +127,8 @@ finished, whatever its report says.
 
 ## The phases, and where each one lands
 
-Work accumulates on `mission/session-rules`. Only the Architect merges, and it merges in four
-landings so no branch outlives a day's worth of work. Each landing: a Manager builds and is KILLED,
+Work accumulates on `mission/session-rules`. Only the Architect merges, and it merges in successive
+landings so no branch outlives a day's worth of work, and the demonstration comes in the second one. Each landing: a Manager builds and is KILLED,
 an independent inspector from a different agent family reads the diff adversarially and writes its
 review to a FILE, findings go back to a FRESH Manager, then the Architect merges.
 
@@ -119,7 +147,27 @@ review to a FILE, findings go back to a FRESH Manager, then the Architect merges
 **Proves:** a rule round-trips; a rule naming a primitive that does not exist is refused with a
 reason; the registry is derived and non-empty.
 
-### Phase 2 - authoring by conversation (landing B, first half)
+### Phase 2 - THE THIN VERTICAL SLICE, straight to the demonstration (landing B)
+
+This is the owner's acceptance test, built as early as it can possibly be built, and it comes BEFORE
+authoring by conversation and before any user interface. It may be crude. It may be driven from a
+test harness or a command rather than a screen. It must be REAL: a real stored rule, the real
+working-to-idle event, the real screen read, the real prompt route, a real recorded firing.
+
+- The evaluator's free checks, the one agent call for the screen, and the act.
+- The rule used for the demonstration is stored by the phase 1 store, not faked.
+- The demonstration is CAPTURED as an artifact the moment it works and appended to `qa-report.md`:
+  the screen before, the rule that matched, what it decided, what it typed, and the screen after.
+- The DECLINE is captured in the same pass: a screen the instruction does not cover, declined, with
+  the reason recorded. A rule that never declines has not been shown to have a boundary.
+
+**Proves:** words go onto a terminal screen and something happens automatically because a rule said
+so, quoted from a real run with its commit; and a screen the instruction does not cover is declined.
+
+Phases 3, 4 and 5 below then HARDEN and SURFACE what this slice proved, in that order, and each one
+appends its own evidence to the same report.
+
+### Phase 3 - authoring by conversation (landing C, first half)
 
 - English in, a built rule out. The model asks about genuine ambiguity rather than guessing, and
   what it built is shown back in the account's own words before anything is saved.
@@ -129,7 +177,7 @@ reason; the registry is derived and non-empty.
 
 **Proves:** a sentence in, a stored rule out, quoted; and a sentence in, a refusal out, quoted.
 
-### Phase 3 - the evaluator (landing B, second half)
+### Phase 4 - hardening the evaluator and the act (landing C, second half)
 
 - Hangs off the same working-to-idle event the supervisor already uses. Free checks first: screen
   changed, session idle, rule in scope, under cooldown and daily cap, trigger words present. Any no
@@ -137,11 +185,7 @@ reason; the registry is derived and non-empty.
 - Then ONE agent call for the screen, covering all surviving candidates, with the reply validated as
   in A5.
 
-**Proves:** a screen with no trigger word costs no model call - a PRESENCE check on an instrumented
-call counter reading zero, never an absence of log lines; a screen that does match reaches the agent;
-a screen the instruction does not cover is DECLINED and the decline recorded.
-
-### Phase 4 - acting (landing C, first half)
+Then the guards the slice may have skipped:
 
 - Re-read the screen immediately before acting; if it changed, abandon and record why.
 - Type through the existing prompt route. Handle a confirmation picker if one appears.
@@ -154,7 +198,7 @@ a screen the instruction does not cover is DECLINED and the decline recorded.
 absence of a log line; live types exactly the composed text; a screen that changed between the
 decision and the keystroke is abandoned and the abandonment recorded.
 
-### Phase 5 - the record and the surface (landing C, second half)
+### Phase 5 - the record and the surface (landing D)
 
 - The Rules page: the list as the sentences the account said, the firing record, the rule editor,
   and the "make a rule from this screen" entry point.
@@ -162,9 +206,10 @@ decision and the keystroke is abandoned and the abandonment recorded.
 
 **Proves:** the page renders a real stored rule and a real firing read from the store, screenshotted.
 
-### Phase 6 - the QA report (landing D)
+### Phase 6 - finishing the QA report (landing E)
 
-The mission's whole point. It carries, as artifacts and not as prose:
+The report has been accumulating since the first proof (A9). Phase 6 finishes it rather than starting
+it. It carries, as artifacts and not as prose:
 
 1. A rule created from plain English - the sentence in, the built rule out, quoted.
 2. **The headline:** words are put on a terminal screen, and something happens automatically because
