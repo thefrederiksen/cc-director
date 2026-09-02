@@ -755,7 +755,12 @@ public sealed class ControlApiHost : IAsyncDisposable
         // Per-turn review log: one record each time a session flips Working -> needs-you
         // (our detector's transition, no hooks). Terminal + what the Wingman said/did, 7-day
         // retention. See CcStorage.TurnReviewLogs().
-        _turnReviewLogger = new Core.Storage.TurnReviewLogger(_sessionManager);
+        // The screen ALSO goes to the Gateway from here (the Terminal Rules mission, issue #2644): this
+        // logger already fires on the one trigger that means "the screen has stopped moving and now means
+        // something", so the push hangs off that same flip rather than adding a second capture that would
+        // eventually disagree with this one.
+        _turnReviewLogger = new Core.Storage.TurnReviewLogger(
+            _sessionManager, new GatewayScreenSink(() => _streamClient));
         _turnReviewLogger.Start();
 
         // The model producer (issue #1637): on the same turn-end trigger, ask each session's driver

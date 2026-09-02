@@ -26,7 +26,19 @@ public sealed class TurnReviewLogger : IDisposable
     private bool _started;
     private int _disposed;
 
-    public TurnReviewLogger(SessionManager sessionManager) => _sessionManager = sessionManager;
+    private readonly ITurnEndScreenSink? _screenSink;
+
+    public TurnReviewLogger(SessionManager sessionManager) : this(sessionManager, null) { }
+
+    /// <param name="screenSink">Where the turn-end screen is ALSO sent, or null to keep the local record
+    /// only. The Terminal Rules mission pushes the screen to the Gateway from here rather than adding a
+    /// second capture: this class already fires on the one trigger that means "the screen has stopped
+    /// moving and now means something", and a second trigger would eventually disagree with this one.</param>
+    public TurnReviewLogger(SessionManager sessionManager, ITurnEndScreenSink? screenSink)
+    {
+        _sessionManager = sessionManager;
+        _screenSink = screenSink;
+    }
 
     public void Start()
     {
@@ -74,6 +86,7 @@ public sealed class TurnReviewLogger : IDisposable
 
         var screenCells = session.SnapshotScreenColoredRows();
         var transcript = CaptureSinceCursor(session);
+        EmitScreen(session, now);
 
         var record = new TurnReviewRecord
         {
@@ -101,6 +114,43 @@ public sealed class TurnReviewLogger : IDisposable
         }
 
         _ = Task.Run(() => TurnReviewLog.Write(record));
+    }
+
+    /// <summary>
+    /// Hand the same turn-end moment to the screen sink, in the plain-rows-plus-flags shape a reader
+    /// classifies (which is what the Gateway's screen-grid verb answers), together with the terminal's
+    /// byte mark taken in the same operation. Never throws into the state-change event: the local turn
+    /// review is the caller's contract here, and a sink that cannot send must not cost the record.
+    /// </summary>
+    private void EmitScreen(Session session, DateTime capturedAt)
+    {
+        if (_screenSink is null) return;
+        try
+        {
+            var (rows, cursorRow, cursorCol, cursorVisible, isAlternateScreen, bufferBytes) =
+                session.SnapshotLiveScreenWithBufferMark();
+            _screenSink.Send(new TurnEndScreen
+            {
+                SessionId = session.Id.ToString(),
+                CapturedAtUtc = capturedAt,
+                Rows = rows,
+                CursorRow = cursorRow,
+                CursorCol = cursorCol,
+                CursorVisible = cursorVisible,
+                IsAlternateScreen = isAlternateScreen,
+                // A session with a real terminal parser yields a fixed-height grid even when the screen is
+                // blank; only a session with no parser yields an empty array, and that is UNREADABLE - the
+                // same rule the screen-grid verb applies, stated the same way so the two cannot drift.
+                HasGrid = rows.Length > 0,
+                BufferBytes = bufferBytes,
+                ActivityState = ActivityState.WaitingForInput.ToString(),
+                Agent = session.AgentKind.ToString(),
+            });
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[TurnReviewLogger] screen sink FAILED for session={session.Id}: {ex.Message}");
+        }
     }
 
     /// <summary>Capture THIS session's terminal output since the stored cursor, ANSI-stripped,

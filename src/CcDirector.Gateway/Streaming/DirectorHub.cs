@@ -61,7 +61,8 @@ public sealed class DirectorHub : Hub
         DirectorConnectionRegistry? connections = null,
         PushedRepositoryStore? repositoryStore = null, RepoHistoryStore? repoHistory = null,
         History.SessionHistoryRecorder? sessionHistory = null,
-        Pairing.SessionKeyRegistry? sessionKeys = null)
+        Pairing.SessionKeyRegistry? sessionKeys = null,
+        Screens.SessionScreenStore? sessionScreens = null)
     {
         _sessionKeys = sessionKeys;
         _store = store;
@@ -76,6 +77,7 @@ public sealed class DirectorHub : Hub
         _repositoryStore = repositoryStore;
         _repoHistory = repoHistory;
         _sessionHistory = sessionHistory;
+        _sessionScreens = sessionScreens;
     }
 
     private readonly PushedRepositoryStore? _repositoryStore;
@@ -92,6 +94,14 @@ public sealed class DirectorHub : Hub
     // Issue #2194: the durable work-history recorder, fed from the same accepted pushes as the other
     // observers. Throttled internally (it is NOT a write per push) and never throws.
     private readonly History.SessionHistoryRecorder? _sessionHistory;
+
+    /// <summary>
+    /// The terminal-screen store (the Terminal Rules mission). Null in tests and older callers, which makes
+    /// <see cref="PushScreen"/> refuse LOUDLY rather than accept a push it silently drops - a Director that
+    /// believed its screens were stored while nothing held them would leave every reader falling back to the
+    /// tunnel with no sign of why.
+    /// </summary>
+    private readonly Screens.SessionScreenStore? _sessionScreens;
 
     /// <summary>
     /// A full repository/worktree snapshot from the bound Director (repositories mission, #510
@@ -451,6 +461,51 @@ public sealed class DirectorHub : Hub
         // rejected push from a superseded connection must not touch the record.
         if (accepted)
             _sessionHistory?.Observe(RequireBoundTenant(), directorId, session);
+    }
+
+    /// <summary>
+    /// One turn-end terminal screen from the bound Director (the Terminal Rules mission,
+    /// <c>docs/missions/terminal-rules-2026-09-02/brief.md</c>). The Director captures the screen at the
+    /// moment its own detector flips a session from Working to WaitingForInput and sends it here; the
+    /// Gateway stores it per tenant and every screen reader on the Gateway reads it instead of pulling a
+    /// fresh grid down the tunnel.
+    ///
+    /// Tenant and Director id come from the CONNECTION BINDING, never from the payload - the same rule
+    /// every other push on this hub follows, and the reason a Director can only ever write screens into
+    /// its own account.
+    ///
+    /// Deliberately NOT sequence-gated the way <see cref="PushSnapshot"/> and <see cref="PushDelta"/> are.
+    /// Those maintain one mutable current roster, so an out-of-order arrival must be dropped or it would
+    /// put back a state the Director has left. A screen is an immutable historical row keyed by its capture
+    /// time: a late arrival is a real screen from a real moment and belongs in the store, and a re-sent one
+    /// is idempotent on the key.
+    /// </summary>
+    public void PushScreen(ScreenPush screen)
+    {
+        var directorId = RequireBoundDirector();
+        if (screen is null || string.IsNullOrEmpty(screen.SessionId))
+        {
+            FileLog.Write($"[DirectorHub] PushScreen ignored (no session id): director={directorId}, conn={Short(Context.ConnectionId)}");
+            return;
+        }
+        if (_sessionScreens is null)
+        {
+            // Loud, not silent. A Director that believed its screens were stored while nothing held them
+            // would leave every reader falling back to the tunnel with no sign of why.
+            FileLog.Write($"[DirectorHub] PushScreen REFUSED for sid={screen.SessionId}: this Gateway has no screen store wired");
+            return;
+        }
+        using var tenantScope = EnterBoundTenantScope();
+        try
+        {
+            _sessionScreens.Append(directorId, screen, DateTime.UtcNow);
+        }
+        catch (ArgumentException ex)
+        {
+            // A push that disagrees with itself is a bug in the sending Director. Say exactly what was wrong
+            // and store nothing; the next turn end sends a fresh capture.
+            FileLog.Write($"[DirectorHub] PushScreen REFUSED for sid={screen.SessionId}: {ex.Message}");
+        }
     }
 
     /// <summary>A remove/tombstone: drops one session from the bound Director's set.</summary>

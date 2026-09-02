@@ -484,6 +484,7 @@ public sealed class GatewayStreamClient : IAsyncDisposable
     private static readonly string[] MethodsThisDirectorNeeds =
     {
         "RegisterSessionKey", "RevokeSessionKey", "PushSnapshot", "PushDelta", "PushRepoSnapshot",
+        "PushScreen",
     };
 
     /// <summary>The capability line already reported, so a ten-second reseed does not repeat it forever.</summary>
@@ -785,6 +786,26 @@ public sealed class GatewayStreamClient : IAsyncDisposable
         if (conn is null || conn.State != HubConnectionState.Connected) return;
         var seq = Interlocked.Increment(ref _sequence);
         _ = SendAsync(() => conn.InvokeAsync("RemoveSession", seq, sessionId), "RemoveSession");
+    }
+
+    /// <summary>
+    /// Push one turn-end terminal screen (the Terminal Rules mission,
+    /// <c>docs/missions/terminal-rules-2026-09-02/brief.md</c>). Fire-and-forget: a screen dropped
+    /// because the tunnel was mid-reconnect is not re-sent, and that is correct rather than a gap to
+    /// paper over - the NEXT turn end sends a fresh capture, and a reader that finds no stored screen
+    /// falls back to a live tunnel pull, which is exactly the behaviour it had before this store existed.
+    /// Nothing is silently degraded by a miss; only the round trip it would have saved is lost.
+    ///
+    /// Deliberately NOT sequence-stamped. The sequence on the snapshot and delta pushes exists to order
+    /// mutations of one current roster; a screen is an immutable row keyed by the instant it was taken,
+    /// and the Gateway is idempotent on that key.
+    /// </summary>
+    public void PushScreen(ScreenPush screen)
+    {
+        if (screen is null || string.IsNullOrEmpty(screen.SessionId)) return;
+        var conn = _connection;
+        if (conn is null || conn.State != HubConnectionState.Connected) return;
+        _ = SendAsync(() => conn.InvokeAsync("PushScreen", screen), "PushScreen");
     }
 
     private static async Task SendAsync(Func<Task> send, string what)

@@ -2165,6 +2165,30 @@ public sealed class Session : IDisposable
     /// single lock. Returns empty rows and (-1,-1) with the flags false when there is no grid (an Embedded
     /// session with no server-side parser).
     /// </summary>
+    /// <summary>
+    /// <see cref="SnapshotLiveScreen"/> plus the terminal buffer's total-bytes-written mark, taken in ONE
+    /// operation - the capture the Terminal Rules mission pushes to the Gateway
+    /// (<c>docs/missions/terminal-rules-2026-09-02/brief.md</c>, ruling 1). The Gateway serves this stored
+    /// screen as the live one only while the session's pushed byte count still equals this mark, so the mark
+    /// and the frame it describes must be taken together; a mark read a moment later describes a different
+    /// terminal.
+    ///
+    /// THE ORDER IS DELIBERATE AND IT IS NOT SYMMETRIC. The buffer counter is read FIRST, before the parser
+    /// lock is taken, because the write path appends bytes to the buffer and only then feeds the parser: the
+    /// parser state lags the counter. Reading the counter first can therefore only UNDERSTATE the frame that
+    /// comes back (bytes may arrive and repaint between the two reads), which makes the Gateway equality test
+    /// refuse a screen it could have served - the harmless direction. Reading it afterwards could OVERSTATE
+    /// it, and the Gateway would then certify a screen the terminal had already moved past, which is the
+    /// failure this whole mechanism exists to prevent. A single lock covering both is not available: the
+    /// buffer and the parser have separate locks and taking them together would invert the write path order.
+    /// </summary>
+    public (string[] Rows, int CursorRow, int CursorCol, bool CursorVisible, bool IsAlternateScreen, long BufferBytes) SnapshotLiveScreenWithBufferMark()
+    {
+        var bufferBytes = Buffer?.TotalBytesWritten ?? 0;
+        var (rows, cursorRow, cursorCol, cursorVisible, isAlternateScreen) = SnapshotLiveScreen();
+        return (rows, cursorRow, cursorCol, cursorVisible, isAlternateScreen, bufferBytes);
+    }
+
     public (string[] Rows, int CursorRow, int CursorCol, bool CursorVisible, bool IsAlternateScreen) SnapshotLiveScreen()
     {
         if (_htmlCells is null || _htmlParser is null)

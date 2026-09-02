@@ -157,6 +157,12 @@ public sealed class GatewayDbContext : DbContext
     /// watermark, and the per-session facts a history read needs.</summary>
     public DbSet<SessionTurnHeadEntity> SessionTurnHeads => Set<SessionTurnHeadEntity>();
 
+    /// <summary>The stored terminal screens (<c>session_screens</c>): one row per turn-end screen a Director
+    /// pushed, the Terminal Rules mission's source for every Gateway screen read. A SEPARATE store from
+    /// <see cref="SessionTurns"/> - a different source, a bulkier row, and a seven-day retention rather than
+    /// ninety.</summary>
+    public DbSet<SessionScreenEntity> SessionScreens => Set<SessionScreenEntity>();
+
     /// <summary>Per-tenant setting overrides (<c>tenant_settings</c>, issue #2017) - the per-tenant home the
     /// AI / voice / car-mode / notification settings needed before they could be served on the hosted Gateway.
     /// Tenant-scoped: an absent row means "no override" and the typed resolver returns the operator global
@@ -502,6 +508,23 @@ public sealed class GatewayDbContext : DbContext
             // Hello asks "every session this Director has pushed"; retention cuts on updated-at.
             b.HasIndex(e => new { e.TenantId, e.DirectorId });
             b.HasIndex(e => new { e.TenantId, e.UpdatedAtUtc });
+        });
+
+        modelBuilder.Entity<SessionScreenEntity>(b =>
+        {
+            b.ToTable("session_screens");
+            // COMPOSITE primary key led by tenant_id, the session_turns reasoning exactly: the session id and
+            // the capture time both arrive on the push stream from the Director, so a key that did not lead
+            // with the tenant would let one tenant squat another's rows. This key is also what makes a
+            // re-sent push idempotent - the same (session, captured-at) cannot be stored twice - and what
+            // answers "the newest screen for this session" without a second index.
+            b.HasKey(e => new { e.TenantId, e.SessionId, e.CapturedAtUtc });
+            b.Property(e => e.SessionId).HasMaxLength(64);
+            b.Property(e => e.DirectorId).HasMaxLength(64);
+            b.Property(e => e.ActivityState).HasMaxLength(32);
+            b.Property(e => e.Agent).HasMaxLength(32);
+            // Retention cuts on received-at, tenant-leading for the global filter.
+            b.HasIndex(e => new { e.TenantId, e.ReceivedAtUtc });
         });
 
         modelBuilder.Entity<SessionHistoryEntity>(b =>
@@ -863,6 +886,7 @@ public sealed class GatewayDbContext : DbContext
         ApplyTenantScope<SessionHistoryRollupEntity>(modelBuilder);
         ApplyTenantScope<SessionTurnEntity>(modelBuilder);
         ApplyTenantScope<SessionTurnHeadEntity>(modelBuilder);
+        ApplyTenantScope<SessionScreenEntity>(modelBuilder);
 
         ApplyCommonSubsetConventions(modelBuilder);
 
