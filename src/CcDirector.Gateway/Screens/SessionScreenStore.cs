@@ -233,6 +233,12 @@ public sealed class SessionScreenStore
     ///
     /// It reads the over-cap sessions FIRST and trims each in its own transaction, so a long tail of sessions
     /// does not hold one transaction open across the whole table.
+    ///
+    /// WHAT IT COSTS. One grouped count per tenant per sweep pass, and the sweep runs hourly - the grouping
+    /// is on the primary key's own (tenant, session) prefix, so it is an index scan rather than a table
+    /// scan, and it does no further work at all when nothing is over the cap. Considered rather than
+    /// assumed: a repair that ran on every write, or every few minutes, would not be worth its cost for a
+    /// state that only an overlapping deploy can produce.
     /// </summary>
     public int TrimSessionsOverCap()
     {
