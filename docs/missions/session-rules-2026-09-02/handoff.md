@@ -47,3 +47,24 @@ Every one of those is a test that was watched going RED before it went green, wi
 same base. Generate this mission's migration on top of `origin/main` and expect to regenerate the
 model snapshot if that mission lands first. Fetch with `--prune`; test PRESENCE ON MAIN, not
 difference from the merge base.
+
+---
+
+## Migration slot sweep, run by the Architect 2026-09-02
+
+Method (ruling A10): fetch with `--prune`, then for each candidate branch list its migration files
+and test whether each one is PRESENT ON `origin/main`. Never test difference from the merge base - a
+squash-merged branch still differs and therefore still votes, which produced a false holder on the
+sister mission earlier the same day.
+
+Result - three holders besides this mission:
+
+| Branch | Migrations absent from origin/main |
+| --- | --- |
+| `origin/mission/terminal-rules` | `20260902154804_AddSessionScreens` |
+| `origin/prompt-delete-erases` (pull request 2379, open, untouched since 8 August) | `20260802044500_PromptErasureWatermark`, `20260802141655_RollupMaterialReadTime`, `20260802153217_SealBoundAndFirstSeen` |
+| `mission/session-rules-p1` (this mission) | `20260902191922_AddSessionRules` |
+
+The Terminal Rules mission has given this one PRIORITY on the slot and will regenerate its own model
+snapshot if the two collide. Take the slot; do not sequence anything on that mission's timing. Whoever
+lands last regenerates - that is mechanical, not a dispute.
