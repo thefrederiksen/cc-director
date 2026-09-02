@@ -230,7 +230,8 @@ public sealed class PostgresProviderProofTests
     /// <summary>
     /// The other side of the same coin: columns carrying an explicit "C" collation while NOT being a string
     /// key column derived from the model. An entry here is a collation applied for a reason the model does
-    /// not express, which needs writing down. Empty today, and it should stay that way.
+    /// not express, which needs writing down. Every entry carries its argument; a new one without one is
+    /// not an exception, it is an unexplained collation.
     /// </summary>
     private static readonly HashSet<(string Table, string Column)> CollationExtras = new()
     {
@@ -251,6 +252,19 @@ public sealed class PostgresProviderProofTests
         // have to agree about equality or the ledger silently reports on a different account than the trial
         // row it is about.
         ("trial_extensions", "subject"),
+
+        // The known-repository lookup keys. Normalized machine and path values that a caller supplies and
+        // that are matched as EXACT indexed predicates, so the two providers have to agree on which of them
+        // are equal or a search returns a different candidate set on the hosted Gateway than on a local
+        // install. They sit in a NON-unique index rather than a key, so the model-derived enumeration
+        // cannot see them - which is exactly the case this list exists for.
+        //
+        // They surfaced here rather than being noticed: they arrived on main while this mission was
+        // replacing the hand-written allow-list with the derived check, so the two changes met for the
+        // first time in a merge. The check did its job - it is loud about a collation that the model does
+        // not account for - and the answer is this written exception, not a wider net.
+        ("known_repositories", "MachineKey"),
+        ("known_repositories", "PathKey"),
     };
 
     /// <summary>
