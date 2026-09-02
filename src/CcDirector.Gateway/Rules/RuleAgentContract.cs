@@ -46,9 +46,6 @@ public static class RuleAgentContract
     /// <summary>How many lines of the screen tail the question carries.</summary>
     public const int ScreenTailLines = 40;
 
-    private static readonly string InputSource = RuleWireNames.ToWireName(nameof(RuleArgumentSource.Input));
-    private static readonly string LiteralSource = RuleWireNames.ToWireName(nameof(RuleArgumentSource.Literal));
-
     /// <summary>
     /// Build the one question for this screen: what a rule is, the rules in play, the screen, the checks
     /// that exist, and the exact shape of the answer.
@@ -154,7 +151,7 @@ public static class RuleAgentContract
                 return RuleAgentReading.Refused(
                     "the agent's answer was not the answer shape that was asked for. It said: " + Shorten(raw));
 
-            var ruleIdText = Text(root, "rule_id");
+            var ruleIdText = RuleCallJson.Text(root, "rule_id");
             if (!Guid.TryParse(ruleIdText, out var ruleId))
                 return RuleAgentReading.Refused(
                     $"the agent's answer names the instruction '{Shorten(ruleIdText)}', which is not an " +
@@ -166,7 +163,7 @@ public static class RuleAgentContract
                     $"the agent's answer names the instruction {ruleId}, which was not one of the " +
                     $"{(offered?.Count ?? 0)} it was asked about. Nothing was done.");
 
-            var decision = (Text(root, "decision") ?? "").Trim().ToLowerInvariant();
+            var decision = (RuleCallJson.Text(root, "decision") ?? "").Trim().ToLowerInvariant();
             if (decision != RuleDecisions.Act && decision != RuleDecisions.Decline)
                 return RuleAgentReading.Refused(
                     $"the agent answered '{Shorten(decision)}', and the only answers there are are " +
@@ -180,7 +177,7 @@ public static class RuleAgentContract
                     if (entry.ValueKind != JsonValueKind.Object)
                         return RuleAgentReading.Refused(
                             "the agent asked for a check that is not a check at all: " + Shorten(entry.ToString()));
-                    checks.Add(ReadCall(entry));
+                    checks.Add(RuleCallJson.ReadCall(entry));
                 }
             }
 
@@ -189,7 +186,7 @@ public static class RuleAgentContract
                 return RuleAgentReading.Refused(
                     "the agent asked for a check that cannot be run: " + validation.Reason);
 
-            var textToType = (Text(root, "type") ?? "").Trim();
+            var textToType = (RuleCallJson.Text(root, "type") ?? "").Trim();
             if (decision == RuleDecisions.Act && textToType.Length == 0)
                 return RuleAgentReading.Refused(
                     "the agent decided to act and then gave nothing to type. An act with nothing to type is " +
@@ -197,67 +194,13 @@ public static class RuleAgentContract
 
             return RuleAgentReading.Accepted(new RuleAgentReply(
                 ruleId,
-                (Text(root, "understanding") ?? "").Trim(),
+                (RuleCallJson.Text(root, "understanding") ?? "").Trim(),
                 decision,
-                (Text(root, "reason") ?? "").Trim(),
+                (RuleCallJson.Text(root, "reason") ?? "").Trim(),
                 checks,
                 decision == RuleDecisions.Act ? textToType : ""));
         }
     }
-
-    /// <summary>One asked-for check, as data. Nothing is checked here - <see cref="RuleCallValidator"/> is
-    /// the one place that decides whether a call is legal, so a name that does not exist arrives with its
-    /// name intact and is refused there by name.</summary>
-    private static RulePrimitiveCall ReadCall(JsonElement entry)
-    {
-        var call = new RulePrimitiveCall { Name = (Text(entry, "name") ?? "").Trim() };
-
-        if (!entry.TryGetProperty("arguments", out var arguments) || arguments.ValueKind != JsonValueKind.Object)
-            return call;
-
-        foreach (var argument in arguments.EnumerateObject())
-            call.Arguments.Add(ReadArgument(argument.Name, argument.Value));
-
-        return call;
-    }
-
-    /// <summary>
-    /// One argument's value. A string in angle brackets is a request to read something when the rule runs;
-    /// a list is a list of literal terms; anything else is one written-down value. The angle-bracket form is
-    /// the same rendering the firing record uses, so what the agent writes and what a person later reads are
-    /// the same notation.
-    /// </summary>
-    private static RuleArgument ReadArgument(string parameter, JsonElement value)
-    {
-        if (value.ValueKind == JsonValueKind.Array)
-            return new RuleArgument
-            {
-                Parameter = parameter,
-                Source = LiteralSource,
-                Values = value.EnumerateArray().Select(Scalar).ToList(),
-            };
-
-        var text = Scalar(value);
-        if (text.Length >= 2 && text[0] == '<' && text[^1] == '>')
-            return new RuleArgument
-            {
-                Parameter = parameter,
-                Source = InputSource,
-                Values = new List<string> { text[1..^1].Trim() },
-            };
-
-        return RuleArgument.Literal(parameter, text);
-    }
-
-    private static string Scalar(JsonElement value) => value.ValueKind switch
-    {
-        JsonValueKind.String => value.GetString() ?? "",
-        JsonValueKind.Null => "",
-        _ => value.ToString(),
-    };
-
-    private static string? Text(JsonElement root, string name) =>
-        root.TryGetProperty(name, out var value) ? Scalar(value) : null;
 
     /// <summary>
     /// The JSON out of a reply a chat model wrapped in prose or a fenced block, or null when there is none.
