@@ -115,10 +115,46 @@ recorded before the code existed.
 | What | Red | Green |
 | --- | --- | --- |
 | The five primitives and the derived registry | `a8259bcbb` - **33 failed, 1 passed, exit code 1** | `84c25911e` - **34 passed, 0 failed, exit code 0** |
-| The stored call shape and the write-time validator | `84c25911e` - **18 failed, 0 passed, exit code 1** | `5523025ec` - **52 passed, 0 failed, exit code 0** (all rules tests) |
-| The rule store | `522b1cee5` - **21 failed, 0 passed, exit code 1** | `515759985` - **21 passed, 0 failed, exit code 0** |
+| The stored call shape and the write-time validator | **DELETED - see below.** Replaced by `1eeaca050` - **18 failed, 0 passed, total 18, exit code 1** | `47b28c298` / `9412cb2bd` - **128 passed, 0 failed, exit code 0** (all rules tests) |
+| The rule store | **DELETED - see below.** Replaced by `c6bdef6c8` - **21 failed, 0 passed, total 21, exit code 1** | `9412cb2bd` - **128 passed, 0 failed, exit code 0** (all rules tests) |
 | The types-nothing guard, against a known-bad input | `c991921d2` - **1 failed, 2 passed, exit code 1** | `7a7422119` - **76 passed, 0 failed, exit code 0** (all rules tests) |
 | The tenant-scope guard on the two new tables | `7a7422119` - **1 failed, 3310 passed, exit code 1** | `48eeb1e83` - **81 passed, 0 failed, exit code 0** |
+
+### Two of these claims were FALSE, and this is what happened to them
+
+The independent inspection of landing A found that two of the five reds above did not reproduce from
+the commits this table named. That is right, it was checked again in fix round A, and the two claims
+were DELETED rather than re-worded:
+
+- `RuleCallValidatorTests.cs` **does not exist at `84c25911e`**. A filter naming it there exits 0
+  with `No test matches`.
+- `SessionRuleStoreTests.cs` **does not exist at `522b1cee5`**. The same.
+
+`git ls-tree -r --name-only <commit> -- src/CcDirector.Gateway.UnitTests/Rules/` shows it at either
+commit in one line. Whatever produced the quoted failures was an uncommitted working tree, and a
+working tree is not identified by a commit, so the numbers were not evidence for anything a reader
+could check. **A number that cannot be reproduced from the commit beside it is not a weaker number;
+it is not a number.**
+
+The repair is the one the standard asks for. Fix round A committed a REAL red probe for each
+feature - the feature's behaviour deliberately absent while its tests are present - so the red can be
+reproduced by checking the commit out and running the same filter. Both probe commits are left in the
+history on purpose, exactly as phase 1 left its types-nothing probe:
+
+| Feature | Probe commit (red) | Filter | Result |
+| --- | --- | --- | --- |
+| The write-time validator | `1eeaca050` | `FullyQualifiedName~RuleCallValidatorTests` | Failed 18, Passed 0, Total 18, exit code 1 |
+| The rule store | `c6bdef6c8` | `FullyQualifiedName~SessionRuleStoreTests` | Failed 21, Passed 0, Total 21, exit code 1 |
+
+Both go green on `9412cb2bd`: `FullyQualifiedName~Rules`, **128 passed, 0 failed, total 128, exit
+code 0**.
+
+And the instrument that let the false claims stand was fixed, because it would have let the next one
+stand too: `scripts/test-local.ps1` returned SUCCESS for a run that collected zero tests. It now
+refuses one - exit code 3, distinct from a test failure - so a filter naming a class that is not in
+the checkout can no longer read as a green. That was watched failing first: on `6467aa69a` a filter
+matching nothing gave nine projects at `total=0` and **exit code 0**; on `65e88f4f0` the same input
+gives **exit code 3** and `RESULT: ZERO TESTS COLLECTED`.
 
 The one pass in the first red is deliberate: it is the instrument check saying the assembly really
 does carry attributed primitives. If THAT had failed, every completeness check below it would have
@@ -183,6 +219,16 @@ Of those, 81 are the phase's own tests.
 
 Stated plainly, because a report that only lists successes has not shown where the edge is.
 
+- **Two red-first claims in the first version of this report were not reproducible, and were
+  deleted.** The commits named for the validator's red and the store's red do not contain the test
+  files, so the runs that produced those numbers cannot be identified by anything a reader can check
+  out. The numbers now in the table come from probe commits made in fix round A, and the ORIGINAL
+  runs remain unproven and always will be - the tree they ran on is gone. See "Two of these claims
+  were FALSE" above.
+- **The zero-collection guard covers the runner, not every way evidence is gathered.** A run made
+  with a hand-rolled `dotnet test` rather than `scripts/test-local.ps1` still exits 0 on
+  `No test matches`. The fix closes the fleet's one command; it does not close a command somebody
+  types themselves.
 - **The parked `CcDirector.Gateway.Tests` suite did not run.** The gate flags it as a coverage gap,
   and the flag is generic - any file under `src/CcDirector.Gateway` maps to that suite, so this is
   not a specific test known to be affected. It was not run because the machine-wide test lock was

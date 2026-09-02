@@ -554,9 +554,9 @@ ran on.
 | --- | --- | --- | --- |
 | Rules tests, first run against unwritten code | `a8259bcbb` | 1 | 33 failed, 1 passed (the one pass is the instrument check) |
 | Rules tests, after the checks and registry | `84c25911e` | 0 | 34 passed, 0 failed |
-| Validator tests, first run against unwritten code | `84c25911e` | 1 | 18 failed, 0 passed |
+| Validator tests, first run against unwritten code | `1eeaca050` | 1 | 18 failed, 0 passed, total 18 (the ORIGINAL claim named `84c25911e`, which does not contain the test file; it was deleted and re-proved on a committed probe) |
 | All rules tests, after the validator | `5523025ec` | 0 | 52 passed, 0 failed |
-| Store tests, first run against unwritten code | `522b1cee5` | 1 | 21 failed, 0 passed |
+| Store tests, first run against unwritten code | `c6bdef6c8` | 1 | 21 failed, 0 passed, total 21 (the ORIGINAL claim named `522b1cee5`, which does not contain the test file; it was deleted and re-proved on a committed probe) |
 | Store tests, after the store | `515759985` | 0 | 21 passed, 0 failed |
 | Types-nothing guard against a known-BAD input | `c991921d2` | 1 | 1 failed, 2 passed - named the offending type |
 | All rules tests, probe removed | `7a7422119` | 0 | 76 passed, 0 failed |
