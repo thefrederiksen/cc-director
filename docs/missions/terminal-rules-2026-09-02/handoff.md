@@ -51,6 +51,11 @@ The Manager's own report is the current truth on which are proven - read the fil
 Phase 1 is the rule store and the rule contract: storage, CRUD, validation, **dry-run only, nothing
 typed into any session**. The rule shape is in `brief.md`.
 
+**A rule's condition is a terminal screen description and nothing else** - the owner settled this on
+2026-09-02 (`rulings/r11`). Waiting time, token spend, conversation text and machine state are
+deferred, not rejected, and must NOT be pre-built behind a condition abstraction with one
+implementation. Build the narrow thing completely; do not re-ask him about it.
+
 It does not start on the strength of phase 0's provable rows, because it would be built on a schema
 the pending-model-changes check has not yet confirmed against the regenerated migration (r4, r6).
 

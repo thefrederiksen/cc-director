@@ -1,0 +1,255 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>How a rule is created and how it runs</title>
+<style>
+  :root{
+    --bg:#0b1020; --surface:#141a2e; --surface-2:#1b2238; --border:#28304a;
+    --text:#e6e9f2; --dim:#99a0b8; --accent:#3b82f6; --ok:#34d399; --warn:#f59e0b;
+    --attn:#f14c4c; --code:#0a0f1e;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:#05070f;color:var(--text);
+    font:14.5px/1.62 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
+  .wrap{max-width:1000px;margin:0 auto;padding:30px 24px 70px}
+  h1{font-size:23px;margin:0 0 6px}
+  .lede{color:var(--dim);margin:0 0 26px;max-width:74ch}
+  h2{font-size:17px;margin:36px 0 6px;padding-top:20px;border-top:1px solid var(--border)}
+  h2:first-of-type{border-top:0;padding-top:0}
+  .sub{color:var(--dim);margin:0 0 16px;max-width:76ch}
+  p{max-width:78ch}
+  .card{background:var(--surface);border:1px solid var(--border);border-radius:9px;
+    padding:16px 19px;margin:0 0 13px}
+  .card h3{margin:0 0 5px;font-size:14.5px}
+  .card p{margin:0;color:var(--dim);font-size:13.5px}
+  .mono{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:12.5px}
+  code{background:var(--code);border:1px solid var(--border);border-radius:4px;
+    padding:1px 6px;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:12.5px}
+
+  /* pipeline */
+  .pipe{display:flex;flex-direction:column;gap:0}
+  .step{display:grid;grid-template-columns:118px 1fr;gap:16px;align-items:start}
+  .who{padding:13px 0 0}
+  .tag{display:inline-block;padding:3px 9px;border-radius:5px;font-size:11px;font-weight:600;
+    letter-spacing:.03em;white-space:nowrap}
+  .tag.code{background:rgba(59,130,246,.15);color:#93c0fb;border:1px solid rgba(59,130,246,.45)}
+  .tag.model{background:rgba(245,158,11,.14);color:#f6c86a;border:1px solid rgba(245,158,11,.45)}
+  .body{background:var(--surface);border:1px solid var(--border);border-radius:9px;
+    padding:13px 17px;margin-bottom:9px}
+  .body b{display:block;margin-bottom:3px}
+  .body span{color:var(--dim);font-size:13.5px}
+  .arrow{grid-column:2;color:var(--dim);font-size:18px;line-height:1;margin:-4px 0 5px 18px}
+  .stop{border-color:rgba(52,211,153,.4);background:rgba(52,211,153,.07)}
+  .stop b{color:var(--ok)}
+  .act{border-color:rgba(241,76,76,.4);background:rgba(241,76,76,.07)}
+
+  table{width:100%;border-collapse:collapse;font-size:13.5px;margin:6px 0 4px}
+  th{text-align:left;color:var(--dim);font-weight:500;font-size:12px;padding:8px 10px;
+    border-bottom:1px solid var(--border)}
+  td{padding:10px;border-bottom:1px solid var(--border);vertical-align:top}
+  tr:last-child td{border-bottom:0}
+  .yes{color:var(--ok)} .no{color:var(--dim)} .maybe{color:var(--warn)}
+  .q{border:1px solid rgba(245,158,11,.45);background:rgba(245,158,11,.07);
+    border-radius:9px;padding:15px 19px;margin:14px 0}
+  .q h3{margin:0 0 6px;font-size:14.5px;color:#f6c86a}
+  .q.settled{border-color:rgba(52,211,153,.45);background:rgba(52,211,153,.07)}
+  .q.settled h3{color:#7fe3bd}
+  .q p{margin:0 0 8px;color:var(--text);font-size:13.5px}
+  .q p:last-child{margin:0}
+  ol{padding-left:20px;max-width:78ch} ol li{margin-bottom:9px}
+  ul{padding-left:20px;max-width:78ch} ul li{margin-bottom:6px;color:var(--dim)}
+  ul li b{color:var(--text)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>How a rule is created, and how it actually runs</h1>
+<p class="lede">Answering four questions: what a rule can see, who decides, who types, and how you
+make one. Proposal - none of this is built yet. Where something is not settled, it says so.</p>
+
+<h2>The short answer to "is it a language model or code?"</h2>
+<p class="sub">It is both, and the split is the whole design. A model that could type would be a
+model that could invent an instruction you never gave.</p>
+
+<div class="card">
+  <h3>Ordinary code decides whether to ask. A small model decides which rule matches. Ordinary code
+      does the typing.</h3>
+  <p>The model is asked one narrow question and can only answer with the name of one of your rules,
+     or "none". It never produces the text that gets typed. Every character that reaches your session
+     comes from the rule you wrote, exactly as you wrote it.</p>
+</div>
+<p style="color:var(--dim);font-size:13.5px">(It is C#, not Python - it lives in the Gateway,
+which is a .NET service. Nothing here runs on your machine.)</p>
+
+<h2>The path, step by step</h2>
+<p class="sub">This runs when a session STOPS - the moment it goes from working to waiting. Not
+continuously, and never mid-turn.</p>
+
+<div class="pipe">
+
+  <div class="step">
+    <div class="who"><span class="tag code">CODE</span></div>
+    <div class="body"><b>1. A session stops working</b>
+      <span>Its screen is captured and pushed to the Gateway - the thing phase 0 just built. No rule
+      is involved yet.</span></div>
+  </div>
+  <div class="arrow">&darr;</div>
+
+  <div class="step">
+    <div class="who"><span class="tag code">CODE</span></div>
+    <div class="body"><b>2. Is this screen even worth looking at?</b>
+      <span>Has it changed since last time? Is the session actually idle? Has this rule already
+      fired here, or hit its daily limit? Any "no" stops here.</span></div>
+  </div>
+  <div class="arrow">&darr;</div>
+
+  <div class="step">
+    <div class="who"><span class="tag code">CODE</span></div>
+    <div class="body"><b>3. Do any of your watch-words appear?</b>
+      <span>Plain text search. If a rule lists words and none are on the screen, that rule is
+      dropped without ever asking the model. This is the cost control - it is why having rules
+      costs nothing on the thousands of ordinary screens.</span></div>
+  </div>
+  <div class="arrow">&darr;</div>
+
+  <div class="step">
+    <div class="who"><span class="tag code">CODE</span></div>
+    <div class="body stop"><b>Nothing survived - stop. This is the normal outcome.</b>
+      <span>Free. No model was asked. Most turn-ends end here.</span></div>
+  </div>
+  <div class="arrow">&darr;</div>
+
+  <div class="step">
+    <div class="who"><span class="tag model">MODEL</span></div>
+    <div class="body"><b>4. One question, once: which of these rules fits this screen?</b>
+      <span>The model gets the screen and the surviving rules' descriptions. It answers with one
+      rule's name, or "none". <b style="display:inline">One call covers all your rules</b> - not one
+      call per rule - so ten rules cost the same as one.</span></div>
+  </div>
+  <div class="arrow">&darr;</div>
+
+  <div class="step">
+    <div class="who"><span class="tag code">CODE</span></div>
+    <div class="body"><b>5. Look at the screen again, right now</b>
+      <span>Between the model answering and anything being typed, the screen is re-read. If it
+      changed, or a menu appeared that was not expected, the action is abandoned rather than pressed
+      into something new.</span></div>
+  </div>
+  <div class="arrow">&darr;</div>
+
+  <div class="step">
+    <div class="who"><span class="tag code">CODE</span></div>
+    <div class="body act"><b>6. Type your text, verbatim</b>
+      <span>The exact characters from your rule - <code>/model opus</code> - into the composer, the
+      same way the text box on your phone does it. Then record what happened: the screen, the
+      verdict, the keystroke.</span></div>
+  </div>
+
+</div>
+
+<h2>What a rule can see</h2>
+<p class="sub">Always the terminal screen. That was raised as an open question and the owner settled
+it on 2 September - see the box below the table.</p>
+
+<table>
+  <thead><tr><th style="width:31%">Input</th><th style="width:16%">Available</th><th>Notes</th></tr></thead>
+  <tbody>
+    <tr><td><b>The terminal screen</b> when the session stopped</td>
+        <td class="yes">Built</td>
+        <td>What phase 0 delivered. It is the only surface every agent shares - pickers, banners and
+            permission prompts appear here and nowhere else.</td></tr>
+    <tr><td><b>The conversation</b> - what the agent actually said</td>
+        <td class="maybe">Exists, not wired</td>
+        <td>Your turn-push work is storing this. A rule could read it. Not designed for.</td></tr>
+    <tr><td><b>How long it has been waiting</b></td>
+        <td class="maybe">Known, not wired</td>
+        <td>Would allow "if it has been stuck 30 minutes, tell me" with no screen reading at all.</td></tr>
+    <tr><td><b>Which agent, repo, machine, mission</b></td>
+        <td class="yes">Known</td>
+        <td>Already usable to scope a rule to some sessions rather than all.</td></tr>
+    <tr><td><b>Token spend, context fullness</b></td>
+        <td class="maybe">Known, not wired</td>
+        <td>Would allow "if this session has burned more than X, stop it".</td></tr>
+    <tr><td><b>Anything on your machine</b></td>
+        <td class="no">Never</td>
+        <td>Rules read state and type text. They do not run commands.</td></tr>
+  </tbody>
+</table>
+
+<div class="q settled">
+  <h3>Settled 2 September: the screen is the only input</h3>
+  <p>This was raised as an open question - whether a rule should also be able to trigger on things
+     that never appear on a screen, like a session stuck for an hour or burning money. The owner's
+     answer: <b>"Let's leave it at just the terminal for now."</b></p>
+  <p>So a rule's condition is a description of a terminal screen and nothing else. The other rows
+     above are kept rather than deleted, because knowing they were considered and deferred is worth
+     more than a shorter table.</p>
+  <p><b>Deferred, not rejected</b> - and it will not be pre-built behind an abstraction "ready for
+     later". A condition type with one possible value is surface a reviewer has to read for behaviour
+     that cannot happen. Build the narrow thing properly; widening a small clean thing later is
+     ordinary work.</p>
+</div>
+
+<h2>How you create one</h2>
+<p class="sub">Three ways in, all landing on the same thing.</p>
+
+<ol>
+  <li><b>From a screen that already stopped a session.</b> The main way. You are looking at the
+      stored screen, you press "Make a rule from this", and the model turns that screen into a
+      first-draft description in plain English. You edit it, choose what to do, save. You never have
+      to guess what the terminal said, because it is stored in front of you.</li>
+  <li><b>From scratch.</b> An empty rule. You write the description yourself. Useful when you know
+      the situation but have not hit it yet.</li>
+  <li><b>From a starter rule.</b> Ready-made ones for the situations everybody meets - out of
+      allowance, provider down, waiting on a permission prompt. You pick the action and the fallback
+      model; the description is already written.</li>
+</ol>
+
+<p>Whichever way in, a new rule <b>starts in dry run</b>: it reports what it would have done and
+   types nothing. You promote it to live once you have watched it be right. That is deliberate -
+   the first time a rule presses a key in your work should not be the first time you have seen it
+   make a decision.</p>
+
+<h2>What you write, in full</h2>
+
+<div class="card">
+  <h3>The description - the only part the model reads</h3>
+  <p>Plain English, in your words. "The agent says it has run out of usage or credits for the model
+     it is running, and offers switching models." The model judges the screen against this sentence.
+     Wording that varies between providers still matches, which a keyword search cannot manage.</p>
+</div>
+<div class="card">
+  <h3>The watch-words - optional, and purely about cost</h3>
+  <p>If you list them and none appear, the model is never asked. Leave it empty and every screen gets
+     judged, which works and costs more. This is not a filter you have to get right; getting it wrong
+     only costs money, never correctness.</p>
+</div>
+<div class="card">
+  <h3>The action - what a person would have typed</h3>
+  <p>Switch model, type this text, notify me, snooze then continue, stop the session, or flag it and
+     wait. Nothing else is offered, and there is no box where you can put a shell command.</p>
+</div>
+<div class="card">
+  <h3>The limits - not optional</h3>
+  <p>How long before it may act on the same session again, how many times a day, and whether it is
+     live or in dry run. A rule presses keys into running work; it does not get to do that without
+     a ceiling.</p>
+</div>
+
+<h2>The three things this design refuses to do</h2>
+<ul>
+  <li><b>The model never writes what gets typed.</b> It picks one of your rules by name, or none.
+      Every keystroke is yours, verbatim. This is the same rule dictation lives under, for the same
+      reason.</li>
+  <li><b>Rules never run commands.</b> Every action is something you could have typed into that
+      session yourself. There is no escape hatch, deliberately.</li>
+  <li><b>Nothing acts on a session that is working.</b> Only on one that has stopped and is waiting -
+      and only after looking at the screen a second time, immediately before pressing anything.</li>
+</ul>
+
+</div>
+</body>
+</html>
