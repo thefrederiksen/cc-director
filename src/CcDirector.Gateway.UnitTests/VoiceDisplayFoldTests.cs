@@ -183,4 +183,100 @@ public sealed class VoiceDisplayFoldTests
         Assert.Equal("serviceDown", d.Kind);
         Assert.Null(d.VoiceFallbackNotice);
     }
+
+    // ------------------------------------------------------------------------------------------------
+    // "That computer cannot send its conversation" (2026-09-02). The Gateway knew this the whole time -
+    // Chat was already saying it in plain English - while the voice path said "Voice did not arrive after
+    // 22m" and the colour fold held those sessions yellow. These pin the SENTENCE the reader gets, not
+    // just the branch taken, because the sentence is what was wrong.
+    // ------------------------------------------------------------------------------------------------
+
+    [Fact]
+    public void DirectorCannotSend_SaysUpdateThatComputer_AndOffersNoDeadEndButton()
+    {
+        var d = VoiceDisplayFold.Fold(voiceMode: true, agentWorking: false, hasAudio: false, generating: false,
+            unavailable: null, nothingToNarrate: false, directorCannotSendConversation: true);
+        Assert.Equal("directorTooOld", d.Kind);
+        Assert.Equal("red", d.Tone);
+        Assert.Equal("Update DevThrottle", d.Label);
+        // The WORDS, verbatim. A test that only pinned the Kind would have passed while the screen said
+        // anything at all, including the "be patient" sentence this whole arm exists to stop.
+        Assert.Equal(VoiceDisplayFold.DirectorTooOldText, d.Message);
+        Assert.Contains("Update it", d.Message);
+        Assert.False(d.CanGenerate);   // the action is on the other machine
+        Assert.False(d.CanPlay);
+    }
+
+    [Fact]
+    public void DirectorCannotSend_ReplacesTheGaveUpSentence_THE_2026_09_02_DEFECT()
+    {
+        // The exact shape of the incident: voice on, no audio, and a wait long past the give-up boundary.
+        // Before this arm the reader was told "Voice did not arrive after 22m" - a symptom, and a promise
+        // that the Gateway was still trying at something that could never work.
+        var waitingSince = new DateTime(2026, 9, 2, 18, 35, 0, DateTimeKind.Utc);
+        var now = waitingSince.AddMinutes(22);
+
+        var before = VoiceDisplayFold.Fold(voiceMode: true, agentWorking: false, hasAudio: false, generating: false,
+            unavailable: null, nothingToNarrate: false, waitingSince: waitingSince, utcNow: now,
+            directorCannotSendConversation: false);
+        Assert.Equal("gaveUp", before.Kind);                         // NEGATIVE CONTROL: this is what it used to say
+        Assert.Contains("did not arrive", before.Label);
+
+        var after = VoiceDisplayFold.Fold(voiceMode: true, agentWorking: false, hasAudio: false, generating: false,
+            unavailable: null, nothingToNarrate: false, waitingSince: waitingSince, utcNow: now,
+            directorCannotSendConversation: true);
+        Assert.Equal("directorTooOld", after.Kind);
+        Assert.Equal(VoiceDisplayFold.DirectorTooOldText, after.Message);
+        Assert.DoesNotContain("did not arrive", after.Label);
+        Assert.DoesNotContain("still trying", after.Message);        // no promise it cannot keep
+    }
+
+    [Fact]
+    public void DirectorCannotSend_BeatsNothingToNarrate_BecauseNobodyReadTheConversation()
+    {
+        // "This session is waiting for you on a prompt" is a claim about a conversation this Gateway has
+        // never seen. It must not be made on a session whose words never arrived.
+        var d = VoiceDisplayFold.Fold(voiceMode: true, agentWorking: false, hasAudio: false, generating: false,
+            unavailable: null, nothingToNarrate: true, directorCannotSendConversation: true);
+        Assert.Equal("directorTooOld", d.Kind);
+    }
+
+    [Theory]
+    [InlineData(HostedAiState.NeedsCredits)]
+    [InlineData(HostedAiState.NeedsKey)]
+    [InlineData(HostedAiState.SubscriptionRequired)]
+    [InlineData(HostedAiState.ServiceDown)]
+    public void AccountAndServiceConditions_StillOutrank_DirectorCannotSend(HostedAiState state)
+    {
+        // The deliberate ordering, asserted so it cannot drift: an account-level condition is what the rest
+        // of the product is already telling this member, and it is answered by a real call-to-action. The
+        // too-old machine is the narrower fact and waits its turn.
+        var d = VoiceDisplayFold.Fold(voiceMode: true, agentWorking: false, hasAudio: false, generating: false,
+            unavailable: state, nothingToNarrate: false, directorCannotSendConversation: true);
+        Assert.NotEqual("directorTooOld", d.Kind);
+    }
+
+    [Fact]
+    public void PlayableAudio_AndAWorkingAgent_BothStillWin_OverDirectorCannotSend()
+    {
+        // A clip in hand is never hidden behind a verdict about the machine that produced it, and a session
+        // mid-turn says so. Both sit above every reason arm; this pins that the new one did not jump them.
+        var ready = VoiceDisplayFold.Fold(voiceMode: true, agentWorking: false, hasAudio: true, generating: false,
+            unavailable: null, nothingToNarrate: false, directorCannotSendConversation: true);
+        Assert.Equal("ready", ready.Kind);
+        Assert.True(ready.CanPlay);
+
+        var working = VoiceDisplayFold.Fold(voiceMode: true, agentWorking: true, hasAudio: false, generating: false,
+            unavailable: null, nothingToNarrate: false, directorCannotSendConversation: true);
+        Assert.Equal("working", working.Kind);
+    }
+
+    [Fact]
+    public void VoiceOff_SaysNothingAboutAnybodysBuild()
+    {
+        var d = VoiceDisplayFold.Fold(voiceMode: false, agentWorking: false, hasAudio: false, generating: false,
+            unavailable: null, nothingToNarrate: false, directorCannotSendConversation: true);
+        Assert.Equal("off", d.Kind);
+    }
+
 }
