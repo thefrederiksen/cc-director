@@ -71,7 +71,7 @@ public sealed class RuleEvaluatorTests
 
         /// <summary>THE SEND SEAM. Every keystroke this feature can produce goes through here.</summary>
         public List<string> Typed { get; } = new();
-        public bool TypeSucceeds { get; set; } = true;
+        public RuleSendResult SendResult { get; set; } = RuleSendResult.Confirmed();
 
         public DateTime NowUtc { get; set; } = Now;
 
@@ -98,11 +98,11 @@ public sealed class RuleEvaluatorTests
             return Task.FromResult(AgentReply);
         }
 
-        public Task<bool> TypeIntoSessionAsync(
+        public Task<RuleSendResult> TypeIntoSessionAsync(
             TenantId tenant, string directorId, string sessionId, string text, CancellationToken ct)
         {
             Typed.Add(text);
-            return Task.FromResult(TypeSucceeds);
+            return Task.FromResult(SendResult);
         }
 
         public void RecordFiring(TenantId tenant, RuleFiringDraft draft) => Recorded.Add(draft);
@@ -431,17 +431,50 @@ public sealed class RuleEvaluatorTests
     }
 
     [Fact]
-    public async Task A_send_that_did_not_land_is_recorded_as_a_send_that_did_not_land()
+    public async Task A_send_that_never_left_the_gateway_is_recorded_as_nothing_typed()
     {
         var rule = Rule(state: RuleState.Live);
         var env = EnvironmentWith(rule);
         env.AgentReply = ActReply(rule.Id);
-        env.TypeSucceeds = false;
+        env.SendResult = RuleSendResult.NotSent("that machine is not connected.");
 
         var pass = await Run(env);
 
-        Assert.Equal(RulePassOutcomes.SendFailed, pass.What);
-        Assert.Contains("did not land", Assert.Single(env.Recorded).Outcome);
+        Assert.Equal(RulePassOutcomes.NotSent, pass.What);
+        var firing = Assert.Single(env.Recorded);
+        Assert.Equal("", firing.TypedText);
+        Assert.Contains("nothing was typed", firing.Outcome);
+        Assert.Contains("not connected", firing.Outcome);
+    }
+
+    /// <summary>
+    /// THE 502 TRAP, and it is a defect this feature already produced once on a real session. The
+    /// prompt route answers "never started a turn ... parked in the composer unsubmitted" for a
+    /// session whose turn is over in milliseconds - a shell - while the keystroke has in fact landed.
+    /// Reading that as "the send did not land" put a sentence into the firing record that the
+    /// session's own screen disproved. An unconfirmed send is therefore recorded as UNCONFIRMED,
+    /// with the text kept as typed and the screen named as the evidence - never as a send that did
+    /// not happen.
+    /// </summary>
+    [Fact]
+    public async Task A_send_the_route_could_not_confirm_is_recorded_as_unconfirmed_not_as_nothing_typed()
+    {
+        var rule = Rule(state: RuleState.Live);
+        var env = EnvironmentWith(rule);
+        env.AgentReply = ActReply(rule.Id);
+        env.SendResult = RuleSendResult.NotConfirmed(
+            "never started a turn within 8 beats: the agent produced under 2048 bytes.");
+
+        var pass = await Run(env);
+
+        Assert.Equal(RulePassOutcomes.SendUnconfirmed, pass.What);
+        Assert.Equal("/usage-credits", Assert.Single(env.Typed));
+        var firing = Assert.Single(env.Recorded);
+        Assert.Equal("/usage-credits", firing.TypedText);
+        Assert.Contains("did not confirm", firing.Outcome);
+        Assert.Contains("screen", firing.Outcome);
+        Assert.DoesNotContain("did not land", firing.Outcome);
+        Assert.DoesNotContain("never reached", firing.Outcome);
     }
 
     private static string ScreenTextOf(RuleFiringDraft draft) =>

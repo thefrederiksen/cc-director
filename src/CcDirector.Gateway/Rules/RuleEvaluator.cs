@@ -45,15 +45,51 @@ public static class RulePassOutcomes
     /// <summary>The rule is in dry run: it decided to act, and typed nothing.</summary>
     public const string DryRun = "dry-run";
 
-    /// <summary>The rule is live and the text was typed into the session.</summary>
+    /// <summary>The rule is live, the text was typed, and the route confirmed it started a turn.</summary>
     public const string Acted = "acted";
 
-    /// <summary>The rule is live, the text was sent, and the send did not land.</summary>
-    public const string SendFailed = "send-failed";
+    /// <summary>The text was typed and the route would not confirm it started a turn. NOT a failure:
+    /// see <see cref="RuleSendResult.NotConfirmed"/>.</summary>
+    public const string SendUnconfirmed = "send-unconfirmed";
+
+    /// <summary>Nothing was typed, because the keystroke never left this Gateway.</summary>
+    public const string NotSent = "not-sent";
 }
 
 /// <summary>What one evaluation pass did, and the firings it wrote.</summary>
 public sealed record RulePass(string What, string Detail, IReadOnlyList<RuleFiringDraft> Recorded);
+
+/// <summary>What the send seam can answer. THREE answers, not two, because "it did not work" hides a
+/// distinction that matters: a keystroke that never left this Gateway is not the same event as one
+/// that went out and whose arrival nobody would confirm.</summary>
+public static class RuleSendOutcomes
+{
+    /// <summary>It went out and the route confirmed a turn started.</summary>
+    public const string Confirmed = "confirmed";
+
+    /// <summary>It went out and the route would not confirm a turn started. NOT a failure. The prompt
+    /// route answers this for a session whose turn is over in milliseconds - a plain shell, or an
+    /// agent answering a picker - while the keystroke has in fact landed. Recorded as unconfirmed,
+    /// with the screen named as the evidence, and never as a keystroke that did not happen.</summary>
+    public const string NotConfirmed = "not-confirmed";
+
+    /// <summary>It never left this Gateway - the machine is not connected. Nothing was typed.</summary>
+    public const string NotSent = "not-sent";
+}
+
+/// <summary>What the send seam answered, and the words that go on the record.</summary>
+public sealed record RuleSendResult(string What, string Detail)
+{
+    /// <summary>It went out and the route confirmed a turn started.</summary>
+    public static RuleSendResult Confirmed() => new(RuleSendOutcomes.Confirmed, "");
+
+    /// <summary>It went out and nobody would confirm it. <paramref name="detail"/> is what the route
+    /// said, verbatim, so the record carries the route's own words rather than a paraphrase.</summary>
+    public static RuleSendResult NotConfirmed(string detail) => new(RuleSendOutcomes.NotConfirmed, detail);
+
+    /// <summary>It never left this Gateway. <paramref name="detail"/> says why.</summary>
+    public static RuleSendResult NotSent(string detail) => new(RuleSendOutcomes.NotSent, detail);
+}
 
 /// <summary>
 /// Everything the evaluator needs from the Gateway around it, as one seam - the same shape, and for the
@@ -80,7 +116,7 @@ public interface IRuleEnvironment
     Task<string?> AskAgentAsync(TenantId tenant, string prompt, CancellationToken ct);
 
     /// <summary>THE SEND SEAM: type text into the session. The only thing in this feature that can.</summary>
-    Task<bool> TypeIntoSessionAsync(
+    Task<RuleSendResult> TypeIntoSessionAsync(
         TenantId tenant, string directorId, string sessionId, string text, CancellationToken ct);
 
     /// <summary>Write one firing down.</summary>
@@ -218,18 +254,34 @@ public sealed class RuleEvaluator
             return new RulePass(RulePassOutcomes.DryRun, reply.TextToType, new[] { wouldHave });
         }
 
-        var landed = await _env.TypeIntoSessionAsync(tenant, directorId, sessionId, reply.TextToType, ct)
+        var sent = await _env.TypeIntoSessionAsync(tenant, directorId, sessionId, reply.TextToType, ct)
             .ConfigureAwait(false);
 
+        // A keystroke that never left this Gateway is the only case in which nothing was typed. The
+        // record says so, and the typed text is blank, because claiming text that never went anywhere
+        // would be the same lie in the other direction.
+        if (sent.What == RuleSendOutcomes.NotSent)
+        {
+            var notSent = Record(tenant, new RuleFiringDraft(
+                chosen.Id, sessionId, screen, reply.Understanding, RuleDecisions.Act, reply.Reason,
+                checks.Runs, "",
+                "nothing was typed: " + sent.Detail));
+            return new RulePass(RulePassOutcomes.NotSent, sent.Detail, new[] { notSent });
+        }
+
+        var confirmed = sent.What == RuleSendOutcomes.Confirmed;
         var acted = Record(tenant, new RuleFiringDraft(
             chosen.Id, sessionId, screen, reply.Understanding, RuleDecisions.Act, reply.Reason,
             checks.Runs, reply.TextToType,
-            landed
+            confirmed
                 ? "typed into the session: " + reply.TextToType
-                : "the send did not land, so the session was never reached."));
+                : "typed into the session: " + reply.TextToType +
+                  " - but the prompt route did not confirm it started a turn (" + sent.Detail +
+                  "). The session's screen is the only evidence of whether the keystroke landed."));
 
         return new RulePass(
-            landed ? RulePassOutcomes.Acted : RulePassOutcomes.SendFailed, reply.TextToType, new[] { acted });
+            confirmed ? RulePassOutcomes.Acted : RulePassOutcomes.SendUnconfirmed,
+            reply.TextToType, new[] { acted });
     }
 
     private RulePass Abandon(

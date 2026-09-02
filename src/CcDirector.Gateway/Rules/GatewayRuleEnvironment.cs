@@ -134,21 +134,38 @@ internal sealed class GatewayRuleEnvironment : IRuleEnvironment
     }
 
     /// <inheritdoc />
-    public async Task<bool> TypeIntoSessionAsync(
+    /// <remarks>
+    /// THE ROUTE NOT CONFIRMING A SEND IS NOT THE ROUTE REFUSING IT. The prompt verb answers
+    /// "never started a turn ... parked in the composer unsubmitted" for any session whose turn is over
+    /// in milliseconds - a plain shell, or an agent answering a picker - while the keystroke has in
+    /// fact landed. Reading that as a failed send put a sentence into a firing record on 2 September
+    /// 2026 that the session's own screen disproved. So the two are answered separately here: a
+    /// Director that is not connected means nothing was typed, and a send nobody would confirm means
+    /// the screen is the evidence.
+    /// </remarks>
+    public async Task<RuleSendResult> TypeIntoSessionAsync(
         TenantId tenant, string directorId, string sessionId, string text, CancellationToken ct)
     {
         var route = _route(tenant, directorId);
         if (route is null)
         {
             FileLog.Write($"[GatewayRuleEnvironment] NOT typed sid={sessionId}: director {directorId} is not connected");
-            return false;
+            return RuleSendResult.NotSent($"the machine running this session ({directorId}) is not connected.");
         }
 
         var request = new PromptRequest { Text = text, AppendEnter = true, WaitForIdle = false };
         var (ok, _, error) = await route.PostPromptAsync(sessionId, request, ct).ConfigureAwait(false);
-        if (!ok)
-            FileLog.Write($"[GatewayRuleEnvironment] typing FAILED sid={sessionId}: {error}");
-        return ok;
+        if (ok) return RuleSendResult.Confirmed();
+
+        FileLog.Write($"[GatewayRuleEnvironment] typing UNCONFIRMED sid={sessionId}: {error}");
+        return RuleSendResult.NotConfirmed(Shorten(error));
+    }
+
+    /// <summary>The route's own words, kept short enough to read on a record.</summary>
+    private static string Shorten(string? detail)
+    {
+        var text = (detail ?? "the route gave no reason").Trim().ReplaceLineEndings(" ");
+        return text.Length <= 300 ? text : text[..300] + "...";
     }
 
     /// <inheritdoc />
