@@ -72,16 +72,7 @@ public sealed class SessionScreenStore
         ArgumentNullException.ThrowIfNull(db);
     }
 
-    /// <summary>
-    /// Build the store over an arbitrary context source. INTERNAL, and it exists for one reason: the
-    /// mission's migration is not written yet (the fleet-wide slot is held), and a real
-    /// <see cref="GatewayDatabase"/> creates its schema with <c>Database.Migrate()</c>, so it cannot produce
-    /// a database containing <c>session_screens</c> until that lands. This lets the tests build the schema
-    /// from the mapped MODEL instead - see <c>ScreenStoreTestDb</c>, which also states the limit that comes
-    /// with it. Nothing about the production path changes: the public constructor above supplies
-    /// <c>db.CreateContext</c>, which is exactly what this class called before.
-    /// </summary>
-    internal SessionScreenStore(Func<GatewayDbContext> context)
+    private SessionScreenStore(Func<GatewayDbContext> context)
     {
         _context = context ?? throw new ArgumentNullException(nameof(context));
     }
