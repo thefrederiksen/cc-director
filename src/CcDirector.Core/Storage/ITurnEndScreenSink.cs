@@ -31,10 +31,9 @@ public sealed class TurnEndScreen
     /// screen, not an empty one, and a consumer must fail closed on it.</summary>
     public bool HasGrid { get; set; }
 
-    /// <summary>The terminal buffer's total bytes ever written, read in the SAME operation as the
-    /// grid (<c>Session.SnapshotLiveScreenWithBufferMark</c>). A consumer that later wants to know
-    /// whether this screen is still what is on the terminal compares this against the session's
-    /// current byte count; the two must therefore describe the same instant.</summary>
+    /// <summary>How many terminal bytes THIS FRAME REFLECTS, counted inside the same lock that produced
+    /// the grid (<c>Session.SnapshotLiveScreenWithBufferMark</c>) - so the mark and the rows are one
+    /// observation of one moment rather than two reads of a moving terminal.</summary>
     public long BufferBytes { get; set; }
 
     /// <summary>The activity state at capture, as the Director names it.</summary>

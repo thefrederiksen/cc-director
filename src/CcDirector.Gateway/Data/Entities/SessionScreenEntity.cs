@@ -43,8 +43,9 @@ public sealed class SessionScreenEntity : TenantScopedEntity
     /// must not mistake for an empty one.</summary>
     public bool HasGrid { get; set; }
 
-    /// <summary>The session's total bytes ever written at capture. A reader serves this screen as the
-    /// live one only while the session's pushed snapshot still reports this exact number.</summary>
+    /// <summary>How many terminal bytes the captured frame reflected, counted in the same locked
+    /// observation that produced the rows. It orders a session's captures against its terminal output; it
+    /// is NOT a currency proof and no reader serves this screen as the live one.</summary>
     public long BufferBytes { get; set; }
 
     /// <summary>The activity state at capture, as the Director names it.</summary>

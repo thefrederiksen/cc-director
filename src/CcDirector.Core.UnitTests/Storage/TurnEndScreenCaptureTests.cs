@@ -90,10 +90,12 @@ public class TurnEndScreenCaptureTests
             // "not empty" assertion on a fixed-height grid, because a blank grid is still full of rows.
             Assert.Contains(screen.Rows, r => r.Contains("SCREEN_MARKER_FOR_ROW_ZERO"));
 
-            // The byte mark and the grid describe the same moment. The mark is read before the grid
-            // snapshot on purpose (see Session.SnapshotLiveScreenWithBufferMark), so it may lag the
-            // buffer by bytes that arrive in between - it may never RUN AHEAD of it.
-            Assert.True(screen.BufferBytes > 0, "the byte mark must carry the terminal's written total");
+            // The byte mark and the grid describe the same moment: both are taken inside the parser's own
+            // lock (see Session.SnapshotLiveScreenWithBufferMark), so the mark counts exactly the bytes the
+            // returned rows reflect. It can never exceed the buffer's own total, because the parser consumes
+            // what the buffer has already accepted. The interleaving that used to break this is driven
+            // directly in CaptureMarkDescribesTheCapturedFrameTests.
+            Assert.True(screen.BufferBytes > 0, "the byte mark must carry the frame's terminal byte count");
             Assert.True(screen.BufferBytes <= buffer.TotalBytesWritten,
                 $"the mark ({screen.BufferBytes}) must never exceed the buffer's own total ({buffer.TotalBytesWritten})");
 

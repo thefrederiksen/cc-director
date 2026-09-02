@@ -7,13 +7,16 @@ namespace CcDirector.Gateway.Contracts;
 /// at the moment the Director's own detector flips a session from Working to WaitingForInput, which is
 /// the moment the screen stops moving and starts meaning something.
 ///
-/// WHY THE BUFFER MARK IS ON HERE. A stored screen is only useful to a reader that is about to act if
-/// the reader can prove it is still what is on the terminal. <see cref="BufferBytes"/> is the session's
-/// total bytes ever written at the instant of capture; the Gateway serves this screen only while the
-/// session's live pushed snapshot still reports the same number, which is a positive proof that not one
-/// byte has reached that terminal since. A repaint, a picker opening, or a person typing on the machine
-/// all move the counter, and the reader falls back to a live tunnel pull. The dictation moved-on guard
-/// already decides "has this session moved on?" from the same counter.
+/// WHY THE BYTE MARK IS ON HERE, and what it does NOT mean. <see cref="BufferBytes"/> is the number of
+/// terminal bytes THIS FRAME REFLECTS, counted inside the same lock that produced the rows, so the mark
+/// and the rows are one observation of one moment - it orders a session's captures against its terminal
+/// output and lets a reviewer say how far through the session a screen sat.
+///
+/// It is NOT a currency proof and must never be used as one. An earlier design served a stored screen as
+/// the LIVE screen while this mark still equalled the session's pushed byte total; that total reaches the
+/// Gateway on a ten-second snapshot and is never refreshed by a terminal write, so it could not establish
+/// what its name claimed. A live screen is now always read from the owning Director - see
+/// <c>GatewayScreenReader</c> and ruling 13.
 /// </summary>
 public sealed class ScreenPush
 {
@@ -46,8 +49,8 @@ public sealed class ScreenPush
     /// empty grid as "nothing on screen".</summary>
     public bool HasGrid { get; set; }
 
-    /// <summary>The session's total bytes ever written to its terminal at the instant of capture. The
-    /// currency proof - see the type comment.</summary>
+    /// <summary>How many terminal bytes the captured frame reflects, counted in the same locked
+    /// observation that produced <see cref="Rows"/> - see the type comment for what it is not.</summary>
     public long BufferBytes { get; set; }
 
     /// <summary>The activity state the session was in at capture, as the Director names it. Always the
@@ -60,9 +63,10 @@ public sealed class ScreenPush
 }
 
 /// <summary>
-/// A stored screen as a Gateway reader gets it back, with the two facts a raw
-/// <see cref="ScreenGridResponse"/> cannot carry: when it was captured, and whether the Gateway can still
-/// prove it is what is on the terminal right now.
+/// A stored screen as a Gateway reader gets it back, with the facts a raw
+/// <see cref="ScreenGridResponse"/> cannot carry: when it was captured, which Director captured it, and
+/// how far through that terminal's output the captured frame sat. It is HISTORY - the Gateway never
+/// serves it as the live screen.
 /// </summary>
 public sealed class StoredScreen
 {
@@ -73,7 +77,8 @@ public sealed class StoredScreen
     /// <summary>The screen itself, in the shape every existing reader already consumes.</summary>
     public ScreenGridResponse Grid { get; set; } = new();
 
-    /// <summary>The buffer mark taken at capture, so a caller can re-check currency itself.</summary>
+    /// <summary>How many terminal bytes the captured frame reflected. See <see cref="ScreenPush"/> for
+    /// what this is and, more importantly, what it is not.</summary>
     public long BufferBytes { get; set; }
 
     public string ActivityState { get; set; } = "";
