@@ -60,7 +60,18 @@ public sealed class RulePromotionGrant
     public static RulePromotionGrant FromAuthenticatedRequest(
         Guid ruleId, string? callerIdentity, string? acknowledgement, DateTime askedUtc)
     {
-        return new RulePromotionGrant(
-            ruleId, (callerIdentity ?? "").Trim(), (acknowledgement ?? "").Trim(), askedUtc.ToUniversalTime());
+        var actor = (callerIdentity ?? "").Trim();
+        if (actor.Length == 0)
+            throw new RuleRejectedException(
+                "a rule is moved out of dry run by a person, and this request has no caller the Gateway " +
+                "could name. Nothing that runs on its own can promote a rule.");
+
+        var said = (acknowledgement ?? "").Trim();
+        if (said.Length == 0)
+            throw new RuleRejectedException(
+                "moving a rule out of dry run is the one act that lets it type into your sessions, so it " +
+                "asks you to say what you are agreeing to. An empty request promotes nothing.");
+
+        return new RulePromotionGrant(ruleId, actor, said, askedUtc.ToUniversalTime());
     }
 }

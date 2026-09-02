@@ -46,7 +46,27 @@ public static class RuleReasonGrounding
     /// <summary>Check a stated reason against the screen it was given.</summary>
     public static RuleGrounding Check(string? reason, string? screenText)
     {
-        return new RuleGrounding(true, "grounding: checked.", Array.Empty<string>());
+        var quoted = QuotedPassages(reason ?? "");
+        if (quoted.Count == 0)
+            return new RuleGrounding(
+                true,
+                "grounding: the reason quoted nothing from the screen, so there was nothing to check.",
+                Array.Empty<string>());
+
+        var screen = Flatten(screenText);
+        var missing = quoted.Where(p => !screen.Contains(Flatten(p), StringComparison.Ordinal)).ToList();
+
+        if (missing.Count == 0)
+            return new RuleGrounding(
+                true,
+                $"grounding: {quoted.Count} quoted passage(s) checked against this screen, all found on it.",
+                Array.Empty<string>());
+
+        return new RuleGrounding(
+            false,
+            "grounding: the reason quotes text this screen does not contain: " +
+            string.Join("; ", missing.Select(m => "'" + m.Trim() + "'")) + ".",
+            missing);
     }
 
     /// <summary>The quoted passages in a piece of text, long enough to be a claim about the screen.</summary>

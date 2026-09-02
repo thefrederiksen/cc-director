@@ -21,6 +21,11 @@ namespace CcDirector.Gateway.Api;
 /// A REFUSAL COMES BACK AS A REFUSAL. The store's reason is returned verbatim with a 400, never flattened
 /// into a generic failure - a caller that cannot see why its rule was rejected will guess, and guessing is
 /// how a rule ends up subtly different from the sentence that was meant.
+///
+/// TWO THINGS HAVE TO BE SAID OUT LOUD ON THESE ROUTES, and both used to be inferred. A write says which
+/// sessions the rule may act on - "all-sessions" is a choice a caller can make, but an absent scope is no
+/// longer read as meaning all of them. And a promotion says who is asking and what they are agreeing to;
+/// an empty POST to the promote route now promotes nothing.
 /// </summary>
 internal static class SessionRuleEndpoints
 {
@@ -66,9 +71,8 @@ internal static class SessionRuleEndpoints
         // sentence in a comment: it is minted here, from the caller the request pipeline authenticated and
         // the acknowledgement they wrote, and the store refuses a promotion that does not carry one. The
         // evaluator has no inbound request, so it can mint nothing - see RulePromotionGrant.
-        app.MapPost("/gateway/rules/{id:guid}/promote", (HttpContext http, JsonElement body) =>
+        app.MapPost("/gateway/rules/{id:guid}/promote", (Guid id, HttpContext http, JsonElement body) =>
         {
-            var id = Guid.Parse((string)http.Request.RouteValues["id"]!);
             try
             {
                 var grant = RulePromotionGrant.FromAuthenticatedRequest(
@@ -135,16 +139,37 @@ internal static class SessionRuleEndpoints
         outcome = f.Outcome,
     };
 
-    private static RuleScope ReadScope(JsonElement body)
+    /// <summary>
+    /// The scope, which has to be SAID. An absent scope used to become "every session" - the widest value
+    /// there is - so the wire could not tell a deliberate choice from an omission, and malformed authoring
+    /// output would have been read as permission to act on everything. Now: the string "all-sessions" is
+    /// the explicit way to say every session, an object naming at least one part is a narrower scope, and
+    /// anything else is null, which the store refuses with a reason.
+    /// </summary>
+    private static RuleScope? ReadScope(JsonElement body)
     {
-        if (!body.TryGetProperty("scope", out var scope) || scope.ValueKind != JsonValueKind.Object)
-            return RuleScope.AllSessions;
-        return new RuleScope(
+        if (!body.TryGetProperty("scope", out var scope)) return null;
+
+        if (scope.ValueKind == JsonValueKind.String)
+            return string.Equals(scope.GetString()?.Trim(), AllSessionsWireValue, StringComparison.OrdinalIgnoreCase)
+                ? RuleScope.AllSessions
+                : null;
+
+        if (scope.ValueKind != JsonValueKind.Object) return null;
+
+        var built = new RuleScope(
             RuleCallJson.Text(scope, "agent"),
             RuleCallJson.Text(scope, "repository"),
             RuleCallJson.Text(scope, "machine"),
             RuleCallJson.Text(scope, "mission"));
+
+        // An object with nothing in it is not a choice of "all sessions"; it is the same omission wearing
+        // a pair of braces.
+        return built == RuleScope.AllSessions ? null : built;
     }
+
+    /// <summary>How a caller says "every session" out loud.</summary>
+    private const string AllSessionsWireValue = "all-sessions";
 
     private static IReadOnlyList<string> Strings(JsonElement body, string name)
     {

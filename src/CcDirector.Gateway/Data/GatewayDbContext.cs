@@ -43,6 +43,90 @@ public sealed class GatewayDbContext : DbContext
     {
     }
 
+    /// <summary>
+    /// Set by <see cref="Rules.SessionRuleStore.Promote"/> for the one save that moves a rule to live,
+    /// naming the rule a person asked about. Null the rest of the time, which is what makes a rule
+    /// changing state through any other route a refusal - see <see cref="GuardRuleWrites"/>.
+    /// </summary>
+    internal Guid? PromotionInEffect { get; set; }
+
+    /// <inheritdoc />
+    public override int SaveChanges(bool acceptAllChangesOnSuccess)
+    {
+        GuardRuleWrites();
+        return base.SaveChanges(acceptAllChangesOnSuccess);
+    }
+
+    /// <inheritdoc />
+    public override Task<int> SaveChangesAsync(
+        bool acceptAllChangesOnSuccess, CancellationToken cancellationToken = default)
+    {
+        GuardRuleWrites();
+        return base.SaveChangesAsync(acceptAllChangesOnSuccess, cancellationToken);
+    }
+
+    /// <summary>
+    /// THE WRITE GATE FOR SESSION RULES, AND IT IS HERE BECAUSE HERE IS WHERE IT CANNOT BE GONE ROUND.
+    ///
+    /// The store's own source used to claim that nothing reached <c>session_rules</c> without passing
+    /// <see cref="Rules.RuleCallValidator"/>. It was not true. The entity, its setters, the DbSet and the
+    /// context factory are all public, so any Gateway caller could build a rule with an arbitrary call
+    /// document, an arbitrary tenant and <c>State = "live"</c>, add it and save it - meeting neither the
+    /// validator nor dry run. An independent inspection found the claim and the code disagreeing, and a
+    /// FALSE STRUCTURAL CLAIM IN A COMMENT IS WORSE THAN AN HONEST ABSENCE, because the next author
+    /// trusts it.
+    ///
+    /// So the claim was made true rather than deleted. Every route to the table - the store, the DbSet, a
+    /// context built by hand - ends at <c>SaveChanges</c>, and this runs there. What it holds:
+    ///
+    ///  - a rule's calls are valid against the shipped check registry, on every write;
+    ///  - a NEW rule is in dry run, whoever wrote it (owner ruling 14, the bound that puts a person
+    ///    between an instruction and its first real use);
+    ///  - a rule moving to live carries a promotion a person asked for (<see cref="PromotionInEffect"/>);
+    ///  - a rule belongs to the tenant this context is scoped to, so a write cannot plant a row in
+    ///    another account's partition - which reading is already scoped against, but writing was not.
+    ///
+    /// It is a GATE and not a wall: a rule the store built passes straight through it, and there is a test
+    /// that says so, because every refusal test above would also pass on a gate that refused everything.
+    /// </summary>
+    /// <exception cref="Rules.RuleRejectedException">A rule write does not hold, with the reason.</exception>
+    private void GuardRuleWrites()
+    {
+        foreach (var entry in ChangeTracker.Entries<SessionRuleEntity>())
+        {
+            if (entry.State != EntityState.Added && entry.State != EntityState.Modified) continue;
+            var rule = entry.Entity;
+
+            if (!string.Equals(rule.TenantId, ActiveTenant, StringComparison.Ordinal))
+                throw new Rules.RuleRejectedException(
+                    $"this rule says it belongs to '{rule.TenantId}', and this connection belongs to " +
+                    $"'{ActiveTenant}'. A rule is written into the account that is writing it.");
+
+            var validation = Rules.RuleCallValidator.ValidateAll(rule.Calls, Rules.RulePrimitiveRegistry.Default);
+            if (!validation.IsValid) throw new Rules.RuleRejectedException(validation.Reason);
+
+            if (entry.State == EntityState.Added && !string.Equals(rule.State, DryRunState, StringComparison.Ordinal))
+                throw new Rules.RuleRejectedException(
+                    $"a new rule is always created in dry run, and this one says '{rule.State}'. Dry run is " +
+                    "what puts a person between a standing instruction and the first time it types " +
+                    "anything, so there is no route by which a rule can start live.");
+
+            if (entry.State == EntityState.Modified
+                && string.Equals(rule.State, LiveState, StringComparison.Ordinal)
+                && PromotionInEffect != rule.Id)
+                throw new Rules.RuleRejectedException(
+                    "a rule is moved out of dry run by a person, and this write carried no evidence that a " +
+                    "person asked. Nothing that runs on its own can promote a rule.");
+        }
+    }
+
+    // Derived from the states themselves, never typed out again: a second copy of a wire value is a
+    // second thing to keep in step, and this one decides whether a rule may act.
+    private static readonly string DryRunState =
+        Rules.RuleWireNames.ToWireName(nameof(Rules.RuleState.DryRun));
+    private static readonly string LiveState =
+        Rules.RuleWireNames.ToWireName(nameof(Rules.RuleState.Live));
+
     /// <summary>Cron job definitions (<c>cron_jobs</c>).</summary>
     public DbSet<CronJobEntity> CronJobs => Set<CronJobEntity>();
 

@@ -17,6 +17,11 @@ namespace CcDirector.Gateway.Rules;
 /// liveness is never established by dialing it; the send is the ordinary prompt verb, which is the route
 /// already proven to carry a slash command into a session; the rules and the firings are the phase 1 store.
 ///
+/// IT CANNOT PROMOTE A RULE, AND THAT IS A TYPE BOUND RATHER THAN A HABIT. It is handed
+/// <see cref="IRuleReading"/>, which has no promotion on it, and <c>RulesPromotionBoundaryGuardTests</c>
+/// asserts against the built assembly that nothing in this namespace holds the concrete store. Through
+/// phase 2 it held the store itself and was one line away from being able to make a rule live.
+///
 /// THIS IS THE ONLY TYPE IN THE FEATURE THAT CAN TYPE, and that is asserted against the built assembly by
 /// <c>RulesTypeNothingGuardTests</c>. The evaluator decides whether a rule is in dry run and simply never
 /// calls <see cref="TypeIntoSessionAsync"/> when it is - so "dry run types nothing" holds because of the
@@ -29,14 +34,16 @@ namespace CcDirector.Gateway.Rules;
 /// </summary>
 internal sealed class GatewayRuleEnvironment : IRuleEnvironment
 {
-    private readonly SessionRuleStore _store;
+    private readonly IRuleReading _store;
     private readonly Func<TenantId, string, SessionVerbClient?> _route;
     private readonly Func<TenantId, string, SessionDto?> _session;
     private readonly Func<TenantId, WingmanModelRole, CancellationToken, Task<IAgentBrain>> _brainProvider;
     private readonly Func<TenantId, IDisposable>? _enterTenantScope;
     private readonly Func<DateTime> _nowUtc;
 
-    /// <param name="store">The phase 1 rule store - the rules and the firing record.</param>
+    /// <param name="store">The phase 1 rule store, seen through the NARROW seam: reading the rules,
+    /// counting a rule's firings, writing one down. There is deliberately no promotion on it, so the
+    /// evaluation path cannot move a rule out of dry run even by mistake (owner ruling 14, bound 6).</param>
     /// <param name="route">Resolves a tunnel caller for (tenant, director id); null means that Director is
     /// not connected, which every read treats as "cannot tell" rather than as a fault.</param>
     /// <param name="session">Reads a session's roster row from the pushed snapshot, or null when it is no
@@ -50,7 +57,7 @@ internal sealed class GatewayRuleEnvironment : IRuleEnvironment
     /// <param name="nowUtc">The clock, as a seam.</param>
     /// <exception cref="ArgumentNullException">A required dependency is null.</exception>
     public GatewayRuleEnvironment(
-        SessionRuleStore store,
+        IRuleReading store,
         Func<TenantId, string, SessionVerbClient?> route,
         Func<TenantId, string, SessionDto?> session,
         Func<TenantId, WingmanModelRole, CancellationToken, Task<IAgentBrain>> brainProvider,

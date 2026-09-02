@@ -10,16 +10,25 @@ namespace CcDirector.Gateway.Rules;
 /// Rules mission, phase 1). Rules are durable and shared - the Cockpit, the phone and the evaluator all
 /// read the same rules - so they live here, on the Gateway, in the EF data layer, tenant-scoped.
 ///
-/// THIS IS THE GATE. Nothing reaches <c>session_rules</c> without passing <see cref="RuleCallValidator"/>,
-/// so a call naming a check we do not ship, or supplying the wrong arguments to one we do, is refused
-/// here with a stated reason (Architect ruling A4). That refusal is the whole of ruling 15 in practice:
-/// the stored rule holds a name and argument values, and there is no column and no path by which anything
-/// executable could arrive.
+/// THIS IS THE FRONT DOOR. It is NOT the only door, and the difference is worth being exact about,
+/// because this comment used to claim it was. It said nothing reached <c>session_rules</c> without passing
+/// <see cref="RuleCallValidator"/>, and that was false: the entity, its setters, the DbSet and the context
+/// factory are all public, so a caller could build a rule with an arbitrary call document, an arbitrary
+/// tenant and a live state, add it and save it - meeting nothing in this file. An independent inspection
+/// found the claim and the code disagreeing.
+///
+/// The claim was made TRUE rather than deleted. The validator, dry run and the tenant check now run in
+/// <c>GatewayDbContext.SaveChanges</c>, which every route to the table ends at, so the structural boundary
+/// exists where the claim always said it did. What this file adds on top of that gate is the plain-English
+/// refusal a person reads: which check was named, which value was missing, and what the product ships.
 ///
 /// DRY RUN IS ENFORCED, NOT DOCUMENTED. <see cref="Create"/> takes no state and always writes a dry-run
-/// rule, so no caller can create a live one; a person promotes it with <see cref="Promote"/>. And a
-/// firing recorded against a dry-run rule may not claim to have typed anything - the store refuses it -
-/// so "dry run types nothing" is a property of the writer rather than a promise about the reader.
+/// rule, so no caller can create a live one, and the write gate refuses a new rule that is not in dry run
+/// however it was built. A person promotes it with <see cref="Promote"/>, which requires a
+/// <see cref="RulePromotionGrant"/> - evidence, mintable only from an authenticated request, that names
+/// the one rule it is for. And a firing recorded against a dry-run rule may not claim to have typed
+/// anything, so "dry run types nothing" is a property of the writer rather than a promise about the
+/// reader.
 ///
 /// Threading: the Gateway is a single writer. Every operation runs under this store's write lock over a
 /// fresh pooled context.
@@ -52,7 +61,10 @@ public sealed class SessionRuleStore : IRuleReading
         string screenDescription,
         IEnumerable<string> triggerWords,
         IEnumerable<RulePrimitiveCall> calls,
-        RuleScope scope,
+        // DELIBERATELY NULLABLE. A missing scope is a real thing that arrives at runtime - it is what
+        // malformed or incomplete authoring output looks like - and the type says so, so the refusal below
+        // is part of the contract rather than a guard against something the signature denies can happen.
+        RuleScope? scope,
         int cooldownSeconds,
         int dailyCap,
         DateTime nowUtc)
@@ -95,7 +107,15 @@ public sealed class SessionRuleStore : IRuleReading
             throw new RuleRejectedException(validation.Reason);
         }
 
-        var theScope = scope ?? RuleScope.AllSessions;
+        // A MISSING SCOPE IS NOT "EVERY SESSION". Scope is a real safety bound, and turning an omission
+        // into the WIDEST possible value is a fail-open: the contract could not tell "the account chose
+        // all sessions" from "the authoring output left the field out". All sessions is still a scope a
+        // rule can have - it is RuleScope.AllSessions, said out loud - but it has to be said.
+        if (scope is null)
+            throw new RuleRejectedException(
+                "a rule has to say which sessions it may act on. Every session is a choice you can make, " +
+                "but it is a choice - a rule that did not say is not read as meaning all of them.");
+        var theScope = scope;
         var created = nowUtc.ToUniversalTime();
 
         lock (_gate)
@@ -159,6 +179,16 @@ public sealed class SessionRuleStore : IRuleReading
     /// a person asked, or the grant was obtained for a different rule.</exception>
     public SessionRule Promote(Guid id, RulePromotionGrant grant, DateTime nowUtc)
     {
+        if (grant is null)
+            throw new RuleRejectedException(
+                "a rule is moved out of dry run by a person, and this call carried no evidence that a " +
+                "person asked. Nothing that runs on its own can promote a rule.");
+
+        if (grant.RuleId != id)
+            throw new RuleRejectedException(
+                $"this evidence was given for the rule {grant.RuleId}, not for {id}. A person agrees to " +
+                "one rule going live, not to whichever rule is asked for next.");
+
         lock (_gate)
         {
             using var ctx = _db.CreateContext();
@@ -169,9 +199,15 @@ public sealed class SessionRuleStore : IRuleReading
                 return ToRecord(entity);
 
             entity.State = LiveValue;
+            entity.PromotedBy = grant.Actor;
             entity.UpdatedUtc = nowUtc.ToUniversalTime();
-            ctx.SaveChanges();
-            FileLog.Write($"[SessionRuleStore] Promote: rule {id} is now live");
+            // Tell the write gate that THIS context carries a promotion a person asked for. Without it the
+            // gate refuses a rule moving to live, which is what closes the route straight through the
+            // DbSet as well - see GatewayDbContext.
+            ctx.PromotionInEffect = id;
+            try { ctx.SaveChanges(); }
+            finally { ctx.PromotionInEffect = null; }
+            FileLog.Write($"[SessionRuleStore] Promote: rule {id} is now live, asked for by {grant.Actor}");
             return ToRecord(entity);
         }
     }
@@ -213,6 +249,39 @@ public sealed class SessionRuleStore : IRuleReading
     {
         var typed = typedText ?? "";
 
+        // THE RECORD IS THE PRODUCT (owner ruling 14), so a record of nothing is refused rather than
+        // written with its missing parts turned into empty strings. A decline with no reason, an outcome
+        // nobody stated, a check the product does not ship, an answer that is blank - each of those was a
+        // legal write before, and every one of them produces a row that cannot establish what happened.
+        RequireSomething(sessionId, "which session this fired on");
+        RequireSomething(reason, "why it decided that - a decline with no reason is not a record of anything");
+        RequireSomething(outcome, "what happened next");
+        RequireSomething(grounding,
+            "what checking the stated reason against this screen found. A firing that cannot say is a " +
+            "firing where that check may never have run");
+
+        var theDecision = (decision ?? "").Trim();
+        if (!KnownDecisions.Contains(theDecision, StringComparer.Ordinal))
+            throw new RuleRejectedException(
+                $"'{theDecision}' is not a decision this build knows. A firing records one of: " +
+                string.Join(", ", KnownDecisions) + ".");
+
+        var runs = (primitiveRuns ?? Array.Empty<RulePrimitiveRun>()).ToList();
+        foreach (var run in runs)
+        {
+            if (run is null)
+                throw new RuleRejectedException("a firing cannot record a check that is nothing at all.");
+            if (_registry.Find(run.Name) is null)
+                throw new RuleRejectedException(
+                    $"this firing says the check '{run.Name}' ran, and there is no such check. The record " +
+                    "names what we ship: " + string.Join(", ", _registry.Primitives.Select(p => p.Name)) + ".");
+            if (string.IsNullOrWhiteSpace(run.Answer))
+                throw new RuleRejectedException(
+                    $"this firing says the check '{run.Name}' ran and does not say what it answered. A " +
+                    "check with no answer changed no decision, so recording it as evidence would be a " +
+                    "claim nobody can read.");
+        }
+
         lock (_gate)
         {
             using var ctx = _db.CreateContext();
@@ -232,18 +301,21 @@ public sealed class SessionRuleStore : IRuleReading
             {
                 TenantId = ctx.ActiveTenant!,
                 RuleId = ruleId,
-                SessionId = sessionId ?? "",
+                SessionId = sessionId.Trim(),
                 OccurredUtc = nowUtc.ToUniversalTime(),
+                // The screen and the understanding are the two parts that CAN legitimately be empty: a
+                // terminal really can be blank, and a reply that was refused really did give no
+                // understanding. Every other part of the record is required above.
                 ScreenText = screenText ?? "",
                 Understanding = understanding ?? "",
-                Decision = decision ?? "",
-                Reason = reason ?? "",
-                PrimitiveRuns = (primitiveRuns ?? Array.Empty<RulePrimitiveRun>())
+                Decision = theDecision,
+                Reason = reason.Trim(),
+                PrimitiveRuns = runs
                     .Select(r => new RulePrimitiveRunEntity { Name = r.Name, Arguments = r.Arguments, Answer = r.Answer })
                     .ToList(),
                 TypedText = typed,
-                Outcome = outcome ?? "",
-                Grounding = grounding ?? "",
+                Outcome = outcome.Trim(),
+                Grounding = grounding.Trim(),
             };
             ctx.SessionRuleFirings.Add(entity);
             ctx.SaveChanges();
@@ -267,6 +339,22 @@ public sealed class SessionRuleStore : IRuleReading
                 .Select(ToRecord)
                 .ToList();
         }
+    }
+
+    /// <summary>The decisions a firing may record - the closed set the evaluator uses, so a record can be
+    /// read rather than interpreted. Built from the constants themselves, not typed out a second
+    /// time.</summary>
+    private static readonly IReadOnlyList<string> KnownDecisions = new[]
+    {
+        RuleDecisions.Act, RuleDecisions.Decline, RuleDecisions.Abandoned, RuleDecisions.Refused,
+    };
+
+    /// <summary>Refuse a required part of the record that is missing, saying what it was for.</summary>
+    private static void RequireSomething(string? value, string what)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            throw new RuleRejectedException(
+                "the record is the product, so a firing has to say " + what + ".");
     }
 
     /// <summary>An empty or all-whitespace scope part means "any", which is stored as nothing at all.</summary>

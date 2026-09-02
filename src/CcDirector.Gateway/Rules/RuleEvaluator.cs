@@ -228,12 +228,34 @@ public sealed class RuleEvaluator
         var runtime = new RuleRuntime(screen, facts.RepositoryPath, _env.NowUtc, FirstFailureUtc: null);
         var checks = RuleCheckRunner.Run(reply.Checks, runtime, _registry);
 
+        // RULING A12: IS THE STATED REASON GROUNDED IN THE SCREEN IT WAS GIVEN? Computed before either
+        // branch, so the answer is on the record whichever way the decision went, and so a run where this
+        // never happened cannot look like a run where it happened and found nothing wrong.
+        var grounding = RuleReasonGrounding.Check(reply.Reason, screen);
+
         if (reply.Decision == RuleDecisions.Decline)
         {
+            // A decline stands even when its reason quotes something that is not there - declining is the
+            // direction that does nothing, and the record should show what actually happened. But the
+            // mismatch is NOTED rather than smoothed over, because it is the same unfaithfulness that
+            // would be an act on evidence that was not there.
             var declined = Record(tenant, new RuleFiringDraft(
                 chosen.Id, sessionId, screen, reply.Understanding, RuleDecisions.Decline, reply.Reason,
-                checks.Runs, "", "declined - nothing was typed.", ""));
+                checks.Runs, "", "declined - nothing was typed.", grounding.Statement));
             return new RulePass(RulePassOutcomes.Declined, reply.Reason, new[] { declined });
+        }
+
+        if (!grounding.IsGrounded)
+        {
+            // AN ACT ON EVIDENCE THAT WAS NOT THERE IS REFUSED. Recorded as a refusal with what was quoted
+            // and where it was not, so the reader sees the mismatch rather than an act that never happened.
+            var ungrounded = Record(tenant, new RuleFiringDraft(
+                chosen.Id, sessionId, screen, reply.Understanding, RuleDecisions.Refused, reply.Reason,
+                checks.Runs, "",
+                "nothing was typed: the reason for acting quotes text this screen does not contain.",
+                grounding.Statement));
+            FileLog.Write($"[RuleEvaluator] sid={sessionId}: act REFUSED, {grounding.Statement}");
+            return new RulePass(RulePassOutcomes.Ungrounded, grounding.Statement, new[] { ungrounded });
         }
 
         if (checks.Problem is not null)
@@ -256,7 +278,8 @@ public sealed class RuleEvaluator
             var wouldHave = Record(tenant, new RuleFiringDraft(
                 chosen.Id, sessionId, screen, reply.Understanding, RuleDecisions.Act, reply.Reason,
                 checks.Runs, "",
-                "dry run: nothing was typed. It would have typed: " + reply.TextToType, ""));
+                "dry run: nothing was typed. It would have typed: " + reply.TextToType,
+                grounding.Statement));
             return new RulePass(RulePassOutcomes.DryRun, reply.TextToType, new[] { wouldHave });
         }
 
@@ -271,7 +294,7 @@ public sealed class RuleEvaluator
             var notSent = Record(tenant, new RuleFiringDraft(
                 chosen.Id, sessionId, screen, reply.Understanding, RuleDecisions.Act, reply.Reason,
                 checks.Runs, "",
-                "nothing was typed: " + sent.Detail, ""));
+                "nothing was typed: " + sent.Detail, grounding.Statement));
             return new RulePass(RulePassOutcomes.NotSent, sent.Detail, new[] { notSent });
         }
 
@@ -284,7 +307,7 @@ public sealed class RuleEvaluator
                 : "typed into the session: " + reply.TextToType +
                   " - but the prompt route did not confirm it started a turn (" + sent.Detail +
                   "). The session's screen is the only evidence of whether the keystroke landed.",
-            ""));
+            grounding.Statement));
 
         return new RulePass(
             confirmed ? RulePassOutcomes.Acted : RulePassOutcomes.SendUnconfirmed,
@@ -295,6 +318,8 @@ public sealed class RuleEvaluator
         TenantId tenant, SessionRule rule, string sessionId, string screen,
         RuleAgentReply reply, IReadOnlyList<RulePrimitiveRun> runs, string why)
     {
+        // The reason on an abandonment is this Gateway's own words, not the agent's, so there is nothing of
+        // the agent's to check against the screen. Saying that is not the same as saying nothing.
         var firing = Record(tenant, new RuleFiringDraft(
             rule.Id, sessionId, screen, reply.Understanding, RuleDecisions.Abandoned, why,
             runs, "", "abandoned - nothing was typed.", RuleReasonGrounding.NotTheAgentsReason));

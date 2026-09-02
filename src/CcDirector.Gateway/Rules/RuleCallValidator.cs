@@ -55,6 +55,15 @@ public static class RuleCallValidator
 
         var arguments = call.Arguments ?? new List<RuleArgument>();
 
+        // A NULL ELEMENT IS A REFUSAL, NOT A CRASH. The arguments are a JSON-shaped mutable list, so a null
+        // element is exactly the shape malformed authoring output arrives in - and it used to reach the
+        // GroupBy below and throw, which turned a stated refusal into an unhandled Gateway failure. A
+        // refusal is a reason somebody can act on; an exception is not.
+        if (arguments.Any(a => a is null))
+            return RuleCallValidation.Refused(
+                $"the check '{primitive.Name}' was given a value that is nothing at all. Every value a check " +
+                "is given has to say which parameter it fills and where it comes from.");
+
         var duplicate = arguments
             .GroupBy(a => a.Parameter ?? "", StringComparer.Ordinal)
             .FirstOrDefault(g => g.Count() > 1);
@@ -107,7 +116,7 @@ public static class RuleCallValidator
     private static string? ProblemWithArgument(
         string primitiveName, RulePrimitiveParameter parameter, RuleArgument argument)
     {
-        var values = argument.Values ?? new List<string>();
+        var values = (argument.Values ?? new List<string>()).Select(v => v ?? "").ToList();
         var source = argument.Source ?? "";
 
         if (string.Equals(source, InputSource, StringComparison.Ordinal))
@@ -147,6 +156,9 @@ public static class RuleCallValidator
                 if (values.Count != 1)
                     return $"'{parameter.Name}' on the check '{primitiveName}' is one piece of text; " +
                            $"{values.Count} were given.";
+                if (string.IsNullOrWhiteSpace(values[0]))
+                    return $"'{parameter.Name}' on the check '{primitiveName}' is one piece of text, and it " +
+                           "was empty.";
                 return null;
 
             case RuleValueKind.TextList:
