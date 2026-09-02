@@ -15,10 +15,21 @@ namespace CcDirector.ControlApi;
 ///
 /// UNLIKE <see cref="GatewayPromptSink"/>, THIS ONE IS FIRE-AND-FORGET, and the difference is
 /// deliberate. The prompt sink must be acknowledged because the Director keeps no copy of the
-/// conversation, so an unconfirmed write means those messages exist nowhere. A screen is not like that:
-/// the local turn review still holds it, the next turn end sends a fresh one, and a reader that finds no
-/// stored screen falls back to a live tunnel pull - which is precisely the behaviour it had before this
-/// store existed. A miss costs a round trip, never a record.
+/// conversation, so an unconfirmed write means those messages exist nowhere.
+///
+/// WHAT A MISS ACTUALLY COSTS, corrected (inspection 01, finding 5). This comment used to say a miss cost
+/// "a round trip, never a record", on the reasoning that the next turn sends a fresh screen. It does not
+/// send THIS one. There is no outbox, no sequence and no reconnect replay for screens, so a turn whose
+/// screen could not be sent has no row in the Gateway's history and never will - the next turn sends the
+/// NEXT turn's screen. The Director's own local turn-review file still holds it and nothing replays that
+/// file into the store. If the machine then goes offline, the history read has no fallback for that turn
+/// at all.
+///
+/// That hole is accepted for now and NAMED rather than described away: a durable outbox is a mechanism
+/// that would owe its own proofs. What was fixed is that the loss is no longer silent - every drop is
+/// logged with its session and reason and counted by
+/// <see cref="GatewayStreamClient.ScreenPushesDropped"/>, so a Director that is dropping every screen no
+/// longer looks exactly like one that captured none.
 /// </summary>
 public sealed class GatewayScreenSink : ITurnEndScreenSink
 {

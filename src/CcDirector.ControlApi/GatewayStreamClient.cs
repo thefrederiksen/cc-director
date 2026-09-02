@@ -842,10 +842,79 @@ public sealed class GatewayStreamClient : IAsyncDisposable
     /// </summary>
     public void PushScreen(ScreenPush screen)
     {
-        if (screen is null || string.IsNullOrEmpty(screen.SessionId)) return;
+        if (screen is null) return;
+        if (string.IsNullOrEmpty(screen.SessionId))
+        {
+            DropScreen("<no session id>", default, "the push carries no session id");
+            return;
+        }
         var conn = _connection;
-        if (conn is null || conn.State != HubConnectionState.Connected) return;
-        _ = SendAsync(() => conn.InvokeAsync("PushScreen", screen), "PushScreen");
+        if (conn is null || conn.State != HubConnectionState.Connected)
+        {
+            DropScreen(screen.SessionId, screen.CapturedAtUtc,
+                conn is null ? "this Director has no tunnel connection" : $"the tunnel is {conn.State}, not Connected");
+            return;
+        }
+        _ = SendScreenAsync(conn, screen);
+    }
+
+    /// <summary>
+    /// Send one screen and account for what happened to it. A screen is fire-and-forget and is NOT retried,
+    /// so a failure here is the end of that screen - see <see cref="DropScreen"/> for what that costs.
+    /// </summary>
+    private static async Task SendScreenAsync(HubConnection conn, ScreenPush screen)
+    {
+        try
+        {
+            await conn.InvokeAsync("PushScreen", screen);
+            Interlocked.Increment(ref _screenPushesDelivered);
+        }
+        catch (Exception ex)
+        {
+            DropScreen(screen.SessionId, screen.CapturedAtUtc, $"the send failed ({ex.Message})");
+        }
+    }
+
+    private static long _screenPushesDropped;
+    private static long _screenPushesDelivered;
+
+    /// <summary>
+    /// How many turn-end screens this Director process has FAILED to deliver to the Gateway, and how many it
+    /// has delivered. Process-wide and monotonic, so a caller states a difference.
+    ///
+    /// THEY EXIST BECAUSE THE LOSS IS PERMANENT AND WAS INVISIBLE (inspection 01, finding 5). There is no
+    /// outbox, no sequence and no reconnect replay for screens: a screen that cannot be sent is gone, and the
+    /// next turn sends a DIFFERENT screen rather than this one. Until this counter existed, a Director that
+    /// dropped every screen it captured looked exactly like a Director that had captured none - the drop path
+    /// returned in silence and logged nothing at all.
+    ///
+    /// A DELIVERED count sits beside the dropped one deliberately: "nothing was dropped" is satisfied by a
+    /// Director that never pushed anything, so the number that means something is the pair.
+    /// </summary>
+    public static long ScreenPushesDropped => Interlocked.Read(ref _screenPushesDropped);
+
+    /// <summary>Screens this process has successfully handed to the Gateway. See
+    /// <see cref="ScreenPushesDropped"/> for why both halves are counted.</summary>
+    public static long ScreenPushesDelivered => Interlocked.Read(ref _screenPushesDelivered);
+
+    /// <summary>
+    /// Record a screen that will never reach the Gateway, and say so in the log.
+    ///
+    /// THE LOSS BOUNDARY, STATED HONESTLY. The report for this feature used to say a missed screen costs "a
+    /// round trip, never a record", on the reasoning that the next turn sends a fresh one. That is wrong: the
+    /// next turn sends the NEXT turn's screen. The turn whose screen was dropped has no row in the Gateway's
+    /// history and never will, and if the machine then goes offline there is no fallback for it either. The
+    /// Director's own local turn-review file still holds it, and nothing replays that file into the Gateway.
+    ///
+    /// So this is a real hole and it is named rather than papered over. What was fixed is that it is no longer
+    /// SILENT: every dropped screen is logged with its session, its capture time and the reason, and counted.
+    /// </summary>
+    private static void DropScreen(string sessionId, DateTime capturedAtUtc, string why)
+    {
+        var dropped = Interlocked.Increment(ref _screenPushesDropped);
+        FileLog.Write($"[GatewayStreamClient] screen for session={sessionId} captured {capturedAtUtc:O} DROPPED, "
+            + $"not retried and not replayed: {why}. That turn has no screen in the Gateway's history and will "
+            + $"not get one - the next turn sends the NEXT turn's screen. Screens dropped by this process: {dropped}");
     }
 
     private static async Task SendAsync(Func<Task> send, string what)
