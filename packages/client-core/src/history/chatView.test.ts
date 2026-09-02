@@ -45,11 +45,35 @@ describe("renderChatHistory", () => {
     expect(bubbles[0].html).toBe(""); // raw bubbles carry no rendered HTML
   });
 
-  it("reports the unsupported-agent empty text", () => {
-    const h = history([], { isSupported: false });
+  it("renders the Gateway's empty-state sentence verbatim", () => {
+    // The turn-push mission moved this sentence to the Gateway, which knows WHY a conversation is empty:
+    // an agent that keeps no history, a computer that has not sent its conversation, one too old to send
+    // one, one that is offline. The client used to guess between the first two and show "waiting" for all
+    // the rest, which is how a person waits for something that is never coming.
+    const h = history([], { isSupported: false, emptyText: "History is not available for this agent yet." });
     const { bubbles, emptyText } = renderChatHistory(h, ALL_HIDDEN);
     expect(bubbles).toHaveLength(0);
     expect(emptyText).toBe("History is not available for this agent yet.");
+  });
+
+  it("renders whatever sentence the Gateway sends, including ones it has never seen before", () => {
+    // A new reason for an empty screen is added on the Gateway alone; this must not need a client change.
+    const h = history([], { emptyText: "This session's computer is offline, so its conversation has not arrived here." });
+    expect(renderChatHistory(h, ALL_HIDDEN).emptyText)
+      .toBe("This session's computer is offline, so its conversation has not arrived here.");
+  });
+
+  it("falls back to the waiting line only when the Gateway sent no sentence", () => {
+    const h = history([]);
+    expect(renderChatHistory(h, ALL_HIDDEN).emptyText).toBe("Waiting for the conversation to start...");
+  });
+
+  it("keeps its OWN filter line above the Gateway's sentence - the Gateway cannot see the filters", () => {
+    const h = history([{ role: "Assistant", parts: [{ kind: "ToolUse", text: "ls", toolName: "bash" }] }],
+      { emptyText: "This session's computer is offline, so its conversation has not arrived here." });
+    const { bubbles, emptyText } = renderChatHistory(h, ALL_HIDDEN);
+    expect(bubbles).toHaveLength(0);
+    expect(emptyText).toBe("No messages match the current filters.");
   });
 
   it("reports the no-match empty text when everything is filtered out", () => {

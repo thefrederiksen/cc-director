@@ -62,8 +62,10 @@ public sealed class DirectorHub : Hub
         PushedRepositoryStore? repositoryStore = null, RepoHistoryStore? repoHistory = null,
         History.SessionHistoryRecorder? sessionHistory = null,
         Pairing.SessionKeyRegistry? sessionKeys = null,
-        History.SessionTurnStore? sessionTurns = null)
+        History.SessionTurnStore? sessionTurns = null,
+        TurnPushCapabilityRegistry? turnPushCapabilities = null)
     {
+        _turnPushCapabilities = turnPushCapabilities;
         _sessionTurns = sessionTurns;
         _sessionKeys = sessionKeys;
         _store = store;
@@ -96,6 +98,8 @@ public sealed class DirectorHub : Hub
     private readonly History.SessionHistoryRecorder? _sessionHistory;
     /// <summary>The stored conversation (turn-push mission). Null only in tests that do not exercise it.</summary>
     private readonly History.SessionTurnStore? _sessionTurns;
+    /// <summary>Which connected Directors send their conversations - learned here, from Hello.</summary>
+    private readonly TurnPushCapabilityRegistry? _turnPushCapabilities;
 
     /// <summary>
     /// A full repository/worktree snapshot from the bound Director (repositories mission, #510
@@ -210,6 +214,9 @@ public sealed class DirectorHub : Hub
         // authenticated device key - never the Hello payload, which the client writes.
         _registry.RegisterFromStream(directorId, hello.MachineName, hello.User, hello.Version, hello.Pid, hello.StartedAt, tenant,
             hello.DisplayName);
+        // What this build can do, kept against the CONNECTION: the same machine can come back on an older
+        // or a newer Director, and a stale answer here would put the wrong sentence on an empty Chat screen.
+        _turnPushCapabilities?.Record(tenant, directorId, hello.PushesTurns);
         FileLog.Write($"[DirectorHub] Hello: director={directorId} bound to conn={Short(Context.ConnectionId)} (version={hello.Version}, machine={hello.MachineName})");
         return CapabilitiesFor(tenant, directorId);
     }

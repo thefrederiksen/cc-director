@@ -640,6 +640,8 @@ public sealed class GatewayHost : IAsyncDisposable
     private readonly History.KnownRepositoryStore _knownRepositories;
     /// <summary>The stored conversation (turn-push mission): what Directors push and every reader reads.</summary>
     private readonly History.SessionTurnStore _sessionTurns;
+    /// <summary>Which Directors told this Gateway they send conversations (turn-push mission, phase 2).</summary>
+    private readonly Streaming.TurnPushCapabilityRegistry _turnPushCapabilities = new();
     private readonly History.SessionHistoryRecorder _sessionHistoryRecorder;
     private History.SessionHistorySweep? _sessionHistorySweep;
     private System.Threading.Timer? _sessionHistoryTimer;
@@ -2567,6 +2569,8 @@ public sealed class GatewayHost : IAsyncDisposable
         builder.Services.AddSingleton(_sessionHistoryRecorder);
         // The stored conversation (turn-push mission): DirectorHub.PushTurns writes it, Hello reads its watermarks.
         builder.Services.AddSingleton(_sessionTurns);
+        // Which Directors say they send conversations - recorded at Hello, read when Chat finds nothing stored.
+        builder.Services.AddSingleton(_turnPushCapabilities);
         // Gateway Cleanup mission (Wave 4b): the Gateway-native mission store, so the mission endpoints and
         // spawn validation share the one instance.
         builder.Services.AddSingleton(Missions);
@@ -3135,6 +3139,13 @@ public sealed class GatewayHost : IAsyncDisposable
         // listener with the phone in a pocket knows WHICH session is talking before anything else
         // (WingmanTranslator.FidelityPrompt v5.2). Push-store read - no dial. See ResolveSessionTitle.
         _voiceService ??= new Wingman.WingmanVoiceService(WingmanBrainAsync, _keyVault, _tenantSettingsResolver, instructionsProvider: () => _instructionsStore.ActiveContent, sessionTitleResolver: ResolveSessionTitle);
+        // The session's conversation, served from THIS Gateway's store (turn-push mission, phase 2). A
+        // literal route, so it outranks the /sessions/{sid}/{**rest} catch-all - whose "history" verb entry
+        // is removed in the same change, because the whole point is that reading a conversation no longer
+        // travels down the tunnel to re-parse a transcript on the user's disk once every 2.5 seconds.
+        Api.SessionConversationEndpoint.Map(_app, _sessionTurns, PushedSessions, _turnPushCapabilities,
+            _streamStaleAfter, _tenantBoundary);
+
         GatewayWingmanVoiceEndpoint.Map(_app, Registry, WingmanBrainAsync, _keyVault, _voiceService, _tenantSettingsResolver,
             pushedSessions: PushedSessions,
             sendCommand: SendCommandAsync,

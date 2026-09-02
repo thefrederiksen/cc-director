@@ -12,7 +12,7 @@ import { FileViewerModal } from "../components/FileViewerModal";
 const BOTTOM_THRESHOLD_PX = 40;
 
 export function ChatTab({ sessionId }: { sessionId: string | undefined }) {
-  const { bubbles, emptyText, loadFailed, filter, setFilter } = useSessionChat(sessionId);
+  const { bubbles, emptyText, staleNotice, loadFailed, filter, setFilter } = useSessionChat(sessionId);
   const [copied, setCopied] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   // Local Files (Phase 2): the file path currently being shown in the viewer, or null when closed. A
@@ -77,6 +77,12 @@ export function ChatTab({ sessionId }: { sessionId: string | undefined }) {
       </div>
 
       {error !== null && <div className="composer-error" role="alert">{error}</div>}
+
+      {/* ABOVE the scrolling conversation, not inside it. A long conversation opens at the BOTTOM, so a
+          notice placed at the top of the scroll is exactly where nobody looks (found in review); and it
+          must survive the empty branches too, where the reader is even more in the dark. It is non-null
+          only when there IS a stored conversation, so it never doubles up with the empty-state sentence. */}
+      {staleNotice !== null && <div className="chat-stale" role="status">{staleNotice}</div>}
 
       <div className="chat-stage">
         {loadFailed && bubbles.length === 0 ? (

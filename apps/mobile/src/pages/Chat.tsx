@@ -24,7 +24,7 @@ export function Chat() {
   const navigate = useNavigate();
 
   const [name, setName] = useState<string | null>(null);
-  const { bubbles, emptyText, loadFailed, filter, setFilter } = useSessionChat(sessionId);
+  const { bubbles, emptyText, staleNotice, loadFailed, filter, setFilter } = useSessionChat(sessionId);
   const [status, setStatus] = useState(STATUS_BASE);
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState<string | null>(null);
@@ -129,6 +129,12 @@ export function Chat() {
 
       {/* Live dictation status so a Speak Send from Chat is never silent (#1139). */}
       <DictationStatusStrip sessionId={sessionId} />
+
+      {/* ABOVE the scrolling conversation, not inside it. A long conversation opens at the BOTTOM, so a
+          notice placed at the top of the scroll is exactly where nobody looks (found in review); and it
+          must survive the empty branches too, where the reader is even more in the dark. It is non-null
+          only when there IS a stored conversation, so it never doubles up with the empty-state sentence. */}
+      {staleNotice !== null && <div className="chat-stale" role="status">{staleNotice}</div>}
 
       <div className="chat-stage">
         {loadFailed && bubbles.length === 0 ? (

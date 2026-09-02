@@ -83,9 +83,17 @@ export function chatLinkLabel(text: string): string {
 export function renderChatHistory(history: SessionHistoryDto | null, filter: HistoryBubbleFilter): RenderedHistory {
   const mapped = mapHistory(history, filter);
 
-  let emptyText = "Waiting for the conversation to start...";
-  if (history && history.isSupported === false) emptyText = "History is not available for this agent yet.";
-  else if (mapped.length === 0 && anyHidden(filter) && history && history.messages.length > 0)
+  // THE GATEWAY WRITES THIS SENTENCE (turn-push mission, phase 2). It used to be guessed here from a
+  // boolean, so every reason an empty screen could be empty - a computer that never sent its conversation,
+  // one too old to send one, one that is offline - rendered as "waiting for the conversation to start",
+  // and a person could sit in front of that waiting for something that was never coming. The one line
+  // still written here is about the reader's OWN filters, which the Gateway cannot see.
+  let emptyText = history?.emptyText
+    // No sentence from the Gateway: fall back to what this file used to derive, so a response from any
+    // older build still reads sensibly rather than telling an unsupported agent's reader to keep waiting.
+    ?? (history?.isSupported === false ? "History is not available for this agent yet." : null)
+    ?? "Waiting for the conversation to start...";
+  if (mapped.length === 0 && anyHidden(filter) && history && history.messages.length > 0)
     emptyText = "No messages match the current filters.";
 
   const bubbles: RenderedBubble[] = [];
