@@ -235,8 +235,14 @@ reported exit 0; inspection 01 observed exit 1 because
 alone on retry. Run here, that suite is fully green (456 passed) and the runner exits 0. Both
 observations were honest; the case is intermittent.
 
-**The parked gate:** see `fix-round/parked-gate.md` for the runner's own verdict, reported as the runner
-gave it.
+**The parked gate is RED, because one of its two suites DID NOT RUN.** `Core.Tests` passed - 4,374
+passed, 8 skipped, 0 failed. `Gateway.Tests` executed zero tests: it waited thirty minutes in the
+machine-wide lock queue and was then killed by the Architect, because it was queued ahead of the session
+fixing a live production outage. A suite that did not run is not a suite that passed, and the runner
+says so itself by requiring a total at or above the baseline. `Gateway.Tests` is therefore the one
+outstanding item on this work: it holds the only live-Postgres exercise of the screen store's key and
+the endpoint harness that changed with finding 1. Both projects build; their behaviour is unproven.
+Full detail in `fix-round/parked-gate.md`.
 
 The shared throwaway Postgres database `ccpgtest` was DROPPED AND RECREATED before that run. This is a
 standing rule for the rest of the mission: every time the provisional migration id changes, every

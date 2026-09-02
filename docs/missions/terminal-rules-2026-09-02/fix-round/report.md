@@ -146,6 +146,24 @@ Recorded rather than quietly fixed, because they are the same shape as the missi
   because the lesson is about reading a truncated view as if it were the whole one, which is the same
   mistake as reading an empty grep as a clean result.
 
+## The gates
+
+**The default local gate is GREEN:** nine projects, every TRX outcome Completed, 4,556 tests, 0 failed,
+exit 0. That also resolves the discrepancy ruling 12 asked about rather than averaging it - inspection
+01 saw exit 1 on an intermittent venv-rebuild case that is fully green here.
+
+**The parked gate is RED, because one of its two suites DID NOT RUN.** `Core.Tests` passed - 4,374
+passed, 8 skipped, 0 failed. `Gateway.Tests` executed zero tests: it sat in the machine-wide lock queue
+for thirty minutes and was then killed by the Architect, because it was queued AHEAD of the session
+fixing a live production outage and was putting that fix an hour and a half out. Its own log says "Test
+host process crashed", which is what the runner saw and is not what happened.
+
+**So one item is outstanding on this round: `Gateway.Tests` has not been run.** It is the only place
+this round's new key component is exercised on real Postgres, and it holds the endpoint harness that
+changed with finding 1. Both projects build - the gate builds every project before running any - so
+nothing fails to compile; their behaviour is unproven. No further run will be started until the
+Architect clears it. Full detail, with the runner's own verdict quoted, in `parked-gate.md`.
+
 ## What this round does NOT claim
 
 - It does not say phase 0 is complete. A second independent inspection runs first.
@@ -153,3 +171,5 @@ Recorded rather than quietly fixed, because they are the same shape as the missi
   writer's risk, which is precisely why r12 requires the second inspection.
 - Rows 1, 2, 3, 5 and 6 still seed the store by hand and still say nothing about who hands it a screen.
   Row 4 is the only row that covers that, and it is the one this round made capable of failing.
+- It does not claim a green parked gate. Half of it ran and passed; the other half did not run at all,
+  and a suite that did not run is not a suite that passed.
