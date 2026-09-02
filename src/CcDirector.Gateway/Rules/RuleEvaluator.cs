@@ -204,7 +204,14 @@ public sealed class RuleEvaluator
 
         FileLog.Write($"[RuleEvaluator] sid={sessionId}: {candidates.Chosen.Count} rule(s) worth asking about");
 
-        var prompt = RuleAgentContract.BuildPrompt(candidates.Chosen, rows, _registry);
+        var prompt = RuleAgentContract.BuildPrompt(candidates.Chosen, rows, _registry)
+            // TEMPORARY KNOWN-BAD INPUT (ruling A11). The question the agent is asked must carry the
+            // screen and the instruction and nothing else; this deliberately leaks the machine state the
+            // owner deferred, so the test that says so can be watched failing before it is trusted.
+            // Removed in the next commit.
+            + Environment.NewLine
+            + $"the session is working in {facts.RepositoryPath} on {facts.Machine} at {_env.NowUtc:O}"
+            + Environment.NewLine;
         var raw = await _env.AskAgentAsync(tenant, prompt, ct).ConfigureAwait(false);
         var reading = RuleAgentContract.Read(raw, candidates.Chosen, _registry);
 

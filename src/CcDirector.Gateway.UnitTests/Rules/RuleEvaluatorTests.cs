@@ -80,8 +80,12 @@ public sealed class RuleEvaluatorTests
         public IReadOnlyList<SessionRuleFiring> FiringsFor(TenantId tenant, Guid ruleId) =>
             StoredFirings.Where(f => f.RuleId == ruleId).ToList();
 
+        /// <summary>The repository the session is working in. Settable so a test can give it a string that
+        /// could not appear by accident and then look for it where it must not be.</summary>
+        public string RepositoryPath { get; set; } = @"D:\ReposFred\scratch";
+
         public RuleSessionFacts? ReadSessionFacts(TenantId tenant, string sessionId) =>
-            new(sessionId, "RawCli", @"D:\ReposFred\scratch", "SOREN_NORTH", "Session Rules", ActivityState);
+            new(sessionId, "RawCli", RepositoryPath, "SOREN_NORTH", "Session Rules", ActivityState);
 
         public Task<IReadOnlyList<string>?> ReadScreenRowsAsync(
             TenantId tenant, string directorId, string sessionId, CancellationToken ct)
@@ -476,6 +480,42 @@ public sealed class RuleEvaluatorTests
         Assert.Contains("screen", firing.Outcome);
         Assert.DoesNotContain("did not land", firing.Outcome);
         Assert.DoesNotContain("never reached", firing.Outcome);
+    }
+
+    // ---- ruling A11: what decides WHETHER a rule applies is the screen ------------------------------
+
+    [Fact]
+    public async Task The_question_the_agent_is_asked_carries_the_screen_and_the_instruction_and_not_the_machine_state()
+    {
+        // RULING A11, MADE TESTABLE. The owner ruled that the terminal screen is the only input, and
+        // ruling 15 ships checks that take a clock and the session's repository root as ARGUMENTS - so the
+        // two are not in conflict, but nothing separated them except a convention, and a convention is not
+        // a bound. This is the separation, enforced: the values that would let the agent decide whether an
+        // instruction applies from something other than the screen are NOT in the question it is asked.
+        //
+        // The check the agent may ask for can still be handed those values when it RUNS - that is what
+        // RuleRuntime is for, and it happens after the decision. What cannot happen is the decision being
+        // made from them.
+        var rule = Rule();
+        var env = EnvironmentWith(rule);
+        env.RepositoryPath = @"D:\ReposFred\zz-distinctive-repository-name";
+        env.NowUtc = new DateTime(2031, 4, 5, 6, 7, 8, DateTimeKind.Utc);
+        env.AgentReply = DeclineReply(rule.Id, "the screen is not what the instruction is about.");
+
+        await Run(env);
+
+        var prompt = env.LastPrompt;
+        Assert.NotNull(prompt);
+
+        // A PRESENCE first, so the assertions below cannot pass over an empty or truncated question: the
+        // screen and the account's own sentence must both really be in it.
+        Assert.Contains("reached your", prompt!, StringComparison.Ordinal);
+        Assert.Contains(TheSentence, prompt, StringComparison.Ordinal);
+
+        // And then what must NOT be: the machine state the owner deferred.
+        Assert.DoesNotContain("zz-distinctive-repository-name", prompt, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("2031", prompt, StringComparison.Ordinal);
+        Assert.DoesNotContain("SOREN_NORTH", prompt, StringComparison.Ordinal);
     }
 
     // ---- ruling A12: an act's reason has to be grounded in the screen it was given ------------------
