@@ -149,8 +149,20 @@ natural next bound is to require an act's reason to quote something the screen a
   the recovery of a real provider limit; row 3 of the QA report stays PENDING and is not to be faked.
 - **One machine, one tenant, SQLite, no auth on the rig.** Nothing ran against Postgres, nothing ran
   hosted, and no client authentication was exercised.
-- **`CcDirector.Gateway.Tests` did not run.** It is parked and host-bound; a queued run cannot acquire
-  the machine-wide lock within its 45-minute wait.
+- **`CcDirector.Gateway.Tests` did not run, and the local gate flagged that as a coverage gap** -
+  this change touches `GatewayHost`, which that suite covers. It was ATTEMPTED, filtered down to the
+  turn-end wiring so it would be short, and it ran ZERO tests: the machine-wide lock was held
+  throughout by another session, and the run timed out waiting for it.
+
+  ```
+  [gateway-test-lock] Still waiting after 481s. Holder: process 49548, started 2026-09-02T19:53:01Z,
+  holding since 2026-09-02T20:04:39Z (3896s ago), owner cc-director session
+  68ca6abb-7bac-41f8-9168-5be5f6b897d4, working directory D:\ReposFred\devthrottle-supervised\...
+  ```
+
+  A zero-test timeout is a QUEUE, not a broken build, and the lock was not fought for. The gap is
+  real and is stated rather than covered over: a regression inside that suite could reach the mission
+  branch on a green local gate.
 - **The rules routes are not on the session-key allow list.** An agent's session key cannot call
   `/gateway/rules`; a device key can. Whether an agent should be able to write rules is a product
   decision for the owner, and it was deliberately not made here.

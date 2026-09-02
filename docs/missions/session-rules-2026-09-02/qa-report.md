@@ -573,3 +573,5 @@ ran on.
 | Gateway unit suite, after the endpoints and host wiring | `73273a457` | 0 | 3360 passed, 0 failed, 2 skipped |
 | Send-outcome tests, old wording on the new plumbing | (working tree) | 1 | 2 failed, 16 passed |
 | All rules tests, after the honest send outcome | `79f699c82` | 0 | 128 passed, 0 failed |
+| Local gate, `scripts/test-local.ps1` | `f1bc6ca50` | 0 | all 9 projects Completed; 4654 passed, 2 skipped |
+| Parked `CcDirector.Gateway.Tests`, filtered to the turn-end wiring | `f1bc6ca50` | 124 (timeout) | **PENDING** - ZERO tests ran. The machine-wide lock was held by another session throughout: `Still waiting after 481s. Holder: process 49548 ... owner cc-director session 68ca6abb-7bac-41f8-9168-5be5f6b897d4, working directory D:\ReposFred\devthrottle-supervised\...`. A zero-test timeout is a QUEUE, not a broken build. |
