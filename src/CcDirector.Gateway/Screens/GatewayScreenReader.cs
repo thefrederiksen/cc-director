@@ -71,7 +71,7 @@ public readonly record struct LiveScreenRead(ScreenGridResponse? Grid, ScreenSou
 /// to allow a little noise. Here the conservative direction is the opposite: any byte at all means the
 /// screen may have moved, so it falls to the tunnel, which is cheap and correct.
 /// </summary>
-internal sealed class GatewayScreenReader
+public sealed class GatewayScreenReader
 {
     /// <summary>
     /// How old the pushed snapshot backing a live verdict may be. Twenty seconds: a Director pushes its
@@ -110,7 +110,10 @@ internal sealed class GatewayScreenReader
     /// null grid. The null is the same null <c>GetScreenGridAsync</c> returned before this existed, so a
     /// caller's fail-closed branch needs no change.
     /// </summary>
-    public async Task<LiveScreenRead> ReadLiveAsync(
+    /// <remarks>INTERNAL because <see cref="SessionVerbClient"/> is: the tunnel route is a Gateway-internal
+    /// seam and there is no caller outside this assembly. The history reads above are public, because a
+    /// stored screen is ordinary data.</remarks>
+    internal async Task<LiveScreenRead> ReadLiveAsync(
         TenantId tenant, SessionVerbClient route, string sessionId, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(route);

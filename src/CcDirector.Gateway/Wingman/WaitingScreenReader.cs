@@ -2,17 +2,24 @@ using CcDirector.Core.Tenancy;
 using CcDirector.Core.Utilities;
 using CcDirector.Gateway.Api;
 using CcDirector.Gateway.Contracts;
+using CcDirector.Gateway.Screens;
 
 namespace CcDirector.Gateway.Wingman;
 
 /// <summary>
-/// Reads a session's LIVE screen over the tunnel and classifies it with the pure
+/// Reads a session's LIVE screen and classifies it with the pure
 /// <see cref="WaitingScreenClassifier"/> (issue #2193). This is the ONE place that read-and-classify
 /// step lives, so every surface that has to know "is this session sitting on a menu right now?" asks
 /// the same question and gets the same answer: the wingman voice endpoint, the prompt front door's
 /// menu guard, and the narration generator.
 ///
-/// It costs one tunnel read and NO model call - the classifier is pure. That is what makes it usable
+/// The read goes through <see cref="GatewayScreenReader.ReadLiveAsync"/> (the Terminal Rules mission,
+/// issue #2644), so it is answered from the Gateway's own screen store when the store can PROVE the
+/// stored screen is still what is on that terminal, and by a live tunnel pull otherwise. A read neither
+/// can answer is UNREADABLE and arrives here as a null grid - the same null the tunnel pull returned
+/// before the store existed, so every fail-closed branch below is unchanged.
+///
+/// It costs at most one tunnel read and NO model call - the classifier is pure. That is what makes it usable
 /// on the send path (where a model call would add seconds to every spoken reply) and on the narration
 /// path (where it must not add provider cost to a turn).
 ///
@@ -40,15 +47,12 @@ internal static class WaitingScreenReader
     /// never mistaken for either a menu or a composer.
     /// </summary>
     public static async Task<WaitingScreenKind> ClassifyAsync(
-        SessionVerbClient route, string sid, CancellationToken ct = default)
+        GatewayScreenReader screens, TenantId tenant, SessionVerbClient route, string sid, CancellationToken ct = default)
     {
-        ScreenGridResponse? grid;
-        try { grid = await route.GetScreenGridAsync(sid, ct); }
-        catch (Exception ex)
-        {
-            FileLog.Write($"[WaitingScreenReader] sid={sid}: screen-grid read threw ({ex.Message}) - treating as unreadable");
-            return WaitingScreenKind.Blocked;
-        }
+        // ReadLiveAsync owns the store-or-tunnel decision and never throws for a failed read: an unreadable
+        // screen comes back as a null grid, which is what this method has always treated as Blocked.
+        var read = await screens.ReadLiveAsync(tenant, route, sid, ct);
+        var grid = read.Grid;
         if (grid is null)
             return WaitingScreenKind.Blocked;
 
@@ -63,8 +67,9 @@ internal static class WaitingScreenReader
     /// the stricter rule, but it would silently break ordinary voice replies, which is a worse outcome than
     /// the gap it would close.
     /// </summary>
-    public static async Task<bool> IsMenuAsync(SessionVerbClient route, string sid, CancellationToken ct = default)
-        => await ClassifyAsync(route, sid, ct) == WaitingScreenKind.Menu;
+    public static async Task<bool> IsMenuAsync(
+        GatewayScreenReader screens, TenantId tenant, SessionVerbClient route, string sid, CancellationToken ct = default)
+        => await ClassifyAsync(screens, tenant, route, sid, ct) == WaitingScreenKind.Menu;
 
     /// <summary>
     /// The MODEL-CONFIRMED menu verdict (issue devthrottle_internal#1195) - the one every surface that BLOCKS
@@ -82,15 +87,11 @@ internal static class WaitingScreenReader
     /// chose - the original #2193 disaster); an unreadable screen or a quiet classifier never blocks.
     /// </summary>
     public static async Task<bool> ConfirmedMenuAsync(
-        SessionVerbClient route, string sid, TenantId tenant, WingmanTranslator? translator, CancellationToken ct = default)
+        GatewayScreenReader screens, SessionVerbClient route, string sid, TenantId tenant,
+        WingmanTranslator? translator, CancellationToken ct = default)
     {
-        ScreenGridResponse? grid;
-        try { grid = await route.GetScreenGridAsync(sid, ct); }
-        catch (Exception ex)
-        {
-            FileLog.Write($"[WaitingScreenReader] sid={sid}: screen-grid read threw ({ex.Message}) - not a menu");
-            return false;
-        }
+        var read = await screens.ReadLiveAsync(tenant, route, sid, ct);
+        var grid = read.Grid;
         if (grid is null || grid.Rows is null || grid.Rows.Count == 0) return false;
 
         var kind = WaitingScreenClassifier.Classify(

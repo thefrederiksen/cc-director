@@ -129,7 +129,12 @@ public sealed class WingmanVoiceService
     /// <summary>The directory the per-tenant partitions live under.</summary>
     private readonly string _baseDir;
     private readonly HttpClient? _ttsHttp;   // test seam for TtsAsync (issue #939); the shared static when null
-    private readonly Func<TenantId, string, string?>? _sessionTitleResolver;   // tenant + sid -> session title, spoken first
+    private readonly Func<TenantId, string, string?>? _sessionTitleResolver;
+
+    /// <summary>The Gateway's screen reader, or null when this service was built without one (see the
+    /// constructor). Narration reads the screen through it, so a turn whose stored screen is provably
+    /// current costs NO tunnel round trip - which is the round trip phase 0 exists to remove.</summary>
+    private readonly Screens.GatewayScreenReader? _screens;   // tenant + sid -> session title, spoken first
 
     /// <summary>
     /// True only for the EXACT form <see cref="Tenancy.TenantRegistry"/> mints: a canonical lowercase GUID.
@@ -327,8 +332,15 @@ public sealed class WingmanVoiceService
         string? persistPath = null,
         Func<string>? instructionsProvider = null,
         HttpClient? ttsHttpClient = null,
-        Func<TenantId, string, string?>? sessionTitleResolver = null)
+        Func<TenantId, string, string?>? sessionTitleResolver = null,
+        Screens.GatewayScreenReader? screens = null)
     {
+        // Terminal Rules (issue #2644). OPTIONAL here, unlike the endpoints, and the reason is that a null
+        // does not mean "read the tunnel anyway" - it means this service was constructed without a screen
+        // reader at all, in which case the narration simply carries NO screen, which is the documented
+        // behaviour of a failed screen read on this path already ("narrating without a screen verdict").
+        // There is no second answer to the same question and nothing is silently degraded.
+        _screens = screens;
         _vault = vault ?? throw new ArgumentNullException(nameof(vault));
         _tenantSettings = tenantSettings ?? throw new ArgumentNullException(nameof(tenantSettings));
         // The account's spoken language comes from the same per-tenant resolver this service already
@@ -1048,8 +1060,18 @@ public sealed class WingmanVoiceService
         // narration, exactly the read the old post-translate menu check made anyway. A failed read just
         // means no verdict this turn: the narration itself never depends on it.
         ScreenGridResponse? screenGrid = null;
-        try { screenGrid = await route.GetScreenGridAsync(sid, ct); }
-        catch (Exception ex) { FileLog.Write($"[WingmanVoiceService] screen-grid read failed for sid={sid}: {ex.Message} - narrating without a screen verdict"); }
+        if (_screens is not null)
+        {
+            // Terminal Rules (issue #2644): narration runs AT TURN END, which is exactly the moment the
+            // store holds a screen for this session, so this is the round trip the store was built to
+            // remove. ReadLiveAsync still falls to the tunnel whenever it cannot prove the stored screen
+            // is current, and an unreadable screen comes back null - the same "narrating without a screen
+            // verdict" this path has always handled.
+            var read = await _screens.ReadLiveAsync(tenant, route, sid, ct);
+            screenGrid = read.Grid;
+            if (screenGrid is null)
+                FileLog.Write($"[WingmanVoiceService] no screen for sid={sid} ({read.Why}) - narrating without a screen verdict");
+        }
         var liveScreen = screenGrid is { HasGrid: true, Rows.Count: > 0 } ? string.Join("\n", screenGrid.Rows) : null;
         // The wingman is now running for this session - show it yellow until the summary lands, but
         // only for a brand-new turn. A background refresh / catch-up stays quiet so a session a phone

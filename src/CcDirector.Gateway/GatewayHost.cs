@@ -2320,6 +2320,7 @@ public sealed class GatewayHost : IAsyncDisposable
             activityState: (tenant, sessionId) =>
                 PushedSessions.TryLocate(tenant, sessionId, _streamStaleAfter)?.Session.ActivityState,
             brainProvider: WingmanBrainAsync,
+            screens: ScreenReader,
             ledger: _activityEvents,
             enterTenantScope: tenant => _tenantBoundary.EnterScope(tenant),
             sendOwnerEmail: async (subject, body, ct) =>
@@ -2415,7 +2416,7 @@ public sealed class GatewayHost : IAsyncDisposable
         // sessionTitleResolver: the wingman opens every narration with the session's title, so a
         // listener with the phone in a pocket knows WHICH session is talking before anything else
         // (WingmanTranslator.FidelityPrompt v5.2). Push-store read - no dial. See ResolveSessionTitle.
-        _voiceService ??= new Wingman.WingmanVoiceService(WingmanBrainAsync, _keyVault, _tenantSettingsResolver, instructionsProvider: () => _instructionsStore.ActiveContent, sessionTitleResolver: ResolveSessionTitle);
+        _voiceService ??= new Wingman.WingmanVoiceService(WingmanBrainAsync, _keyVault, _tenantSettingsResolver, instructionsProvider: () => _instructionsStore.ActiveContent, sessionTitleResolver: ResolveSessionTitle, screens: ScreenReader);
 
         // The session supervisor (issue #915). It hangs off the SAME turn-end boundary as the voice refresh
         // below, deliberately: that event is the only thing that can wake it, so a Working session is out of
@@ -2854,6 +2855,8 @@ public sealed class GatewayHost : IAsyncDisposable
             // The auth-boundary tenant binder - REQUIRED (finding CR-7): request-scoped reads resolve the
             // caller's tenant through it, and on hosted a request with no bound tenant is denied, never Local.
             _tenantBoundary,
+            // Terminal Rules (issue #2644): the one screen reader the menu guard on the prompt route turns on.
+            ScreenReader,
             AuthEnabled,
             netDiagRollup: _netDiagRollup,
             // Issue #2017: the snooze-default consumer at POST /sessions/{sid}/hold reads the caller tenant's
@@ -3154,7 +3157,7 @@ public sealed class GatewayHost : IAsyncDisposable
         // sessionTitleResolver: the wingman opens every narration with the session's title, so a
         // listener with the phone in a pocket knows WHICH session is talking before anything else
         // (WingmanTranslator.FidelityPrompt v5.2). Push-store read - no dial. See ResolveSessionTitle.
-        _voiceService ??= new Wingman.WingmanVoiceService(WingmanBrainAsync, _keyVault, _tenantSettingsResolver, instructionsProvider: () => _instructionsStore.ActiveContent, sessionTitleResolver: ResolveSessionTitle);
+        _voiceService ??= new Wingman.WingmanVoiceService(WingmanBrainAsync, _keyVault, _tenantSettingsResolver, instructionsProvider: () => _instructionsStore.ActiveContent, sessionTitleResolver: ResolveSessionTitle, screens: ScreenReader);
         GatewayWingmanVoiceEndpoint.Map(_app, Registry, WingmanBrainAsync, _keyVault, _voiceService, _tenantSettingsResolver,
             pushedSessions: PushedSessions,
             sendCommand: SendCommandAsync,
@@ -3166,6 +3169,7 @@ public sealed class GatewayHost : IAsyncDisposable
             history: _transcriptionHistory,
             audioArchive: _transcriptionAudioArchive,
             tenantBoundary: _tenantBoundary,
+            screens: ScreenReader,
             transcripts: _transcripts);
 
         // The fleet brain: the tool-calling loop behind POST /assistant/turn. The chat transport resolves the

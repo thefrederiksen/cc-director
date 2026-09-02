@@ -67,6 +67,10 @@ internal static class GatewayEndpoints
         // error too. A self-host process constructs the boundary over the SingleTenantContext, which always
         // resolves Local - so there is no legitimate caller with nothing to pass.
         Tenancy.HostedTenantBoundary tenantBoundary,
+        // Terminal Rules (issue #2644): the ONE place a screen is read. REQUIRED AND NON-NULLABLE for the
+        // same reason the boundary above is - the menu guard below turns on it, and a defaulted null would
+        // have to mean "pull the tunnel anyway", a second answer to a question that must have exactly one.
+        Screens.GatewayScreenReader screens,
         bool authEnabled = false, Func<bool>? requestShutdown = null,
         Action<string, string, string>? onSessionState = null,
         Func<TenantId, string, bool>? voiceGeneratingFor = null,
@@ -2757,7 +2761,7 @@ internal static class GatewayEndpoints
                     return Results.Json(new { error = "a tenant could not be resolved for this request" },
                         statusCode: StatusCodes.Status403Forbidden);
                 var guardRoute = new SessionVerbClient(director, sendCommand);
-                if (await Wingman.WaitingScreenReader.ConfirmedMenuAsync(guardRoute, sid, guardTenant.Value, wingmanTranslator, CancellationToken.None))
+                if (await Wingman.WaitingScreenReader.ConfirmedMenuAsync(screens, guardRoute, sid, guardTenant.Value, wingmanTranslator, CancellationToken.None))
                 {
                     // The refusal is SPOKEN - a voice reply asked for this guard - so it is said in the
                     // account's language (issue #1009). The resolver is required rather than defaulted: a
