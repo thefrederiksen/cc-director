@@ -8,30 +8,48 @@ conduct). Not a transcript. Not a history.
 
 ## Where things stand
 
-- **Phase:** 1 - the rule store, the contract, the primitives.
-- **Mission branch:** `mission/session-rules`, pushed. Base `fac79fb56` (origin/main).
+- **Phase:** 2 - THE THIN VERTICAL SLICE, straight to the owner's demonstration (ruling A9).
+- **Mission branch:** `mission/session-rules`, pushed, head `6513a1968` - phase 1 merged in.
 - **Landed on main so far:** nothing.
-- **Head of the mission branch:** `21c86e85d` - brief and plan only, no product code yet.
+- **Phase 1 is DONE and accepted** by the Architect: the rule store, the contract, the
+  reflection-derived check registry, the five verified checks, and the write-time validator. Its
+  account, with every red quoted before its green, is `phase-1-report.md`. Local gate exit code 0,
+  4604 passed, on `48eeb1e83`; the only change after that run was documentation.
+- **An independent inspection of phase 1 is IN FLIGHT** with a different agent family. Its findings
+  come back to a FRESH Manager, not to the one that built it, and not to the inspector to patch.
+  Phase 2 is being built on top of phase 1 in parallel rather than waiting, because the owner's
+  model allowance may not last the mission (A9).
 
 ## The next Manager's task
 
-Build phase 1 as `plan.md` describes it, on a phase branch cut from `origin/mission/session-rules`,
-in its OWN worktree. Push often. Report to the Architect when it is done and pushed, then stop - the
-Architect kills the Manager and calls the inspection.
+Build the THIN VERTICAL SLICE described in `demonstration-rig.md`, on a phase branch cut from
+`origin/mission/session-rules`, in its OWN worktree. This is the owner's acceptance test and it is
+the single most valuable thing left in the mission. It may be crude. It must be REAL.
 
-## The acceptance rows phase 1 owes
+Read `demonstration-rig.md` before anything else - it is the executable design, and it says exactly
+what each demonstration proves and what it does NOT.
 
-1. A rule round-trips through the store: the account's sentence, the derived screen description, the
-   derived trigger words, the derived primitive calls, scope, cooldown, daily cap, state.
-2. A rule naming a primitive that does not exist is REJECTED at write time with a stated reason.
-3. A rule supplying the wrong arguments to a real primitive is REJECTED with a stated reason.
-4. The primitive registry is DERIVED by reflection and is non-empty, and every attributed primitive
-   is reachable through it.
-5. The five primitives have their own unit tests, including `is_path_inside` against `..`, a
-   symlink, and a prefix collision (`/repo-other` is not inside `/repo`).
-6. A new rule is created in dry run and nothing in phase 1 types anything anywhere.
+## The acceptance rows phase 2 owes
 
-Every one of those is a test that was watched going RED before it went green, with both quoted.
+1. **Demonstration A, captured as an artifact.** Words go onto a real terminal screen; the session
+   goes idle on its own; the rule fires on its own; something is typed; the screen after shows it.
+   The screen before, the rule that matched, what the agent understood and decided, which checks ran
+   with what arguments and what they answered, exactly what was typed, and the screen after - all
+   quoted into `qa-report.md` with the commit and the exit code, the moment it works.
+2. **The negative control N1:** a session merely DISCUSSING a usage limit is NOT convicted, and the
+   record says why not. Trigger words alone cannot tell that apart from the real thing; only reading
+   the screen against the instruction can.
+3. **The negative control N2:** a rule DECLINES a screen its instruction does not cover, with a
+   stated reason, and the decline is a RECORDED FIRING. Silence is not a decline - a rule that did
+   nothing because the evaluator threw looks identical to one that declined, unless it is written
+   down. Prove the decline by the PRESENCE of its record.
+4. **Dry run types nothing**, proved by an instrumented send seam counted at zero, never by the
+   absence of a log line.
+5. **The screen is re-read immediately before acting**, and a screen that changed between the
+   decision and the keystroke is abandoned with the abandonment recorded.
+
+Everything else - authoring by conversation, the user interface, the hardening - comes after. Do not
+build them. If the slice needs a rule, create it through the phase 1 store directly.
 
 ## Branch and worktree convention on this mission
 
