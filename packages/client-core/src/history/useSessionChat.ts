@@ -22,6 +22,9 @@ const CHAT_POLL_MS = 2500;
 export interface SessionChat {
   bubbles: RenderedBubble[];
   emptyText: string;
+  /** The Gateway's sentence for a conversation that is real but no longer current - its computer is away,
+   *  or too old to send new turns. Shown ABOVE the bubbles; null while the session is live. */
+  staleNotice: string | null;
   loadFailed: boolean;
   filter: HistoryBubbleFilter;
   /** Flip a "Show:" category; the choice is persisted and the cached history re-rendered immediately. */
@@ -32,6 +35,9 @@ export function useSessionChat(sessionId: string | undefined): SessionChat {
   const [filter, setFilterState] = useState<HistoryBubbleFilter>(loadChatFilter);
   const [bubbles, setBubbles] = useState<RenderedBubble[]>([]);
   const [emptyText, setEmptyText] = useState("Waiting for the conversation to start...");
+  // The Gateway's notice for a conversation that is real but no longer current (its computer is away, or
+  // cannot send new turns). Shown ABOVE the bubbles; null while the session is live.
+  const [staleNotice, setStaleNotice] = useState<string | null>(null);
   const [loadFailed, setLoadFailed] = useState(false);
 
   const signatureRef = useRef("");
@@ -46,6 +52,7 @@ export function useSessionChat(sessionId: string | undefined): SessionChat {
     const f = filterRef.current;
     const rendered = renderChatHistory(history, f);
     setEmptyText(rendered.emptyText);
+    setStaleNotice(history?.staleNotice ?? null);
 
     const mappedForSignature = rendered.bubbles.map((r) => r.bubble);
     const signature = buildChatSignature(mappedForSignature, history?.historyState, f);
@@ -94,5 +101,5 @@ export function useSessionChat(sessionId: string | undefined): SessionChat {
     [renderHistory],
   );
 
-  return { bubbles, emptyText, loadFailed, filter, setFilter };
+  return { bubbles, emptyText, staleNotice, loadFailed, filter, setFilter };
 }

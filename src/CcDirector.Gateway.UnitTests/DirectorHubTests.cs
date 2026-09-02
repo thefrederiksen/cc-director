@@ -140,6 +140,28 @@ public sealed class DirectorHubTests : IDisposable
     }
 
     [Fact]
+    public void Hello_RecordsWhetherThisDirectorSendsConversations()
+    {
+        // The input to the sentence an empty Chat screen shows. Without it, "the computer has not sent its
+        // conversation yet" and "that computer is too old to send one" are the same silence, and the screen
+        // tells a reader to wait for something that will never arrive.
+        var caps = new CcDirector.Gateway.Streaming.TurnPushCapabilityRegistry();
+        var ctxNew = new FakeHubCallerContext("conn-1");
+        var newBuild = new DirectorHub(_store, _registry, InputStatsHandle.Available(_inputStats), new GatewayStreamRegistry(), SelfHostBoundary(), turnPushCapabilities: caps) { Context = ctxNew };
+        var ctxOld = new FakeHubCallerContext("conn-2");
+        var oldBuild = new DirectorHub(_store, _registry, InputStatsHandle.Available(_inputStats), new GatewayStreamRegistry(), SelfHostBoundary(), turnPushCapabilities: caps) { Context = ctxOld };
+
+        newBuild.Hello(new DirectorStreamHello { DirectorId = "dir-new", Version = "test", PushesTurns = true });
+        oldBuild.Hello(new DirectorStreamHello { DirectorId = "dir-old", Version = "test" });   // an older build says nothing
+
+        Assert.True(caps.PushesTurns(TenantId.Local, "dir-new"));
+        Assert.False(caps.PushesTurns(TenantId.Local, "dir-old"));
+        Assert.False(caps.PushesTurns(TenantId.Local, "dir-never-seen"));
+        // Partitioned: another account's Director of the same name has said nothing to us.
+        Assert.False(caps.PushesTurns(new TenantId("11111111-1111-1111-1111-111111111111"), "dir-new"));
+    }
+
+    [Fact]
     public void Hello_WithNothingStoredForThisDirector_SaysSo_RatherThanStayingSilent()
     {
         // An empty list that the Gateway VOUCHES for is a fact the Director acts on: it pushes every

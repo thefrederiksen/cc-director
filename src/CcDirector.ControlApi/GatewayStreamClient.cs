@@ -601,6 +601,7 @@ public sealed class GatewayStreamClient : IAsyncDisposable
                 Pid = Environment.ProcessId,
                 StartedAt = _startedAt,
                 DisplayName = ReadDisplayName(),
+                PushesTurns = true,   // this build carries the TurnPusher (turn-push mission)
             });
             awaitGateway += DateTime.UtcNow - helloStarted;
             ReportGatewayCapabilities(capabilities);

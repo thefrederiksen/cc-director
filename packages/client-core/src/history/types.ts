@@ -38,8 +38,28 @@ export interface SessionHistoryDto {
   historyState?: string | null;
   /** The conversation messages, in chronological order. */
   messages: HistoryMessageDto[];
-  /** "ok" | "unsupported". */
+  /**
+   * The finished sentence to show ABOVE a conversation that is frozen - its computer is offline, or too old
+   * to send new turns. Null while the session is live. Unlike emptyText it rides alongside the content: a
+   * conversation that stopped an hour ago otherwise looks exactly like a live one.
+   */
+  staleNotice?: string | null;
+  /**
+   * The finished sentence to show when nothing renders, or null/absent when there is content. Written by
+   * the GATEWAY (SessionConversationFold), because "no messages" has several causes - a session that has
+   * not spoken, an agent that keeps no history, a computer that has not sent its conversation, one too old
+   * to send it, one that is offline - and only one of them means "wait, it is coming". Rendered verbatim.
+   */
+  emptyText?: string | null;
+  /**
+   * "ok" | "unsupported" | "unknown-session" | "director-offline" | "director-too-old" | "not-pushed-yet".
+   * A machine-readable companion to emptyText, for logs and diagnostics - the screen renders emptyText.
+   */
   status: string;
-  /** Free-text error message if status != "ok". */
+  /**
+   * The same sentence as emptyText when the empty screen is a FAULT - the computer is offline, too old to
+   * send conversations, or the session is unknown here. Null for the two states that are not faults: a
+   * session that has simply not spoken yet, and an agent that keeps no history at all.
+   */
   error?: string | null;
 }

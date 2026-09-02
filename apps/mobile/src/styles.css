@@ -1971,6 +1971,20 @@ a.banner-btn {
   overflow: hidden;
 }
 
+/* A conversation that is real but no longer current: its computer is offline, or too old to send new
+   turns. The words on screen are true; what has stopped being true is that they are up to date. Muted
+   rather than alarming - nothing is broken, and the reader is not being asked to fix anything. */
+.chat-stale {
+  margin: 0 12px 8px;
+  padding: 8px 12px;
+  border-left: 3px solid var(--warn);
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--warn) 10%, transparent);
+  color: var(--text-dim);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
 .chat-empty {
   flex: 1;
   display: flex;
