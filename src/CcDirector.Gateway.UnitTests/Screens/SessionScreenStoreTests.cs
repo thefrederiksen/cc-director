@@ -1,0 +1,283 @@
+using CcDirector.Gateway.Contracts;
+using CcDirector.Gateway.Screens;
+using Xunit;
+
+namespace CcDirector.Gateway.UnitTests.Screens;
+
+/// <summary>
+/// Phase 0 of the Terminal Rules mission (<c>docs/missions/terminal-rules-2026-09-02/brief.md</c>): the
+/// store every Gateway screen read goes through. These pin the properties the reader and the later phases
+/// lean on - a stored screen that comes back whole, an idempotent append, the newest capture, the
+/// per-session cap that trims at write time, refusal of a push that disagrees with itself, seven-day
+/// retention that leaves live rows alone, and a capture time that survives the round trip.
+///
+/// WHAT THESE RESULTS DO AND DO NOT SAY, and it travels with every one of them. They run on
+/// <see cref="ScreenStoreTestDb"/>, whose tables are built from the mapped MODEL because the mission's
+/// migration slot is held elsewhere - so they are proven against the model, not against the migrated
+/// schema, and every row here needs one confirming run once the migration lands. And they seed the store
+/// BY HAND: not one of them drives the Director capture through the sink and the hub, so they say the
+/// store behaves correctly WHEN HANDED a screen, and nothing about who hands it one.
+/// </summary>
+public sealed class SessionScreenStoreTests : IDisposable
+{
+    private readonly ScreenStoreTestDb _db = new();
+    private static readonly DateTime Now = new(2026, 9, 2, 20, 0, 0, DateTimeKind.Utc);
+
+    public void Dispose() => _db.Dispose();
+
+    private SessionScreenStore Store(string tenant = "local") => _db.StoreFor(tenant);
+
+    /// <summary>A well-formed push. Every malformed case below starts from one of these and breaks exactly
+    /// one thing, so the fault under test is the only difference from a push that is known to be accepted.</summary>
+    private static ScreenPush Push(DateTime capturedAt, params string[] rows) => new()
+    {
+        SessionId = "s1",
+        CapturedAtUtc = capturedAt,
+        Rows = rows.Length == 0 ? new List<string> { "$ " } : rows.ToList(),
+        CursorRow = 2,
+        CursorCol = 7,
+        CursorVisible = true,
+        IsAlternateScreen = true,
+        HasGrid = true,
+        BufferBytes = 4096,
+        ActivityState = "WaitingForInput",
+        Agent = "ClaudeCode",
+    };
+
+    /// <summary>How many screens the session currently holds. The cap bounds a session at
+    /// <see cref="SessionScreenStore.MaxScreensPerSession"/>, which is also the most one read returns, so
+    /// this counts everything a capped session can hold.</summary>
+    private static int Count(SessionScreenStore store, string sessionId)
+        => store.ReadRecent(sessionId, SessionScreenStore.MaxScreensPerSession).Count;
+
+    [Fact]
+    public void Append_AWellFormedPush_IsReadBackWithEveryFieldIntact()
+    {
+        var store = Store();
+        var capturedAt = Now.AddMinutes(-3);
+
+        var added = store.Append("d1", Push(capturedAt, "NOTICE: you have reached your limit", "> "), Now);
+
+        Assert.True(added);
+        var stored = store.ReadLatest("s1");
+        Assert.NotNull(stored);
+        Assert.Equal("s1", stored.SessionId);
+        Assert.Equal(capturedAt, stored.CapturedAtUtc);
+        Assert.Equal(DateTimeKind.Utc, stored.CapturedAtUtc.Kind);
+        Assert.Equal("d1", stored.DirectorId);
+        Assert.Equal(4096, stored.BufferBytes);
+        Assert.Equal("WaitingForInput", stored.ActivityState);
+        Assert.Equal("ClaudeCode", stored.Agent);
+        Assert.Equal(new[] { "NOTICE: you have reached your limit", "> " }, stored.Grid.Rows);
+        Assert.Equal("s1", stored.Grid.SessionId);
+        Assert.Equal(2, stored.Grid.CursorRow);
+        Assert.Equal(7, stored.Grid.CursorCol);
+        Assert.True(stored.Grid.CursorVisible);
+        Assert.True(stored.Grid.IsAlternateScreen);
+        Assert.True(stored.Grid.HasGrid);
+    }
+
+    [Fact]
+    public void Append_TheSameCaptureTwice_StoresNothingTheSecondTime_AndLeavesOneRow()
+    {
+        // A Director re-sends after a reconnect. The (tenant, session, captured-at) key makes that one row,
+        // and the second call says so rather than throwing.
+        var store = Store();
+        var capturedAt = Now.AddMinutes(-1);
+
+        Assert.True(store.Append("d1", Push(capturedAt, "first"), Now));
+        var again = store.Append("d1", Push(capturedAt, "first"), Now.AddSeconds(30));
+
+        Assert.False(again);
+        Assert.Equal(1, Count(store, "s1"));
+        Assert.Equal(new[] { "first" }, store.ReadLatest("s1")!.Grid.Rows);
+    }
+
+    [Fact]
+    public void ReadLatest_ReturnsTheNewestCapture_AndReadRecent_ReturnsThemNewestFirst()
+    {
+        var store = Store();
+        // Deliberately appended out of order, so the read is doing the ordering and not the insert order.
+        store.Append("d1", Push(Now.AddMinutes(-2), "middle"), Now);
+        store.Append("d1", Push(Now.AddMinutes(-3), "oldest"), Now);
+        store.Append("d1", Push(Now.AddMinutes(-1), "newest"), Now);
+
+        Assert.Equal(new[] { "newest" }, store.ReadLatest("s1")!.Grid.Rows);
+        var recent = store.ReadRecent("s1", 10);
+        Assert.Equal(new[] { "newest", "middle", "oldest" }, recent.Select(s => s.Grid.Rows[0]));
+        Assert.Equal(
+            new[] { Now.AddMinutes(-1), Now.AddMinutes(-2), Now.AddMinutes(-3) },
+            recent.Select(s => s.CapturedAtUtc));
+    }
+
+    [Fact]
+    public void Append_PastThePerSessionCap_TrimsTheOldest_AndKeepsTheNewest()
+    {
+        // Retention alone is not a bound: a session that ends a hundred turns an hour would hold seven days
+        // of them. The cap is applied at WRITE time, inside the push transaction.
+        var store = Store();
+        const int over = 3;
+        var captures = Enumerable.Range(0, SessionScreenStore.MaxScreensPerSession + over)
+            .Select(i => Now.AddMinutes(-(SessionScreenStore.MaxScreensPerSession + over) + i))
+            .ToList();
+        foreach (var capturedAt in captures)
+            Assert.True(store.Append("d1", Push(capturedAt, "row " + capturedAt.Ticks), Now));
+
+        var held = store.ReadRecent("s1", SessionScreenStore.MaxScreensPerSession);
+
+        Assert.Equal(SessionScreenStore.MaxScreensPerSession, held.Count);
+        // The three oldest are gone...
+        var times = held.Select(s => s.CapturedAtUtc).ToHashSet();
+        foreach (var trimmed in captures.Take(over))
+            Assert.DoesNotContain(trimmed, times);
+        // ...the oldest SURVIVOR is the one immediately after them, so the cut was at the boundary and not
+        // deeper, and the newest is still there and is still what ReadLatest answers with.
+        Assert.Equal(captures[over], held[^1].CapturedAtUtc);
+        Assert.Equal(captures[^1], held[0].CapturedAtUtc);
+        Assert.Equal(captures[^1], store.ReadLatest("s1")!.CapturedAtUtc);
+    }
+
+    [Theory]
+    [InlineData("empty-session-id")]
+    [InlineData("empty-director-id")]
+    [InlineData("no-capture-time")]
+    [InlineData("negative-buffer-bytes")]
+    [InlineData("null-rows")]
+    [InlineData("null-row")]
+    [InlineData("too-many-rows")]
+    [InlineData("row-too-long")]
+    [InlineData("grid-claimed-with-no-rows")]
+    public void Append_APushThatDisagreesWithItself_IsRefused_WithAMessageSayingWhatWasWrong(string fault)
+    {
+        // The known-BAD inputs. The positive control is Append_AWellFormedPush_IsReadBackWithEveryFieldIntact
+        // above: the same push shape, unbroken, is accepted and read back - so a refusal here is this fault
+        // being caught and not the store refusing everything.
+        var store = Store();
+        var push = Push(Now.AddMinutes(-1), "hello");
+        string expected;
+        switch (fault)
+        {
+            case "empty-session-id":
+                push.SessionId = "";
+                expected = "push.SessionId";
+                break;
+            case "empty-director-id":
+                expected = "directorId";
+                break;
+            case "no-capture-time":
+                push.CapturedAtUtc = default;
+                expected = "CapturedAtUtc is not set";
+                break;
+            case "negative-buffer-bytes":
+                push.BufferBytes = -1;
+                expected = "BufferBytes is negative";
+                break;
+            case "null-rows":
+                push.Rows = null!;
+                expected = "Rows is null";
+                break;
+            case "null-row":
+                push.Rows = new List<string> { "ok", null! };
+                expected = "row 1 is null";
+                break;
+            case "too-many-rows":
+                push.Rows = Enumerable.Repeat("x", SessionScreenStore.MaxRows + 1).ToList();
+                expected = $"at most {SessionScreenStore.MaxRows} rows; this one carries {SessionScreenStore.MaxRows + 1}";
+                break;
+            case "row-too-long":
+                push.Rows = new List<string> { new('x', SessionScreenStore.MaxRowLength + 1) };
+                expected = $"row 0 is {SessionScreenStore.MaxRowLength + 1} characters; the limit is {SessionScreenStore.MaxRowLength}";
+                break;
+            case "grid-claimed-with-no-rows":
+                push.Rows = new List<string>();
+                push.HasGrid = true;
+                expected = "HasGrid is true but no rows were sent";
+                break;
+            default:
+                throw new ArgumentOutOfRangeException(nameof(fault));
+        }
+        var directorId = fault == "empty-director-id" ? "" : "d1";
+
+        var thrown = Assert.Throws<ArgumentException>(() => store.Append(directorId, push, Now));
+
+        Assert.Contains(expected, thrown.Message, StringComparison.Ordinal);
+        Assert.Null(store.ReadLatest("s1"));   // and nothing was written
+    }
+
+    [Fact]
+    public void PurgeOlderThan_RemovesRowsReceivedBeforeTheCutoff_AndLeavesLaterOnes()
+    {
+        // The survivor is the control. A purge that deleted everything - the easiest way for this to be
+        // wrong - fails on the second half, not on the first.
+        var store = Store();
+        store.Append("d1", Push(Now.AddDays(-9), "expired"), Now.AddDays(-9));
+        store.Append("d1", Push(Now.AddDays(-1), "live"), Now.AddDays(-1));
+
+        var removed = store.PurgeOlderThan(Now.AddDays(-7));
+
+        Assert.Equal(1, removed);
+        Assert.Equal(1, Count(store, "s1"));
+        var survivor = store.ReadLatest("s1");
+        Assert.NotNull(survivor);
+        Assert.Equal(Now.AddDays(-1), survivor.CapturedAtUtc);
+        Assert.Equal(new[] { "live" }, survivor.Grid.Rows);
+        // And it is not a method that always answers 1: with nothing left to expire it answers 0.
+        Assert.Equal(0, store.PurgeOlderThan(Now.AddDays(-7)));
+    }
+
+    // THE SWEEP'S OWN RETURN IS NOT ASSERTED HERE, AND THE REASON IS NOT A CHOICE.
+    //
+    // SessionScreenSweep takes a HostedTenantBoundary and a TenantRegistry. Both need a real
+    // GatewayDatabase - the boundary through DeviceRegistry, the registry directly - and on this branch a
+    // real GatewayDatabase CANNOT BE OPENED AT ALL: SessionScreenEntity is in the mapped model with no
+    // migration behind it, so Database.Migrate() throws PendingModelChangesWarning before any test runs.
+    // A sweep test written now would not be a red that says something about the sweep; it would be one more
+    // instance of the branch-wide red the held migration slot causes.
+    //
+    // What is asserted instead is the store call the sweep makes - PurgeOlderThan above, with both its
+    // arms, 1 and then 0. When the migration lands, the missing assertion is
+    // SessionScreenSweep.SweepAsync returning 1 for a screen older than SessionScreenSweep.Retention and
+    // then 0 on a second pass, with the fresher screen surviving both. Until then it is BLOCKED, and this
+    // comment is here so nobody records the store-level test as if it had covered the sweep.
+
+    [Fact]
+    public void Append_ACaptureTimeWithSubMillisecondTicks_IsStored_AndFoundAgainByReadLatest()
+    {
+        // Postgres keeps microseconds and .NET keeps hundred-nanosecond ticks. A time written at full
+        // precision could not be found again by the exact-match duplicate check on one provider and could on
+        // the other, so both sides are pinned to whole milliseconds. The ROUND TRIP is the assertion.
+        var store = Store();
+        var ragged = Now.AddMinutes(-4).AddTicks(7777);
+
+        Assert.True(store.Append("d1", Push(ragged, "ragged"), Now));
+
+        var stored = store.ReadLatest("s1");
+        Assert.NotNull(stored);
+        Assert.Equal(SessionScreenStore.CapturePrecision(ragged), stored.CapturedAtUtc);
+        Assert.Equal(0, stored.CapturedAtUtc.Ticks % TimeSpan.TicksPerMillisecond);
+        Assert.Equal(new[] { "ragged" }, stored.Grid.Rows);
+        // And the same ragged time re-sent is recognised as the row already held, rather than stored twice
+        // at a precision the lookup cannot match.
+        Assert.False(store.Append("d1", Push(ragged, "ragged"), Now));
+        Assert.Equal(1, Count(store, "s1"));
+    }
+
+    [Fact]
+    public void ReadLatest_FromAnotherTenant_AnswersItsOwnRow_AndNeverTheFirstTenants()
+    {
+        // The partition proof, and the positive line comes FIRST: tenant A's store ANSWERS, so the null B
+        // gets is the filter refusing and not a fixture that stored nothing.
+        var a = Store("tenant-a");
+        var b = Store("tenant-b");
+        a.Append("d1", Push(Now.AddMinutes(-1), "tenant a screen"), Now);
+
+        Assert.Equal(new[] { "tenant a screen" }, a.ReadLatest("s1")!.Grid.Rows);
+        Assert.Null(b.ReadLatest("s1"));
+        Assert.Empty(b.ReadRecent("s1", 10));
+
+        // B storing its own row under the SAME session id gets its own row back, and A still gets A's.
+        b.Append("d1", Push(Now.AddMinutes(-1), "tenant b screen"), Now);
+        Assert.Equal(new[] { "tenant b screen" }, b.ReadLatest("s1")!.Grid.Rows);
+        Assert.Equal(new[] { "tenant a screen" }, a.ReadLatest("s1")!.Grid.Rows);
+    }
+}
