@@ -103,10 +103,16 @@ function Invoke-Teardown {
         return
     }
     # The database goes with it. That is the point: a provisional migration id must not outlive the run.
-    try {
-        Remove-Item -Recurse -Force $rig -ErrorAction Stop
-        Say "removed the rig root $rig, database included"
-    } catch { Say "could not remove $($rig): $($_.Exception.Message)" }
+    # Retried: the Director publish carries agent assets that the just-stopped process can still hold for a
+    # moment, and a first-attempt failure here would leave a database stamped with a provisional migration
+    # id lying around - the one outcome ruling 8 exists to prevent.
+    $removed = $false
+    foreach ($attempt in 1..10) {
+        try { Remove-Item -Recurse -Force $rig -ErrorAction Stop; $removed = $true; break }
+        catch { Start-Sleep -Milliseconds 1000 }
+    }
+    if ($removed) { Say "removed the rig root $rig, database included" }
+    else { Say "COULD NOT REMOVE $rig - delete it by hand; it holds a database stamped with a provisional migration id" }
 }
 
 # Which Director a process id is, read from the registration the running process writes into ITS OWN
@@ -202,8 +208,16 @@ try {
     $gwStage  = Join-Path $stage 'gateway'
     $dirStage = Join-Path $stage 'director'
     if (-not $SkipBuild) {
+        # CcDirector.Gateway, NOT CcDirector.Gateway.Host. The Host project carries a compiled-in
+        # HostedGatewayImageAttribute, which makes it the immutable HOSTED identity: it asserts the full
+        # hosted contract at startup - hosted mode on, auth enabled, an HTTPS public URL, PostgreSQL - and
+        # REFUSES to run without them rather than silently downgrading to single-tenant no-auth semantics.
+        # That refusal is correct and must not be worked around with environment variables; a rig that set
+        # CC_GATEWAY_HOSTED=1 would be proving something about a hosted Gateway it is not entitled to say.
+        # CcDirector.Gateway is the same Gateway with the same entry point and no hosted marker, which is
+        # what a self-host install runs.
         Say 'publishing the Gateway from this worktree'
-        & dotnet publish (Join-Path $repo 'src\CcDirector.Gateway.Host\CcDirector.Gateway.Host.csproj') `
+        & dotnet publish (Join-Path $repo 'src\CcDirector.Gateway\CcDirector.Gateway.csproj') `
             -c Debug -o $gwStage --nologo -v q
         if ($LASTEXITCODE -ne 0) { Fail 'the Gateway publish failed' }
 
@@ -213,7 +227,8 @@ try {
         if ($LASTEXITCODE -ne 0) { Fail 'the Director publish failed' }
     }
 
-    $gwExe = Get-ChildItem $gwStage -Filter '*.exe' | Where-Object { $_.Name -notlike 'createdump*' } | Select-Object -First 1
+    $gwExe = Get-ChildItem $gwStage -Filter 'CcDirector.Gateway.exe' | Select-Object -First 1
+    if (-not $gwExe) { $gwExe = Get-ChildItem $gwStage -Filter '*.exe' | Where-Object { $_.Name -notlike 'createdump*' } | Select-Object -First 1 }
     if (-not $gwExe) { Fail "no Gateway executable in $gwStage" }
 
     $dirSource = Get-ChildItem $dirStage -Filter 'cc-director*.exe' | Where-Object { $_.Name -notlike 'createdump*' } | Select-Object -First 1
@@ -260,13 +275,20 @@ try {
     # CcStorage.GatewayDb() is Root()/gateway.db, and Root() honours CC_DIRECTOR_ROOT - so the throwaway
     # Gateway's database is inside the rig root and goes away with it. The search below is a safety net for
     # an instance-scoped root, not a guess.
-    $gwDb = Join-Path $gwRoot 'gateway.db'
-    if (-not (Test-Path $gwDb)) {
+    # WAITED FOR, not sampled once: /healthz answers as soon as the listener is up, and the database file
+    # appears a moment later on the first store open. A single check right after healthz is a race, and it
+    # lost one.
+    $gwDb = $null
+    $deadline = (Get-Date).AddSeconds(90)
+    while ((Get-Date) -lt $deadline -and -not $gwDb) {
+        $direct = Join-Path $gwRoot 'gateway.db'
+        if (Test-Path $direct) { $gwDb = $direct; break }
         $found = Get-ChildItem $gwRoot -Recurse -Filter '*.db' -ErrorAction SilentlyContinue |
                  Where-Object { $_.Name -notlike '*stats*' } | Select-Object -First 1
-        if ($found) { $gwDb = $found.FullName }
+        if ($found) { $gwDb = $found.FullName; break }
+        Start-Sleep -Milliseconds 1000
     }
-    if (-not (Test-Path $gwDb)) { Fail "could not find the throwaway Gateway's database under $gwRoot" }
+    if (-not $gwDb) { Fail "could not find the throwaway Gateway's database under $gwRoot" }
     Say "gateway database: $gwDb"
 
     $tokenFile = Join-Path $gwRoot 'config\director\gateway-token.txt'
@@ -275,14 +297,24 @@ try {
     if (-not $script:GatewayToken) { Fail 'the Gateway machine token file is empty' }
 
     # ---- the throwaway Director, pointed at THAT Gateway --------------------
-    $dirConfigDir = Join-Path $dirRoot 'config'
+    # THE INSTANCE HOME, not the root. A Director re-points CC_DIRECTOR_ROOT at
+    # {sharedRoot}\instances\{slug} first thing in Main (InstanceContext.Initialize), so its whole data
+    # tree - config.json included - lives one level down. Writing to <root>\config instead leaves the
+    # Director reporting "no gateway.url configured" while the file sits there unread, which looks exactly
+    # like a Director that could not reach the Gateway.
+    $dirConfigDir = Join-Path $dirRoot 'instances\default\config'
     New-Item -ItemType Directory -Force -Path $dirConfigDir | Out-Null
-    @{
+    $dirConfigJson = @{
         gateway = @{
             url   = "http://127.0.0.1:$GatewayPort"
             token = $script:GatewayToken
         }
-    } | ConvertTo-Json -Depth 5 | Set-Content -Path (Join-Path $dirConfigDir 'config.json') -Encoding utf8
+    } | ConvertTo-Json -Depth 5
+    # WITHOUT A BYTE-ORDER MARK. Set-Content -Encoding utf8 on Windows PowerShell 5.1 writes one, and a
+    # leading BOM makes the Director's JSON parse fail - so it would boot with NO Gateway configured, dial
+    # nothing, and look exactly like a Director that could not reach the Gateway.
+    [System.IO.File]::WriteAllText(
+        (Join-Path $dirConfigDir 'config.json'), $dirConfigJson, (New-Object System.Text.UTF8Encoding($false)))
     Say "director configured to dial http://127.0.0.1:$GatewayPort - and nothing else"
 
     # Launched through Task Scheduler, never from this process tree: a Director started inside an agent's
@@ -329,7 +361,8 @@ try {
 
     # POSITIVE liveness, read off the Gateway rather than assumed from having started something.
     $connected = $false
-    $deadline = (Get-Date).AddSeconds(90)
+    # Generous: a cold Director runs a full tool-health scan before it settles, and the dial happens after.
+    $deadline = (Get-Date).AddSeconds(240)
     while ((Get-Date) -lt $deadline -and -not $connected) {
         try {
             $directors = Invoke-Gw '/directors'
@@ -338,91 +371,233 @@ try {
         } catch { }
         Start-Sleep -Milliseconds 1000
     }
-    if (-not $connected) { Fail 'the Gateway never saw the rig Director connect' }
+    if (-not $connected) {
+        # Say what WAS seen rather than only that the expectation was not met - a bare "never connected"
+        # sends the next reader to guess between "the Director did not dial", "it dialled another Gateway"
+        # and "it connected under a different id".
+        try {
+            $raw = Invoke-WebRequest -Uri "http://127.0.0.1:$GatewayPort/directors" -Headers @{ Authorization = "Bearer $script:GatewayToken" } -UseBasicParsing -TimeoutSec 20
+            Say "raw /directors body: $($raw.Content)"
+        } catch { Say "the /directors read itself failed: $($_.Exception.Message)" }
+        # Searched from the root DOWN: an instance-scoped Director puts its log under
+        # <root>\instances\<slug>\logs\director, not directly under <root>\logs\director.
+        $dirLog = Get-ChildItem $dirRoot -Recurse -Filter 'director-*.log' -ErrorAction SilentlyContinue |
+                  Sort-Object LastWriteTime | Select-Object -Last 1
+        if ($dirLog) {
+            Say "--- every GATEWAY line in the rig Director log ($($dirLog.Name)) ---"
+            $gwLines = @(Select-String -Path $dirLog.FullName -Pattern 'Gateway|gateway' | Select-Object -Last 40)
+            if ($gwLines.Count -eq 0) { Say '  (none - the Director never mentioned a Gateway at all)' }
+            else { $gwLines | ForEach-Object { Say "  $($_.Line)" } }
+            Say "--- last 10 lines ---"
+            Get-Content $dirLog.FullName -Tail 10 | ForEach-Object { Say "  $_" }
+        } else { Say "no rig Director log under $dirRoot" }
+        Fail "the Gateway never saw the rig Director connect (looking for $directorId)"
+    }
     Say 'STEP 1 PASS: the throwaway Director is connected to the throwaway Gateway'
 
     # ---- a real session, a real turn ---------------------------------------
+    function Get-RigLogText([string]$root) {
+        $files = @(Get-ChildItem $root -Recurse -Filter 'director-*.log' -ErrorAction SilentlyContinue)
+        if ($files.Count -eq 0) { return '' }
+        return ($files | ForEach-Object { Get-Content $_.FullName -Raw -ErrorAction SilentlyContinue }) -join "`n"
+    }
+
     Say 'creating a session on the rig Director'
+    # The session must actually WORK and then WAIT, because the capture trigger is the Working ->
+    # WaitingForInput flip and nothing else. A bare shell sitting at its prompt never goes Working, so it
+    # never ends a turn and no screen is ever captured - measured, not assumed: a first attempt with a plain
+    # cmd.exe produced a Director log containing only "[TurnReviewLogger] Start".
+    #
+    # So the session is started ON a command that emits output for several seconds and then returns to the
+    # prompt. That is a genuine turn: output makes the detector say Working, and the quiet that follows makes
+    # it say WaitingForInput. No prompt route is involved, so nothing here depends on the submit verifier.
     $created = Invoke-Gw "/directors/$directorId/sessions" 'POST' @{
-        repoPath = $rig
-        agent    = 'RawCli'
-        command  = $env:ComSpec
-        name     = 'terminal-rules screen proof'
+        repoPath    = $rig
+        agent       = 'RawCli'
+        command     = $env:ComSpec
+        commandArgs = "/k echo TERMINAL_RULES_SCREEN_PROOF_$stamp"
+        name        = 'terminal-rules screen proof'
     }
     $sid = $created.sessionId
     if (-not $sid) { Fail 'the Gateway did not return a session id' }
     Say "session $sid"
 
     Say 'waiting for the session to end a turn (Working -> WaitingForInput), which is the capture trigger'
+    # The prompt is a NUDGE, not the thing under test, and its HTTP result is deliberately not the gate.
+    # The prompt route answers 502 when its submit verifier cannot see the keystroke start a TURN - which is
+    # a real and documented case for input that is not a turn (issue #2644 records the same 502 for a
+    # keystroke that answered a picker and had in fact worked). The assertion that matters is below and it is
+    # a PRESENCE: did a screen actually reach the store. So a failed nudge is reported and the run continues
+    # to ask the real question, rather than being reported as the row failing.
+    # A SUBMITTED keystroke is what makes the detector say Working - Session.SetActivityState(Working) runs
+    # on submission, not on output - so the session must be typed into for a turn to exist at all. Measured
+    # rather than assumed: a session started on a long-running command and never typed into sat at
+    # WaitingForInput for three minutes and produced no capture.
+    #
+    # The prompt route's HTTP result is deliberately NOT the gate. It answers 502 when its submit verifier
+    # cannot see the keystroke start a turn, which is a real and documented case for input that is not a turn
+    # (issue #2644 records the same 502 for a keystroke that answered a picker and had in fact worked). The
+    # state change happens on submit either way, and the assertion that matters is below and is a PRESENCE:
+    # did a screen actually reach the store.
     Start-Sleep -Seconds 5
-    Invoke-Gw "/sessions/$sid/prompt" 'POST' @{ text = "echo TERMINAL_RULES_SCREEN_PROOF_$stamp" } | Out-Null
+    try {
+        # The command must produce a LOT of output, FAST. The Director's submit verifier confirms a keystroke
+        # started a turn by watching the terminal grow by 2048 bytes within eight beats of about 1.2 seconds
+        # each - and it says so itself when it gives up. Measured rather than guessed: a one-line echo left
+        # it reporting "dead window (49 bytes in 1200ms)" and nudging with Enter five times, and a ping that
+        # trickled sixty bytes a second did not clear the bar either. A recursive directory listing floods
+        # the terminal immediately, which is an honest turn - output while it runs, quiet when it stops,
+        # which is exactly the Working then WaitingForInput the capture triggers on.
+        Invoke-Gw "/sessions/$sid/prompt" 'POST' @{
+            text      = "echo TERMINAL_RULES_SCREEN_PROOF_$stamp & dir /s /b C:\Windows\System32"
+            timeoutMs = 120000
+        } | Out-Null
+        Say 'prompt accepted'
+    } catch {
+        Say "prompt answered $($_.Exception.Message) - continuing; the store assertion below is the gate"
+        Start-Sleep -Seconds 3
+        $promptHits = @([regex]::Matches((Get-RigLogText $gwRoot), '(?m)^.*(prompt|Prompt|SubmitVerifier|DirectorCommand).*$') | ForEach-Object { $_.Value })
+        Say '--- Gateway: prompt lines ---'
+        if ($promptHits.Count -eq 0) { Say '  (none)' } else { $promptHits | Select-Object -Last 12 | ForEach-Object { Say "  $_" } }
+    }
 
     # ---- did the screen reach the store? -----------------------------------
+    # The store writes through FileLog, which is the Gateway's LOG FILE under its own storage root - not the
+    # process stdout this script redirected. Looking in stdout would report "never stored" for a screen that
+    # had been stored perfectly well.
+
     $stored = $false
-    $deadline = (Get-Date).AddSeconds(120)
+    $states = New-Object System.Collections.ArrayList
+    $deadline = (Get-Date).AddSeconds(180)
     while ((Get-Date) -lt $deadline -and -not $stored) {
-        $gwText = if (Test-Path $gwLog) { Get-Content $gwLog -Raw -ErrorAction SilentlyContinue } else { '' }
+        # Sample the session's activity state as we wait. The capture fires on Working -> WaitingForInput and
+        # on nothing else, so the sequence of states IS the diagnosis when no screen appears: it says whether
+        # the turn happened at all, which "no screen was stored" on its own cannot.
+        try {
+            $me = @(Invoke-Gw '/sessions') | Where-Object { $_.sessionId -ieq $sid } | Select-Object -First 1
+            if ($me -and ($states.Count -eq 0 -or $states[$states.Count - 1] -ne $me.activityState)) {
+                [void]$states.Add($me.activityState)
+            }
+        } catch { }
+        $gwText = Get-RigLogText $gwRoot
         if ($gwText -and $gwText -match "\[SessionScreenStore\].*$([regex]::Escape($sid)).*stored screen captured") { $stored = $true; break }
-        Start-Sleep -Milliseconds 1000
+        Start-Sleep -Milliseconds 2000
     }
+    Say "session activity states observed, in order: $($states -join ' -> ')"
     if (-not $stored) {
-        if (Test-Path $gwLog) { Get-Content $gwLog -Tail 60 | Write-Host }
+        # Name which HALF of the push path went quiet, rather than reporting the whole chain as broken. The
+        # Director's own lines say whether the capture fired and whether the sink sent; the Gateway's say
+        # whether the hub method was reached.
+        Say '--- Director: capture and sink lines ---'
+        $dirText = Get-RigLogText $dirRoot
+        $dirHits = @([regex]::Matches($dirText, '(?m)^.*(TurnReviewLogger|GatewayScreenSink|PushScreen).*$') | ForEach-Object { $_.Value })
+        if ($dirHits.Count -eq 0) { Say '  (none - the capture never fired and the sink was never called)' }
+        else { $dirHits | Select-Object -Last 20 | ForEach-Object { Say "  $_" } }
+
+        Say '--- Gateway: screen lines ---'
+        $gwHits = @([regex]::Matches((Get-RigLogText $gwRoot), '(?m)^.*(SessionScreenStore|PushScreen|DirectorHub).*$') | ForEach-Object { $_.Value })
+        if ($gwHits.Count -eq 0) { Say '  (none - nothing about a screen reached the Gateway)' }
+        else { $gwHits | Select-Object -Last 20 | ForEach-Object { Say "  $_" } }
+
         Fail "the Gateway never logged storing a screen for session $sid - the push path did not reach the store"
     }
     Say 'STEP 2 PASS: the Gateway logged storing a screen pushed by the rig Director'
 
-    # The BEFORE half of step 3's comparison, taken while the machine is still up. Without it, "blocked
-    # after stopping" would be satisfied by a session that was never readable in the first place.
-    $script:BeforeKind = ''
-    $deadline = (Get-Date).AddSeconds(60)
-    while ((Get-Date) -lt $deadline) {
-        try {
-            $script:BeforeKind = (Invoke-Gw "/sessions/$sid/wingman/waiting-screen").kind
-            if ($script:BeforeKind -and $script:BeforeKind -ne 'blocked') { break }
-        } catch { }
-        Start-Sleep -Milliseconds 1000
+    # THE BEFORE HALF of the machine-went-away comparison, taken while it is still up.
+    #
+    # The comparison is on the READER'S OWN VERDICT, not on the waiting-screen route's kind. A raw shell has
+    # no recognisable composer, so the classifier fails closed and answers "blocked" whether the machine is
+    # up or down - measured, not assumed - which would make a before-and-after on that value prove nothing.
+    # GatewayScreenReader writes exactly which of its three answers it gave and why, so that is what is
+    # compared: a screen obtained (STORED or TUNNEL) while up, and UNREADABLE naming the disconnected
+    # tunnel once the machine is gone. Two positive artifacts, not one absence.
+    try {
+        $ws = Invoke-Gw "/sessions/$sid/wingman/waiting-screen"
+        Say "waiting-screen answered: kind=$($ws.kind) canType=$($ws.canType)"
+    } catch { Say "waiting-screen call FAILED: $($_.Exception.Message)" }
+    Start-Sleep -Seconds 2
+    $readerUp = @([regex]::Matches((Get-RigLogText $gwRoot),
+        "(?m)^.*\[GatewayScreenReader\].*$([regex]::Escape($sid)).*$") | ForEach-Object { $_.Value })
+    $gotScreenWhileUp = @($readerUp | Where-Object { $_ -match 'STORED screen|TUNNEL' })
+    if ($gotScreenWhileUp.Count -eq 0) {
+        Say '--- every GatewayScreenReader line for this session ---'
+        if ($readerUp.Count -eq 0) { Say '  (none)' } else { $readerUp | ForEach-Object { Say "  $_" } }
+        Say '--- every GatewayScreenReader line, ANY session ---'
+        $anyReader = @([regex]::Matches((Get-RigLogText $gwRoot), '(?m)^.*GatewayScreenReader.*$') | ForEach-Object { $_.Value })
+        if ($anyReader.Count -eq 0) { Say '  (none at all)' } else { $anyReader | Select-Object -Last 8 | ForEach-Object { Say "  $_" } }
+        Say '--- every waiting-screen / WaitingScreenReader line ---'
+        $wsHits = @([regex]::Matches((Get-RigLogText $gwRoot), '(?m)^.*(waiting-screen|WaitingScreenReader|GatewayWingmanVoice).*$') | ForEach-Object { $_.Value })
+        if ($wsHits.Count -eq 0) { Say '  (none)' } else { $wsHits | Select-Object -Last 10 | ForEach-Object { Say "  $_" } }
+        Fail "with the machine UP the reader never reported obtaining a screen, so the same reader " +
+             "reporting UNREADABLE after it is stopped would prove nothing about the machine going away"
     }
-    if (-not $script:BeforeKind -or $script:BeforeKind -eq 'blocked') {
-        Fail "the live-screen read answered '$script:BeforeKind' while the machine was UP, so the same " +
-             "answer after stopping it would prove nothing about the machine going away"
-    }
-    Say "STEP 2b PASS: with the machine up, the live-screen read answers '$script:BeforeKind'"
+    Say "STEP 2b PASS, machine up: $($gotScreenWhileUp[-1])"
+    $readerLinesBefore = $readerUp.Count
 
     # ---- now take the machine away -----------------------------------------
     Say 'stopping the rig Director - this is the "machine offline" half of the row'
     Stop-RigDirector
     $script:DirectorPid = 0
 
-    # The machine's absence is read POSITIVELY off the Gateway, by asking the SAME question that was asked
-    # while it was up and showing the answer change. DirectorDto carries no "connected" flag - a registration
-    # survives a disconnect on purpose - so the honest probe is a route that actually needs the tunnel.
-    # GET /sessions/{sid}/wingman/waiting-screen runs the live-truth read: with the machine gone it can be
-    # answered by neither the store (which refuses to certify a screen whose Director is not connected) nor
-    # the tunnel, so it must come back blocked. That is row 5's live half, proved over HTTP, in the same run.
-    $afterKind = ''
-    $deadline = (Get-Date).AddSeconds(60)
-    while ((Get-Date) -lt $deadline) {
+    # TWO refusals are acceptable here and BOTH are positive, named facts rather than absences. Which one
+    # happens depends on how far the request gets before the missing Director stops it:
+    #   - the reader itself answers UNREADABLE, naming the disconnected tunnel; or
+    #   - the route refuses earlier, because a session whose Director is gone cannot be LOCATED at all, and
+    #     answers "session not found on any director".
+    # The second is the ordinary outcome and is just as good an observation of the machine having gone: it
+    # is the Gateway saying so, not this script inferring it from silence. What is NOT acceptable is the
+    # request still being served a screen, which is what the assertion below rules out.
+    $refusal = $null
+    $deadline = (Get-Date).AddSeconds(90)
+    while ((Get-Date) -lt $deadline -and -not $refusal) {
+        $routeSaid = $null
         try {
-            $afterKind = (Invoke-Gw "/sessions/$sid/wingman/waiting-screen").kind
-            if ($afterKind -eq 'blocked') { break }
-        } catch { $afterKind = 'error' }
-        Start-Sleep -Milliseconds 1000
+            $ws = Invoke-Gw "/sessions/$sid/wingman/waiting-screen"
+            $routeSaid = "served kind=$($ws.kind)"
+        } catch {
+            $routeSaid = "refused: $($_.Exception.Message)"
+            try {
+                $body = (New-Object System.IO.StreamReader($_.Exception.Response.GetResponseStream())).ReadToEnd()
+                if ($body) { $routeSaid = "refused: $body" }
+            } catch { }
+        }
+        Start-Sleep -Seconds 2
+        $readerNow = @([regex]::Matches((Get-RigLogText $gwRoot),
+            "(?m)^.*\[GatewayScreenReader\].*$([regex]::Escape($sid)).*$") | ForEach-Object { $_.Value })
+        if ($readerNow.Count -gt $readerLinesBefore) {
+            $fresh = $readerNow[$readerLinesBefore..($readerNow.Count - 1)]
+            $hit = @($fresh | Where-Object { $_ -match 'UNREADABLE' }) | Select-Object -Last 1
+            if ($hit) { $refusal = "the reader answered UNREADABLE: $hit" }
+            $served = @($fresh | Where-Object { $_ -match 'served the STORED screen' }) | Select-Object -Last 1
+            if ($served) { Fail "the reader SERVED a stored screen as live for a Director that is gone: $served" }
+        }
+        if (-not $refusal -and $routeSaid -match 'not found on any director') {
+            $refusal = "the route refused before the read: $routeSaid"
+        }
+        if (-not $refusal -and $routeSaid -match '^served kind=') {
+            Fail "with the machine stopped the live-screen route still answered ($routeSaid)"
+        }
     }
-    if ($afterKind -ne 'blocked') {
-        Fail "with the machine stopped the waiting-screen read answered '$afterKind', not 'blocked' - " +
-             "something served a screen for a Director that is gone"
-    }
-    Say "STEP 3 PASS: the same live-screen question answered '$script:BeforeKind' with the machine up and 'blocked' with it stopped"
+    if (-not $refusal) { Fail 'with the machine stopped the Gateway neither refused nor answered - no verdict at all' }
+    Say "STEP 3 PASS, machine stopped: $refusal"
 
     # ---- read the screen back, with the machine gone ------------------------
     Say 'reading the stored screen back out of the Gateway store, with the machine offline'
     $env:CC_SCREEN_RIG_DB = $gwDb
     $env:CC_SCREEN_RIG_SESSION = $sid
+    $rowFile = Join-Path $results 'stored-row.txt'
+    $env:CC_SCREEN_RIG_OUT = $rowFile
     $readLog = Join-Path $results 'readback.log'
-    & dotnet test (Join-Path $repo 'src\CcDirector.Gateway.Tests\CcDirector.Gateway.Tests.csproj') `
+    # The UNIT project, deliberately: CcDirector.Gateway.Tests takes a machine-wide lock and this step
+    # queued behind two other worktrees' suites for ten minutes with the rig alive the whole time.
+    & dotnet test (Join-Path $repo 'src\CcDirector.Gateway.UnitTests\CcDirector.Gateway.UnitTests.csproj') `
         --filter 'FullyQualifiedName~StoredScreenRigRead' --nologo -v q *> $readLog
     $readExit = $LASTEXITCODE
-    Get-Content $readLog | Write-Host
+    # Print the ROW the test read back, not just the pass line. The acceptance for this row is "show the
+    # stored row and the read", and a summary line shows neither.
+    Say '--- the stored screen, read back from the Gateway with the machine offline ---'
+    if (Test-Path $rowFile) { Get-Content $rowFile | ForEach-Object { Say "  $_" } }
+    else { Say '  (the read-back test wrote no row file)' }
 
     $summary = (Select-String -Path $readLog -Pattern '^(Passed!|Failed!)' | Select-Object -Last 1).Line
     if ($readExit -ne 0) { Fail "the read-back test did not pass (exit $readExit): $summary" }
@@ -441,5 +616,6 @@ try {
 finally {
     Remove-Item Env:\CC_SCREEN_RIG_DB -ErrorAction SilentlyContinue
     Remove-Item Env:\CC_SCREEN_RIG_SESSION -ErrorAction SilentlyContinue
+    Remove-Item Env:\CC_SCREEN_RIG_OUT -ErrorAction SilentlyContinue
     Invoke-Teardown
 }

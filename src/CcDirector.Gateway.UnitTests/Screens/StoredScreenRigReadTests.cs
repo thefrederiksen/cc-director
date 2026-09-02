@@ -3,7 +3,7 @@ using CcDirector.Gateway.Data;
 using CcDirector.Gateway.Screens;
 using Xunit;
 
-namespace CcDirector.Gateway.Tests.Screens;
+namespace CcDirector.Gateway.UnitTests.Screens;
 
 /// <summary>
 /// ROW 4 of the Terminal Rules phase 0 proofs
@@ -14,6 +14,13 @@ namespace CcDirector.Gateway.Tests.Screens;
 /// by <c>scripts\terminal-rules-screen-proof.ps1</c>, which stands up a throwaway Gateway and a throwaway
 /// Director, has the Director really end a turn, then really stops it - and only then runs this, pointed at
 /// the rig's own database, to make the READ with the real store over the real MIGRATED schema.
+///
+/// IT LIVES IN THE UNIT PROJECT, and that is not a filing preference. CcDirector.Gateway.Tests takes a
+/// MACHINE-WIDE lock, so running one filtered test from it queues behind whatever other worktree happens
+/// to be running that suite - measured: a rig run sat in this step for ten minutes while the turn-push and
+/// pull-request-2643 worktrees held the lock, with a throwaway Gateway and Director alive the whole time.
+/// A proof step that can be blocked for a quarter of an hour by an unrelated repository is not a proof
+/// step anybody will run.
 ///
 /// It is gated on <c>CC_SCREEN_RIG_DB</c> and reports SKIPPED without it, so an ordinary test run never
 /// looks for a database that is not there. A skipped result is NOT a pass: the rig script asserts this test
@@ -71,11 +78,23 @@ public sealed class StoredScreenRigReadTests
         Assert.False(string.IsNullOrWhiteSpace(stored.DirectorId),
             "the stored screen does not name the Director that captured it");
 
-        // Printed so the rig's report can quote the row rather than assert that a method returned.
-        Console.WriteLine($"[rig] session={stored.SessionId} capturedAt={stored.CapturedAtUtc:O} "
-            + $"director={stored.DirectorId} agent={stored.Agent} state={stored.ActivityState} "
-            + $"bufferBytes={stored.BufferBytes} rows={stored.Grid.Rows.Count}");
-        foreach (var row in stored.Grid.Rows.Where(r => !string.IsNullOrWhiteSpace(r)).Take(12))
-            Console.WriteLine($"[rig]   | {row}");
+        // The row is WRITTEN OUT, to a file the rig prints, rather than left on the console. This row's
+        // acceptance is "show the stored row and the read", and a pass line shows neither - while capturing
+        // a test runner's console needs a verbosity that makes the run minutes slower and is itself a thing
+        // that can silently stop working.
+        var lines = new List<string>
+        {
+            $"session={stored.SessionId} capturedAt={stored.CapturedAtUtc:O} director={stored.DirectorId} "
+            + $"agent={stored.Agent} state={stored.ActivityState} bufferBytes={stored.BufferBytes} "
+            + $"rows={stored.Grid.Rows.Count} hasGrid={stored.Grid.HasGrid} "
+            + $"cursor=({stored.Grid.CursorRow},{stored.Grid.CursorCol}) visible={stored.Grid.CursorVisible} "
+            + $"alternateScreen={stored.Grid.IsAlternateScreen}",
+        };
+        lines.AddRange(stored.Grid.Rows.Where(r => !string.IsNullOrWhiteSpace(r)).Take(12).Select(r => "  | " + r));
+        foreach (var line in lines) Console.WriteLine("[rig] " + line);
+
+        var outPath = Environment.GetEnvironmentVariable("CC_SCREEN_RIG_OUT");
+        if (!string.IsNullOrWhiteSpace(outPath))
+            File.WriteAllLines(outPath, lines);
     }
 }

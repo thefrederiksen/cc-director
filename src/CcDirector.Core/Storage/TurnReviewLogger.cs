@@ -129,6 +129,8 @@ public sealed class TurnReviewLogger : IDisposable
         {
             var (rows, cursorRow, cursorCol, cursorVisible, isAlternateScreen, bufferBytes) =
                 session.SnapshotLiveScreenWithBufferMark();
+            FileLog.Write($"[TurnReviewLogger] turn end captured for session={session.Id}: "
+                + $"rows={rows.Length} bufferBytes={bufferBytes} handing it to the screen sink");
             _screenSink.Send(new TurnEndScreen
             {
                 SessionId = session.Id.ToString(),

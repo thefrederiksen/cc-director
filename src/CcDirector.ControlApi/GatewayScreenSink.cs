@@ -38,6 +38,13 @@ public sealed class GatewayScreenSink : ITurnEndScreenSink
             FileLog.Write($"[GatewayScreenSink] No Gateway tunnel - screen for session={screen.SessionId} NOT pushed");
             return;
         }
+        // Logged on the SUCCESS path too, not only on failure. A push that logs nothing when it works and
+        // nothing when it is dropped is indistinguishable from a capture that never fired - which is exactly
+        // what happened while proving this path end to end: every log on both sides was silent and the
+        // silence carried no information at all.
+        FileLog.Write($"[GatewayScreenSink] pushing screen for session={screen.SessionId} "
+            + $"capturedAt={screen.CapturedAtUtc:O} rows={screen.Rows.Length} hasGrid={screen.HasGrid} "
+            + $"bufferBytes={screen.BufferBytes}");
         stream.PushScreen(new ScreenPush
         {
             SessionId = screen.SessionId,
