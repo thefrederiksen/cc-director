@@ -126,3 +126,52 @@ It is also **not the binding constraint today**: #2643 holds the slot regardless
 mission nothing right now and must not consume the owner's attention yet. If #2643 merges and #2379
 is then the only thing standing between this mission and its last two proof rows, that is the moment
 it becomes one plain question for the owner - close it or land it - and not before.
+
+
+---
+
+## SECOND AMENDMENT - 2026-09-02, after #2643 landed: the sweep lied a third time
+
+Run the moment #2643 merged, the amended sweep reported
+`origin/feat/mobile-session-picker-repository-search` as STILL HOLDING - the branch whose merge had
+just freed the slot.
+
+**Why.** `git diff origin/main...branch` compares the branch against the MERGE BASE. After a squash
+merge the content is on main but the merge base has not moved, so every file the branch added still
+shows as added. The branch had also already been deleted on origin; the local remote-tracking ref was
+stale because the fetch had no `--prune`.
+
+Two corrections, both required:
+
+1. **Fetch with `--prune`**, or deleted branches keep voting.
+2. **Test whether the file is PRESENT ON MAIN, not whether it differs from the merge base.** Presence
+   is the question being asked - "does main already have this migration?" - and the diff was a proxy
+   for it that stops being true the moment a branch merges.
+
+```
+git fetch origin --prune
+for b in $(git branch -r --format='%(refname:short)' | grep -v HEAD | grep -v 'origin/main$'); do
+  held=""
+  for f in $(git diff --name-only origin/main..."$b"              | grep -E '^(src/CcDirector\.Gateway/Data/Migrations|src/CcDirector\.Gateway\.Migrations\.Postgres/Migrations)/.*\.cs$'              | grep -v ModelSnapshot | grep -v Designer); do
+    git cat-file -e "origin/main:$f" 2>/dev/null || held="$held    $f
+"
+  done
+  [ -n "$held" ] && { echo "HOLDER $b"; printf "$held"; }
+done
+```
+
+**Third defect, third correction, same instrument.** That is the point worth keeping: this sweep has
+now been wrong about missing the Postgres directory, wrong about Stats being a different context, and
+wrong about a merged branch. Each time it failed in the direction of a FALSE ALARM, and each time the
+temptation was to eyeball the output and wave the hit away. Do not. Fix the instrument.
+
+**Result of the corrected run, 2026-09-02 after #2643 landed:**
+
+- `feat/mobile-session-picker-repository-search` - gone from origin, migration on main. **Released.**
+- `mission/terminal-rules` - our own provisional migration. Expected.
+- `prompt-delete-erases` (PR #2379) - three migrations from 2 August. **Still a holder.**
+
+**#2379 does NOT block this mission and the owner is not to be asked about it yet.** Ruling 2's
+amendment set that trigger as "#2379 is the only thing standing between this mission and its last two
+proof rows". It is not: ruling 6's rebase-and-regenerate onto the new main can be done now, and the
+rows can run. #2379 is a future collision, not a present block. The trigger has not fired.
