@@ -637,6 +637,8 @@ public sealed class GatewayHost : IAsyncDisposable
     // ticks every two minutes so an interrupted ruling lands within minutes of the threshold; guarded
     // against overlap like the cron sweep. Created in StartAsync, disposed in StopAsync.
     private readonly History.SessionHistoryStore _sessionHistory;
+    /// <summary>The stored conversation (turn-push mission): what Directors push and every reader reads.</summary>
+    private readonly History.SessionTurnStore _sessionTurns;
     private readonly History.SessionHistoryRecorder _sessionHistoryRecorder;
     private History.SessionHistorySweep? _sessionHistorySweep;
     private System.Threading.Timer? _sessionHistoryTimer;
@@ -1651,6 +1653,7 @@ public sealed class GatewayHost : IAsyncDisposable
         // through, resolved at call time (the dictionary-screening precedent) - summarisation is a
         // background digest, and the fast leg is the cheap one. The per-pass caps live in the sweep.
         _sessionHistory = new History.SessionHistoryStore(_gatewayDb);
+        _sessionTurns = new History.SessionTurnStore(_gatewayDb);
         // The machine name and the Director version are stamped from the CONNECTION record, not
         // from the pushed session: the pushed machine name is hard-coded empty on every client in
         // the field, and the version has never been on the session payload at all. Reading them
@@ -1676,7 +1679,7 @@ public sealed class GatewayHost : IAsyncDisposable
                 return Task.FromResult(brain);
             });
         _sessionHistorySweep = new History.SessionHistorySweep(
-            _tenantBoundary, TenantRegistry, _tenantContext, _sessionHistory, historySummarizer);
+            _tenantBoundary, TenantRegistry, _tenantContext, _sessionHistory, _sessionTurns, historySummarizer);
 
         // Web Push (mobile app-icon "needs you" dot): load (or generate on first run) the VAPID key
         // pair and the set of subscribed devices. The notifier that fans out to these is built and

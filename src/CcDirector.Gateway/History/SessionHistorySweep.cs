@@ -37,16 +37,18 @@ public sealed class SessionHistorySweep : TenantScopedSweep
 
     private readonly ITenantContext _tenantContext;
     private readonly SessionHistoryStore _store;
+    private readonly SessionTurnStore _turns;
     private readonly SessionHistorySummarizer? _summarizer;
 
     /// <param name="summarizer">Null when the Gateway has no model path (some self-host setups);
     /// endings and retention still run, summaries stay owed - the record never depends on the model.</param>
     public SessionHistorySweep(HostedTenantBoundary boundary, TenantRegistry tenants,
-        ITenantContext tenantContext, SessionHistoryStore store, SessionHistorySummarizer? summarizer)
+        ITenantContext tenantContext, SessionHistoryStore store, SessionTurnStore turns, SessionHistorySummarizer? summarizer)
         : base(boundary, tenants)
     {
         _tenantContext = tenantContext ?? throw new ArgumentNullException(nameof(tenantContext));
         _store = store ?? throw new ArgumentNullException(nameof(store));
+        _turns = turns ?? throw new ArgumentNullException(nameof(turns));
         _summarizer = summarizer;
     }
 
@@ -67,6 +69,8 @@ public sealed class SessionHistorySweep : TenantScopedSweep
             }
 
             _store.PurgeOlderThan(now - Retention);
+            // The stored conversation lives exactly as long as the session-history row it belongs to.
+            _turns.PurgeOlderThan(now - Retention);
         }, ct).ConfigureAwait(false);
     }
 }
