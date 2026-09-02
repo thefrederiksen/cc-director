@@ -62,11 +62,60 @@ public sealed class RulesTypeNothingGuardTests
     /// <summary>Where the dry-run decision is made. It must be structurally incapable of typing.</summary>
     private const string TheEvaluator = "CcDirector.Gateway.Rules.RuleEvaluator";
 
-    private static ModuleDefinition GatewayModule()
+    /// <summary>
+    /// THE ASSEMBLY AND ITS CALL GRAPH, READ ONCE FOR THE WHOLE TEST PROCESS.
+    ///
+    /// This is not a micro-optimisation, it is the difference between the gate running and the gate being
+    /// killed. Building the graph means resolving every call site in the Gateway assembly to a definition,
+    /// and doing that once per test pushed this project past the two-minute ceiling the local gate enforces
+    /// - the suite was STOPPED, which is not a failure and is not a pass either. Built once, shared, and
+    /// held for the life of the process, because a module that is disposed takes the type handles in the
+    /// index with it.
+    /// </summary>
+    private static readonly Lazy<ModuleDefinition> Module = new(() =>
     {
         var path = Path.Combine(AppContext.BaseDirectory, "CcDirector.Gateway.dll");
         Assert.True(File.Exists(path), "the Gateway assembly is not beside the tests at " + path);
         return ModuleDefinition.ReadModule(path);
+    }, isThreadSafe: true);
+
+    private static ModuleDefinition GatewayModule() => Module.Value;
+
+    /// <summary>Who calls what, plus where each method lives. Seam-independent, so one build serves every
+    /// question any test asks.</summary>
+    private sealed record CallIndex(
+        Dictionary<string, TypeDefinition> Owner,
+        Dictionary<string, string> Name,
+        Dictionary<string, List<string>> Callers);
+
+    private static readonly Lazy<CallIndex> Graph = new(BuildCallIndex, isThreadSafe: true);
+
+    private static CallIndex BuildCallIndex()
+    {
+        var module = GatewayModule();
+        var owner = new Dictionary<string, TypeDefinition>(StringComparer.Ordinal);
+        var name = new Dictionary<string, string>(StringComparer.Ordinal);
+        var callers = new Dictionary<string, List<string>>(StringComparer.Ordinal);
+
+        foreach (var type in AllTypes(module))
+        {
+            foreach (var method in type.Methods)
+            {
+                owner[method.FullName] = type;
+                name[method.FullName] = method.Name;
+                if (!method.HasBody) continue;
+
+                foreach (var instruction in method.Body.Instructions)
+                {
+                    if (instruction.Operand is not MethodReference callee) continue;
+                    var key = DefinitionKey(callee);
+                    if (key is null) continue;
+                    if (!callers.TryGetValue(key, out var list)) callers[key] = list = new List<string>();
+                    list.Add(method.FullName);
+                }
+            }
+        }
+        return new CallIndex(owner, name, callers);
     }
 
     /// <summary>Every method whose OWN body references <paramref name="seam"/>, among the types this
@@ -117,43 +166,26 @@ public sealed class RulesTypeNothingGuardTests
     private static List<string> MethodsReachingThroughCalls(
         ModuleDefinition module, string seam, Func<TypeDefinition, bool> include)
     {
-        var owner = new Dictionary<string, TypeDefinition>(StringComparer.Ordinal);
-        var name = new Dictionary<string, string>(StringComparer.Ordinal);
-        var callers = new Dictionary<string, List<string>>(StringComparer.Ordinal);
+        var graph = Graph.Value;
         var reached = new HashSet<string>(StringComparer.Ordinal);
 
         foreach (var type in AllTypes(module))
-        {
             foreach (var method in type.Methods)
-            {
-                owner[method.FullName] = type;
-                name[method.FullName] = method.Name;
-                if (!method.HasBody) continue;
-                if (Mentions(method, seam)) reached.Add(method.FullName);
-
-                foreach (var instruction in method.Body.Instructions)
-                {
-                    if (instruction.Operand is not MethodReference callee) continue;
-                    var key = DefinitionKey(callee);
-                    if (key is null) continue;
-                    if (!callers.TryGetValue(key, out var list)) callers[key] = list = new List<string>();
-                    list.Add(method.FullName);
-                }
-            }
-        }
+                if (method.HasBody && Mentions(method, seam))
+                    reached.Add(method.FullName);
 
         var queue = new Queue<string>(reached);
         while (queue.Count > 0)
         {
             var current = queue.Dequeue();
-            if (!callers.TryGetValue(current, out var itsCallers)) continue;
+            if (!graph.Callers.TryGetValue(current, out var itsCallers)) continue;
             foreach (var caller in itsCallers)
                 if (reached.Add(caller)) queue.Enqueue(caller);
         }
 
         return reached
-            .Where(m => owner.TryGetValue(m, out var t) && include(t))
-            .Select(m => Outermost(owner[m]).FullName + "." + name[m])
+            .Where(m => graph.Owner.TryGetValue(m, out var t) && include(t))
+            .Select(m => Outermost(graph.Owner[m]).FullName + "." + graph.Name[m])
             .Distinct(StringComparer.Ordinal)
             .OrderBy(n => n, StringComparer.Ordinal)
             .ToList();
@@ -244,7 +276,7 @@ public sealed class RulesTypeNothingGuardTests
     {
         // THE INSTRUMENT. If this comes back empty the scanner is broken, and every guard below it would
         // certify a run that never looked at anything.
-        using var module = GatewayModule();
+        var module = GatewayModule();
         var typists = MethodsReaching(module, TypingSeam,
             t => Outermost(t).FullName.StartsWith(KnownTypist, StringComparison.Ordinal));
 
@@ -257,7 +289,7 @@ public sealed class RulesTypeNothingGuardTests
     public void The_rules_namespace_exists_and_has_types_in_it()
     {
         // The second instrument: a guard over an empty namespace passes and proves nothing.
-        using var module = GatewayModule();
+        var module = GatewayModule();
         var ruleTypes = AllTypes(module)
             .Where(t => NamespaceOf(t).StartsWith(RulesNamespace, StringComparison.Ordinal))
             .Select(t => t.FullName)
@@ -272,7 +304,7 @@ public sealed class RulesTypeNothingGuardTests
         // The third instrument. The guard's scope grew to cover the rule and firing entities, and a scope
         // that quietly selected nothing - or everything - would make every assertion below it meaningless
         // in opposite directions.
-        using var module = GatewayModule();
+        var module = GatewayModule();
         var feature = AllTypes(module).Where(IsFeatureType).Select(t => Outermost(t).FullName).Distinct().ToList();
 
         Assert.Contains("CcDirector.Gateway.Data.Entities.SessionRuleEntity", feature);
@@ -298,7 +330,7 @@ public sealed class RulesTypeNothingGuardTests
         // THE INSTRUMENT FOR THE TRAVERSAL ITSELF. A call-graph walk that followed no edges would answer
         // exactly what the old one-hop scanner answered, and every assertion built on it would be the old
         // guard wearing a new name. So it has to find strictly more.
-        using var module = GatewayModule();
+        var module = GatewayModule();
         var oneHop = MethodsReaching(module, SeamWithChainsBehindIt, _ => true)
             .Distinct(StringComparer.Ordinal).ToList();
         var throughCalls = MethodsReachingThroughCalls(module, SeamWithChainsBehindIt, _ => true);
@@ -317,7 +349,7 @@ public sealed class RulesTypeNothingGuardTests
         // remark: today every method that reaches the prompt verb calls it itself. The day that stops
         // being true this test fails, and whoever reads it will find out from here rather than from a
         // guard quietly measuring a longer list.
-        using var module = GatewayModule();
+        var module = GatewayModule();
         var oneHop = MethodsReaching(module, TypingSeam, _ => true).Distinct(StringComparer.Ordinal).Count();
         var throughCalls = MethodsReachingThroughCalls(module, TypingSeam, _ => true).Count;
 
@@ -328,7 +360,7 @@ public sealed class RulesTypeNothingGuardTests
     [Fact]
     public void Exactly_one_type_in_the_whole_feature_can_type_and_it_is_the_named_one()
     {
-        using var module = GatewayModule();
+        var module = GatewayModule();
         var typists = TypesOf(MethodsReachingThroughCalls(module, TypingSeam, IsFeatureType));
 
         // A PRESENCE first: the one thing that is supposed to be able to type must actually be there. An
@@ -341,7 +373,7 @@ public sealed class RulesTypeNothingGuardTests
     [Fact]
     public void The_evaluator_reaches_the_send_only_through_its_environment_seam()
     {
-        using var module = GatewayModule();
+        var module = GatewayModule();
         var offenders = MethodsReachingThroughCalls(module, TypingSeam,
             t => Outermost(t).FullName.StartsWith(TheEvaluator, StringComparison.Ordinal));
 
@@ -357,7 +389,7 @@ public sealed class RulesTypeNothingGuardTests
     [Fact]
     public void Nothing_in_the_rules_namespace_reaches_the_command_router_directly()
     {
-        using var module = GatewayModule();
+        var module = GatewayModule();
 
         // The instrument for THIS seam, so the assertion below cannot pass on a scanner that finds nothing:
         // the endpoint layer really does reach the router.

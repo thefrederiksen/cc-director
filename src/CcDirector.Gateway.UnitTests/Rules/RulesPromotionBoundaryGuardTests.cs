@@ -21,12 +21,17 @@ public sealed class RulesPromotionBoundaryGuardTests
     private const string TheStore = "CcDirector.Gateway.Rules.SessionRuleStore";
     private const string TheGrant = "CcDirector.Gateway.Rules.RulePromotionGrant";
 
-    private static ModuleDefinition GatewayModule()
+    /// <summary>The assembly, read ONCE for the whole test process and held. Reading it per test is what
+    /// pushed this project past the local gate's two-minute ceiling, and a suite that gets stopped is
+    /// neither a pass nor a failure.</summary>
+    private static readonly Lazy<ModuleDefinition> Module = new(() =>
     {
         var path = Path.Combine(AppContext.BaseDirectory, "CcDirector.Gateway.dll");
         Assert.True(File.Exists(path), "the Gateway assembly is not beside the tests at " + path);
         return ModuleDefinition.ReadModule(path);
-    }
+    }, isThreadSafe: true);
+
+    private static ModuleDefinition GatewayModule() => Module.Value;
 
     private static TypeDefinition Outermost(TypeDefinition type)
     {
@@ -100,7 +105,7 @@ public sealed class RulesPromotionBoundaryGuardTests
         // THE INSTRUMENT. The composition root really does hold the concrete store - it is what wires the
         // routes. If this comes back empty the scanner is reading nothing, and the assertion below it would
         // certify a sweep that never looked.
-        using var module = GatewayModule();
+        var module = GatewayModule();
         var holders = ShapesMentioning(module, TheStore,
             t => !NamespaceOf(t).StartsWith(RulesNamespace, StringComparison.Ordinal));
 
@@ -112,7 +117,7 @@ public sealed class RulesPromotionBoundaryGuardTests
     [Fact]
     public void Nothing_in_the_rules_namespace_holds_the_store_that_can_promote_except_the_store_itself()
     {
-        using var module = GatewayModule();
+        var module = GatewayModule();
         var holders = ShapesMentioning(module, TheStore,
             t => NamespaceOf(t).StartsWith(RulesNamespace, StringComparison.Ordinal)
                  && !Outermost(t).FullName.StartsWith(TheStore, StringComparison.Ordinal));
@@ -126,7 +131,7 @@ public sealed class RulesPromotionBoundaryGuardTests
     [Fact]
     public void Nothing_in_the_rules_namespace_can_obtain_a_promotion_grant_except_the_store_and_the_grant()
     {
-        using var module = GatewayModule();
+        var module = GatewayModule();
         var holders = ShapesMentioning(module, TheGrant,
             t => NamespaceOf(t).StartsWith(RulesNamespace, StringComparison.Ordinal)
                  && !Outermost(t).FullName.StartsWith(TheStore, StringComparison.Ordinal)

@@ -1,3 +1,4 @@
+using CcDirector.Gateway.Data;
 using CcDirector.Gateway.Rules;
 using CcDirector.Gateway.Tests.Data;
 using Xunit;
@@ -24,7 +25,12 @@ public sealed class RulePromotionBoundaryTests : IDisposable
 
     private static readonly DateTime Now = new(2026, 9, 2, 12, 0, 0, DateTimeKind.Utc);
 
-    private SessionRuleStore NewStore() => new(_h.Open());
+    /// <summary>ONE database per test, opened once - see the note in RulesWriteGateTests. The single test
+    /// that wants a real restart opens a second one and says why.</summary>
+    private GatewayDatabase Db => _db ??= _h.Open();
+    private GatewayDatabase? _db;
+
+    private SessionRuleStore NewStore() => new(Db);
 
     private static IReadOnlyList<RulePrimitiveCall> GoodCalls() => new[]
     {
