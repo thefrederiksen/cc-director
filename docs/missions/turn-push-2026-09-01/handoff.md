@@ -40,13 +40,47 @@ boundary, never appended to. Seats on this mission are named `Turn Push - <Role>
   at 48.88 minutes, 2324 tests, 2320 passed, 4 skipped, 0 failed, `--blame-hang` produced no dump.
 - **`mission/turn-push` holds 3c, 4 and both fix rounds**, rebased on main, default gate green
   (3269 Gateway unit tests, 1m15s - back inside the 120-second ceiling after the concurrency tests were
-  rewritten to park on an await rather than hold a thread). A parked `Gateway.Tests` run against this exact
-  tree is the last gate before the pull requests open.
+  rewritten to park on an await rather than hold a thread).
+- **THE LAST GATE IS NOT YET PASSED.** A parked `Gateway.Tests` run against this exact tree ABORTED on
+  2026-09-02 at 16:04 local, after 54.3 minutes. Read the next section before re-running it.
 - **Holding off main while the hosted Gateway deploys.** The `devthrottle_internal - gateway` seat is
   shipping a statistics-store fix and waiting on a combined-tree run; nothing of this mission lands until
   it reports being out.
 - The Director's own `turns` verb is deliberately still there. Production runs the previous Gateway build,
   which still asks for it. It goes when that Gateway is deployed, not before.
+
+## The aborted parked run - what is known, and what is NOT
+
+**Do not merge until this is resolved.** The run ended `Test Run Aborted`, and the shape matters:
+
+- **2314 passed, 4 skipped, ZERO failed.** Nothing failed. The run HUNG, and `--blame-hang
+  --blame-hang-timeout 8m` killed it and wrote a dump - the instrument doing its job.
+- The hang was in `HostedImagePublishedArtifactTests.Every_published_entry_executable_fails_closed_
+  without_the_hosted_contract`, which runs `dotnet publish` and spawns child processes. The same test
+  passed in **4 seconds** in the 2026-09-02 run on `fix/turn-push-parked-suite`.
+- **No code changed by this mission appears in any stack frame in the whole log** (checked on `   at `
+  lines: no `WingmanVoiceService`, `VoiceRetryPolicy`, `SessionTurnStore`, `SessionVerbClient`,
+  `TurnPusher`, `SessionConversation`).
+- The `[GatewayHost] pipeline exception` entries in the log are disposed-service-provider teardown noise
+  reaching `SkillStore` and `GatewayPublicUrl`. One appeared in the earlier PASSING run, four here.
+- **Three other Gateway test suites from other worktrees were running on this machine at the same time**
+  (`devthrottle-supervised`, `devthrottle-session-rules-p2`, `devthrottle.wt-wingman-too-old`).
+
+**The honest state: this is very likely machine contention, and that is INFERENCE, not proof.** A
+publish-and-spawn test exceeding an 8-minute inactivity window on a machine running three other suites
+is the obvious reading, and no evidence gathered so far contradicts it - but nobody has yet watched the
+test pass or hang again in isolation. Do not write "it was contention" into anything as fact until a
+clean run says so.
+
+**How to finish this:** re-run the parked suite against `mission/turn-push` **when the machine is
+quiet** - no other `testhost.exe` from another worktree, and the per-user Gateway lock free
+(`%LOCALAPPDATA%\cc-director	est-locks\gateway-test-suite.lock`). Green means open the pull request
+(body drafted, see below) and merge. A second hang in the same place on a quiet machine means it IS
+worth chasing, and the hang dump is the place to start.
+
+Note the lock queue while doing this: any Gateway.Tests run takes a machine-wide lock in a
+`[ModuleInitializer]`, so even a single-test filtered run queues behind another worktree's full run,
+and gives up after 45 minutes. That is issue #2653.
 
 ## What is NOT proven
 
