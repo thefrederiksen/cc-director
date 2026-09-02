@@ -114,7 +114,28 @@ removed the rig root ...\screen-proof-20260902-153655-acfb0849, database include
 
 All forty stored rows were compared against the Director's own terminal text, not only these three.
 
-## `Gateway.Tests` - still PENDING
+## `Gateway.Tests` - the attempts, and who ended them
+
+**Three attempts. Two were ended by the Architect, and NEITHER was a fault of the suite or of this
+round's code.** That is recorded here in those words because the failure shape has now happened twice
+and both times the artifact would have said something untrue.
+
+| attempt | when | what happened | cause |
+|---|---|---|---|
+| 1 | 12:26-12:55 | queued 30 minutes behind `devthrottle-turn-push`, ended with ZERO tests; its log says "Test host process crashed" | **the Architect killed it**, because it was queued ahead of a live production outage's fix. It did not crash. |
+| 2 | 17:21 | ended at once, exit 1, no log file written | **the Architect killed it in error.** Its watcher classified any `Gateway.Tests` process without "terminal-rules" in its command line as another worktree's - and this invocation uses a RELATIVE project path, so it contains no worktree name at all. The competitor it saw was this run's own parent process. |
+| 3 | 17:23 | started on commit `02d66df15` with the lock verified free by exclusive open and zero `Gateway.Tests` processes | see below |
+
+**The lesson both times is the same one, and it is the mission's own.** Absence of a string from a
+command line is not evidence of another owner, exactly as an absence of newer bytes was not evidence
+that a terminal had not moved. A check whose pass condition is an absence fails open, and here it failed
+open in the direction of killing a healthy run. On attempt 2 the first instinct in this seat was to blame
+its own shell quoting - exit 1 with no log file looks exactly like a command that never started - and
+that would have gone into this file as a cause that was never observed. It did not, because the
+Architect said what it had done. **If a run here dies and this seat did not end it, the cause is asked
+for, not inferred.**
+
+## `Gateway.Tests` - the result
 
 **It has not run, and it is the only thing outstanding.**
 
