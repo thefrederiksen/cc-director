@@ -803,6 +803,35 @@ public sealed class GatewayHost : IAsyncDisposable
     /// re-implementation. Null until StartAsync builds it.</summary>
     internal TurnEndWatcher? TurnEndWatcherForTest => _turnEndWatcher;
 
+    /// <summary>
+    /// Put a conversation into this Gateway's store for one session, as the owning Director's push would
+    /// (turn-push mission). Tests need it because the narration path reads the STORE now: before the mission
+    /// they supplied a session's words by answering a "turns" command on the tunnel, and there is no such
+    /// command any more. Enters the tenant's scope itself, so a test cannot seed one account's conversation
+    /// into another's partition by forgetting to.
+    /// </summary>
+    internal void SeedStoredConversationForTest(TenantId tenant, string directorId, string sessionId,
+        params (string Role, string Text)[] messages)
+    {
+        using var scope = _tenantBoundary?.EnterScope(tenant);
+        var batch = new Contracts.TurnPushBatch
+        {
+            SessionId = sessionId,
+            Generation = "seeded:" + sessionId,
+            GenerationStartedUtc = DateTime.UtcNow,
+            Agent = "ClaudeCode",
+            StartOrdinal = 0,
+            TotalCount = messages.Length,
+            Turns = messages.Select((m, i) => new Contracts.PushedTurn
+            {
+                Ordinal = i,
+                Role = m.Role,
+                Parts = { new Contracts.HistoryPartDto { Kind = "Text", Text = m.Text } },
+            }).ToList(),
+        };
+        _sessionTurns.Append(directorId, batch, DateTime.UtcNow);
+    }
+
     /// <summary>Test-only: the session supervisor (issue #915), so a test can drive a real Working -&gt; idle
     /// transition into the REAL engine. Null until StartAsync builds it.</summary>
     internal Supervision.SessionSupervisor? SessionSupervisorForTest => _sessionSupervisor;

@@ -185,6 +185,16 @@ public sealed class WingmanVoiceTurnLiveScreenProofTests : IAsyncLifetime
 
     // ===================== The one thing allowed: type on a confident plain-text composer ===============
 
+    /// <summary>Accept the prompt AND put the agent's reply into the Gateway's store, which is what the
+    /// owning Director's push does the moment the turn ends. The voice-turn wait watches the store, so this
+    /// is what lets it find an answer instead of waiting out its deadline.</summary>
+    private DirectorCommandResult SeedReplyThenOk(string sid, string reply)
+    {
+        _gateway.SeedStoredConversationForTest(CcDirector.Core.Tenancy.TenantId.Local, DirectorId, sid,
+            new[] { ("User", "the spoken question"), ("Assistant", reply) });
+        return Ok(new PromptResponse { Accepted = true });
+    }
+
     [Fact]
     public async Task VoiceTurn_ConfidentPlainTextComposer_TypesTheSpokenAnswer()
     {
@@ -195,15 +205,11 @@ public sealed class WingmanVoiceTurnLiveScreenProofTests : IAsyncLifetime
         _dispatch = cmd => cmd.Verb switch
         {
             "screen-grid" => Ok(ComposerGrid(sid)),   // both the classify and the pre-send re-confirm see it
-            "turns" => Ok(new TurnsResponse
-            {
-                SessionId = sid,
-                Status = "ok",
-                Widgets = promptSent
-                    ? new List<TurnWidgetDto> { new() { Kind = "Text", Content = "Added the retry." } }
-                    : new List<TurnWidgetDto>(),
-            }),
-            "prompt" => Mark(ref promptSent, Ok(new PromptResponse { Accepted = true })),
+            // The reply arrives the way it does in production now (turn-push mission): the Director PUSHES it
+            // once the turn ends and the Gateway reads its own store. There is no "turns" command any more,
+            // so seeding the store as the prompt lands is what stands in for that push - and without it the
+            // wait for the answer sits out its full deadline.
+            "prompt" => Mark(ref promptSent, SeedReplyThenOk(sid, "Added the retry.")),
             _ => DirectorCommandResult.Fail(DirectorCommandStatus.BadRequest, $"unexpected verb {cmd.Verb}"),
         };
 
@@ -235,15 +241,11 @@ public sealed class WingmanVoiceTurnLiveScreenProofTests : IAsyncLifetime
                 IsAlternateScreen = false,
                 HasGrid = true,
             }),
-            "turns" => Ok(new TurnsResponse
-            {
-                SessionId = sid,
-                Status = "ok",
-                Widgets = promptSent
-                    ? new List<TurnWidgetDto> { new() { Kind = "Text", Content = "Running." } }
-                    : new List<TurnWidgetDto>(),
-            }),
-            "prompt" => Mark(ref promptSent, Ok(new PromptResponse { Accepted = true })),
+            // The reply arrives the way it does in production now (turn-push mission): the Director PUSHES it
+            // once the turn ends and the Gateway reads its own store. There is no "turns" command any more,
+            // so seeding the store as the prompt lands is what stands in for that push - and without it the
+            // wait for the answer sits out its full deadline.
+            "prompt" => Mark(ref promptSent, SeedReplyThenOk(sid, "Running.")),
             _ => DirectorCommandResult.Fail(DirectorCommandStatus.BadRequest, $"unexpected verb {cmd.Verb}"),
         };
 
