@@ -2562,6 +2562,8 @@ public sealed class GatewayHost : IAsyncDisposable
         // Issue #2194: the work-history recorder, so the SignalR-constructed DirectorHub folds every
         // accepted push into the durable session record (throttled inside the recorder).
         builder.Services.AddSingleton(_sessionHistoryRecorder);
+        // The stored conversation (turn-push mission): DirectorHub.PushTurns writes it, Hello reads its watermarks.
+        builder.Services.AddSingleton(_sessionTurns);
         // Gateway Cleanup mission (Wave 4b): the Gateway-native mission store, so the mission endpoints and
         // spawn validation share the one instance.
         builder.Services.AddSingleton(Missions);

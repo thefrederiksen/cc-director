@@ -187,7 +187,10 @@ public sealed class PostgresProviderProofTests
             "ORDER BY c.relname, a.attname");
 
         // One entry per UseCollation("C") declaration in GatewayDbContext, read back from the live catalog.
-        // 21 declarations, 21 columns - verified one-to-one against the model on 2026-08-11.
+        // 25 declarations, 25 columns - verified one-to-one against the model on 2026-09-02, when the four
+        // turn-push columns were added (they were added to the model on 1 September and this list was not
+        // updated with them, so the suite was red on main in between - the third time this enumeration has
+        // gone stale, and the third time it did its job).
         // It went stale a second time between 2026-07-31 and now: the two session_keys columns arrived with
         // the remove-the-network-port change (#2450) and this list was not updated, so the suite was red on
         // main from 2026-08-05 and stayed red through the v2.0.0 and v2.0.1 tags. Being environment-gated is
@@ -209,6 +212,13 @@ public sealed class PostgresProviderProofTests
             ("session_keys", "KeyHash"),
             ("session_keys", "SessionId"),
             ("session_spend", "SessionId"),
+            // The stored conversation's natural keys (the turn-push mission): the session id, and the
+            // generation digest that identifies which transcript source a row belongs to. Both are compared
+            // and keyed byte-ordinally, the same reason session_history.SessionId above is pinned.
+            ("session_turn_heads", "Generation"),
+            ("session_turn_heads", "SessionId"),
+            ("session_turns", "Generation"),
+            ("session_turns", "SessionId"),
             ("skill_tenant_overrides", "SkillId"),
             ("skills", "Id"),
             ("snoozes", "SessionId"),

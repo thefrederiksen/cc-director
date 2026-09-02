@@ -81,6 +81,33 @@ public static class SessionHistoryReader
     public static ConversationHistory Read(Session session) => ReadAll(session).MainThread;
 
     /// <summary>
+    /// The main-thread history read from a transcript path the CALLER already resolved. Exists so a caller
+    /// that needs the path for something else (the turn push labels the messages with it as their
+    /// generation, and derives the history state from the same file) reads the messages from THAT file -
+    /// resolving twice could label one file's messages with another's identity if the pointer moved in
+    /// between. Gemini ignores the path (its history is its terminal buffer); the store-backed agents read
+    /// by repository as always.
+    /// </summary>
+    public static ConversationHistory Read(Session session, string? resolvedPath)
+    {
+        ArgumentNullException.ThrowIfNull(session);
+        // No blanket null-path check: Copilot and OpenCode read a store BY REPOSITORY and never needed the
+        // path, so cutting them off above would have made them permanently empty here while ReadAll still
+        // answered (found in review). Each file-backed arm tests the path itself.
+        return (session.AgentKind switch
+        {
+            AgentKind.Gemini => GeminiTerminalHistory.FromBuffer(session.Buffer),
+            AgentKind.Copilot => CopilotHistoryReader.Read(session.RepoPath),
+            AgentKind.OpenCode => OpenCodeHistoryReader.Read(session.RepoPath),
+            AgentKind.ClaudeCode when resolvedPath is not null => ClaudeTranscriptReader.Read(resolvedPath),
+            AgentKind.Codex when resolvedPath is not null => CodexTranscriptReader.Read(resolvedPath),
+            AgentKind.Pi when resolvedPath is not null => PiTranscriptReader.Read(resolvedPath),
+            AgentKind.Grok when resolvedPath is not null => GrokTranscriptReader.Read(resolvedPath),
+            _ => ConversationHistory.Empty,
+        }).MainThread;
+    }
+
+    /// <summary>
     /// Everything the source holds, unfiltered - including nested subagent turns, meta lines, and
     /// lines carrying only token usage. Prefer <see cref="Read"/> unless you specifically need those.
     /// </summary>
