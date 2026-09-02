@@ -223,6 +223,14 @@ public sealed class GatewayDbContext : DbContext
     /// any tenant is known, and the tenant is read off the matched row.</summary>
     public DbSet<SessionKeyEntity> SessionKeys => Set<SessionKeyEntity>();
 
+    /// <summary>Standing instructions the account gave in English (<c>session_rules</c>, the Session Rules
+    /// mission). A rule holds the sentence itself plus what a model derived from it - never code.</summary>
+    public DbSet<SessionRuleEntity> SessionRules => Set<SessionRuleEntity>();
+
+    /// <summary>The record of every rule firing (<c>session_rule_firings</c>) - screen, understanding,
+    /// decision, reason, which verified checks ran, what was typed, and what happened next.</summary>
+    public DbSet<SessionRuleFiringEntity> SessionRuleFirings => Set<SessionRuleFiringEntity>();
+
     /// <summary>Serializer options for the skill metadata column. One shared instance: constructing
     /// fresh options per call defeats the serializer's internal caching.</summary>
     private static readonly System.Text.Json.JsonSerializerOptions MetadataJsonOptions = new();
@@ -486,6 +494,40 @@ public sealed class GatewayDbContext : DbContext
             b.Property(e => e.Role).HasMaxLength(16);
             // Retention cuts on received-at, tenant-leading for the global filter.
             b.HasIndex(e => new { e.TenantId, e.ReceivedAtUtc });
+        });
+
+        // ---- the Session Rules mission: standing instructions and the record of every firing -------
+
+        modelBuilder.Entity<SessionRuleEntity>(b =>
+        {
+            b.ToTable("session_rules");
+            b.HasKey(e => e.Id);
+            // The rules list is read per tenant, newest first; tenant-leading for the global filter.
+            b.HasIndex(e => new { e.TenantId, e.CreatedUtc });
+            b.Property(e => e.State).HasMaxLength(32);
+            // The trigger words are a bounded sub-document: a primitive collection, like skill triggers.
+            b.PrimitiveCollection(e => e.TriggerWords);
+            // The derived calls are TYPED sub-documents serialized to a JSON column (the cron store's
+            // "sub-doc -> JSON in a column" pattern). This is the shape that makes ruling 15 structural
+            // rather than a promise: the column holds a name and argument VALUES, checked against a real
+            // primitive signature before the row is written, and there is nowhere for a program to sit.
+            b.OwnsMany(e => e.Calls, o =>
+            {
+                o.ToJson();
+                o.OwnsMany(c => c.Arguments, a => a.PrimitiveCollection(x => x.Values));
+            });
+        });
+
+        modelBuilder.Entity<SessionRuleFiringEntity>(b =>
+        {
+            b.ToTable("session_rule_firings");
+            b.HasKey(e => e.Id);
+            b.Property(e => e.SessionId).HasMaxLength(64);
+            b.Property(e => e.Decision).HasMaxLength(64);
+            // "What did this rule do?" and "what happened on this session?" are the two reads.
+            b.HasIndex(e => new { e.TenantId, e.RuleId, e.OccurredUtc });
+            b.HasIndex(e => new { e.TenantId, e.SessionId, e.OccurredUtc });
+            b.OwnsMany(e => e.PrimitiveRuns, o => o.ToJson());
         });
 
         modelBuilder.Entity<SessionTurnHeadEntity>(b =>
@@ -883,6 +925,8 @@ public sealed class GatewayDbContext : DbContext
         ApplyTenantScope<SessionHistoryRollupEntity>(modelBuilder);
         ApplyTenantScope<SessionTurnEntity>(modelBuilder);
         ApplyTenantScope<SessionTurnHeadEntity>(modelBuilder);
+        ApplyTenantScope<SessionRuleEntity>(modelBuilder);
+        ApplyTenantScope<SessionRuleFiringEntity>(modelBuilder);
 
         ApplyCommonSubsetConventions(modelBuilder);
 

@@ -1008,6 +1008,123 @@ namespace CcDirector.Gateway.Migrations.Postgres.Migrations
                     b.ToTable("session_keys", "gateway");
                 });
 
+            modelBuilder.Entity("CcDirector.Gateway.Data.Entities.SessionRuleEntity", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid");
+
+                    b.Property<int>("CooldownSeconds")
+                        .HasColumnType("integer");
+
+                    b.Property<DateTime>("CreatedUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<int>("DailyCap")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("Instruction")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("ScopeAgent")
+                        .HasColumnType("text");
+
+                    b.Property<string>("ScopeMachine")
+                        .HasColumnType("text");
+
+                    b.Property<string>("ScopeMission")
+                        .HasColumnType("text");
+
+                    b.Property<string>("ScopeRepository")
+                        .HasColumnType("text");
+
+                    b.Property<string>("ScreenDescription")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("State")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
+                    b.Property<string>("TenantId")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("tenant_id");
+
+                    b.PrimitiveCollection<List<string>>("TriggerWords")
+                        .IsRequired()
+                        .HasColumnType("text[]");
+
+                    b.Property<DateTime>("UpdatedUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("TenantId");
+
+                    b.HasIndex("TenantId", "CreatedUtc");
+
+                    b.ToTable("session_rules", "gateway");
+                });
+
+            modelBuilder.Entity("CcDirector.Gateway.Data.Entities.SessionRuleFiringEntity", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("Decision")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<DateTime>("OccurredUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Outcome")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("Reason")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<Guid>("RuleId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("ScreenText")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("SessionId")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<string>("TenantId")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("tenant_id");
+
+                    b.Property<string>("TypedText")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("Understanding")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("TenantId");
+
+                    b.HasIndex("TenantId", "RuleId", "OccurredUtc");
+
+                    b.HasIndex("TenantId", "SessionId", "OccurredUtc");
+
+                    b.ToTable("session_rule_firings", "gateway");
+                });
+
             modelBuilder.Entity("CcDirector.Gateway.Data.Entities.SessionSpendEntity", b =>
                 {
                     b.Property<string>("TenantId")
@@ -1944,6 +2061,104 @@ namespace CcDirector.Gateway.Migrations.Postgres.Migrations
 
                     b.Navigation("Target")
                         .IsRequired();
+                });
+
+            modelBuilder.Entity("CcDirector.Gateway.Data.Entities.SessionRuleEntity", b =>
+                {
+                    b.OwnsMany("CcDirector.Gateway.Rules.RulePrimitiveCall", "Calls", b1 =>
+                        {
+                            b1.Property<Guid>("SessionRuleEntityId")
+                                .HasColumnType("uuid");
+
+                            b1.Property<int>("__synthesizedOrdinal")
+                                .ValueGeneratedOnAdd()
+                                .HasColumnType("integer");
+
+                            b1.Property<string>("Name")
+                                .IsRequired()
+                                .HasColumnType("text");
+
+                            b1.HasKey("SessionRuleEntityId", "__synthesizedOrdinal");
+
+                            b1.ToTable("session_rules", "gateway");
+
+                            b1.ToJson("Calls");
+
+                            b1.WithOwner()
+                                .HasForeignKey("SessionRuleEntityId");
+
+                            b1.OwnsMany("CcDirector.Gateway.Rules.RuleArgument", "Arguments", b2 =>
+                                {
+                                    b2.Property<Guid>("RulePrimitiveCallSessionRuleEntityId")
+                                        .HasColumnType("uuid");
+
+                                    b2.Property<int>("RulePrimitiveCall__synthesizedOrdinal")
+                                        .HasColumnType("integer");
+
+                                    b2.Property<int>("__synthesizedOrdinal")
+                                        .ValueGeneratedOnAdd()
+                                        .HasColumnType("integer");
+
+                                    b2.Property<string>("Parameter")
+                                        .IsRequired()
+                                        .HasColumnType("text");
+
+                                    b2.Property<string>("Source")
+                                        .IsRequired()
+                                        .HasColumnType("text");
+
+                                    b2.PrimitiveCollection<List<string>>("Values")
+                                        .IsRequired()
+                                        .HasColumnType("text[]");
+
+                                    b2.HasKey("RulePrimitiveCallSessionRuleEntityId", "RulePrimitiveCall__synthesizedOrdinal", "__synthesizedOrdinal");
+
+                                    b2.ToTable("session_rules", "gateway");
+
+                                    b2.WithOwner()
+                                        .HasForeignKey("RulePrimitiveCallSessionRuleEntityId", "RulePrimitiveCall__synthesizedOrdinal");
+                                });
+
+                            b1.Navigation("Arguments");
+                        });
+
+                    b.Navigation("Calls");
+                });
+
+            modelBuilder.Entity("CcDirector.Gateway.Data.Entities.SessionRuleFiringEntity", b =>
+                {
+                    b.OwnsMany("CcDirector.Gateway.Data.Entities.RulePrimitiveRunEntity", "PrimitiveRuns", b1 =>
+                        {
+                            b1.Property<Guid>("SessionRuleFiringEntityId")
+                                .HasColumnType("uuid");
+
+                            b1.Property<int>("__synthesizedOrdinal")
+                                .ValueGeneratedOnAdd()
+                                .HasColumnType("integer");
+
+                            b1.Property<string>("Answer")
+                                .IsRequired()
+                                .HasColumnType("text");
+
+                            b1.Property<string>("Arguments")
+                                .IsRequired()
+                                .HasColumnType("text");
+
+                            b1.Property<string>("Name")
+                                .IsRequired()
+                                .HasColumnType("text");
+
+                            b1.HasKey("SessionRuleFiringEntityId", "__synthesizedOrdinal");
+
+                            b1.ToTable("session_rule_firings", "gateway");
+
+                            b1.ToJson("PrimitiveRuns");
+
+                            b1.WithOwner()
+                                .HasForeignKey("SessionRuleFiringEntityId");
+                        });
+
+                    b.Navigation("PrimitiveRuns");
                 });
 
             modelBuilder.Entity("CcDirector.Gateway.Data.Entities.WingmanInstructionEntity", b =>
