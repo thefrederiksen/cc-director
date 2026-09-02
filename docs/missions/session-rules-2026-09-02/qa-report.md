@@ -201,9 +201,47 @@ outcome:  the send did not land, so the session was never reached.
 the submit verifier - `never started a turn ... the agent produced under 2048 bytes, so the prompt is
 parked in the composer unsubmitted` - which is the trap the mission brief warns about in those words,
 and the evaluator read that 502 as a failed send. The keystroke had in fact landed. The evaluator
-must not treat that 502 as a failure; that belongs to phase 4, which already owns this trap, and it is
-carried there rather than patched here. Nothing else in the chain is affected: the decision, the
-re-read, the keystroke and the record all happened, and only the last sentence of the record is wrong.
+must not treat that 502 as a failure.
+
+**Fixed in `79f699c82`, and the fix was then run against a real session.** The send seam now answers
+three things rather than two - not sent, not confirmed, confirmed - because "it did not work" hid the
+distinction that matters. A keystroke that never left this Gateway records a blank typed text and
+says nothing was typed; a keystroke that went out and that nobody would confirm keeps the text as
+typed, quotes the route's own words, and names the screen as the evidence. Red before the fix, with
+the old wording restored on the new plumbing:
+
+```
+Assert.Contains() Failure: Sub-string not found
+String:    "the send did not land, so the session was"...
+Not found: "did not confirm"
+
+Failed: 2, Passed: 16, exit code 1
+```
+
+The same demonstration re-run on the fixed build, Gateway reporting
+`2.0.4+79f699c8290915b7de274082226eef36e386bba7`:
+
+```
+occurred:  2026-09-02T20:35:41.5011030Z
+decision:  act
+typed:     /usage-credits
+outcome:   typed into the session: /usage-credits - but the prompt route did not confirm it started a
+           turn (director returned Error: [SubmitVerifier] 'RawCli: /usage-credits' never started a
+           turn within 8 beats (7 nudge(s) sent): the agent produced under 2048 bytes, so the prompt
+           is parked in the composer unsubmitted...). The session's screen is the only evidence of
+           whether the keystroke landed.
+```
+
+And the screen, which is that evidence:
+
+```
+C:\Users\soren\AppData\Local\Temp\ccrules\scratch>/usage-credits
+'/usage-credits' is not recognized as an internal or external command,
+operable program or batch file.
+```
+
+Nothing else in the chain was ever affected: the decision, the re-read, the keystroke and the record
+all happened both times, and it was the last sentence of the first record that was wrong.
 
 ### What this row does NOT prove
 
@@ -348,10 +386,25 @@ Short, plain, from the real screen.
 
 To be filled in honestly at the end, and never left empty.
 
-As of the end of phase 1: rows 1 to 5 above are all still PENDING. Nothing has fired, nothing has
-been typed, no model has built a rule from English, and there is no user interface. Phase 1's own
-list of what it did not prove is in `phase-1-report.md` and is carried forward here rather than
-restated.
+As of the end of phase 2:
+
+- **Row 1 (a rule created from plain English) is PENDING.** The demonstration rule's derived parts -
+  the screen description, the trigger words, the stored check - were written by hand. Deriving them
+  from the account's sentence is phase 3.
+- **Row 3 (the real case) is PENDING**, and it is not to be faked. No session genuinely blocked on a
+  provider usage limit occurred during this run. What IS known is stated beside it: row 2 proves the
+  mechanism end to end, and the injection route itself was proven separately in
+  devthrottle_internal#1619, in both directions, with a negative control showing the fleet-message
+  route cannot do it.
+- **Row 5 (how to write a rule) is PENDING** - it needs the authoring conversation and a screen to
+  write it from.
+- **There is no user interface.** Rules are read and written over `/gateway/rules` only.
+- Everything else phase 2 did not prove is listed in its own section below, and includes two things
+  that matter more than the missing surfaces: the rule's own stored check never ran on a live screen,
+  and on one run the agent's recorded reason quoted text that was not on the screen it was given.
+
+Phase 1's own list of what it did not prove is in `phase-1-report.md` and is carried forward here
+rather than restated.
 
 ---
 
@@ -473,7 +526,21 @@ The live dry-run firing in row 2 is the same property observed on a real session
   through the store and was never executed.
 - **The session was a plain shell.** See the end of row 2: this is the mechanism, not a recovery from
   a real provider limit. Row 3 stays PENDING.
-- **One machine, one tenant, SQLite.** Nothing ran against Postgres and nothing ran hosted.
+- **The judgement is not stable across runs, and once it was not faithful to the screen.** The same
+  rule, on near-identical screens, ACTED twice and DECLINED twice. Every one of those is a recorded
+  firing with a reason, so the RECORD is complete either way - but "the rule fires when it should" is
+  proved by an observed act, not by a repeatable rate. Worse, one decline's recorded reason quoted
+  text that was NOT on the screen the firing record stores (it had been on that session's screen
+  twelve minutes earlier, in an unrelated run). The decline itself was safe - declining does nothing -
+  and everything around it behaved correctly. But the same unfaithfulness in the other direction
+  would be a rule acting on evidence that was not there. It is recorded here rather than fixed, and
+  it is the sharpest thing this phase learned; the natural bound is to require an act's reason to
+  quote something the screen actually contains, and that belongs with phase 4's hardening.
+- **One machine, one tenant, SQLite, no auth on the rig.** Nothing ran against Postgres, nothing ran
+  hosted, and no client authentication was exercised.
+- **The rules routes are not on the session-key allow list.** An agent's session key cannot call
+  `/gateway/rules`; a device key can. Whether an agent should be able to write rules is a product
+  decision for the owner, and it was deliberately not made here.
 - **`CcDirector.Gateway.Tests` did not run** - it is parked and host-bound.
 
 ---
@@ -499,3 +566,10 @@ ran on.
 | `has-pending-model-changes`, SQLite | `48eeb1e83` | 0 | no changes since the last migration |
 | `has-pending-model-changes`, Postgres | `48eeb1e83` | 0 | no changes since the last migration |
 | Parked `CcDirector.Gateway.Tests` | | | **PENDING** - machine-wide lock held; see phase 1 report |
+| Phase 2 tests, first run against unwritten code | `62133c497` | 1 | 47 failed, 55 passed (the 55 are phase 1's, so the instrument was reading something) |
+| Phase 2 rules tests, after the evaluator | `558f2698a` | 0 | 102 passed, 0 failed |
+| Tightened types-nothing guard, against the unwritten wiring | `a7bf10b2f` | 1 | 1 failed, 3 passed - `Collection: []`, the named typist absent |
+| All rules tests, after the production wiring | `18fb72a7c` | 0 | 127 passed, 0 failed |
+| Gateway unit suite, after the endpoints and host wiring | `73273a457` | 0 | 3360 passed, 0 failed, 2 skipped |
+| Send-outcome tests, old wording on the new plumbing | (working tree) | 1 | 2 failed, 16 passed |
+| All rules tests, after the honest send outcome | `79f699c82` | 0 | 128 passed, 0 failed |
