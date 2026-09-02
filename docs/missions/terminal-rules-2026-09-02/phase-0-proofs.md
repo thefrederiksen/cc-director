@@ -37,10 +37,23 @@ That splits the proofs in two, and the split is not a matter of convenience:
 MIGRATION FILE. Those are two different generators, and only the second one ships. So the five rows
 below are
 
-> **proven against the mapped model, not the migrated schema.**
+> **proven against the mapped model, not the migrated schema, and proven from the store inwards
+> with the push path unexercised.**
 
-They prove the store's LOGIC and they prove NOTHING about the schema. That label travels with them
-into every report, so that nobody reading this six weeks from now mistakes one for the other.
+BOTH halves, always together (ruling 5). The first half is the schema: they prove the store's LOGIC
+and NOTHING about the shape the migration will produce.
+
+The second half is the one that is easier to miss, and it follows from something row 4 already says.
+Rows 1, 2, 3, 5 and 6 all seed the store BY HAND. Not one of them drives
+`TurnReviewLogger` to `GatewayScreenSink` to the hub to the store - so **if the push were wired to
+nothing at all, all five would still pass.** Row 4 is the only row that covers that path, and row 4
+is blocked.
+
+So nobody may say "the store works" on the strength of the five. What the five say is: **the store
+and the reader behave correctly WHEN HANDED a screen.**
+
+Row 0 below takes the one cheap seam that exists and says exactly where it stops. It does not close
+the gap; it narrows it, and naming what is still open beats a contrived test that hides it.
 
 ### Three things are owed the moment the slot frees
 
@@ -55,6 +68,30 @@ And: **phase 1 does not start on the strength of the five.** It would be built o
 pending-model-changes check has not yet confirmed.
 
 ---
+
+## Row 0 - the real capture fires and reaches the sink (a partial, and it says where it stops)
+
+**Claim.** The real `TurnReviewLogger` really does capture the screen on the real Working ->
+WaitingForInput flip, and really does hand it to its sink with the grid and the byte mark taken
+together.
+
+This is the cheap in-process seam ruling 5 asked for. `TurnReviewLogger` takes an
+`ITurnEndScreenSink`, and `TurnReviewLogTests.cs` already builds a real `Session` and flips its
+activity state, so no Gateway and no hub are needed to drive the Director half of the capture.
+
+**Pass condition, all three:**
+1. A real `Session` with a real terminal parser is written to, then flipped to `WaitingForInput`.
+2. The sink receives exactly ONE `TurnEndScreen`, whose `Rows` are the rows that were on that
+   terminal, content asserted - not merely a non-empty capture.
+3. Its `BufferBytes` equals the session buffer's own `TotalBytesWritten`, and `HasGrid` agrees with
+   whether there were rows.
+
+**WHERE THIS STOPS, stated so it is not stretched into a bigger claim.** It covers the flip, the
+capture, and the sink CONTRACT. It does NOT cover `GatewayScreenSink.Send`, the
+`GatewayStreamClient.PushScreen` invoke, the `DirectorHub.PushScreen` handler, or the store write.
+Those four links remain unexercised until row 4 runs against a real Gateway.
+
+Status: **provable now.**
 
 ## Row 1 - a screen survives the push and comes back whole
 
@@ -170,6 +207,16 @@ received nothing at all, and when it was never called. Closed by naming what it 
 3. Time advances past the freshness budget. `ReadLiveAsync` now returns either `Source.Tunnel` with
    the CURRENT rows, or `Source.Unreadable` with a reason naming the stale snapshot - and the test
    asserts which, by name. It never returns the stored screen.
+
+   **HOW time advances, settled before writing it (ruling 5): by INJECTING THE CLOCK.** Both
+   `GatewayScreenReader` and `PushedSessionStore` already take a `Func<DateTime>` seam, so the test
+   moves its own clock forward and the suite pays nothing. NOT a real twenty-second sleep, and NOT
+   by editing `LiveSnapshotBudget`, which is the constant under test - a test that moves the rule to
+   make itself pass has stopped testing the rule.
+
+   **And the boundary is asserted from BOTH sides**, or the row passes on a rule that always
+   refuses: at one second INSIDE the budget the same call still returns `Source.Store`, and at one
+   second outside it does not. One assertion each, in the same test.
 4. Separately, with the snapshot fresh but the byte count moved to N+1, `ReadLiveAsync` again does
    not return the stored screen, and the reason names the moved terminal.
 

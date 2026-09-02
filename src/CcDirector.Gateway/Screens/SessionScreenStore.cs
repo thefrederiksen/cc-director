@@ -40,7 +40,7 @@ public sealed class SessionScreenStore
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
 
     private readonly object _gate = new();
-    private readonly GatewayDatabase _db;
+    private readonly Func<GatewayDbContext> _context;
 
     /// <summary>The most turn-end screens one session keeps. Beyond this the oldest are trimmed at write
     /// time, so the table is bounded by (sessions * this) and not by how busy a session is.</summary>
@@ -54,8 +54,23 @@ public sealed class SessionScreenStore
     public const int MaxRowLength = 4000;
 
     public SessionScreenStore(GatewayDatabase db)
+        : this(() => (db ?? throw new ArgumentNullException(nameof(db))).CreateContext())
     {
-        _db = db ?? throw new ArgumentNullException(nameof(db));
+        ArgumentNullException.ThrowIfNull(db);
+    }
+
+    /// <summary>
+    /// Build the store over an arbitrary context source. INTERNAL, and it exists for one reason: the
+    /// mission's migration is not written yet (the fleet-wide slot is held), and a real
+    /// <see cref="GatewayDatabase"/> creates its schema with <c>Database.Migrate()</c>, so it cannot produce
+    /// a database containing <c>session_screens</c> until that lands. This lets the tests build the schema
+    /// from the mapped MODEL instead - see <c>ScreenStoreTestDb</c>, which also states the limit that comes
+    /// with it. Nothing about the production path changes: the public constructor above supplies
+    /// <c>db.CreateContext</c>, which is exactly what this class called before.
+    /// </summary>
+    internal SessionScreenStore(Func<GatewayDbContext> context)
+    {
+        _context = context ?? throw new ArgumentNullException(nameof(context));
     }
 
     /// <summary>
@@ -85,7 +100,7 @@ public sealed class SessionScreenStore
 
     private bool AppendOnce(string directorId, ScreenPush push, DateTime capturedAt, DateTime now)
     {
-        using var ctx = _db.CreateContext();
+        using var ctx = _context();
         using var tx = ctx.Database.BeginTransaction();
 
         var already = ctx.SessionScreens.Any(s => s.SessionId == push.SessionId && s.CapturedAtUtc == capturedAt);
@@ -153,7 +168,7 @@ public sealed class SessionScreenStore
         ArgumentException.ThrowIfNullOrEmpty(sessionId);
         lock (_gate)
         {
-            using var ctx = _db.CreateContext();
+            using var ctx = _context();
             var row = ctx.SessionScreens.AsNoTracking()
                 .Where(s => s.SessionId == sessionId)
                 .OrderByDescending(s => s.CapturedAtUtc)
@@ -170,7 +185,7 @@ public sealed class SessionScreenStore
         if (limit <= 0) throw new ArgumentOutOfRangeException(nameof(limit), "limit must be positive");
         lock (_gate)
         {
-            using var ctx = _db.CreateContext();
+            using var ctx = _context();
             return ctx.SessionScreens.AsNoTracking()
                 .Where(s => s.SessionId == sessionId)
                 .OrderByDescending(s => s.CapturedAtUtc)
@@ -191,7 +206,7 @@ public sealed class SessionScreenStore
         var cutoff = Utc(cutoffUtc);
         lock (_gate)
         {
-            using var ctx = _db.CreateContext();
+            using var ctx = _context();
             var removed = ctx.SessionScreens.Where(s => s.ReceivedAtUtc < cutoff).ExecuteDelete();
             if (removed > 0)
                 FileLog.Write($"[SessionScreenStore] PurgeOlderThan: removed {removed} screen(s) received before {cutoff:O}");
