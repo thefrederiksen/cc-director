@@ -13,7 +13,7 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace CcDirector.Gateway.Migrations.Postgres.Migrations
 {
     [DbContext(typeof(GatewayDbContext))]
-    [Migration("20260902112419_AddSessionScreens")]
+    [Migration("20260902115702_AddSessionScreens")]
     partial class AddSessionScreens
     {
         /// <inheritdoc />

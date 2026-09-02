@@ -4,6 +4,7 @@ using CcDirector.Gateway.Data.Entities;
 using CcDirector.Gateway.Contracts;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Metadata;
 using Npgsql;
 using Xunit;
 
@@ -188,11 +189,69 @@ public sealed class PostgresProviderProofTests
     private static readonly HashSet<(string Table, string Column)> CollationExceptions = new();
 
     /// <summary>
+    /// INHERITED DEBT, NOT REASONED EXEMPTIONS - and the distinction is the point of keeping them apart.
+    ///
+    /// These string key columns carry no explicit "C" collation and were already in the schema when this
+    /// check was inverted on 2026-09-02. The previous version was an allow-list, so it could not see a
+    /// MISSING collation at all and none of these was ever raised. They are listed here so the check is red
+    /// for anything NEW - which is the direction that matters - without this one change becoming a
+    /// schema-wide edit to five other missions' tables.
+    ///
+    /// EVERY ENTRY IS AN OPEN QUESTION, not a decision. Several look like they should simply be collated:
+    /// workflows.Id and skill_versions.SkillId are slugs of exactly the shape as skills.Id, which IS
+    /// collated. The correct resolution for each is either a UseCollation("C") in the model with its
+    /// migration, or a written reason moved up into <see cref="CollationExceptions"/> - not indefinite
+    /// residence here.
+    ///
+    /// A NEW column may NOT be added to this set. If a change makes this list shorter, delete the entries
+    /// it fixed; if a change would make it longer, that is the check working and the answer is a collation
+    /// or an argued exemption.
+    /// </summary>
+    private static readonly HashSet<(string Table, string Column)> InheritedUncollatedKeyColumns = new()
+    {
+        ("cron_jobs", "CronJobEntityId"),
+        ("cron_jobs", "CronJobEntityTenantId"),
+        ("cron_jobs", "Id"),
+        ("dictation_transcripts", "Id"),
+        // entitlements is the payment side's table, excluded from our migrations - we do not create it, so
+        // we cannot collate it either. This one is arguably a genuine exemption rather than debt, but it is
+        // left here rather than promoted, because promoting it is a claim about somebody else's schema.
+        ("entitlements", "subject"),
+        ("repo_state", "DirectorId"),
+        ("repo_state", "RepoPath"),
+        ("session_keys", "TenantId"),
+        ("skill_placement_state", "AgentKind"),
+        ("skill_placement_state", "DirectorId"),
+        ("skill_versions", "SkillId"),
+        ("workflow_versions", "WorkflowId"),
+        ("workflows", "Id"),
+    };
+
+    /// <summary>
     /// The other side of the same coin: columns carrying an explicit "C" collation while NOT being a string
     /// key column derived from the model. An entry here is a collation applied for a reason the model does
     /// not express, which needs writing down. Empty today, and it should stay that way.
     /// </summary>
-    private static readonly HashSet<(string Table, string Column)> CollationExtras = new();
+    private static readonly HashSet<(string Table, string Column)> CollationExtras = new()
+    {
+        // A LOOKUP column, not a key: a credential is FOUND by its hash, and that lookup is an exact
+        // byte-ordinal match on a value the caller supplies. Getting equality wrong here does not reorder a
+        // list, it authenticates the wrong device or fails to authenticate the right one - so it is
+        // deliberately collated even though the model does not make it a key.
+        ("device_credentials", "DeviceKeyHash"),
+
+        // The turn store's generation digest. It is part of a NON-unique index rather than a key, so the
+        // model-derived enumeration cannot see it, but the store compares it for exact equality on every
+        // push to decide whether a batch belongs to the session's current conversation - the same
+        // byte-ordinal requirement as the key columns beside it.
+        ("session_turn_heads", "Generation"),
+
+        // The trial-extension ledger's subject. Not a key here, but it must group by EXACTLY the value
+        // account_trials.subject is keyed on - and that one IS collated. Two columns holding one identity
+        // have to agree about equality or the ledger silently reports on a different account than the trial
+        // row it is about.
+        ("trial_extensions", "subject"),
+    };
 
     /// <summary>
     /// Proves that EVERY string key column the model declares carries an explicit byte-ordinal collation
@@ -256,7 +315,9 @@ public sealed class PostgresProviderProofTests
                     .Where(prop => prop.ClrType == typeof(string))
                     .Select(prop => (Table: table, Column: prop.GetColumnName(storeObject) ?? prop.Name));
             })
-            .Where(pair => !ExemptColumnNames.Contains(pair.Column) && !CollationExceptions.Contains(pair))
+            .Where(pair => !ExemptColumnNames.Contains(pair.Column)
+                           && !CollationExceptions.Contains(pair)
+                           && !InheritedUncollatedKeyColumns.Contains(pair))
             .Distinct()
             .OrderBy(pair => pair.Table, StringComparer.Ordinal)
             .ThenBy(pair => pair.Column, StringComparer.Ordinal)
@@ -293,6 +354,15 @@ public sealed class PostgresProviderProofTests
         Assert.True(unexpected.Count == 0,
             "these columns carry an explicit C collation but are neither a string key column nor a listed "
             + "exception: " + string.Join(", ", unexpected.Select(u => u.Item1 + "." + u.Item2)));
+
+        // The inherited-debt list is itself hand-kept, so it gets the same treatment as everything else
+        // here: an entry that HAS since been collated must be deleted rather than left, or the list slowly
+        // becomes a place where fixed things are still recorded as broken and nobody trusts it.
+        var fixedSince = InheritedUncollatedKeyColumns.Where(pair => actual.Contains(pair)).ToList();
+        Assert.True(fixedSince.Count == 0,
+            "these columns are listed as inherited debt but now DO carry an explicit C collation - delete "
+            + "them from InheritedUncollatedKeyColumns: "
+            + string.Join(", ", fixedSince.Select(f => f.Table + "." + f.Column)));
 
 
         // And no gateway column carries any explicit collation OTHER than the default or "C" - nothing

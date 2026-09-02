@@ -181,6 +181,21 @@ function Invoke-Gw([string]$Path, [string]$Method = 'GET', $Body = $null) {
 # ================================================================== the run ====
 try {
     Say "rig root: $rig"
+
+    # The slot must be genuinely free before anything is built. The fleet's own isolation harness reserves
+    # a slot by registering a task named cc-director<N>-launch and by running an image called
+    # cc-director<N>.exe, so both are checked - a rig that took an occupied slot would have this script's
+    # process checks matching somebody else's Director, and its teardown is the part that matters there.
+    if (Get-Process -Name ("cc-director$Slot") -ErrorAction SilentlyContinue) {
+        Fail "slot $Slot is in use - a cc-director$Slot process is already running. Re-run with -Slot <a free one>."
+    }
+    if (Get-ScheduledTask -TaskName ("cc-director$Slot-launch") -ErrorAction SilentlyContinue) {
+        Fail "slot $Slot is reserved - the scheduled task cc-director$Slot-launch exists. Re-run with -Slot <a free one>."
+    }
+    if (Get-NetTCPConnection -LocalPort $GatewayPort -State Listen -ErrorAction SilentlyContinue) {
+        Fail "port $GatewayPort is already listening - something else is there. Re-run with -GatewayPort <a free one>."
+    }
+
     New-Item -ItemType Directory -Force -Path $rig, $gwRoot, $dirRoot, $stage, $results | Out-Null
 
     # ---- build both halves from THIS worktree -------------------------------
@@ -242,7 +257,10 @@ try {
     }
     Say "gateway healthy (pid $($script:GatewayProcess.Id))"
 
-    $gwDb = Join-Path $gwRoot 'config\gateway\gateway.db'
+    # CcStorage.GatewayDb() is Root()/gateway.db, and Root() honours CC_DIRECTOR_ROOT - so the throwaway
+    # Gateway's database is inside the rig root and goes away with it. The search below is a safety net for
+    # an instance-scoped root, not a guess.
+    $gwDb = Join-Path $gwRoot 'gateway.db'
     if (-not (Test-Path $gwDb)) {
         $found = Get-ChildItem $gwRoot -Recurse -Filter '*.db' -ErrorAction SilentlyContinue |
                  Where-Object { $_.Name -notlike '*stats*' } | Select-Object -First 1
