@@ -866,11 +866,26 @@ jobs:
       # regression that dropped the block. Treating that as "nothing to check" would make this step
       # certify precisely the deploys it cannot see into, which is the failure it exists to remove.
       - name: Prove every subsystem came up
-        # Same guard the poller uses: only assert against production when a swap actually put the new
-        # image there. A refused or failed deploy leaves the OLD image serving, and holding that to this
-        # contract would report a three-minute subsystem failure for a run that deliberately changed
-        # nothing.
-        if: needs.deploy.outputs.readiness_outcome == 'healthy'
+        # `always()` IS LOAD-BEARING HERE - WITHOUT IT THIS STEP IS SILENT ON EXACTLY THE DEPLOYS THAT
+        # NEED IT.
+        #
+        # A step whose `if:` does not mention always()/failure() is implicitly ANDed with success(), so a
+        # bare condition here means "...and every earlier step passed". The step above measures the
+        # outage and FAILS the run when it exceeds the budget. So the first time this check mattered -
+        # run 33666956643, the deploy of the incident fix itself - the outage step failed at 36.4s and
+        # this step was SKIPPED. A troubled deploy is the one where "did the pages actually come up?" is
+        # worth asking, and it was the one case that could not ask it.
+        #
+        # That is a check whose pass condition was an absence: nothing failed here, because nothing ran
+        # here, and the run's own summary showed no subsystem complaint. The step exists because a green
+        # signal over a dead page cost four and a half hours on 2 September 2026; shipping it in a form
+        # that goes quiet whenever anything else is wrong would have reproduced that fault inside its own
+        # fix.
+        #
+        # The rest of the guard is unchanged and is a real exclusion, not a convenience: readiness_outcome
+        # is 'healthy' only when a swap actually put the new image into production. A refused deploy
+        # (wrong ref, failed checks) leaves the OLD image serving and must not be held to this contract.
+        if: always() && needs.deploy.outputs.readiness_outcome == 'healthy'
         run: |
           deadline=$(( $(date +%s) + 180 ))
           last=""
