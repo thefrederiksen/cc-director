@@ -196,7 +196,14 @@ internal static class GatewayEndpoints
         // runs before the listener binds and the database is opened AFTER it, so the value is not known
         // here. Null means "assume ready", which is what every self-host and test caller wants.
         Func<bool>? databaseReady = null,
-        History.KnownRepositoryStore? knownRepositories = null)
+        History.KnownRepositoryStore? knownRepositories = null,
+        // Per-subsystem readiness for /healthz: the parts of the Gateway that can be down on their own
+        // while the process serves normally. A delegate, not a snapshot, for the same reason databaseReady
+        // above is one - the statistics store is allowed to come up (and now to come BACK) long after Map
+        // ran, and a value read here would freeze the answer at startup. Null computes none, which OMITS
+        // the block; that is what every self-host and test caller gets, and it is honest: a responder that
+        // was given nothing to report must not report that everything is fine. See HealthDto.Subsystems.
+        Func<IReadOnlyDictionary<string, string>>? subsystems = null)
     {
         // The old issue #1188 "session lock" (423 Locked on human input while a PENDING dictation record
         // existed) was removed deliberately (issue #1308). This is a single-operator tool: a collision
@@ -586,6 +593,7 @@ internal static class GatewayEndpoints
                     Status = "starting",
                     Version = version,
                     Commit = Environment.GetEnvironmentVariable("COCKPIT_COMMIT"),
+                    Subsystems = subsystems?.Invoke(),
                     ServerTime = DateTime.UtcNow,
                 }, statusCode: StatusCodes.Status503ServiceUnavailable);
             }
@@ -622,6 +630,7 @@ internal static class GatewayEndpoints
                     Status = "ok",
                     Version = version,
                     Commit = commit,
+                    Subsystems = subsystems?.Invoke(),
                     ServerTime = DateTime.UtcNow,
                 });
             }
@@ -644,6 +653,7 @@ internal static class GatewayEndpoints
                 Sessions = totalSessions,
                 Version = version,
                 Commit = commit,
+                Subsystems = subsystems?.Invoke(),
                 ServerTime = DateTime.UtcNow,
             });
         });

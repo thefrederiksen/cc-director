@@ -102,12 +102,50 @@ public sealed class GatewayStatsStore : IDisposable
     /// </summary>
     public static readonly TimeSpan OpenDeadline = TimeSpan.FromSeconds(8);
 
+    /// <summary>
+    /// How long to wait before each successive attempt to reopen a store that COULD NOT BE REACHED, with the
+    /// last value repeating for as long as the process runs.
+    ///
+    /// WHY THIS EXISTS. The open used to happen exactly once. A store that was merely SLOW was covered - the
+    /// attempt outlives the startup deadline and publishes when it finishes - but a store that was briefly
+    /// UNREACHABLE was not: the failure latched, and statistics stayed dead for the life of the container
+    /// with no retry anywhere. That is not a theoretical gap. On 2 September 2026 a deploy ran production and
+    /// staging together for four minutes; each container opens its own pool, the pooler refused the incoming
+    /// container's statistics connection, and Your Throttle answered 503 for hours while every turn the owner
+    /// drove went unrecorded - on a database that was healthy the whole time and answered on the next
+    /// connection anyone made to it.
+    ///
+    /// A TRANSIENT FAILURE MUST NOT BE PERMANENT, and one reachability test is not evidence about the next
+    /// minute. So a store that could not be reached is retried until it can be, and the surface comes back on
+    /// its own with no restart - the same promise the late arrival already makes for a slow store, kept for an
+    /// unreachable one too.
+    ///
+    /// BACKED OFF, AND THEN STEADY RATHER THAN STOPPED. The early attempts are close together because the
+    /// common case is a pooler that refused one connection during a deploy and will accept the next one
+    /// seconds later. It settles at one attempt a minute and stays there: a database can come back at any
+    /// hour, an attempt is a single connection that costs nothing measurable beside the roster traffic
+    /// already flowing, and a store that gives up after N tries is the same permanent failure this exists to
+    /// remove, just with a longer fuse. Nothing here retries a store that is UNCONFIGURED, one that failed
+    /// inside our OWN code, or one whose adoption verdict says this build cannot use it - see
+    /// <see cref="ScheduleReopen"/> for why each of those is a different answer, not a slower one.
+    /// </summary>
+    internal static readonly IReadOnlyList<TimeSpan> ReopenBackoff = new[]
+    {
+        TimeSpan.FromSeconds(5),
+        TimeSpan.FromSeconds(10),
+        TimeSpan.FromSeconds(20),
+        TimeSpan.FromSeconds(40),
+        TimeSpan.FromSeconds(60),
+    };
+
     private readonly StatsFailureCounters _health = new(ObserverName);
     private readonly object _gate = new();
+    private readonly CancellationTokenSource _stop = new();
     private ServiceProvider? _provider;
     private StatsStoreAvailability _availability;
     private IDbContextFactory<GatewayStatsDbContext>? _factory;
     private bool _disposed;
+    private bool _reopening;
 
     /// <summary>
     /// What the statistics surface should say about itself. Folded once, here.
@@ -306,8 +344,9 @@ public sealed class GatewayStatsStore : IDisposable
             var detail = theirs
                 ? $"The statistics database ({choice.Target}) could not be opened or migrated " +
                   $"({ex.GetType().Name}). The settings name a database, so this is a database or network " +
-                  "problem rather than a missing setting. Statistics are unavailable; the Gateway is serving " +
-                  "normally and the rest of it is unaffected."
+                  "problem rather than a missing setting. The Gateway is retrying it until it answers, so " +
+                  "the statistics surface will come up on its own with no restart needed. The Gateway is " +
+                  "serving normally and the rest of it is unaffected."
                 : "Statistics are unavailable because something in DevThrottle's own code failed while " +
                   $"opening the statistics store ({ex.GetType().Name}). This is a fault in DevThrottle, NOT " +
                   "a problem with your database, your network or your settings - checking those will not " +
@@ -318,6 +357,11 @@ public sealed class GatewayStatsStore : IDisposable
                 theirs ? StatsStoreUnavailableReason.Unreachable : StatsStoreUnavailableReason.InternalError,
                 detail, choice.Source, choice.Target);
             _health.RecordFailure(detail);
+
+            // THEIRS IS RETRIED, OURS IS NOT. A database or network that refused this connection may accept
+            // the next one; a fault in our own code throws identically every time, and looping on it would
+            // bury the report that gets it fixed. See ScheduleReopen.
+            if (theirs) ScheduleReopen(choice);
 
             // The STACK is logged for our own faults and not for theirs. For a storage failure the type and
             // the redacted target are the whole diagnosis and a stack is noise; for a fault in our code the
@@ -397,13 +441,149 @@ public sealed class GatewayStatsStore : IDisposable
             late.Dispose();
 
             var detail = prepared?.Detail ??
-                $"The statistics store ({choice.Target}) failed after the startup deadline ({failure}).";
+                $"The statistics store ({choice.Target}) failed after the startup deadline ({failure}). " +
+                "The Gateway is retrying it until it answers, and the statistics surface will come up on " +
+                "its own with no restart needed.";
             var reason = prepared?.Reason ?? StatsStoreUnavailableReason.Unreachable;
             _availability = Unavailable(reason, detail, choice.Source, choice.Target);
             _health.RecordFailure(detail);
 
             FileLog.Write(
                 $"[GatewayStatsStore] Late arrival FAILED (CONTAINED): {_availability.ReasonCode}: {detail}");
+
+            // A THROW is a reachability failure and is retried; an adoption VERDICT is not. prepared is null
+            // exactly when the attempt faulted, which is the case this incident came from.
+            if (prepared is null) ScheduleReopen(choice);
+        }
+    }
+
+    /// <summary>
+    /// Start retrying an open that failed because the store COULD NOT BE REACHED, until it can be.
+    ///
+    /// ONLY UNREACHABLE IS RETRIED, and the three states this deliberately excludes are excluded because
+    /// retrying them is not a slower version of the right answer, it is the wrong answer repeated:
+    ///
+    ///  - NOT CONFIGURED. No setting names a database. There is nothing to connect to, and a thousand
+    ///    attempts do not produce a connection string. The operator has to set it, and the log already
+    ///    names the variable.
+    ///  - INTERNAL ERROR. Something in OUR code threw while opening the store. A defect is not a timing
+    ///    artefact; it will throw again on every attempt, and turning it into a permanent background loop
+    ///    buries the one report that would get it fixed.
+    ///  - AN ADOPTION VERDICT. The store was reached and interrogated, and this build says it cannot use
+    ///    what it found. That is a considered answer about the store's CONTENTS, and it does not change
+    ///    because we ask a second time.
+    ///
+    /// At most ONE loop ever runs, and it is the only thing other than the constructor and the late arrival
+    /// that may make the store available. It ends on success or on Dispose - never on a retry count; see
+    /// <see cref="ReopenBackoff"/> for why stopping would reintroduce exactly the failure it exists to fix.
+    /// </summary>
+    /// <param name="choice">The chosen connection to keep trying. The same one the failed attempt used - a
+    /// reopen never re-resolves the configuration, so it cannot quietly start using a different database
+    /// than the one the operator's log says the Gateway chose.</param>
+    private void ScheduleReopen(StatsConnectionChoice choice)
+    {
+        // Called from inside the lock on the late-arrival path and from outside it in the constructor, so it
+        // takes the lock itself and tolerates already holding it (a Monitor is re-entrant per thread).
+        lock (_gate)
+        {
+            if (_disposed || _reopening || _factory is not null) return;
+            _reopening = true;
+        }
+
+        FileLog.Write(
+            $"[GatewayStatsStore] Reopen SCHEDULED: source={choice.Source} target={choice.Target}. The store " +
+            "could not be reached, so it will be retried until it answers. No restart is needed.");
+
+        _ = Task.Run(() => ReopenLoop(choice));
+    }
+
+    /// <summary>
+    /// The reopen loop. Waits, opens, and publishes the first attempt that succeeds.
+    ///
+    /// It runs on a thread pool thread for the life of the process, so EVERY attempt is contained: a throw
+    /// escaping here would be an unobserved task exception and would end the loop silently, which is the
+    /// failure mode this whole type exists to prevent. Nothing it catches leaves.
+    /// </summary>
+    private async Task ReopenLoop(StatsConnectionChoice choice)
+    {
+        for (var attempt = 0; ; attempt++)
+        {
+            var wait = ReopenBackoff[Math.Min(attempt, ReopenBackoff.Count - 1)];
+            try
+            {
+                await Task.Delay(wait, _stop.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                return;   // Disposed. There is nothing left to publish into.
+            }
+
+            ServiceProvider? provider = null;
+            try
+            {
+                provider = BuildProvider(choice);
+                var factory = provider.GetRequiredService<IDbContextFactory<GatewayStatsDbContext>>();
+
+                // NOT bounded on the clock here, and that is the difference from the constructor. The startup
+                // deadline exists because the platform is waiting on the port bind; nothing is waiting on
+                // this. A slow attempt takes as long as it takes, and the next one starts after it.
+                var prepared = await Task.Run(() => OpenAndMigrate(factory, choice)).ConfigureAwait(false);
+
+                if (!prepared.IsUsable)
+                {
+                    // The store answered, with a verdict. That is not a reachability failure, and asking a
+                    // second time asks the same question - so the loop ends with the verdict on the surface.
+                    provider.Dispose();
+                    lock (_gate)
+                    {
+                        _reopening = false;
+                        if (_disposed) return;
+                        _availability = Unavailable(
+                            prepared.Reason, prepared.Detail, choice.Source, choice.Target);
+                        _health.RecordFailure(prepared.Detail);
+                    }
+
+                    FileLog.Write(
+                        "[GatewayStatsStore] Reopen STOPPED: the store answered and this build cannot use it " +
+                        $"({prepared.Reason}): {prepared.Detail}");
+                    return;
+                }
+
+                lock (_gate)
+                {
+                    if (_disposed)
+                    {
+                        provider.Dispose();
+                        return;
+                    }
+
+                    _provider = provider;
+                    _factory = factory;
+                    _availability = new StatsStoreAvailability(
+                        IsAvailable: true,
+                        Reason: StatsStoreUnavailableReason.None,
+                        ReasonCode: "available",
+                        Detail: choice.Detail,
+                        Source: choice.Source,
+                        Target: choice.Target);
+                    _reopening = false;
+                }
+
+                FileLog.Write(
+                    $"[GatewayStatsStore] REOPENED on attempt {attempt + 1}: the statistics store is now " +
+                    $"AVAILABLE ({choice.Target}). No restart was needed.");
+                return;
+            }
+            catch (Exception ex)
+            {
+                // Contained, exactly as the constructor's boundary is. The exception MESSAGE is never used -
+                // a provider echoes a malformed connection string back in it - so the type and the already
+                // redacted target are what gets logged, and the loop waits and tries again.
+                provider?.Dispose();
+                FileLog.Write(
+                    $"[GatewayStatsStore] Reopen attempt {attempt + 1} FAILED (CONTAINED): " +
+                    $"target={choice.Target}: {ex.GetType().Name}. Waiting and retrying.");
+            }
         }
     }
 
@@ -861,6 +1041,7 @@ public sealed class GatewayStatsStore : IDisposable
         {
             if (_disposed) return;
             _disposed = true;
+            _stop.Cancel();
             _provider?.Dispose();
             _provider = null;
             _factory = null;
@@ -872,6 +1053,9 @@ public sealed class GatewayStatsStore : IDisposable
         // it is process-wide and has no business being held under this store's gate.
         if (availability.Source == StatsConnectionSource.SqliteFile)
             SqliteConnection.ClearAllPools();
+
+        // Outside the lock, and after the cancel above has already stopped the reopen loop from publishing.
+        _stop.Dispose();
         FileLog.Write($"[GatewayStatsStore] Dispose: closed {availability.Target}");
     }
 }
