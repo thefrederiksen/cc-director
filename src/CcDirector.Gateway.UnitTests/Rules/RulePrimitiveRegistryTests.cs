@@ -55,19 +55,43 @@ public sealed class RulePrimitiveRegistryTests
         Assert.Equal(attributed.Count, RulePrimitiveRegistry.Default.Primitives.Count);
     }
 
+    /// <summary>
+    /// THE FIVE THE RULING NAMES, and the ONE hand-written list in this file. They are the owner's ruling
+    /// 15 and Architect ruling A3 - an EXTERNAL contract, which is exactly the kind of thing that cannot
+    /// be derived from our own code, because deriving it from the code would make it agree with the code
+    /// by construction and prove nothing at all. Everything it is compared against is derived.
+    /// </summary>
+    private static readonly (string Name, string[] Parameters, RuleValueKind Answer)[] TheApprovedFive =
+    {
+        ("is_path_inside",    new[] { "target", "root" },        RuleValueKind.Boolean),
+        ("retry_delay_from",  new[] { "screen_text", "now" },    RuleValueKind.OptionalSeconds),
+        ("elapsed_since",     new[] { "first_failure", "now" },  RuleValueKind.Seconds),
+        ("matches_any",       new[] { "text", "terms" },         RuleValueKind.Boolean),
+        ("extract_first",     new[] { "screen_text", "kind" },   RuleValueKind.Text),
+    };
+
+    [Fact]
+    public void The_registry_ships_exactly_the_approved_checks_and_no_others()
+    {
+        // THE HALF THAT WAS MISSING. Both existing checks compared sets derived from the same attributes,
+        // and the external one only asked whether each approved name was PRESENT - so a sixth attributed
+        // method with supported parameter types was legal and left every test green. It was run against
+        // exactly that: a sixth check committed on purpose, which the suite passed.
+        //
+        // A new general-purpose check is the route by which an interpreter returns under another name
+        // (owner ruling 15), so adding one has to be a visible act. This is what makes it visible.
+        var approved = TheApprovedFive.Select(e => e.Name).OrderBy(n => n, StringComparer.Ordinal).ToArray();
+        var shipped = RulePrimitiveRegistry.Default.Primitives
+            .Select(p => p.Name).OrderBy(n => n, StringComparer.Ordinal).ToArray();
+
+        Assert.NotEmpty(shipped);
+        Assert.Equal(approved, shipped);
+    }
+
     [Fact]
     public void The_five_primitives_the_ruling_names_are_present_with_their_stated_signatures()
     {
-        // These five names and shapes are the owner's ruling 15 / Architect ruling A3 - an external
-        // contract, not something derivable from our own code, so they are asserted directly.
-        var expected = new (string Name, string[] Parameters, RuleValueKind Answer)[]
-        {
-            ("is_path_inside",    new[] { "target", "root" },        RuleValueKind.Boolean),
-            ("retry_delay_from",  new[] { "screen_text", "now" },    RuleValueKind.OptionalSeconds),
-            ("elapsed_since",     new[] { "first_failure", "now" },  RuleValueKind.Seconds),
-            ("matches_any",       new[] { "text", "terms" },         RuleValueKind.Boolean),
-            ("extract_first",     new[] { "screen_text", "kind" },   RuleValueKind.Text),
-        };
+        var expected = TheApprovedFive;
 
         foreach (var (name, parameters, answer) in expected)
         {
