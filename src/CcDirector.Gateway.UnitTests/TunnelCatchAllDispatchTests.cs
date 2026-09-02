@@ -60,7 +60,6 @@ public sealed class TunnelCatchAllDispatchTests
     [InlineData("buffer/html", "buffer-html")]
     [InlineData("usage", "usage")]
     [InlineData("context", "context")]
-    [InlineData("history", "history")]
     [InlineData("github-urls", "github-urls")]
     [InlineData("queue", "queue-read")]
     public async Task Each_catch_all_read_path_maps_to_its_verb(string rest, string expectedVerb)
@@ -74,6 +73,23 @@ public sealed class TunnelCatchAllDispatchTests
         Assert.True(handled);
         Assert.Equal(expectedVerb, seen()!.Verb);
         Assert.Equal("", seen()!.PayloadJson); // reads carry no payload
+    }
+
+    [Fact]
+    public async Task History_is_NOT_dispatched_down_the_tunnel_any_more()
+    {
+        // The turn-push mission's whole point: a conversation is read from the Gateway's own store, not
+        // fetched from the owning Director on every 2.5-second Chat poll. The literal route
+        // (SessionConversationEndpoint) serves it; this dispatcher must not claim the path, or a request
+        // would go back down the tunnel and re-parse a transcript on the user's disk.
+        var send = Capture(out var seen, DirectorCommandResult.Success("{}"));
+        var dispatch = new TunnelCatchAllDispatch(send);
+        var (ctx, _) = NewCtx("GET");
+
+        var handled = await dispatch.TryDispatchAsync(ctx, Guid.NewGuid().ToString(), "dir1", "history");
+
+        Assert.False(handled);
+        Assert.Null(seen());
     }
 
     [Fact]

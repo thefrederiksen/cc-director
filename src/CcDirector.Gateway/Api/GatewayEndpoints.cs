@@ -199,7 +199,8 @@ internal static class GatewayEndpoints
         // Whether the database is connected yet (issue #2383's real fix). A delegate, not a bool: Map
         // runs before the listener binds and the database is opened AFTER it, so the value is not known
         // here. Null means "assume ready", which is what every self-host and test caller wants.
-        Func<bool>? databaseReady = null)
+        Func<bool>? databaseReady = null,
+        History.KnownRepositoryStore? knownRepositories = null)
     {
         // The old issue #1188 "session lock" (423 Locked on human input while a PENDING dictation record
         // existed) was removed deliberately (issue #1308). This is a single-operator tool: a collision
@@ -2930,6 +2931,29 @@ internal static class GatewayEndpoints
 
             // Post-cut: tunnel-only. A null result (Director not connected) stays 502, but now says so instead of arriving as a silent bare status.
             return TunnelFailure(null);
+        });
+
+        // The complete machine-scoped repository catalog used by mobile session creation. It is served
+        // from Gateway storage rather than through the Director tunnel, so a temporarily disconnected
+        // Director does not erase search history. The machine comes from the owned Director registration;
+        // callers cannot supply a machine name and cross that ownership boundary.
+        app.MapGet("/directors/{id}/known-repositories", (HttpContext ctx, string id) =>
+        {
+            if (!TryResolveOwnedDirector(ctx, tenantBoundary, registry, id, out var director, out var error))
+                return error;
+            if (knownRepositories is null)
+                return Results.Json(new { error = "Known repository storage is not available." },
+                    statusCode: StatusCodes.Status503ServiceUnavailable);
+
+            var requestTenant = ResolveReadTenant(ctx, tenantBoundary);
+            if (requestTenant is null)
+                return Results.Json(new { error = "no tenant is bound to this request" },
+                    statusCode: StatusCodes.Status403Forbidden);
+            if (string.IsNullOrWhiteSpace(director.MachineName))
+                return Results.Json(new { error = "The Director has not reported a machine name." },
+                    statusCode: StatusCodes.Status409Conflict);
+
+            return Results.Json(knownRepositories.ReadForMachine(requestTenant.Value, director.MachineName));
         });
 
         // Issue #330: pull a registered Director's machine facts (tool inventory with

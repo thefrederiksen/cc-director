@@ -28,6 +28,14 @@ public sealed class DirectorStreamHello
     /// <summary>Gateway Cleanup mission (tunnel-only): the Director process id (roster/diagnostics).</summary>
     public int Pid { get; set; }
 
+    /// <summary>
+    /// This Director SENDS its sessions' conversations (the turn-push mission). False from a build too old
+    /// to have the feature, which is why the Gateway asks rather than assuming: when it holds no
+    /// conversation for a session, "it has not arrived yet" and "that computer cannot send it" are
+    /// different news to the person looking at an empty Chat screen, and only this tells them apart.
+    /// </summary>
+    public bool PushesTurns { get; set; }
+
     /// <summary>Gateway Cleanup mission (tunnel-only): when the Director process started (UTC).</summary>
     public DateTime StartedAt { get; set; }
 

@@ -61,6 +61,127 @@ public sealed class DirectorHubTests : IDisposable
         return (hub, ctx);
     }
 
+    private (DirectorHub hub, FakeHubCallerContext ctx) NewHub(string connectionId, CcDirector.Gateway.History.SessionTurnStore turns)
+    {
+        var ctx = new FakeHubCallerContext(connectionId);
+        var hub = new DirectorHub(_store, _registry, InputStatsHandle.Available(_inputStats), new GatewayStreamRegistry(), SelfHostBoundary(), sessionTurns: turns) { Context = ctx };
+        return (hub, ctx);
+    }
+
+    // ---------- Turn push (the turn-push mission, phase 1): PushTurns stores, Hello hands back the watermarks ----------
+
+    private static TurnPushBatch Turns(string sid, string generation, int start, int count) => new()
+    {
+        SessionId = sid,
+        Generation = generation,
+        GenerationStartedUtc = new DateTime(2026, 9, 1, 20, 0, 0, DateTimeKind.Utc),
+        Agent = "ClaudeCode",
+        StartOrdinal = start,
+        TotalCount = start + count,
+        Turns = Enumerable.Range(start, count).Select(i => new PushedTurn
+        {
+            Ordinal = i,
+            Role = i % 2 == 0 ? "User" : "Assistant",
+            Parts = { new HistoryPartDto { Kind = "Text", Text = "m" + i } },
+        }).ToList(),
+    };
+
+    [Fact]
+    public void PushTurns_AfterHello_StoresTheTurns_AndAnswersTheWatermark()
+    {
+        var turns = new CcDirector.Gateway.History.SessionTurnStore(Db);
+        var (hub, _) = NewHub("conn-1", turns);
+        hub.Hello(Hello("dir-A"));
+
+        var mark = hub.PushTurns(1, Turns("s1", "gen-a", 0, 3));
+
+        Assert.NotNull(mark);
+        Assert.Equal(3, mark.Count);
+        var stored = turns.ReadCurrent("s1");
+        Assert.NotNull(stored);
+        Assert.Equal(new[] { "m0", "m1", "m2" }, stored.Value.Messages.Select(m => m.Parts[0].Text));
+        Assert.Equal("dir-A", stored.Value.Head.DirectorId);   // attributed to the BOUND Director, not to anything in the batch
+    }
+
+    [Fact]
+    public void PushTurns_AMalformedBatch_IsRefused_AndNothingIsStored()
+    {
+        var turns = new CcDirector.Gateway.History.SessionTurnStore(Db);
+        var (hub, _) = NewHub("conn-1", turns);
+        hub.Hello(Hello("dir-A"));
+        var bad = Turns("s1", "gen-a", 0, 2);
+        bad.Turns[1].Ordinal = 9;   // disagrees with its own position
+
+        Assert.Null(hub.PushTurns(1, bad));
+        Assert.Null(turns.ReadCurrent("s1"));
+    }
+
+    [Fact]
+    public void Hello_HandsBackTheWatermarks_ForThisDirectorsSessionsOnly()
+    {
+        var turns = new CcDirector.Gateway.History.SessionTurnStore(Db);
+        var (hubA, _) = NewHub("conn-1", turns);
+        hubA.Hello(Hello("dir-A"));
+        hubA.PushTurns(1, Turns("s1", "gen-a", 0, 2));
+        hubA.PushTurns(2, Turns("s2", "gen-b", 0, 5));
+        var (hubB, _) = NewHub("conn-2", turns);
+        hubB.Hello(Hello("dir-B"));
+        hubB.PushTurns(1, Turns("s3", "gen-c", 0, 1));
+
+        var again = hubA.Hello(Hello("dir-A"));
+
+        Assert.NotNull(again);
+        var marks = again.TurnWatermarks.OrderBy(m => m.SessionId).ToList();
+        Assert.Equal(new[] { "s1", "s2" }, marks.Select(m => m.SessionId));
+        Assert.Equal(new[] { 2, 5 }, marks.Select(m => m.Count));
+        Assert.Equal(new[] { "gen-a", "gen-b" }, marks.Select(m => m.Generation));
+        Assert.Contains("PushTurns", again.HubMethods);
+        Assert.True(again.TurnWatermarksKnown);
+    }
+
+    [Fact]
+    public void Hello_RecordsWhetherThisDirectorSendsConversations()
+    {
+        // The input to the sentence an empty Chat screen shows. Without it, "the computer has not sent its
+        // conversation yet" and "that computer is too old to send one" are the same silence, and the screen
+        // tells a reader to wait for something that will never arrive.
+        var caps = new CcDirector.Gateway.Streaming.TurnPushCapabilityRegistry();
+        var ctxNew = new FakeHubCallerContext("conn-1");
+        var newBuild = new DirectorHub(_store, _registry, InputStatsHandle.Available(_inputStats), new GatewayStreamRegistry(), SelfHostBoundary(), turnPushCapabilities: caps) { Context = ctxNew };
+        var ctxOld = new FakeHubCallerContext("conn-2");
+        var oldBuild = new DirectorHub(_store, _registry, InputStatsHandle.Available(_inputStats), new GatewayStreamRegistry(), SelfHostBoundary(), turnPushCapabilities: caps) { Context = ctxOld };
+
+        newBuild.Hello(new DirectorStreamHello { DirectorId = "dir-new", Version = "test", PushesTurns = true });
+        oldBuild.Hello(new DirectorStreamHello { DirectorId = "dir-old", Version = "test" });   // an older build says nothing
+
+        Assert.True(caps.PushesTurns(TenantId.Local, "dir-new"));
+        Assert.False(caps.PushesTurns(TenantId.Local, "dir-old"));
+        Assert.False(caps.PushesTurns(TenantId.Local, "dir-never-seen"));
+        // Partitioned: another account's Director of the same name has said nothing to us.
+        Assert.False(caps.PushesTurns(new TenantId("11111111-1111-1111-1111-111111111111"), "dir-new"));
+    }
+
+    [Fact]
+    public void Hello_WithNothingStoredForThisDirector_SaysSo_RatherThanStayingSilent()
+    {
+        // An empty list that the Gateway VOUCHES for is a fact the Director acts on: it pushes every
+        // conversation from the start. A Gateway with no store at all must not look like that.
+        var turns = new CcDirector.Gateway.History.SessionTurnStore(Db);
+        var (withStore, _) = NewHub("conn-1", turns);
+        var answered = withStore.Hello(Hello("dir-A"));
+
+        Assert.NotNull(answered);
+        Assert.Empty(answered.TurnWatermarks);
+        Assert.True(answered.TurnWatermarksKnown);
+
+        var (noStore, _) = NewHub("conn-2");
+        var silent = noStore.Hello(Hello("dir-B"));
+
+        Assert.NotNull(silent);
+        Assert.Empty(silent.TurnWatermarks);
+        Assert.False(silent.TurnWatermarksKnown);
+    }
+
     private (DirectorHub hub, FakeHubCallerContext ctx) NewHub(string connectionId, SnoozeLandingObserver snooze)
     {
         var ctx = new FakeHubCallerContext(connectionId);

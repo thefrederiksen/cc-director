@@ -62,8 +62,12 @@ public sealed class DirectorHub : Hub
         PushedRepositoryStore? repositoryStore = null, RepoHistoryStore? repoHistory = null,
         History.SessionHistoryRecorder? sessionHistory = null,
         Pairing.SessionKeyRegistry? sessionKeys = null,
+        History.SessionTurnStore? sessionTurns = null,
+        TurnPushCapabilityRegistry? turnPushCapabilities = null,
         Screens.SessionScreenStore? sessionScreens = null)
     {
+        _turnPushCapabilities = turnPushCapabilities;
+        _sessionTurns = sessionTurns;
         _sessionKeys = sessionKeys;
         _store = store;
         _registry = registry;
@@ -94,6 +98,10 @@ public sealed class DirectorHub : Hub
     // Issue #2194: the durable work-history recorder, fed from the same accepted pushes as the other
     // observers. Throttled internally (it is NOT a write per push) and never throws.
     private readonly History.SessionHistoryRecorder? _sessionHistory;
+    /// <summary>The stored conversation (turn-push mission). Null only in tests that do not exercise it.</summary>
+    private readonly History.SessionTurnStore? _sessionTurns;
+    /// <summary>Which connected Directors send their conversations - learned here, from Hello.</summary>
+    private readonly TurnPushCapabilityRegistry? _turnPushCapabilities;
 
     /// <summary>
     /// The terminal-screen store (the Terminal Rules mission). Null in tests and older callers, which makes
@@ -216,8 +224,87 @@ public sealed class DirectorHub : Hub
         // authenticated device key - never the Hello payload, which the client writes.
         _registry.RegisterFromStream(directorId, hello.MachineName, hello.User, hello.Version, hello.Pid, hello.StartedAt, tenant,
             hello.DisplayName);
+        // What this build can do, kept against the CONNECTION: the same machine can come back on an older
+        // or a newer Director, and a stale answer here would put the wrong sentence on an empty Chat screen.
+        _turnPushCapabilities?.Record(tenant, directorId, hello.PushesTurns);
         FileLog.Write($"[DirectorHub] Hello: director={directorId} bound to conn={Short(Context.ConnectionId)} (version={hello.Version}, machine={hello.MachineName})");
-        return Capabilities;
+        return CapabilitiesFor(tenant, directorId);
+    }
+
+    /// <summary>
+    /// The shared capability record plus THIS Director's turn watermarks (turn-push mission): what the
+    /// Gateway already holds of each of its sessions' conversations, so a reconnecting Director resends
+    /// only what is missing. Read inside the bound tenant's scope, because the store answers through the
+    /// tenant query filter.
+    /// </summary>
+    private GatewayCapabilities CapabilitiesFor(TenantId tenant, string directorId)
+    {
+        var shared = Capabilities;
+        var answer = new GatewayCapabilities { Version = shared.Version, Commit = shared.Commit, HubMethods = shared.HubMethods };
+        if (_sessionTurns is null) return answer;
+        // BEST EFFORT, and never allowed to throw. Hello is the first thing a Director does on every dial,
+        // and the Director treats a failed Hello as a failed RESEED - so a database that is slow, not open
+        // yet (this Gateway binds its port BEFORE the database is connected), or simply unhappy would stop
+        // the Director pushing its session snapshot at all, and its whole fleet would go missing from every
+        // screen. The watermarks are an optimisation: without them the Director pushes each conversation
+        // from the start, which the store is idempotent about. Losing them costs a little bandwidth once;
+        // losing the reseed costs the roster.
+        try
+        {
+            using var tenantScope = EnterBoundTenantScope();
+            answer.TurnWatermarks = _sessionTurns.WatermarksFor(directorId).ToList();
+            answer.TurnWatermarksKnown = true;
+            if (answer.TurnWatermarks.Count > 0)
+                FileLog.Write($"[DirectorHub] Hello: handing director={directorId} {answer.TurnWatermarks.Count} turn watermark(s) (tenant {tenant.ToLogString()})");
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[DirectorHub] Hello: could not read turn watermarks for director={directorId} (tenant {tenant.ToLogString()}): {ex.Message}. "
+                        + "Answering with none - the Director will push each conversation from the start, which the store is idempotent about. The reseed is NOT affected.");
+            answer.TurnWatermarks = new List<TurnWatermark>();
+            answer.TurnWatermarksKnown = false;   // a silence, not an answer - the Director keeps what it has
+        }
+        return answer;
+    }
+
+    /// <summary>
+    /// The turn-push mission's one write: a Director pushes a contiguous run of one session's conversation
+    /// messages, and the Gateway stores them (<see cref="History.SessionTurnStore.Append"/>) and answers the
+    /// watermark the Director should continue from. From here Chat, the transcript view, and the wingman
+    /// read the stored rows; the Gateway never asks the Director to re-read the transcript.
+    ///
+    /// The <paramref name="sequence"/> is the Director's push sequence, carried for the log and for
+    /// symmetry with <see cref="PushDelta"/>; ordering inside the conversation is the batch's own ordinals,
+    /// and the store is idempotent, so a batch that arrives twice or late is harmless - a superseded
+    /// connection pushing the same rows again stores nothing new and cannot move the session backwards
+    /// (the store switches generation only to a strictly later source).
+    ///
+    /// Null means REFUSED: the batch disagreed with itself (a Director bug, logged with the reason), or this
+    /// Gateway has no store. The Director stops that run and logs; nothing was written.
+    /// </summary>
+    public TurnWatermark? PushTurns(long sequence, TurnPushBatch batch)
+    {
+        var directorId = RequireBoundDirector();
+        if (_sessionTurns is null)
+        {
+            FileLog.Write($"[DirectorHub] PushTurns ignored (this Gateway has no turn store): director={directorId}");
+            return null;
+        }
+        if (batch is null || string.IsNullOrEmpty(batch.SessionId))
+        {
+            FileLog.Write($"[DirectorHub] PushTurns ignored (no session id): director={directorId}, seq={sequence}");
+            return null;
+        }
+        using var tenantScope = EnterBoundTenantScope();
+        try
+        {
+            return _sessionTurns.Append(directorId, batch, DateTime.UtcNow);
+        }
+        catch (ArgumentException ex)
+        {
+            FileLog.Write($"[DirectorHub] PushTurns REFUSED a malformed batch: director={directorId} session={batch.SessionId} seq={sequence}: {ex.Message}");
+            return null;
+        }
     }
 
     /// <summary>

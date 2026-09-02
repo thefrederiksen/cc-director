@@ -1,26 +1,26 @@
 # Turn push - running handoff note
 
 Read `brief.md` first. This note is the compact state a fresh seat needs; it is rewritten at every
-boundary, never appended to.
+boundary, never appended to. Seats on this mission are named `Turn Push - <Role>`.
 
-- **Branch:** `mission/turn-push`, worktree `D:\ReposFred\devthrottle-turn-push`, cut from `b71baccbf`.
+- **Branch:** `mission/turn-push`, worktree `D:\ReposFred\devthrottle-turn-push`.
 - **Issue:** thefrederiksen/devthrottle#2638.
-- **Phase 0 (the store): done, three Codex passes.** Tables `session_turns` (key tenant, session,
-  generation key, ordinal) and `session_turn_heads` (one per session: current generation key + source
-  text + start, contiguous watermark, agent facts, history state, `Revision` concurrency token).
-  Migrations `AddSessionTurns` on both providers, snapshots in sync. `SessionTurnStore`: validated batch,
-  one transaction per push with one retry on a lost race, idempotent rows, paged contiguous watermark,
-  generation switch only when strictly later (millisecond precision on both sides, ties by key), whole-
-  session retention judged on the head and race-free, aged rows of left generations dropped. Retention
-  wired into `SessionHistorySweep`. Contracts `PushedTurn` / `TurnPushBatch` / `TurnWatermark`.
-  Thirty-one store tests. Local gate green.
-- **Next: Phase 1.** `DirectorHub.PushTurns(sequence, TurnPushBatch)` bound to the tenant and Director
-  like `PushDelta`, writes through `SessionTurnStore.Append`, returns the `TurnWatermark`; `Hello`
-  answers `WatermarksFor(directorId)` on `GatewayCapabilities`. Director side: `TurnPusher` in
-  `CcDirector.ControlApi` reading through `SessionHistoryReader.Read`; generation = resolved transcript
-  path (Claude) or the session id (others); `GenerationStartedUtc` = when the Director first saw that
-  source this process lifetime; triggers: the Director's own Working-to-Waiting edge (where
-  `NotifyDelta` fires in `ControlApiHost`), pointer change, reconnect backfill from the Hello watermarks,
-  a slow safety sweep. `HistoryState` computed on the Director at push time (`HistoryStateDeriver`).
-  Batches of at most `SessionTurnStore.MaxBatchSize`.
-- **Not proven yet:** anything live. No reader uses the rows until Phase 2.
+- **Phase 0 (the store): MERGED**, pull request 2640. `session_turns` + `session_turn_heads`, migrations on
+  both providers, `SessionTurnStore`.
+- **Phase 1 (the Director pushes, the Gateway stores): MERGED**, pull request 2645. `DirectorHub.PushTurns`,
+  watermarks on `Hello`, `TurnPushBuilder` + `TurnPusher` on the Director, deterministic triggers.
+- **Phase 2 (Chat reads the store): built, green, two Codex passes.**
+  - `GET /sessions/{sid}/history` is a literal Gateway route served from the store
+    (`SessionConversationEndpoint`), read INSIDE the caller's tenant scope. The `history` entry is gone from
+    `TunnelCatchAllDispatch`, so reading a conversation never travels down the tunnel again.
+  - `SessionConversationFold` decides the whole answer including the sentence an empty screen shows. Six
+    outcomes, ordered: stored content, unsupported agent, unknown session, offline computer, computer too
+    old to send, nothing sent yet, conversation not started.
+  - `TurnPushCapabilityRegistry` records from each `Hello`, per (tenant, Director), whether that build sends
+    conversations - the input that tells "not sent yet" from "that computer cannot send it".
+  - The client renders the Gateway's `emptyText` verbatim and keeps only its own filter line.
+- **Next: Phase 3** - feed the wingman from the store, delete the `turns` tunnel read from the voice path,
+  and rebase the voice retry schedule and Generate button (branch `feat/voice-retry-schedule-then-button`,
+  two Codex findings outstanding) on top of it.
+- **Not proven:** no live run against a real Director and phone yet. The proof so far is unit-level plus the
+  parked suites.

@@ -134,6 +134,10 @@ internal static class GatewayWingmanVoiceEndpoint
         // this is the ONE place a screen is read, and a defaulted null would have to mean "pull the tunnel
         // anyway", which is a second answer to a question that must have exactly one.
         Screens.GatewayScreenReader screens,
+        // One session's stored conversation as the widget list the wingman reads (turn-push mission, phase 3).
+        // Null answers "nothing stored yet", which is a wait rather than a failure. The caller enters the
+        // tenant's scope and hands over the finished list.
+        Func<TenantId, string, History.StoredConversation?>? conversationReader = null,
         Streaming.PushedSessionStore? pushedSessions = null,
         DirectorCommandRouter.SendDirectorCommandAsync? sendCommand = null,
         SessionOwnerCache? owners = null,
@@ -594,16 +598,25 @@ internal static class GatewayWingmanVoiceEndpoint
             // for the wingman so it can resolve references in the agent's reply. The current question
             // is appended below; BuildRecentContext is called on the pre-send snapshot so it
             // excludes the new turn and includes only what came before.
-            var snapshotWidgets = (await route.GetTurnsAsync(sid, ct))?.Widgets
-                ?? new List<TurnWidgetDto>();
-            var widgetsBefore = snapshotWidgets.Count;
+            var snapshot = conversationReader?.Invoke(reqTenant.Value, sid)?.Widgets;
+            var snapshotWidgets = snapshot ?? new List<TurnWidgetDto>();
+            // NULL MEANS "NO BASELINE", NOT "ZERO". If nothing is stored for this session yet, treating the
+            // baseline as zero would let the whole conversation arrive a moment later and hand back an OLD
+            // agent reply as the answer to the question just asked - which is issue #366 returning by a new
+            // route, and is the worst thing this path can do: the person hears a confident answer to a
+            // question they did not ask. The wait adopts its baseline from the first conversation it
+            // actually sees instead (found in review).
+            int? widgetsBefore = snapshot?.Count;
             var priorContext = WingmanTranslator.BuildRecentContext(snapshotWidgets);
 
             var (ok, _, sendErr) = await route.PostPromptAsync(sid, new PromptRequest { Text = req.Text, AppendEnter = true }, ct);
             if (!ok)
                 return Results.Json(new { error = "send failed: " + sendErr }, statusCode: StatusCodes.Status502BadGateway);
 
-            var reply = await WaitForReplyAsync(route, sid, widgetsBefore, ct);
+            var reply = await WaitForReplyAsync(
+                () => conversationReader?.Invoke(reqTenant.Value, sid)?.Widgets,
+                async () => await ResolveRouteAsync(reqTenant.Value, sid) is not null,
+                sid, widgetsBefore, ct);
             if (string.IsNullOrWhiteSpace(reply))
                 return Results.Json(new { error = "the agent did not produce a reply in time" }, statusCode: StatusCodes.Status504GatewayTimeout);
 
@@ -720,45 +733,51 @@ internal static class GatewayWingmanVoiceEndpoint
             if (!Guid.TryParse(sid, out _))
                 return Results.Json(new { error = "invalid session id format" }, statusCode: StatusCodes.Status400BadRequest);
 
+            // NO LONGER 404 WHEN THE DIRECTOR IS UNREACHABLE. This route reads the conversation from the
+            // Gateway's own store, so a stored conversation can be narrated whether or not the machine that
+            // produced it is currently reachable - refusing here would have kept the old dependency alive in
+            // the one place a person presses a button to escape it (found in review). The route is resolved
+            // only so a session this Gateway has never heard of is still an honest 404.
             var route = await ResolveRouteAsync(reqTenant.Value, sid);
-            if (route is null)
-                return Results.Json(new { error = "session not found on any director" }, statusCode: StatusCodes.Status404NotFound);
-
-            var turns = await route.GetTurnsAsync(sid, ct);
 
             voice.Mark(reqTenant.Value, sid);   // opening voice on a session makes it a voice session (kept fresh on turn-end)
 
-            // A FAILED READ IS NOT "NOTHING TO SUMMARIZE" (issue #2561). GetTurnsAsync answers null when the
-            // tunnel call failed, and otherwise carries the real outcome in Status - a failed read arrives as
-            // a SUCCESS with an empty widget list, because the transport worked even though the read did not.
+            // THE CONVERSATION COMES FROM THE GATEWAY'S OWN STORE (turn-push mission, phase 3). This route is
+            // the button a person presses when a narration has not appeared, so what it can honestly say
+            // matters more here than anywhere: it used to send a command down the tunnel asking the Director
+            // to re-read the transcript, and a failed read there arrived as a SUCCESS with no widgets, which
+            // is how this route came to tell people "this session has not produced anything to summarize yet"
+            // about sessions that had said plenty (issue #2561).
             //
-            // Reading only the widgets makes this route tell the person "this session has not produced
-            // anything to summarize yet" - a confident, wrong sentence about their own session - and record
-            // the never-retried "nothing to narrate" fact behind it. It is the same mistake the automatic
-            // path made, and on THIS route it is the one the owner presses a button to see. The honest answer
-            // is the one the model-leg timeout below already gives: say it is still coming, record Retrying so
-            // the screen says so, and let the voice sweep try again.
-            if (turns is null || !string.Equals(turns.Status, "ok", StringComparison.OrdinalIgnoreCase))
+            // There is no read to fail any more. Either the words are stored or they have not arrived yet,
+            // and the second is a wait on the Director rather than anything voice can fix by trying harder.
+            var stored = conversationReader?.Invoke(reqTenant.Value, sid);
+            if (stored is null && route is null)
+                return Results.Json(new { error = "session not found on any director" }, statusCode: StatusCodes.Status404NotFound);
+            if (stored is { IsSupported: false })
             {
-                // "unsupported" is TERMINAL - this agent exposes no conversation history at all, so no amount
-                // of retrying will produce one and saying "it will keep trying" would be the same lie in a new
-                // costume. Everything else here can become readable on a later pass. Recorded through
-                // NoteReadFailed, into the read's own store, so it can never overwrite a standing account
-                // condition (see TenantVoiceState.ReadFailed).
-                var terminal = string.Equals(turns?.Status, "unsupported", StringComparison.OrdinalIgnoreCase);
-                voice.NoteReadFailed(reqTenant.Value, sid, terminal ? HostedAiState.Unavailable : HostedAiState.Retrying);
-                FileLog.Write(
-                    $"[GatewayWingmanVoice] explain sid={sid}: turns read FAILED "
-                    + $"(status={turns?.Status ?? "(no answer)"} error={turns?.Error ?? "(none)"}) "
-                    + $"- {(terminal ? "TERMINAL" : "Retrying")}; NOT reported as nothing-to-summarize (issue #2561).");
+                // Terminal, and the person pressed a button to find out: say the thing that is true rather
+                // than promising another try that cannot help.
+                voice.NoteReadFailed(reqTenant.Value, sid, HostedAiState.Unavailable);
+                FileLog.Write($"[GatewayWingmanVoice] explain sid={sid}: this agent keeps no conversation that can be read - TERMINAL.");
                 return Results.Json(new
                 {
                     reply = "",
-                    spoken = terminal
-                        ? "This agent does not keep a conversation I can read back to you."
-                        : "I could not read this session's conversation just now - it will keep trying.",
+                    spoken = "This agent does not keep a conversation I can read back to you.",
                     replySeconds = 0.0,
-                    retrying = !terminal,
+                    retrying = false,
+                });
+            }
+            var widgets = stored?.Widgets;
+            if (widgets is null)
+            {
+                FileLog.Write($"[GatewayWingmanVoice] explain sid={sid}: no conversation stored yet - the Director has not pushed it. Not a read failure, and not a statement about the session.");
+                return Results.Json(new
+                {
+                    reply = "",
+                    spoken = "This session's conversation has not reached here yet. It should arrive in a moment.",
+                    replySeconds = 0.0,
+                    retrying = true,
                 });
             }
 
@@ -769,8 +788,7 @@ internal static class GatewayWingmanVoiceEndpoint
             // fact is cleared - the model and speech states clear where they were set.
             voice.ClearReadFailed(reqTenant.Value, sid);
 
-            var widgets = turns.Widgets ?? new List<TurnWidgetDto>();
-            var lastReply = widgets.LastOrDefault(w => w.Kind == "Text")?.Content;
+            var lastReply = History.StoredConversationWidgets.LastAgentText(widgets);
             // Recent conversation so the wingman can give context to a short/terse reply.
             var recentContext = WingmanTranslator.BuildRecentContext(widgets);
 
@@ -1228,65 +1246,116 @@ internal static class GatewayWingmanVoiceEndpoint
     /// <summary>How long the reply transcript must stop growing before we treat the turn as done.</summary>
     private static readonly TimeSpan ReplyStable = TimeSpan.FromSeconds(2.0);
 
+    /// <summary>How often the wait re-checks that the owning computer is still reachable. Every poll would
+    /// be wasteful and every never would be blind; this is roughly every eight seconds.</summary>
+    private const int ReachabilityCheckEveryPolls = 10;
+
     /// <summary>
-    /// Wait for the agent's reply by polling the TRANSCRIPT (not the fragile live session-state
-    /// read across the gateway-to-Director hop): once a new Text widget appears beyond
-    /// <paramref name="widgetsBefore"/> and stops growing for <see cref="ReplyStable"/>, that is the
-    /// reply. Transient null/hiccup reads from the Director are tolerated (we just keep polling) so a
-    /// busy Director mid-turn never makes us give up early - the only way out without a reply is the
-    /// full <see cref="TurnTimeout"/>. Returns the reply text, or null if none landed in time.
+    /// Wait for the agent's reply to a spoken question by watching the Gateway's own STORED conversation
+    /// (the turn-push mission, phase 3b): once a new agent text appears beyond <paramref name="widgetsBefore"/>
+    /// and the conversation stops growing for <see cref="ReplyStable"/>, that is the reply.
+    ///
+    /// This used to poll the TRANSCRIPT down the tunnel, at 750 milliseconds, for up to three minutes - one
+    /// command per poll, each making the owning Director open and parse the whole transcript file on the
+    /// user's disk, all so the Gateway could notice a reply it is now simply handed. The Director pushes
+    /// each finished turn, so the words arrive here on their own.
+    ///
+    /// THE GIVING-UP SIGNAL CHANGED, and it is better. The old loop counted forty consecutive FAILED READS
+    /// to guess the Director was gone - a proxy for something it could not see, using a failure mode that no
+    /// longer exists (a store read cannot fail; it just has nothing yet). So the wait now asks the question
+    /// it actually means: is the owning computer still reachable? If it is not, no reply is coming and
+    /// saying so at once beats waiting out three minutes of silence. If it is, the wait keeps waiting -
+    /// a long turn is a long turn, and giving up on a session that is still working was never the intent.
+    ///
+    /// Returns the reply text, or null if none landed in time.
     /// </summary>
-    private static async Task<string?> WaitForReplyAsync(
-        SessionVerbClient route, string sid, int widgetsBefore, CancellationToken ct)
+    /// <param name="timeout">How long to wait in all. Injected so the wait's own behaviour can be tested in
+    /// milliseconds instead of the three minutes a real spoken turn is allowed.</param>
+    /// <param name="pollEvery">How often to look. Injected for the same reason.</param>
+    /// <param name="settleFor">How long the conversation must stop growing before a reply counts as
+    /// finished. Injected for the same reason.</param>
+    internal static async Task<string?> WaitForReplyAsync(
+        Func<IReadOnlyList<TurnWidgetDto>?> readStoredConversation,
+        Func<Task<bool>> ownerReachableAsync,
+        string sid, int? widgetsBefore, CancellationToken ct,
+        TimeSpan? timeout = null, TimeSpan? pollEvery = null, TimeSpan? settleFor = null)
     {
-        var deadline = DateTime.UtcNow + TurnTimeout;
+        var turnTimeout = timeout ?? TurnTimeout;
+        var pollInterval = pollEvery ?? PollInterval;
+        var replyStable = settleFor ?? ReplyStable;
+        var deadline = DateTime.UtcNow + turnTimeout;
+        var baseline = widgetsBefore;
         string? reply = null;
         var stableCount = -1;
         var stableSince = DateTime.MinValue;
-        var consecutiveNulls = 0;
+        var polls = 0;
+        var unreachableInARow = 0;
         while (DateTime.UtcNow < deadline)
         {
-            try { await Task.Delay(PollInterval, ct); } catch (OperationCanceledException) { return reply; }
+            try { await Task.Delay(pollInterval, ct); } catch (OperationCanceledException) { return reply; }
 
-            TurnsResponse? turns;
-            try { turns = await route.GetTurnsAsync(sid, ct); }
-            catch { turns = null; }
-
-            var widgets = turns?.Widgets;
-            if (widgets is null)
+            var widgets = readStoredConversation() ?? Array.Empty<TurnWidgetDto>();
+            if (baseline is null)
             {
-                // A transient gateway->Director hiccup (the Director is busy running the turn). Do
-                // NOT give up - keep polling. Only a long run of failures (the Director is truly
-                // gone) ends it, and even then we fall through to the deadline.
-                consecutiveNulls++;
-                if (consecutiveNulls > 40) { FileLog.Write($"[GatewayWingmanVoice] voice-turn sid={sid}: director unreachable for replies"); break; }
+                // No baseline could be taken before the question was sent, because nothing was stored for
+                // this session then. The first conversation we actually see becomes the baseline, so only
+                // what arrives AFTER it can be the answer. Waiting one more poll costs a moment; the
+                // alternative is reading out an answer to a question the person did not ask.
+                if (widgets.Count == 0) continue;
+                baseline = widgets.Count;
+                FileLog.Write($"[GatewayWingmanVoice] voice-turn sid={sid}: no conversation was stored when the question was sent, so the first one seen ({baseline} widget(s)) is the baseline for the reply");
                 continue;
             }
-            consecutiveNulls = 0;
 
-            var lastText = widgets.Skip(widgetsBefore).LastOrDefault(w => w.Kind == "Text");
+            var lastText = widgets.Skip(baseline.Value).LastOrDefault(w => w.Kind == "Text");
             if (lastText is not null && !string.IsNullOrWhiteSpace(lastText.Content))
             {
                 reply = lastText.Content;
+                unreachableInARow = 0;
                 if (widgets.Count != stableCount) { stableCount = widgets.Count; stableSince = DateTime.UtcNow; }
-                else if (DateTime.UtcNow - stableSince >= ReplyStable)
+                else if (DateTime.UtcNow - stableSince >= replyStable)
                 {
-                    FileLog.Write($"[GatewayWingmanVoice] voice-turn sid={sid}: reply read, len={reply.Length}");
+                    FileLog.Write($"[GatewayWingmanVoice] voice-turn sid={sid}: reply read from the stored conversation, len={reply.Length}");
                     return reply;
                 }
+                continue;   // a reply is in hand and settling; do not spend a reachability check on it
             }
+
+            // No reply yet. Ask, occasionally, whether one can still arrive at all.
+            if (++polls % ReachabilityCheckEveryPolls != 0) continue;
+
+            bool reachable;
+            try { reachable = await ownerReachableAsync(); }
+            catch (OperationCanceledException) { return reply; }
+            catch (Exception ex)
+            {
+                // The check itself failed. That is not evidence the computer is gone - it is the absence of
+                // evidence either way - so it must never end the wait. Contained here because this runs
+                // inside a request: an escaping exception would answer the person's spoken question with a
+                // server error (found in review).
+                FileLog.Write($"[GatewayWingmanVoice] voice-turn sid={sid}: could not check whether the owning computer is reachable ({ex.Message}); continuing to wait");
+                continue;
+            }
+            if (reachable) { unreachableInARow = 0; continue; }
+
+            // ONE unreachable answer is not enough. A reconnect blip would end the wait on a session that is
+            // still working, and worse, the finished turn may have been stored in the moment between the read
+            // above and this answer - so re-read before believing it, and require a second consecutive
+            // negative before giving up (found in review).
+            var lateWidgets = readStoredConversation() ?? Array.Empty<TurnWidgetDto>();
+            var lateText = lateWidgets.Skip(baseline.Value).LastOrDefault(w => w.Kind == "Text");
+            if (lateText is not null && !string.IsNullOrWhiteSpace(lateText.Content))
+            {
+                FileLog.Write($"[GatewayWingmanVoice] voice-turn sid={sid}: the reply landed as the owning computer went away - answering with it rather than discarding it");
+                return lateText.Content;
+            }
+            if (++unreachableInARow < 2) continue;
+
+            FileLog.Write($"[GatewayWingmanVoice] voice-turn sid={sid}: the owning computer is no longer reachable, so no reply is coming - ending the wait rather than sitting out the timeout");
+            break;
         }
         FileLog.Write($"[GatewayWingmanVoice] voice-turn sid={sid}: returning {(reply is null ? "NO reply" : "last reply len=" + reply.Length)} after wait");
         return reply;
-    }
-
-    private static async Task<string?> ReadNewReplyAsync(
-        SessionVerbClient route, string sid, int widgetsBefore, CancellationToken ct)
-    {
-        var turns = await route.GetTurnsAsync(sid, ct);
-        if (turns?.Widgets is null) return null;
-        var last = turns.Widgets.Skip(widgetsBefore).LastOrDefault(w => w.Kind == "Text");
-        return last?.Content;
     }
 }
 

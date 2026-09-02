@@ -37,6 +37,7 @@ public sealed class SessionHistoryRecorder
     public static readonly TimeSpan FreshnessInterval = TimeSpan.FromMinutes(5);
 
     private readonly SessionHistoryStore _store;
+    private readonly KnownRepositoryStore? _knownRepositories;
 
     private sealed class TrackedSession
     {
@@ -65,10 +66,12 @@ public sealed class SessionHistoryRecorder
     private readonly Func<TenantId, string, DirectorFacts>? _directorFacts;
 
     public SessionHistoryRecorder(SessionHistoryStore store,
-        Func<TenantId, string, DirectorFacts>? directorFacts = null)
+        Func<TenantId, string, DirectorFacts>? directorFacts = null,
+        KnownRepositoryStore? knownRepositories = null)
     {
         _store = store ?? throw new ArgumentNullException(nameof(store));
         _directorFacts = directorFacts;
+        _knownRepositories = knownRepositories;
     }
 
     /// <summary>The Director's machine and version, or Unknown. Never throws and never lets a
@@ -236,7 +239,31 @@ public sealed class SessionHistoryRecorder
         }
 
         if (writeDue)
+        {
             _store.UpsertLive(directorId, session, nowUtc, facts);
+            ObserveKnownRepository(tenant, session, facts, nowUtc);
+        }
+    }
+
+    /// <summary>The repository catalog is additive support for the picker. A catalog write failure is
+    /// contained here so it cannot suppress the existing session-history observation.</summary>
+    private void ObserveKnownRepository(TenantId tenant, SessionDto session, DirectorFacts facts, DateTime nowUtc)
+    {
+        if (_knownRepositories is null || string.IsNullOrWhiteSpace(session.RepoPath))
+            return;
+
+        var machine = string.IsNullOrWhiteSpace(session.MachineName) ? facts.MachineName : session.MachineName;
+        if (string.IsNullOrWhiteSpace(machine))
+            return;
+
+        try
+        {
+            _knownRepositories.Observe(tenant, machine, session.RepoPath, session.RepoName, nowUtc);
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[SessionHistoryRecorder] known repository observation FAILED (swallowed): {ex.Message}");
+        }
     }
 
     /// <summary>The facts whose change forces an immediate write. Activity state and last-activity

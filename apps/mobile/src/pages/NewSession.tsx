@@ -1,278 +1,664 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import {
   createSession,
+  gatewayErrorMessage,
+  getAgents,
   getDirectors,
+  getKnownRepositories,
   getRepos,
+  type AgentChoice,
   type DirectorInfo,
   type RepoInfo,
 } from "@devthrottle/client-core/api/client";
 import { durationLabel, useNow } from "@devthrottle/client-core/sessions/waiting";
 
-// Add-session flow (issue #812): a faithful 1:1 translation of the Android (MAUI)
-// phone/CcDirectorClient NewSessionPanel (TalkPage.xaml ~287-345, TalkPage.xaml.cs
-// OpenNewSessionPanelAsync/OnDirectorSelected/LoadReposAsync/CreateSessionAsync ~819-947). NOT a
-// redesign:
-//
-//   * Step 1 pick a MACHINE from the live GET /directors (default-select the most-recently-seen,
-//     so the repos load with one fewer tap).
-//   * Step 2 pick a REPOSITORY from GET /directors/{id}/repos (newest-used first) OR type a path.
-//   * Create via POST /directors/{id}/sessions { repoPath, agent: "ClaudeCode", wingmanEnabled:
-//     false } - agent hardcoded, type omitted, exactly like Android (NO agent picker).
-//   * On success, open the new session straight on the Terminal view (a fresh session is
-//     wingman-off, so the Terminal is the natural landing - matching the Android EnterTalk).
-//
-// Every call carries the Bearer token, so the flow works with global Gateway auth on or off.
+type ActiveStep = "director" | "agent" | "repository" | "review";
 
-// The local time-of-day for an ISO 8601 stamp (e.g. "6:20 AM"), or "" if missing/unparseable.
+const RECENT_REPOSITORY_COUNT = 5;
+const SEARCH_REPOSITORY_COUNT = 50;
+const AGENT_STORAGE_PREFIX = "mobile.newSession.agent.";
+
 function timeOfDay(iso: string): string {
   if (!iso) return "";
-  const t = new Date(iso);
-  if (Number.isNaN(t.getTime())) return "";
-  return t.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  const timestamp = new Date(iso);
+  if (Number.isNaN(timestamp.getTime())) return "";
+  return timestamp.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
-// Absolute start label: the time-of-day when the Director started today (e.g. "6:20 AM"), otherwise
-// a short date (e.g. "Jun 28"). Returns "" if the stamp is missing/unparseable so the caller omits
-// the "started" segment.
-function startedAbsolute(iso: string): string {
-  if (!iso) return "";
-  const t = new Date(iso);
-  if (Number.isNaN(t.getTime())) return "";
-  const now = new Date();
-  const startedToday =
-    t.getFullYear() === now.getFullYear() &&
-    t.getMonth() === now.getMonth() &&
-    t.getDate() === now.getDate();
-  return startedToday
-    ? timeOfDay(iso)
-    : t.toLocaleDateString([], { month: "short", day: "numeric" });
+function directorLabel(director: DirectorInfo): string {
+  if (director.displayName.trim()) return director.displayName.trim();
+  if (director.machineName.trim()) return director.machineName.trim();
+  return director.directorId || "Director";
 }
 
-// Machine-row subtitle (issue #848). With a valid startedAt it reads
-// "up <uptime> . started <startTime> . seen <lastSeen>" - uptime climbs the shared duration ladder
-// and ticks live off `now`, started is absolute (time today / short date older), seen is the kept
-// last-seen. With no usable startedAt it degrades to the prior last-seen-only subtitle (never an
-// "up NaN" / "Invalid Date"). The " . " separator is ASCII per the approved layout.
-function directorSubtitle(d: DirectorInfo, now: number): string {
-  const seenTime = timeOfDay(d.lastSeen);
-  const up = durationLabel(d.startedAt, now);
-  if (up === "") {
-    // No usable startedAt: keep the existing last-seen rendering only.
-    return seenTime ? `last seen ${seenTime}` : "not seen recently";
+function directorContext(director: DirectorInfo, now: number): string {
+  const parts: string[] = [];
+  if (director.machineName.trim() && director.machineName.trim() !== directorLabel(director)) {
+    parts.push(director.machineName.trim());
   }
-
-  const parts: string[] = [up === "just now" ? "just now" : `up ${up}`];
-  const started = startedAbsolute(d.startedAt);
-  if (started) parts.push(`started ${started}`);
-  parts.push(seenTime ? `seen ${seenTime}` : "not seen recently");
-  return parts.join(" . ");
+  const uptime = durationLabel(director.startedAt, now);
+  if (uptime) parts.push(uptime === "just now" ? "started just now" : "running for " + uptime);
+  const seen = timeOfDay(director.lastSeen);
+  if (seen) parts.push("seen " + seen);
+  if (director.version.trim()) parts.push("version " + director.version.trim());
+  if (director.directorId) parts.push("Director " + director.directorId.slice(0, 8));
+  return parts.join(" · ");
 }
 
-function directorLabel(d: DirectorInfo): string {
-  // devthrottle_internal#1176: the user-editable display name wins when the Director reports one - it
-  // is the label that tells several Directors on one machine apart by something a human chose.
-  if (d.displayName.trim()) return d.displayName.trim();
-  if (d.machineName.trim()) return d.machineName.trim();
-  return d.directorId || "director";
+function repositoryLabel(repository: RepoInfo): string {
+  if (repository.name.trim()) return repository.name.trim();
+  const parts = repository.path.replace(/[\\/]+$/, "").split(/[\\/]/).filter(Boolean);
+  return parts.length ? parts[parts.length - 1] : repository.path;
 }
 
-// The Control API port for a Director, parsed from its controlEndpoint (e.g. "http://127.0.0.1:7880"
-// or "https://host.ts.net:7881" -> "7880" / "7881"). This is what tells apart several cc-director
-// slots running on the SAME machine, so it is shown on every picker row and is the number to quote to
-// an agent to say which cc-director a session was started on. Empty when the endpoint carries no port.
-function directorPort(d: DirectorInfo): string {
-  const match = /:(\d+)(?:\/|$)/.exec(d.controlEndpoint ?? "");
-  return match ? match[1] : "";
+function repositoryKey(path: string): string {
+  const normalized = path.trim().replace(/\\/g, "/").replace(/\/+$/, "");
+  const isWindowsPath = /^[a-z]:\//i.test(normalized) || normalized.startsWith("//");
+  return isWindowsPath ? normalized.toLocaleLowerCase() : normalized;
 }
 
-function repoLabel(r: RepoInfo): string {
-  if (r.name.trim()) return r.name.trim();
-  const parts = r.path.replace(/[\\/]+$/, "").split(/[\\/]/).filter(Boolean);
-  return parts.length ? parts[parts.length - 1] : r.path;
+function mergeRepositories(...sources: Array<RepoInfo[] | null>): RepoInfo[] {
+  const byPath = new Map<string, RepoInfo>();
+  for (const source of sources) {
+    for (const repository of source ?? []) {
+      const key = repositoryKey(repository.path);
+      if (!key) continue;
+      const existing = byPath.get(key);
+      if (
+        existing === undefined
+        || repository.lastUsed.localeCompare(existing.lastUsed) > 0
+      ) {
+        byPath.set(key, {
+          name: repository.name.trim() || existing?.name || "",
+          path: repository.path,
+          lastUsed: repository.lastUsed,
+        });
+      } else if (!existing.name.trim() && repository.name.trim()) {
+        byPath.set(key, { ...existing, name: repository.name.trim() });
+      }
+    }
+  }
+  return [...byPath.values()].sort((left, right) => {
+    const byUsed = right.lastUsed.localeCompare(left.lastUsed);
+    if (byUsed !== 0) return byUsed;
+    return repositoryLabel(left).localeCompare(repositoryLabel(right));
+  });
+}
+
+function rememberedAgent(directorId: string): string | null {
+  try {
+    return window.localStorage.getItem(AGENT_STORAGE_PREFIX + directorId);
+  } catch {
+    return null;
+  }
+}
+
+function rememberAgent(directorId: string, agentType: string): void {
+  try {
+    window.localStorage.setItem(AGENT_STORAGE_PREFIX + directorId, agentType);
+  } catch {
+    // Remembering a choice is optional when browser storage is unavailable.
+  }
+}
+
+function stepSummary(empty: string, selected: string | null): string {
+  return selected?.trim() || empty;
 }
 
 export function NewSession() {
   const navigate = useNavigate();
-
-  // Ticks once a second so each machine row's "up <uptime>" recomputes from its startedAt without
-  // refetching /directors (issue #848), matching the roster's needs-you cards (issue #844).
   const now = useNow(1000);
 
+  const [activeStep, setActiveStep] = useState<ActiveStep>("director");
   const [directors, setDirectors] = useState<DirectorInfo[] | null>(null);
   const [directorsError, setDirectorsError] = useState<string | null>(null);
+  const [directorReload, setDirectorReload] = useState(0);
   const [selectedId, setSelectedId] = useState<string | null>(null);
 
-  const [repos, setRepos] = useState<RepoInfo[] | null>(null);
-  const [reposStatus, setReposStatus] = useState("Pick a machine first.");
+  const [agents, setAgents] = useState<AgentChoice[] | null>(null);
+  const [agentsError, setAgentsError] = useState<string | null>(null);
+  const [agentReload, setAgentReload] = useState(0);
+  const [selectedAgentType, setSelectedAgentType] = useState<string | null>(null);
 
+  const [recentRepositories, setRecentRepositories] = useState<RepoInfo[] | null>(null);
+  const [knownRepositories, setKnownRepositories] = useState<RepoInfo[] | null>(null);
+  const [recentRepositoriesError, setRecentRepositoriesError] = useState<string | null>(null);
+  const [knownRepositoriesError, setKnownRepositoriesError] = useState<string | null>(null);
+  const [repositoryReload, setRepositoryReload] = useState(0);
+  const [repositoryQuery, setRepositoryQuery] = useState("");
+  const [selectedRepository, setSelectedRepository] = useState<RepoInfo | null>(null);
   const [manualPath, setManualPath] = useState("");
+  const [manualOpen, setManualOpen] = useState(false);
+
   const [creating, setCreating] = useState(false);
-  const [createStatus, setCreateStatus] = useState<string | null>(null);
+  const [createError, setCreateError] = useState<string | null>(null);
 
-  // Guards against a stale repo response landing after the user switched machines.
-  const reposReqRef = useRef(0);
+  const selectedIdRef = useRef<string | null>(null);
+  const createInFlightRef = useRef(false);
 
-  // Step 1: load the machines once. Default-select the most-recently-seen (directors[0]) so the
-  // repos load immediately, exactly like the Android OpenNewSessionPanelAsync.
-  useEffect(() => {
-    const controller = new AbortController();
-    getDirectors(controller.signal)
-      .then((list) => {
-        setDirectors(list);
-        setDirectorsError(null);
-        if (list.length > 0) setSelectedId(list[0].directorId);
-      })
-      .catch((err) => {
-        if (controller.signal.aborted) return;
-        setDirectorsError(err instanceof Error ? err.message : "Could not load machines");
-      });
-    return () => controller.abort();
+  const selectedDirector = directors?.find((director) => director.directorId === selectedId) ?? null;
+  const selectedAgent = agents?.find((agent) => agent.type === selectedAgentType) ?? null;
+
+  const clearDirectorChoices = useCallback(() => {
+    setAgents(null);
+    setAgentsError(null);
+    setSelectedAgentType(null);
+    setRecentRepositories(null);
+    setKnownRepositories(null);
+    setRecentRepositoriesError(null);
+    setKnownRepositoriesError(null);
+    setRepositoryQuery("");
+    setSelectedRepository(null);
+    setManualPath("");
+    setManualOpen(false);
+    setCreateError(null);
   }, []);
 
-  // Step 2: whenever the selected machine changes, load THAT machine's repos.
+  const chooseDirector = useCallback((directorId: string) => {
+    if (directorId === selectedIdRef.current) {
+      setActiveStep("agent");
+      return;
+    }
+
+    selectedIdRef.current = directorId;
+    clearDirectorChoices();
+    setSelectedId(directorId);
+    setActiveStep("agent");
+  }, [clearDirectorChoices]);
+
   useEffect(() => {
-    if (!selectedId) return;
     const controller = new AbortController();
-    const reqId = ++reposReqRef.current;
-    setRepos(null);
-    setReposStatus("Loading repos...");
-    getRepos(selectedId, controller.signal)
+    setDirectors(null);
+    setDirectorsError(null);
+    getDirectors(controller.signal)
       .then((list) => {
-        if (reqId !== reposReqRef.current) return; // a newer selection superseded this one
-        setRepos(list);
-        setReposStatus(
-          list.length === 0 ? "No recent repos here. Enter a path below." : `${list.length} recent repo(s). Tap one to start.`,
-        );
+        if (controller.signal.aborted) return;
+        setDirectors(list);
+        if (list.length > 0) {
+          const firstId = list[0].directorId;
+          if (firstId !== selectedIdRef.current) clearDirectorChoices();
+          selectedIdRef.current = firstId;
+          setSelectedId(firstId);
+        } else {
+          clearDirectorChoices();
+          selectedIdRef.current = null;
+          setSelectedId(null);
+        }
       })
-      .catch((err) => {
-        if (controller.signal.aborted || reqId !== reposReqRef.current) return;
-        setRepos([]);
-        setReposStatus(err instanceof Error ? `Could not load repos: ${err.message}` : "Could not load repos");
+      .catch((error) => {
+        if (controller.signal.aborted) return;
+        setDirectorsError(gatewayErrorMessage(error));
       });
     return () => controller.abort();
-  }, [selectedId]);
+  }, [directorReload, clearDirectorChoices]);
 
-  const create = useCallback(
-    async (repoPath: string) => {
-      if (creating) return; // a create is already in flight (guards a double-tap)
-      if (!selectedId) {
-        setCreateStatus("Pick a machine first.");
-        return;
-      }
-      const path = repoPath.trim();
-      if (!path) {
-        setCreateStatus("Enter a repo path, or tap a recent repo above.");
-        return;
-      }
-      setCreating(true);
-      setCreateStatus(`Creating session in ${path}...`);
-      try {
-        const session = await createSession(selectedId, path);
-        const sid = session.sessionId;
-        if (!sid) throw new Error("the created session had no id");
-        // Open the new session straight on the Terminal view (Android EnterTalk parity).
-        navigate(`/session/${encodeURIComponent(sid)}`);
-      } catch (err) {
-        setCreateStatus(err instanceof Error ? err.message : "Could not create session");
-        setCreating(false);
-      }
-    },
-    [creating, selectedId, navigate],
+  useEffect(() => {
+    if (!selectedId) return;
+
+    const directorId = selectedId;
+    const agentController = new AbortController();
+    const isCurrent = () => !agentController.signal.aborted && selectedIdRef.current === directorId;
+
+    setAgents(null);
+    setAgentsError(null);
+
+    getAgents(directorId, agentController.signal)
+      .then((list) => {
+        if (!isCurrent()) return;
+        setAgents(list);
+        setSelectedAgentType((selected) => {
+          if (selected !== null && list.some((agent) => agent.type === selected)) return selected;
+          if (list.length === 0) return null;
+          const stored = rememberedAgent(directorId);
+          return (list.find((agent) => agent.type === stored) ?? list[0]).type;
+        });
+      })
+      .catch((error) => {
+        if (!isCurrent()) return;
+        setAgents([]);
+        setAgentsError(gatewayErrorMessage(error));
+      });
+
+    return () => agentController.abort();
+  }, [selectedId, agentReload]);
+
+  useEffect(() => {
+    if (!selectedId) return;
+
+    const directorId = selectedId;
+    const recentController = new AbortController();
+    const knownController = new AbortController();
+    const isCurrent = () =>
+      !recentController.signal.aborted
+      && !knownController.signal.aborted
+      && selectedIdRef.current === directorId;
+
+    setRecentRepositories(null);
+    setKnownRepositories(null);
+    setRecentRepositoriesError(null);
+    setKnownRepositoriesError(null);
+
+    getRepos(directorId, recentController.signal)
+      .then((list) => {
+        if (!isCurrent()) return;
+        setRecentRepositories(list);
+      })
+      .catch((error) => {
+        if (recentController.signal.aborted || !isCurrent()) return;
+        setRecentRepositories([]);
+        setRecentRepositoriesError(gatewayErrorMessage(error));
+      });
+
+    getKnownRepositories(directorId, knownController.signal)
+      .then((list) => {
+        if (!isCurrent()) return;
+        setKnownRepositories(list);
+      })
+      .catch((error) => {
+        if (knownController.signal.aborted || !isCurrent()) return;
+        setKnownRepositories([]);
+        setKnownRepositoriesError(gatewayErrorMessage(error));
+      });
+
+    return () => {
+      recentController.abort();
+      knownController.abort();
+    };
+  }, [selectedId, repositoryReload]);
+
+  const allRepositories = useMemo(
+    () => mergeRepositories(recentRepositories, knownRepositories),
+    [recentRepositories, knownRepositories],
   );
+  const matchedRepositories = useMemo(() => {
+    const query = repositoryQuery.trim().toLocaleLowerCase();
+    if (!query) {
+      const recent = mergeRepositories(recentRepositories);
+      return (recent.length > 0 ? recent : allRepositories).slice(0, RECENT_REPOSITORY_COUNT);
+    }
+    return allRepositories.filter((repository) =>
+      repositoryLabel(repository).toLocaleLowerCase().includes(query)
+      || repository.path.toLocaleLowerCase().includes(query),
+    );
+  }, [allRepositories, recentRepositories, repositoryQuery]);
+  const visibleRepositories = repositoryQuery.trim()
+    ? matchedRepositories.slice(0, SEARCH_REPOSITORY_COUNT)
+    : matchedRepositories;
+
+  const chooseAgent = (agent: AgentChoice) => {
+    if (!selectedId) return;
+    setSelectedAgentType(agent.type);
+    rememberAgent(selectedId, agent.type);
+    setCreateError(null);
+    setActiveStep("repository");
+  };
+
+  const chooseRepository = (repository: RepoInfo) => {
+    setSelectedRepository(repository);
+    setManualPath("");
+    setCreateError(null);
+    setActiveStep("review");
+  };
+
+  const chooseManualPath = () => {
+    const path = manualPath.trim();
+    if (!path) {
+      setCreateError("Enter a repository path before continuing.");
+      return;
+    }
+    chooseRepository({ name: "", path, lastUsed: "" });
+  };
+
+  const create = useCallback(async () => {
+    if (createInFlightRef.current) return;
+    if (!selectedId || selectedDirector === null) {
+      setCreateError("Choose a Director first.");
+      setActiveStep("director");
+      return;
+    }
+    if (selectedAgent === null) {
+      setCreateError("Choose an agent before creating the session.");
+      setActiveStep("agent");
+      return;
+    }
+    if (selectedRepository === null || !selectedRepository.path.trim()) {
+      setCreateError("Choose a repository before creating the session.");
+      setActiveStep("repository");
+      return;
+    }
+
+    createInFlightRef.current = true;
+    setCreating(true);
+    setCreateError(null);
+    try {
+      const session = await createSession(selectedId, selectedRepository.path, {
+        agent: selectedAgent.type,
+      });
+      if (!session.sessionId) throw new Error("The created session had no identifier.");
+      navigate("/session/" + encodeURIComponent(session.sessionId));
+    } catch (error) {
+      setCreateError(gatewayErrorMessage(error));
+      setCreating(false);
+      createInFlightRef.current = false;
+    }
+  }, [navigate, selectedAgent, selectedDirector, selectedId, selectedRepository]);
+
+  const canReview = selectedDirector !== null && selectedAgent !== null && selectedRepository !== null;
+  const repositorySourcesSettled = recentRepositories !== null && knownRepositories !== null;
+  const repositorySourcesFailed =
+    recentRepositoriesError !== null || knownRepositoriesError !== null;
 
   return (
-    <div className="screen">
-      <header className="app-bar">
+    <div className="screen newsession-screen">
+      <header className="app-bar newsession-app-bar">
         <Link className="back-link" to="/">&larr; Roster</Link>
         <h1>Start a session</h1>
       </header>
 
-      {createStatus !== null && <div className="status-line">{createStatus}</div>}
-
-      {/* Step 1: machine */}
-      <section className="group">
-        <h2 className="group-title">1. Machine</h2>
-        {directorsError !== null && <div className="banner banner-error" role="alert">{directorsError}</div>}
-        {directors === null && directorsError === null && <p className="status-line">Loading machines...</p>}
-        {directors !== null && directors.length === 0 && (
-          <p className="status-line">No machines found.</p>
-        )}
-        {directors !== null && directors.length > 0 && (
-          <ul className="roster">
-            {directors.map((d) => (
-              <li key={d.directorId} className={`row${d.directorId === selectedId ? " row-selected" : ""}`}>
-                <button type="button" className="picker-link" onClick={() => setSelectedId(d.directorId)}>
-                  <span className="row-body">
-                    <span className="row-name">
-                      {directorLabel(d)}
-                      {directorPort(d) !== "" && <span className="row-port"> port {directorPort(d)}</span>}
-                    </span>
-                    <span className="row-context">{directorSubtitle(d, now)}</span>
-                  </span>
-                  {d.directorId === selectedId && <span className="picker-check" aria-hidden="true">selected</span>}
-                </button>
-              </li>
-            ))}
-          </ul>
-        )}
-      </section>
-
-      {/* Step 2: repository */}
-      <section className="group">
-        <h2 className="group-title">2. Repository</h2>
-        <p className="status-line">{reposStatus}</p>
-        {repos !== null && repos.length > 0 && (
-          <ul className="roster">
-            {repos.map((r) => (
-              <li key={r.path} className="row">
-                <button
-                  type="button"
-                  className="picker-link"
-                  disabled={creating}
-                  onClick={() => create(r.path)}
-                >
-                  <span className="row-body">
-                    <span className="row-name">{repoLabel(r)}</span>
-                    <span className="row-context">{r.path}</span>
-                  </span>
-                </button>
-              </li>
-            ))}
-          </ul>
-        )}
-
-        <label className="newsession-manual-label" htmlFor="newsession-path">Or enter a path</label>
-        <div className="newsession-manual">
-          <input
-            id="newsession-path"
-            className="term-input"
-            type="text"
-            inputMode="text"
-            autoComplete="off"
-            autoCapitalize="off"
-            autoCorrect="off"
-            spellCheck={false}
-            placeholder="D:\Repos\my-project"
-            value={manualPath}
-            onChange={(e) => setManualPath(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") {
-                e.preventDefault();
-                void create(manualPath);
-              }
-            }}
-          />
+      <div className="newsession-steps">
+        <section className={"newsession-step-card" + (activeStep === "director" ? " is-active" : "")}>
           <button
             type="button"
-            className="term-btn newsession-create"
-            disabled={creating || !selectedId}
-            onClick={() => create(manualPath)}
+            className="newsession-step-toggle"
+            aria-expanded={activeStep === "director"}
+            onClick={() => setActiveStep("director")}
           >
-            {creating ? "Creating..." : "Create session"}
+            <span className="newsession-step-number">1</span>
+            <span className="newsession-step-heading">
+              <span className="newsession-step-title">Director</span>
+              <span className="newsession-step-summary">
+                {stepSummary("Choose where the session will run", selectedDirector ? directorLabel(selectedDirector) : null)}
+              </span>
+            </span>
+            <span aria-hidden="true">{activeStep === "director" ? "−" : "+"}</span>
           </button>
+
+          {activeStep === "director" && (
+            <div className="newsession-step-panel">
+              {directorsError !== null && (
+                <div className="banner banner-error newsession-inline-error" role="alert">
+                  <span>{directorsError}</span>
+                  <button type="button" className="newsession-retry" onClick={() => setDirectorReload((value) => value + 1)}>
+                    Retry
+                  </button>
+                </div>
+              )}
+              {directors === null && directorsError === null && <p className="status-line">Loading Directors…</p>}
+              {directors !== null && directors.length === 0 && <p className="status-line">No Directors are available.</p>}
+              {directors !== null && directors.length > 0 && (
+                <ul className="roster newsession-choice-list">
+                  {directors.map((director) => (
+                    <li
+                      key={director.directorId}
+                      className={"row" + (director.directorId === selectedId ? " row-selected" : "")}
+                    >
+                      <button
+                        type="button"
+                        className="picker-link"
+                        aria-label={"Select Director " + directorLabel(director)}
+                        onClick={() => chooseDirector(director.directorId)}
+                      >
+                        <span className="row-body">
+                          <span className="row-name">{directorLabel(director)}</span>
+                          <span className="row-context">{directorContext(director, now)}</span>
+                        </span>
+                        {director.directorId === selectedId && <span className="picker-check">Selected</span>}
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          )}
+        </section>
+
+        <section className={"newsession-step-card" + (activeStep === "agent" ? " is-active" : "")}>
+          <button
+            type="button"
+            className="newsession-step-toggle"
+            aria-expanded={activeStep === "agent"}
+            disabled={selectedDirector === null}
+            onClick={() => setActiveStep("agent")}
+          >
+            <span className="newsession-step-number">2</span>
+            <span className="newsession-step-heading">
+              <span className="newsession-step-title">Agent</span>
+              <span className="newsession-step-summary">
+                {stepSummary("Choose the coding tool", selectedAgent?.displayName ?? null)}
+              </span>
+            </span>
+            <span aria-hidden="true">{activeStep === "agent" ? "−" : "+"}</span>
+          </button>
+
+          {activeStep === "agent" && (
+            <div className="newsession-step-panel">
+              {agents === null && agentsError === null && <p className="status-line">Loading agents…</p>}
+              {agentsError !== null && (
+                <div className="banner banner-error newsession-inline-error" role="alert">
+                  <span>Could not load agents: {agentsError}</span>
+                  <button type="button" className="newsession-retry" onClick={() => setAgentReload((value) => value + 1)}>
+                    Retry
+                  </button>
+                </div>
+              )}
+              {agents !== null && agents.length === 0 && agentsError === null && (
+                <p className="status-line">No agents are configured on this Director. A session cannot be created here.</p>
+              )}
+              {agents !== null && agents.length > 0 && (
+                <ul className="roster newsession-choice-list">
+                  {agents.map((agent) => (
+                    <li key={agent.type} className={"row" + (agent.type === selectedAgentType ? " row-selected" : "")}>
+                      <button
+                        type="button"
+                        className="picker-link"
+                        aria-label={"Select agent " + agent.displayName}
+                        onClick={() => chooseAgent(agent)}
+                      >
+                        <span className="row-body">
+                          <span className="row-name">{agent.displayName}</span>
+                          <span className="row-context">
+                            {agent.modelLabel.trim() || "Uses the agent’s configured default model"}
+                          </span>
+                        </span>
+                        {agent.type === selectedAgentType && <span className="picker-check">Selected</span>}
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          )}
+        </section>
+
+        <section className={"newsession-step-card" + (activeStep === "repository" ? " is-active" : "")}>
+          <button
+            type="button"
+            className="newsession-step-toggle"
+            aria-expanded={activeStep === "repository"}
+            disabled={selectedAgent === null}
+            onClick={() => setActiveStep("repository")}
+          >
+            <span className="newsession-step-number">3</span>
+            <span className="newsession-step-heading">
+              <span className="newsession-step-title">Repository</span>
+              <span className="newsession-step-summary">
+                {stepSummary("Choose the working directory", selectedRepository ? repositoryLabel(selectedRepository) : null)}
+              </span>
+            </span>
+            <span aria-hidden="true">{activeStep === "repository" ? "−" : "+"}</span>
+          </button>
+
+          {activeStep === "repository" && (
+            <div className="newsession-step-panel">
+              <label className="newsession-search-label" htmlFor="newsession-repository-search">
+                Search known repositories
+              </label>
+              <input
+                id="newsession-repository-search"
+                className="term-input newsession-search"
+                type="search"
+                autoComplete="off"
+                autoCapitalize="off"
+                autoCorrect="off"
+                spellCheck={false}
+                placeholder="Repository name or path"
+                value={repositoryQuery}
+                onChange={(event) => setRepositoryQuery(event.target.value)}
+              />
+              {!repositoryQuery.trim() && (
+                <p className="newsession-recent-note">Showing up to five most recently used repositories.</p>
+              )}
+              {repositoryQuery.trim() && matchedRepositories.length > visibleRepositories.length && (
+                <p className="newsession-recent-note" role="status">
+                  Showing {visibleRepositories.length} of {matchedRepositories.length} matches. Type more to narrow the results.
+                </p>
+              )}
+
+              {!repositorySourcesSettled && visibleRepositories.length === 0 && (
+                <p className="status-line">Loading repositories…</p>
+              )}
+              {recentRepositoriesError !== null && (
+                <div className="banner banner-error newsession-source-error" role="alert">
+                  Recent repositories could not be loaded: {recentRepositoriesError}
+                </div>
+              )}
+              {knownRepositoriesError !== null && (
+                <div className="banner banner-error newsession-source-error" role="alert">
+                  Repository history could not be loaded: {knownRepositoriesError}
+                </div>
+              )}
+              {repositorySourcesFailed && (
+                <button type="button" className="newsession-retry standalone" onClick={() => setRepositoryReload((value) => value + 1)}>
+                  Retry repository sources
+                </button>
+              )}
+
+              {repositorySourcesSettled && visibleRepositories.length === 0 && (
+                <p className="status-line">
+                  {repositoryQuery.trim()
+                    ? "No known repositories match that search."
+                    : "No repositories are known on this machine yet."}
+                </p>
+              )}
+              {visibleRepositories.length > 0 && (
+                <ul className="roster newsession-choice-list newsession-repository-list">
+                  {visibleRepositories.map((repository) => (
+                    <li key={repositoryKey(repository.path)} className="row">
+                      <button
+                        type="button"
+                        className="picker-link"
+                        aria-label={"Select repository " + repositoryLabel(repository)}
+                        onClick={() => chooseRepository(repository)}
+                      >
+                        <span className="row-body">
+                          <span className="row-name">{repositoryLabel(repository)}</span>
+                          <span className="row-context newsession-path">{repository.path}</span>
+                        </span>
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+
+              <button
+                type="button"
+                className="newsession-manual-toggle"
+                aria-expanded={manualOpen}
+                onClick={() => setManualOpen((open) => !open)}
+              >
+                {manualOpen ? "Hide manual path" : "Enter a path manually"}
+              </button>
+              {manualOpen && (
+                <div className="newsession-manual-panel">
+                  <label className="newsession-search-label" htmlFor="newsession-path">Repository path</label>
+                  <input
+                    id="newsession-path"
+                    className="term-input newsession-search"
+                    type="text"
+                    inputMode="text"
+                    autoComplete="off"
+                    autoCapitalize="off"
+                    autoCorrect="off"
+                    spellCheck={false}
+                    placeholder="D:\Repositories\my-project"
+                    value={manualPath}
+                    onChange={(event) => {
+                      setManualPath(event.target.value);
+                      setCreateError(null);
+                    }}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") {
+                        event.preventDefault();
+                        chooseManualPath();
+                      }
+                    }}
+                  />
+                  <button type="button" className="newsession-select-path" onClick={chooseManualPath}>
+                    Use this path
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+        </section>
+
+        {activeStep !== "review" && createError !== null && (
+          <div className="banner banner-error newsession-inline-error" role="alert">{createError}</div>
+        )}
+
+        {activeStep === "review" && canReview && (
+          <section className="newsession-review" aria-labelledby="newsession-review-title">
+            <h2 id="newsession-review-title">Review the new session</h2>
+            <dl>
+              <div>
+                <dt>Director</dt>
+                <dd>{directorLabel(selectedDirector)}</dd>
+              </div>
+              <div>
+                <dt>Machine</dt>
+                <dd>{selectedDirector.machineName || "Not reported"}</dd>
+              </div>
+              <div>
+                <dt>Agent</dt>
+                <dd>
+                  {selectedAgent.displayName}
+                  <span>{selectedAgent.modelLabel.trim() || "Configured default model"}</span>
+                </dd>
+              </div>
+              <div>
+                <dt>Repository</dt>
+                <dd>
+                  {repositoryLabel(selectedRepository)}
+                  <span className="newsession-path">{selectedRepository.path}</span>
+                </dd>
+              </div>
+            </dl>
+            {createError !== null && <div className="banner banner-error" role="alert">{createError}</div>}
+          </section>
+        )}
+      </div>
+
+      <footer className="newsession-footer">
+        <div className="newsession-footer-note" aria-live="polite">
+          {creating ? "Creating the session…" : activeStep === "review" ? "Ready to create." : "Review all choices before creating."}
         </div>
-      </section>
+        <button
+          type="button"
+          className="term-btn newsession-primary"
+          disabled={!canReview || creating}
+          onClick={() => {
+            if (activeStep === "review") {
+              void create();
+            } else {
+              setCreateError(null);
+              setActiveStep("review");
+            }
+          }}
+        >
+          {creating ? "Creating…" : activeStep === "review" ? "Create session" : "Review selections"}
+        </button>
+      </footer>
     </div>
   );
 }

@@ -48,6 +48,9 @@ public sealed class ControlApiHost : IAsyncDisposable
     // Issue #1176 (Phase 1a): the outbound push-stream client, running alongside _gatewayClient when
     // gateway.streamMode is on. Null when stream mode is off, so the Director behaves exactly as today.
     private GatewayStreamClient? _streamClient;
+    /// <summary>The turn-push mission's Director side: keeps the Gateway's stored conversation current for
+    /// every session by pushing what it has not seen. Null when there is no Gateway.</summary>
+    private TurnPusher? _turnPusher;
 
     /// <summary>
     /// Remove-the-network-port mission, phase 1b: the hashes of the Gateway session keys this Director's
@@ -457,8 +460,10 @@ public sealed class ControlApiHost : IAsyncDisposable
         // heartbeat, and dial the tunnel. Disabled (no-op) when local-only.
         _gatewayClient = BuildGatewayClient(gatewayConfig);
         _gatewayClient.Start();
+        _turnPusher = BuildTurnPusher(gatewayConfig);
         _streamClient = BuildStreamClient(gatewayConfig);
         _streamClient?.Start();
+        _turnPusher?.Start();
         WireDoorbellPush();
         WireRepositoryPush();
 
@@ -837,6 +842,14 @@ public sealed class ControlApiHost : IAsyncDisposable
             // registry so the director-level reads that stamp/read them (facts, handover, repos-list) serve the
             // same value over the tunnel that their REST route served.
             cmd => DispatchTunnelCommandAsync(cmd),
+            // Turn push: every Hello hands back what the Gateway already holds of this Director's sessions'
+            // conversations; the pusher seeds from it and backfills the rest.
+            // Only when the Gateway actually READ its store. A Gateway that could not read answers a
+            // silence, and reconciling against a silence would re-push every conversation from the start.
+            onHello: capabilities =>
+            {
+                if (capabilities.TurnWatermarksKnown) _turnPusher?.SeedWatermarks(capabilities.TurnWatermarks);
+            },
             // Gateway Cleanup mission, Phase 0 (up-stream): pass the SessionManager so the four connection-bound
             // stream verbs work - their terminal/file producers read session and file state from it and stream
             // frames up this same connection.
@@ -861,6 +874,31 @@ public sealed class ControlApiHost : IAsyncDisposable
                 if (Guid.TryParse(id, out var confirmed))
                     _sessionGatewayKeys.RevocationConfirmed(confirmed);
             });
+    }
+
+    /// <summary>
+    /// The turn-push mission's Director side. Reads each session's conversation through the one resolver
+    /// (<see cref="TurnPushBuilder"/>) and pushes what the Gateway has not seen, over the stream client that
+    /// is current at the time of the push (the field is read per call, so a Gateway settings change that
+    /// rebuilds the stream does not strand the pusher on a dead one). Null when there is no Gateway.
+    /// </summary>
+    private TurnPusher? BuildTurnPusher(GatewayConfig gatewayConfig)
+    {
+        if (!gatewayConfig.IsEnabled) return null;
+        return new TurnPusher(
+            sessionIds: () => _sessionManager.ListSessions().Select(s => s.Id).ToList(),
+            snapshot: sid =>
+            {
+                var session = _sessionManager.GetSession(sid);
+                return session is null ? null : TurnPushBuilder.Snapshot(session);
+            },
+            push: (batch, ct) =>
+            {
+                var client = _streamClient;
+                if (client is null) throw new InvalidOperationException("there is no Gateway stream to push turns over");
+                return client.PushTurnsAsync(batch, ct);
+            },
+            canPush: () => _streamClient?.GatewaySupports("PushTurns") == true);
     }
 
     /// <summary>
@@ -975,7 +1013,7 @@ public sealed class ControlApiHost : IAsyncDisposable
     {
         void Attach(Core.Sessions.Session session)
         {
-            session.OnActivityStateChanged += (_, newState) =>
+            session.OnActivityStateChanged += (oldState, newState) =>
             {
                 var eventName = newState switch
                 {
@@ -986,6 +1024,16 @@ public sealed class ControlApiHost : IAsyncDisposable
                     _ => null,
                 };
                 _gatewayClient?.NotifySessionState(session.Id.ToString(), newState.ToString(), eventName);
+                // Turn push: the Director's OWN turn-end edge - FROM working TO waiting for input or a
+                // permission, or idle - which is the moment the conversation has something new; and the
+                // session ending from any state, for the final push. Deterministic, not sampled: this is the
+                // edge itself, and a transition into a waiting state from anywhere else is not a turn ending.
+                var turnEnded = oldState is Core.Sessions.ActivityState.Working
+                                && newState is Core.Sessions.ActivityState.WaitingForInput
+                                    or Core.Sessions.ActivityState.WaitingForPerm
+                                    or Core.Sessions.ActivityState.Idle;
+                if (turnEnded || newState is Core.Sessions.ActivityState.Exited)
+                    _turnPusher?.Trigger(session.Id);
                 // Issue #1176 (Phase 1a): push the changed session up the stream as a delta.
                 _streamClient?.NotifyDelta(ControlEndpoints.Map(session, DirectorId));
             };
@@ -1046,6 +1094,7 @@ public sealed class ControlApiHost : IAsyncDisposable
             _gatewayClient?.NotifySessionState(session.Id.ToString(), session.ActivityState.ToString(),
                 DoorbellEvents.SessionCreated);
             _streamClient?.NotifyDelta(ControlEndpoints.Map(session, DirectorId));
+            _turnPusher?.Trigger(session.Id);   // a resumed session already has a conversation to push
         };
         _sessionManager.OnSessionRemoved += session =>
         {
@@ -1110,8 +1159,13 @@ public sealed class ControlApiHost : IAsyncDisposable
 
             _gatewayClient = BuildGatewayClient(gatewayConfig);
             _gatewayClient.Start();
+            // The pusher is built BEFORE the stream dials. The stream's first Hello carries the Gateway's
+            // turn watermarks, and a pusher created after that call has already gone out would miss the
+            // reconciliation entirely (found in review) - the same order StartAsync uses.
+            _turnPusher ??= BuildTurnPusher(gatewayConfig);
             _streamClient = BuildStreamClient(gatewayConfig);
             _streamClient?.Start();
+            _turnPusher?.Start();
             // Issue #1292: keep the async-vs-local numbering decision in step with the new config.
             _sessionManager.FleetNumberingActive = gatewayConfig.IsEnabled;
         }
@@ -1187,6 +1241,12 @@ public sealed class ControlApiHost : IAsyncDisposable
         _sessionLogManager?.Dispose();
         _sessionLogManager = null;
         _pointerWatcher?.Dispose();
+        if (_turnPusher is not null)
+        {
+            try { await _turnPusher.DisposeAsync(); }
+            catch (Exception ex) { FileLog.Write($"[ControlApiHost] turn pusher dispose error: {ex.Message}"); }
+            _turnPusher = null;
+        }
         _pointerWatcher = null;
         _preambleMaintainer?.Dispose();
         _preambleMaintainer = null;

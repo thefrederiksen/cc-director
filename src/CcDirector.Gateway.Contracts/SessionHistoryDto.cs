@@ -36,6 +36,26 @@ public sealed class SessionHistoryDto
     public List<HistoryMessageDto> Messages { get; set; } = new();
 
     /// <summary>"ok" | "unsupported".</summary>
+    /// <summary>
+    /// The finished sentence to show ABOVE a conversation that is FROZEN - the words are here, but no more
+    /// are coming, because the computer that produces them is not reachable or cannot send them. Null when
+    /// the session is live. Unlike <see cref="EmptyText"/> this rides ALONGSIDE content: a reader looking at
+    /// a conversation that stopped an hour ago sees the same screen as one watching a live session, would
+    /// type a prompt into it, and would wonder why nothing happened. Written by the Gateway
+    /// (<c>SessionConversationFold</c>) and rendered verbatim.
+    /// </summary>
+    public string? StaleNotice { get; set; }
+
+    /// <summary>
+    /// The finished sentence to show when the conversation renders as nothing, or null when there is
+    /// content. Decided on the GATEWAY (see <c>SessionConversationFold</c>) because "no messages" has
+    /// several causes - a session that has not spoken, an agent that keeps no history, a computer that has
+    /// not sent its conversation, one too old to send it, one that is offline - and only one of them means
+    /// "wait, it is coming". The client renders it verbatim and derives nothing from it; the one empty-state
+    /// line the client still writes for itself is about its OWN filters, which the Gateway cannot see.
+    /// </summary>
+    public string? EmptyText { get; set; }
+
     public string Status { get; set; } = "ok";
 
     /// <summary>Free-text error message if Status != "ok".</summary>
