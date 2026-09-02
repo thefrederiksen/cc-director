@@ -8,48 +8,36 @@ conduct). Not a transcript. Not a history.
 
 ## Where things stand
 
-- **Phase:** 2 - THE THIN VERTICAL SLICE, straight to the owner's demonstration (ruling A9).
-- **Mission branch:** `mission/session-rules`, pushed, head `6513a1968` - phase 1 merged in.
-- **Landed on main so far:** nothing.
-- **Phase 1 is DONE and accepted** by the Architect: the rule store, the contract, the
-  reflection-derived check registry, the five verified checks, and the write-time validator. Its
-  account, with every red quoted before its green, is `phase-1-report.md`. Local gate exit code 0,
-  4604 passed, on `48eeb1e83`; the only change after that run was documentation.
-- **An independent inspection of phase 1 is IN FLIGHT** with a different agent family. Its findings
-  come back to a FRESH Manager, not to the one that built it, and not to the inspector to patch.
-  Phase 2 is being built on top of phase 1 in parallel rather than waiting, because the owner's
-  model allowance may not last the mission (A9).
+- **Phase:** FIX ROUND A - the disposition of the independent inspection and of the two defects
+  phase 2 found in its own work. Read `fix-round-a.md`; it is the task.
+- **Mission branch:** `mission/session-rules`, pushed. Phases 1 and 2 and the inspection are merged.
+- **Landed on main so far:** NOTHING, and nothing lands until this round is done and re-inspected.
+
+**Phase 1 is done:** the rule store, the contract, the reflection-derived check registry, the five
+verified checks, the write-time validator. `phase-1-report.md`.
+
+**Phase 2 is done and THE DEMONSTRATION IS CAPTURED** - the mission's headline, already safe on the
+branch. On a real session, with a real screen read and a rule from the real store, `/usage-credits`
+appears on the terminal with nobody having typed it, and the shell's own rejection of the command is
+unambiguous evidence that the text arrived and was submitted. Both negative controls are live: a rule
+declined a screen that merely DISCUSSED a limit, and a second rule declined a screen its instruction
+does not reach. A live abandonment was captured too, where the screen moved on mid-decision.
+`phase-2-report.md`, and the evidence itself is in `qa-report.md`.
+
+**An independent inspection of landing A returned nine findings, three of them blocking**
+(`inspection-a.md`). Phase 2 self-reported two more. The Architect's disposition of all of them,
+including three new rulings A11, A12 and A13, is `fix-round-a.md`.
 
 ## The next Manager's task
 
-Build the THIN VERTICAL SLICE described in `demonstration-rig.md`, on a phase branch cut from
-`origin/mission/session-rules`, in its OWN worktree. This is the owner's acceptance test and it is
-the single most valuable thing left in the mission. It may be crude. It must be REAL.
+Work `fix-round-a.md`, worst first, on a phase branch cut from `origin/mission/session-rules`, in its
+OWN worktree. Nothing else. Do not rebuild the demonstration and do not start a new feature.
 
-Read `demonstration-rig.md` before anything else - it is the executable design, and it says exactly
-what each demonstration proves and what it does NOT.
-
-## The acceptance rows phase 2 owes
-
-1. **Demonstration A, captured as an artifact.** Words go onto a real terminal screen; the session
-   goes idle on its own; the rule fires on its own; something is typed; the screen after shows it.
-   The screen before, the rule that matched, what the agent understood and decided, which checks ran
-   with what arguments and what they answered, exactly what was typed, and the screen after - all
-   quoted into `qa-report.md` with the commit and the exit code, the moment it works.
-2. **The negative control N1:** a session merely DISCUSSING a usage limit is NOT convicted, and the
-   record says why not. Trigger words alone cannot tell that apart from the real thing; only reading
-   the screen against the instruction can.
-3. **The negative control N2:** a rule DECLINES a screen its instruction does not cover, with a
-   stated reason, and the decline is a RECORDED FIRING. Silence is not a decline - a rule that did
-   nothing because the evaluator threw looks identical to one that declined, unless it is written
-   down. Prove the decline by the PRESENCE of its record.
-4. **Dry run types nothing**, proved by an instrumented send seam counted at zero, never by the
-   absence of a log line.
-5. **The screen is re-read immediately before acting**, and a screen that changed between the
-   decision and the keystroke is abandoned with the abandonment recorded.
-
-Everything else - authoring by conversation, the user interface, the hardening - comes after. Do not
-build them. If the slice needs a rule, create it through the phase 1 store directly.
+The single most important item is A13: two red-first claims in the phase 1 report do not reproduce
+from the commits they name, and the filtered runner exits 0 on `No test matches`. **That report goes
+to the owner. A false claim in it is worse than a missing feature.** Repair it by committing a
+reproducible red probe, or delete the claim and say so plainly in what is not proven - never by
+restating an unreproducible number in softer words.
 
 ## Branch and worktree convention on this mission
 
