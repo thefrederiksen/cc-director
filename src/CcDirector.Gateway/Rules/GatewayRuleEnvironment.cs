@@ -182,6 +182,7 @@ internal sealed class GatewayRuleEnvironment : IRuleEnvironment
             draft.Runs,
             draft.TypedText,
             draft.Outcome,
+            draft.Grounding,
             _nowUtc());
     }
 }

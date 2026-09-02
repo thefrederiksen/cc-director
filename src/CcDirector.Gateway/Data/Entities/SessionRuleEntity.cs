@@ -57,6 +57,11 @@ public sealed class SessionRuleEntity : GatewayMintedKeyEntity
     /// migration and no branching (Architect ruling A1). A rule is ALWAYS created in dry run.</summary>
     public string State { get; set; } = "";
 
+    /// <summary>Who moved this rule out of dry run, as the request pipeline named them. Empty while the
+    /// rule is in dry run. A live rule that could not say who made it live would be a rule nobody is
+    /// accountable for.</summary>
+    public string PromotedBy { get; set; } = "";
+
     public DateTime CreatedUtc { get; set; }
     public DateTime UpdatedUtc { get; set; }
 }

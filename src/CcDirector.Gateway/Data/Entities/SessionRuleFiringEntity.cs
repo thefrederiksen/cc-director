@@ -42,6 +42,12 @@ public sealed class SessionRuleFiringEntity : GatewayMintedKeyEntity
 
     /// <summary>What happened next, once the rule had acted or declined.</summary>
     public string Outcome { get; set; } = "";
+
+    /// <summary>What checking the stated reason against this screen found (Architect ruling A12). NEVER
+    /// blank: a firing that says "nothing was quoted, so there was nothing to check" is a different fact
+    /// from a firing where the check never ran, and a record that cannot tell those apart is not evidence
+    /// of either.</summary>
+    public string Grounding { get; set; } = "";
 }
 
 /// <summary>One verified check that ran during a firing: which one, with what arguments, and what it

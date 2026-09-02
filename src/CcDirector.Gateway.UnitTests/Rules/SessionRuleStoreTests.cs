@@ -25,6 +25,14 @@ public sealed class SessionRuleStoreTests : IDisposable
 
     private SessionRuleStore NewStore() => new(_h.Open());
 
+    /// <summary>A grant as the promote route mints one, for a caller the request pipeline named.</summary>
+    private static RulePromotionGrant GrantFor(Guid ruleId) =>
+        RulePromotionGrant.FromAuthenticatedRequest(
+            ruleId, "device-9f2c", "I have read this rule's dry-run record and I am making it live.", Now);
+
+    /// <summary>What the grounding check found, as every firing has to carry (Architect ruling A12).</summary>
+    private const string Grounding = "grounding: nothing was quoted, so there was nothing to check.";
+
     private static readonly string TheSentence =
         "When I run out of allowance on a model, switch me to Opus and carry on with whatever you were doing.";
 
@@ -204,7 +212,7 @@ public sealed class SessionRuleStoreTests : IDisposable
         var created = CreateTheRule(store);
         Assert.Equal(RuleState.DryRun, created.State);
 
-        var promoted = store.Promote(created.Id, Now.AddHours(1));
+        var promoted = store.Promote(created.Id, GrantFor(created.Id), Now.AddHours(1));
         Assert.Equal(RuleState.Live, promoted.State);
         Assert.Equal(Now.AddHours(1), promoted.UpdatedUtc);
         Assert.Equal(RuleState.Live, new SessionRuleStore(_h.Open()).Get(created.Id)!.State);
@@ -214,7 +222,8 @@ public sealed class SessionRuleStoreTests : IDisposable
     public void Promoting_a_rule_that_does_not_exist_is_refused_with_a_reason()
     {
         var store = NewStore();
-        var ex = Assert.Throws<RuleRejectedException>(() => store.Promote(Guid.NewGuid(), Now));
+        var missing = Guid.NewGuid();
+        var ex = Assert.Throws<RuleRejectedException>(() => store.Promote(missing, GrantFor(missing), Now));
         Assert.NotEqual("", ex.Reason);
     }
 
@@ -229,11 +238,12 @@ public sealed class SessionRuleStoreTests : IDisposable
             "session-101",
             "Claude usage limit reached. Your limit will reset at 14:30.",
             "The session is stopped on a provider allowance notice.",
-            "would_have_acted",
+            RuleDecisions.Act,
             "In dry run, so nothing was typed.",
             new[] { new RulePrimitiveRun("matches_any", "text=<screen_text>, terms=usage limit", "true") },
             typedText: "",
             outcome: "Reported only.",
+            grounding: Grounding,
             Now);
 
         var read = Assert.Single(store.FiringsFor(rule.Id));
@@ -241,7 +251,7 @@ public sealed class SessionRuleStoreTests : IDisposable
         Assert.Equal("session-101", read.SessionId);
         Assert.Equal("Claude usage limit reached. Your limit will reset at 14:30.", read.ScreenText);
         Assert.Equal("The session is stopped on a provider allowance notice.", read.Understanding);
-        Assert.Equal("would_have_acted", read.Decision);
+        Assert.Equal(RuleDecisions.Act, read.Decision);
         Assert.Equal("In dry run, so nothing was typed.", read.Reason);
         Assert.Equal("", read.TypedText);
         Assert.Equal("Reported only.", read.Outcome);
@@ -260,10 +270,11 @@ public sealed class SessionRuleStoreTests : IDisposable
 
         var ex = Assert.Throws<RuleRejectedException>(() => store.RecordFiring(
             rule.Id, "session-101", "Claude usage limit reached.", "stopped on a limit",
-            "acted", "switched the model",
+            RuleDecisions.Act, "switched the model",
             Array.Empty<RulePrimitiveRun>(),
             typedText: "/model opus",
             outcome: "recovered",
+            grounding: Grounding,
             Now));
 
         Assert.Contains("dry run", ex.Reason, StringComparison.OrdinalIgnoreCase);
@@ -275,14 +286,15 @@ public sealed class SessionRuleStoreTests : IDisposable
     {
         var store = NewStore();
         var rule = CreateTheRule(store);
-        store.Promote(rule.Id, Now);
+        store.Promote(rule.Id, GrantFor(rule.Id), Now);
 
         var firing = store.RecordFiring(
             rule.Id, "session-101", "Claude usage limit reached.", "stopped on a limit",
-            "acted", "switched the model",
+            RuleDecisions.Act, "switched the model",
             Array.Empty<RulePrimitiveRun>(),
             typedText: "/model opus",
             outcome: "recovered",
+            grounding: Grounding,
             Now);
 
         Assert.Equal("/model opus", store.FiringsFor(rule.Id).Single().TypedText);
@@ -294,8 +306,8 @@ public sealed class SessionRuleStoreTests : IDisposable
     {
         var store = NewStore();
         var ex = Assert.Throws<RuleRejectedException>(() => store.RecordFiring(
-            Guid.NewGuid(), "session-101", "a screen", "an understanding", "declined", "not covered",
-            Array.Empty<RulePrimitiveRun>(), "", "nothing", Now));
+            Guid.NewGuid(), "session-101", "a screen", "an understanding", RuleDecisions.Decline,
+            "not covered", Array.Empty<RulePrimitiveRun>(), "", "nothing", Grounding, Now));
         Assert.NotEqual("", ex.Reason);
     }
 
@@ -309,12 +321,12 @@ public sealed class SessionRuleStoreTests : IDisposable
             rule.Id, "session-101",
             "The team was discussing what happens when you hit a usage limit.",
             "A conversation about limits, not a session stopped on one.",
-            "declined",
+            RuleDecisions.Decline,
             "The instruction covers a session BLOCKED on an allowance notice; this session is not blocked.",
-            Array.Empty<RulePrimitiveRun>(), "", "Left alone.", Now);
+            Array.Empty<RulePrimitiveRun>(), "", "Left alone.", Grounding, Now);
 
         var read = Assert.Single(store.FiringsFor(rule.Id));
-        Assert.Equal("declined", read.Decision);
+        Assert.Equal(RuleDecisions.Decline, read.Decision);
         Assert.Contains("not blocked", read.Reason, StringComparison.Ordinal);
         Assert.Equal("", read.TypedText);
     }
@@ -324,8 +336,8 @@ public sealed class SessionRuleStoreTests : IDisposable
     {
         var store = NewStore();
         var rule = CreateTheRule(store);
-        store.RecordFiring(rule.Id, "session-101", "a screen", "an understanding", "would_have_acted",
-            "dry run", Array.Empty<RulePrimitiveRun>(), "", "reported", Now);
+        store.RecordFiring(rule.Id, "session-101", "a screen", "an understanding", RuleDecisions.Act,
+            "dry run", Array.Empty<RulePrimitiveRun>(), "", "reported", Grounding, Now);
 
         Assert.True(store.Delete(rule.Id));
         Assert.Null(store.Get(rule.Id));

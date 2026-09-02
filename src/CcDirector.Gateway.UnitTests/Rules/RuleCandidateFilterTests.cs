@@ -34,6 +34,7 @@ public sealed class RuleCandidateFilterTests
             cooldownSeconds,
             dailyCap,
             state,
+            state == RuleState.Live ? "device-9f2c" : "",
             Now,
             Now);
 
@@ -52,7 +53,7 @@ public sealed class RuleCandidateFilterTests
 
     private static SessionRuleFiring Firing(Guid ruleId, string sessionId, DateTime occurredUtc, string decision) =>
         new(Guid.NewGuid(), ruleId, sessionId, occurredUtc, TheNotice, "", decision, "",
-            Array.Empty<RulePrimitiveRun>(), "", "");
+            Array.Empty<RulePrimitiveRun>(), "", "", "");
 
     // ---- the session-level checks ------------------------------------------------------------------
 

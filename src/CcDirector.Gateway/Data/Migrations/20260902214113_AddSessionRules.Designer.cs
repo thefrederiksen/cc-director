@@ -11,7 +11,7 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 namespace CcDirector.Gateway.Data.Migrations
 {
     [DbContext(typeof(GatewayDbContext))]
-    [Migration("20260902191922_AddSessionRules")]
+    [Migration("20260902214113_AddSessionRules")]
     partial class AddSessionRules
     {
         /// <inheritdoc />
@@ -1008,6 +1008,10 @@ namespace CcDirector.Gateway.Data.Migrations
                         .IsRequired()
                         .HasColumnType("TEXT");
 
+                    b.Property<string>("PromotedBy")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
                     b.Property<string>("ScopeAgent")
                         .HasColumnType("TEXT");
 
@@ -1058,6 +1062,10 @@ namespace CcDirector.Gateway.Data.Migrations
                     b.Property<string>("Decision")
                         .IsRequired()
                         .HasMaxLength(64)
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Grounding")
+                        .IsRequired()
                         .HasColumnType("TEXT");
 
                     b.Property<DateTime>("OccurredUtc")

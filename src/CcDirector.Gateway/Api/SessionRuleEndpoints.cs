@@ -62,16 +62,23 @@ internal static class SessionRuleEndpoints
             }
         });
 
-        // Move a rule out of dry run. Only a person does this; a rule can never promote itself.
-        app.MapPost("/gateway/rules/{id:guid}/promote", (Guid id) =>
+        // Move a rule out of dry run. ONLY A PERSON DOES THIS, and the grant is where that stops being a
+        // sentence in a comment: it is minted here, from the caller the request pipeline authenticated and
+        // the acknowledgement they wrote, and the store refuses a promotion that does not carry one. The
+        // evaluator has no inbound request, so it can mint nothing - see RulePromotionGrant.
+        app.MapPost("/gateway/rules/{id:guid}/promote", (HttpContext http, JsonElement body) =>
         {
+            var id = Guid.Parse((string)http.Request.RouteValues["id"]!);
             try
             {
-                return Results.Json(new { rule = Project(store.Promote(id, DateTime.UtcNow)) });
+                var grant = RulePromotionGrant.FromAuthenticatedRequest(
+                    id, CallerIdentity(http), RuleCallJson.Text(body, "acknowledgement"), DateTime.UtcNow);
+                return Results.Json(new { rule = Project(store.Promote(id, grant, DateTime.UtcNow)) });
             }
             catch (RuleRejectedException ex)
             {
-                return Results.Json(new { error = ex.Reason }, statusCode: StatusCodes.Status404NotFound);
+                FileLog.Write($"[SessionRuleEndpoints] promote {id} REFUSED: {ex.Reason}");
+                return Results.Json(new { error = ex.Reason }, statusCode: StatusCodes.Status400BadRequest);
             }
         });
 
@@ -82,6 +89,20 @@ internal static class SessionRuleEndpoints
         // THE RECORD, which is the product: every firing of one rule, newest first.
         app.MapGet("/gateway/rules/{id:guid}/firings", (Guid id) =>
             Results.Json(new { firings = store.FiringsFor(id).Select(Project).ToList() }));
+    }
+
+    /// <summary>Who the request pipeline resolved this caller to be. The device-key middleware puts the
+    /// authenticated device on the request before any of these routes run, so this reads what it decided
+    /// rather than deciding anything itself - a route that worked out its own caller identity would be a
+    /// second answer to a question the pipeline has already answered.</summary>
+    private static string? CallerIdentity(HttpContext http)
+    {
+        var name = http.User?.Identity?.Name;
+        if (!string.IsNullOrWhiteSpace(name)) return name;
+        if (http.Items.TryGetValue("DeviceKeyId", out var device) && device is string deviceId
+            && !string.IsNullOrWhiteSpace(deviceId))
+            return deviceId;
+        return null;
     }
 
     private static object Project(SessionRule r) => new

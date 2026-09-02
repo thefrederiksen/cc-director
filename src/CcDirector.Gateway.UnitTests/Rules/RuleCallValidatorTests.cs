@@ -53,6 +53,59 @@ public sealed class RuleCallValidatorTests
             "the test needs updating alongside whatever primitive introduced it"),
     };
 
+    // ---- a malformed collection, which is what authoring output looks like when it goes wrong ------
+
+    [Fact]
+    public void A_call_whose_argument_list_holds_a_null_is_refused_with_a_reason_and_does_not_crash()
+    {
+        // The arguments are a JSON-shaped mutable list, so a null element is exactly the shape malformed
+        // authoring output arrives in. It used to reach the first GroupBy and throw, which turned a stated
+        // refusal into an unhandled Gateway failure - a crash is not a reason anybody can act on.
+        var call = new RulePrimitiveCall
+        {
+            Name = "is_path_inside",
+            Arguments = new List<RuleArgument>
+            {
+                RuleArgument.Literal("target", "D:\repo\file.cs"),
+                null!,
+            },
+        };
+
+        var result = RuleCallValidator.Validate(call, Registry);
+
+        Assert.False(result.IsValid);
+        Assert.NotEqual("", result.Reason);
+        Assert.Contains("is_path_inside", result.Reason, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void A_list_of_calls_holding_a_null_call_is_refused_with_a_reason_and_does_not_crash()
+    {
+        var result = RuleCallValidator.ValidateAll(new[] { AGoodCall(), null! }, Registry);
+
+        Assert.False(result.IsValid);
+        Assert.NotEqual("", result.Reason);
+    }
+
+    [Fact]
+    public void A_call_whose_argument_values_hold_a_null_is_refused_with_a_reason_and_does_not_crash()
+    {
+        var call = RulePrimitiveCall.To(
+            "matches_any",
+            RuleArgument.FromInput("text", RuleInput.ScreenText),
+            new RuleArgument
+            {
+                Parameter = "terms",
+                Source = "literal",
+                Values = new List<string> { "usage limit", null! },
+            });
+
+        var result = RuleCallValidator.Validate(call, Registry);
+
+        Assert.False(result.IsValid);
+        Assert.NotEqual("", result.Reason);
+    }
+
     // ---- a primitive that does not exist ----------------------------------------------------------
 
     [Fact]

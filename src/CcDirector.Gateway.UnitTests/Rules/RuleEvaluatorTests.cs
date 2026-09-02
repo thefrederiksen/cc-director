@@ -121,6 +121,7 @@ public sealed class RuleEvaluatorTests
             300,
             5,
             state,
+            state == RuleState.Live ? "device-9f2c" : "",
             Now,
             Now);
 
@@ -475,6 +476,117 @@ public sealed class RuleEvaluatorTests
         Assert.Contains("screen", firing.Outcome);
         Assert.DoesNotContain("did not land", firing.Outcome);
         Assert.DoesNotContain("never reached", firing.Outcome);
+    }
+
+    // ---- ruling A12: an act's reason has to be grounded in the screen it was given ------------------
+
+    /// <summary>An ACT reply whose reason quotes something that is not on the screen.</summary>
+    private static string UngroundedActReply(Guid ruleId) => $$"""
+        {
+          "rule_id": "{{ruleId}}",
+          "understanding": "The session is blocked on its model allowance.",
+          "decision": "act",
+          "reason": "the screen says 'YOUR SUBSCRIPTION HAS BEEN CANCELLED', so the allowance is gone.",
+          "checks": [ ],
+          "type": "/usage-credits"
+        }
+        """;
+
+    [Fact]
+    public async Task An_act_whose_reason_quotes_text_the_screen_does_not_contain_is_refused_and_types_nothing()
+    {
+        // THE BOUND RULING A12 ASKS FOR. A rule that acts on evidence that was not there is the same
+        // unfaithfulness that produced a decline quoting a screen from twelve minutes earlier, pointed in
+        // the direction that does something.
+        var rule = Rule(state: RuleState.Live);
+        var env = EnvironmentWith(rule);
+        env.AgentReply = UngroundedActReply(rule.Id);
+
+        var pass = await Run(env);
+
+        Assert.Equal(RulePassOutcomes.Ungrounded, pass.What);
+        Assert.Empty(env.Typed);
+
+        var firing = Assert.Single(env.Recorded);
+        Assert.Equal(RuleDecisions.Refused, firing.Decision);
+        Assert.Equal("", firing.TypedText);
+        Assert.Contains("YOUR SUBSCRIPTION HAS BEEN CANCELLED", firing.Grounding, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task A_decline_whose_reason_quotes_text_the_screen_does_not_contain_is_recorded_with_the_mismatch_noted()
+    {
+        // Declining is the direction that does nothing, so the decline stands - but the record has to show
+        // the unfaithfulness rather than smooth it over.
+        var rule = Rule();
+        var env = EnvironmentWith(rule);
+        env.AgentReply = DeclineReply(rule.Id,
+            "the echo output explicitly says 'THE SCREEN HAS MOVED ON WHILE THE RULE WAS THINKING'.");
+
+        var pass = await Run(env);
+
+        Assert.Equal(RulePassOutcomes.Declined, pass.What);
+        Assert.Empty(env.Typed);
+
+        var firing = Assert.Single(env.Recorded);
+        Assert.Equal(RuleDecisions.Decline, firing.Decision);
+        Assert.Contains("THE SCREEN HAS MOVED ON", firing.Grounding, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Every_firing_says_what_the_grounding_check_found_even_when_there_was_nothing_to_check()
+    {
+        // THE PRESENCE. A run in which the grounding check never executed must not look identical to one
+        // in which it ran and found nothing wrong, so the statement is never blank on any firing.
+        var rule = Rule();
+        var env = EnvironmentWith(rule);
+        env.AgentReply = ActReply(rule.Id);
+
+        var pass = await Run(env);
+
+        Assert.Equal(RulePassOutcomes.DryRun, pass.What);
+        var firing = Assert.Single(env.Recorded);
+        Assert.NotEqual("", firing.Grounding);
+        Assert.Contains("grounding:", firing.Grounding, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task A_refusal_says_the_grounding_check_did_not_apply_rather_than_saying_nothing()
+    {
+        // The reason on a refusal is the Gateway's own words, not the agent's, so there is nothing of the
+        // agent's to check. Saying that is not the same as leaving it blank.
+        var env = EnvironmentWith(Rule());
+        env.AgentReply = "I am not going to answer in JSON.";
+
+        var pass = await Run(env);
+
+        Assert.Equal(RulePassOutcomes.Refused, pass.What);
+        var firing = Assert.Single(env.Recorded);
+        Assert.Equal(RuleReasonGrounding.NotTheAgentsReason, firing.Grounding);
+    }
+
+    [Fact]
+    public async Task An_act_whose_reason_quotes_the_screen_faithfully_still_acts()
+    {
+        // The PRESENCE half of the bound. A grounding check that refused everything would pass the tests
+        // above while making the feature impossible, and they could not tell the difference.
+        var rule = Rule(state: RuleState.Live);
+        var env = EnvironmentWith(rule);
+        env.AgentReply = $$"""
+        {
+          "rule_id": "{{rule.Id}}",
+          "understanding": "The session is blocked on its model allowance.",
+          "decision": "act",
+          "reason": "the screen says 'reached your Fable 5 limit', which is the session's own state.",
+          "checks": [ ],
+          "type": "/usage-credits"
+        }
+        """;
+
+        var pass = await Run(env);
+
+        Assert.Equal(RulePassOutcomes.Acted, pass.What);
+        Assert.Equal("/usage-credits", Assert.Single(env.Typed));
     }
 
     private static string ScreenTextOf(RuleFiringDraft draft) =>

@@ -27,6 +27,7 @@ namespace CcDirector.Gateway.Migrations.Postgres.Migrations
                     Reason = table.Column<string>(type: "text", nullable: false),
                     TypedText = table.Column<string>(type: "text", nullable: false),
                     Outcome = table.Column<string>(type: "text", nullable: false),
+                    Grounding = table.Column<string>(type: "text", nullable: false),
                     tenant_id = table.Column<string>(type: "text", nullable: false),
                     PrimitiveRuns = table.Column<string>(type: "jsonb", nullable: true)
                 },
@@ -51,6 +52,7 @@ namespace CcDirector.Gateway.Migrations.Postgres.Migrations
                     CooldownSeconds = table.Column<int>(type: "integer", nullable: false),
                     DailyCap = table.Column<int>(type: "integer", nullable: false),
                     State = table.Column<string>(type: "character varying(32)", maxLength: 32, nullable: false),
+                    PromotedBy = table.Column<string>(type: "text", nullable: false),
                     CreatedUtc = table.Column<DateTime>(type: "timestamp with time zone", nullable: false),
                     UpdatedUtc = table.Column<DateTime>(type: "timestamp with time zone", nullable: false),
                     tenant_id = table.Column<string>(type: "text", nullable: false),

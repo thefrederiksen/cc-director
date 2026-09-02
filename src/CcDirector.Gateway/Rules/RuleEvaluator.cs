@@ -13,7 +13,8 @@ public sealed record RuleFiringDraft(
     string Reason,
     IReadOnlyList<RulePrimitiveRun> Runs,
     string TypedText,
-    string Outcome);
+    string Outcome,
+    string Grounding);
 
 /// <summary>What one evaluation pass did. A closed set, so a caller and a test both name the same thing.</summary>
 public static class RulePassOutcomes
@@ -41,6 +42,10 @@ public static class RulePassOutcomes
 
     /// <summary>The act was given up before the keystroke. Recorded.</summary>
     public const string Abandoned = "abandoned";
+
+    /// <summary>The reply decided to ACT and its stated reason quoted text the screen does not contain, so
+    /// the act was refused (Architect ruling A12). Recorded, with what was quoted and where it was not.</summary>
+    public const string Ungrounded = "ungrounded";
 
     /// <summary>The rule is in dry run: it decided to act, and typed nothing.</summary>
     public const string DryRun = "dry-run";
@@ -211,7 +216,8 @@ public sealed class RuleEvaluator
             var written = candidates.Chosen
                 .Select(rule => Record(tenant, new RuleFiringDraft(
                     rule.Id, sessionId, screen, "", RuleDecisions.Refused, reading.Refusal,
-                    Array.Empty<RulePrimitiveRun>(), "", "nothing was typed.")))
+                    Array.Empty<RulePrimitiveRun>(), "", "nothing was typed.",
+                    RuleReasonGrounding.NotTheAgentsReason)))
                 .ToList();
             return new RulePass(RulePassOutcomes.Refused, reading.Refusal, written);
         }
@@ -226,7 +232,7 @@ public sealed class RuleEvaluator
         {
             var declined = Record(tenant, new RuleFiringDraft(
                 chosen.Id, sessionId, screen, reply.Understanding, RuleDecisions.Decline, reply.Reason,
-                checks.Runs, "", "declined - nothing was typed."));
+                checks.Runs, "", "declined - nothing was typed.", ""));
             return new RulePass(RulePassOutcomes.Declined, reply.Reason, new[] { declined });
         }
 
@@ -250,7 +256,7 @@ public sealed class RuleEvaluator
             var wouldHave = Record(tenant, new RuleFiringDraft(
                 chosen.Id, sessionId, screen, reply.Understanding, RuleDecisions.Act, reply.Reason,
                 checks.Runs, "",
-                "dry run: nothing was typed. It would have typed: " + reply.TextToType));
+                "dry run: nothing was typed. It would have typed: " + reply.TextToType, ""));
             return new RulePass(RulePassOutcomes.DryRun, reply.TextToType, new[] { wouldHave });
         }
 
@@ -265,7 +271,7 @@ public sealed class RuleEvaluator
             var notSent = Record(tenant, new RuleFiringDraft(
                 chosen.Id, sessionId, screen, reply.Understanding, RuleDecisions.Act, reply.Reason,
                 checks.Runs, "",
-                "nothing was typed: " + sent.Detail));
+                "nothing was typed: " + sent.Detail, ""));
             return new RulePass(RulePassOutcomes.NotSent, sent.Detail, new[] { notSent });
         }
 
@@ -277,7 +283,8 @@ public sealed class RuleEvaluator
                 ? "typed into the session: " + reply.TextToType
                 : "typed into the session: " + reply.TextToType +
                   " - but the prompt route did not confirm it started a turn (" + sent.Detail +
-                  "). The session's screen is the only evidence of whether the keystroke landed."));
+                  "). The session's screen is the only evidence of whether the keystroke landed.",
+            ""));
 
         return new RulePass(
             confirmed ? RulePassOutcomes.Acted : RulePassOutcomes.SendUnconfirmed,
@@ -290,7 +297,7 @@ public sealed class RuleEvaluator
     {
         var firing = Record(tenant, new RuleFiringDraft(
             rule.Id, sessionId, screen, reply.Understanding, RuleDecisions.Abandoned, why,
-            runs, "", "abandoned - nothing was typed."));
+            runs, "", "abandoned - nothing was typed.", RuleReasonGrounding.NotTheAgentsReason));
         return new RulePass(RulePassOutcomes.Abandoned, why, new[] { firing });
     }
 

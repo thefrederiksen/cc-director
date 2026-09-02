@@ -25,6 +25,7 @@ namespace CcDirector.Gateway.Data.Migrations
                     Reason = table.Column<string>(type: "TEXT", nullable: false),
                     TypedText = table.Column<string>(type: "TEXT", nullable: false),
                     Outcome = table.Column<string>(type: "TEXT", nullable: false),
+                    Grounding = table.Column<string>(type: "TEXT", nullable: false),
                     tenant_id = table.Column<string>(type: "TEXT", nullable: false),
                     PrimitiveRuns = table.Column<string>(type: "TEXT", nullable: true)
                 },
@@ -48,6 +49,7 @@ namespace CcDirector.Gateway.Data.Migrations
                     CooldownSeconds = table.Column<int>(type: "INTEGER", nullable: false),
                     DailyCap = table.Column<int>(type: "INTEGER", nullable: false),
                     State = table.Column<string>(type: "TEXT", maxLength: 32, nullable: false),
+                    PromotedBy = table.Column<string>(type: "TEXT", nullable: false),
                     CreatedUtc = table.Column<DateTime>(type: "TEXT", nullable: false),
                     UpdatedUtc = table.Column<DateTime>(type: "TEXT", nullable: false),
                     tenant_id = table.Column<string>(type: "TEXT", nullable: false),

@@ -24,7 +24,7 @@ namespace CcDirector.Gateway.Rules;
 /// Threading: the Gateway is a single writer. Every operation runs under this store's write lock over a
 /// fresh pooled context.
 /// </summary>
-public sealed class SessionRuleStore
+public sealed class SessionRuleStore : IRuleReading
 {
     private readonly object _gate = new();
     private readonly GatewayDatabase _db;
@@ -152,9 +152,12 @@ public sealed class SessionRuleStore
     }
 
     /// <summary>Move a rule out of dry run and into live. A rule that is already live is returned
-    /// unchanged. Only a person does this - a rule can never promote itself (owner ruling 14, bound 6).</summary>
-    /// <exception cref="RuleRejectedException">There is no such rule.</exception>
-    public SessionRule Promote(Guid id, DateTime nowUtc)
+    /// unchanged. Only a person does this - a rule can never promote itself (owner ruling 14, bound 6) -
+    /// so this takes a <see cref="RulePromotionGrant"/>, which can only be minted from an authenticated
+    /// inbound request and names the one rule it is evidence for.</summary>
+    /// <exception cref="RuleRejectedException">There is no such rule, or the call carried no evidence that
+    /// a person asked, or the grant was obtained for a different rule.</exception>
+    public SessionRule Promote(Guid id, RulePromotionGrant grant, DateTime nowUtc)
     {
         lock (_gate)
         {
@@ -193,8 +196,8 @@ public sealed class SessionRuleStore
     /// refused with a reason rather than silently blanked, because a store that quietly edits what it was
     /// told is a store nobody can read as evidence.
     /// </summary>
-    /// <exception cref="RuleRejectedException">There is no such rule, or a dry-run rule was recorded as
-    /// having typed something.</exception>
+    /// <exception cref="RuleRejectedException">There is no such rule, a dry-run rule was recorded as
+    /// having typed something, or the record is not a record of anything.</exception>
     public SessionRuleFiring RecordFiring(
         Guid ruleId,
         string sessionId,
@@ -205,6 +208,7 @@ public sealed class SessionRuleStore
         IEnumerable<RulePrimitiveRun> primitiveRuns,
         string typedText,
         string outcome,
+        string grounding,
         DateTime nowUtc)
     {
         var typed = typedText ?? "";
@@ -239,6 +243,7 @@ public sealed class SessionRuleStore
                     .ToList(),
                 TypedText = typed,
                 Outcome = outcome ?? "",
+                Grounding = grounding ?? "",
             };
             ctx.SessionRuleFirings.Add(entity);
             ctx.SaveChanges();
@@ -292,6 +297,7 @@ public sealed class SessionRuleStore
         e.CooldownSeconds,
         e.DailyCap,
         StateOf(e.State),
+        e.PromotedBy,
         e.CreatedUtc,
         e.UpdatedUtc);
 
@@ -306,7 +312,8 @@ public sealed class SessionRuleStore
         e.Reason,
         e.PrimitiveRuns.Select(r => new RulePrimitiveRun(r.Name, r.Arguments, r.Answer)).ToList(),
         e.TypedText,
-        e.Outcome);
+        e.Outcome,
+        e.Grounding);
 
     /// <summary>The stored state value as a state. An unrecognised value fails loudly rather than being
     /// treated as dry run - a rule whose state we cannot read must not be quietly assumed harmless, and

@@ -28,7 +28,9 @@ public sealed record RuleScope(string? Agent, string? Repository, string? Machin
 
 /// <summary>
 /// One standing instruction, as read back out of the store. <see cref="Instruction"/> is the authority -
-/// the sentence the account said - and everything else was derived from it.
+/// the sentence the account said - and everything else was derived from it. <see cref="PromotedBy"/> is
+/// who moved it out of dry run, and it is empty for exactly as long as the rule is in dry run - a live rule
+/// can always say which person made it live.
 /// </summary>
 public sealed record SessionRule(
     Guid Id,
@@ -40,6 +42,7 @@ public sealed record SessionRule(
     int CooldownSeconds,
     int DailyCap,
     RuleState State,
+    string PromotedBy,
     DateTime CreatedUtc,
     DateTime UpdatedUtc);
 
@@ -48,7 +51,9 @@ public sealed record RulePrimitiveRun(string Name, string Arguments, string Answ
 
 /// <summary>
 /// One firing of one rule, as read back out of the store. The record is the product: an action nobody can
-/// reconstruct is an action nobody can supervise.
+/// reconstruct is an action nobody can supervise. <see cref="Grounding"/> is what the check of the stated
+/// reason against the screen found (Architect ruling A12) and is never blank - a firing that could not say
+/// what that check found would be indistinguishable from one where the check never ran.
 /// </summary>
 public sealed record SessionRuleFiring(
     Guid Id,
@@ -61,7 +66,8 @@ public sealed record SessionRuleFiring(
     string Reason,
     IReadOnlyList<RulePrimitiveRun> PrimitiveRuns,
     string TypedText,
-    string Outcome);
+    string Outcome,
+    string Grounding);
 
 /// <summary>
 /// Thrown when the store REFUSES to write something, carrying the reason in plain English. A refusal is

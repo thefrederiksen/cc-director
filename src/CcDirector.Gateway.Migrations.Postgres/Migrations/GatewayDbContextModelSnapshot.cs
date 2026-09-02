@@ -1026,6 +1026,10 @@ namespace CcDirector.Gateway.Migrations.Postgres.Migrations
                         .IsRequired()
                         .HasColumnType("text");
 
+                    b.Property<string>("PromotedBy")
+                        .IsRequired()
+                        .HasColumnType("text");
+
                     b.Property<string>("ScopeAgent")
                         .HasColumnType("text");
 
@@ -1077,6 +1081,10 @@ namespace CcDirector.Gateway.Migrations.Postgres.Migrations
                         .IsRequired()
                         .HasMaxLength(64)
                         .HasColumnType("character varying(64)");
+
+                    b.Property<string>("Grounding")
+                        .IsRequired()
+                        .HasColumnType("text");
 
                     b.Property<DateTime>("OccurredUtc")
                         .HasColumnType("timestamp with time zone");

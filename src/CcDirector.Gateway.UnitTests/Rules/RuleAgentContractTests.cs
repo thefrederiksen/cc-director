@@ -29,6 +29,7 @@ public sealed class RuleAgentContractTests
         300,
         5,
         RuleState.DryRun,
+        "",
         Now,
         Now);
 

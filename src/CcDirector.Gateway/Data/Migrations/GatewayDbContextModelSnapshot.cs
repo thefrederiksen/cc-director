@@ -1005,6 +1005,10 @@ namespace CcDirector.Gateway.Data.Migrations
                         .IsRequired()
                         .HasColumnType("TEXT");
 
+                    b.Property<string>("PromotedBy")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
                     b.Property<string>("ScopeAgent")
                         .HasColumnType("TEXT");
 
@@ -1055,6 +1059,10 @@ namespace CcDirector.Gateway.Data.Migrations
                     b.Property<string>("Decision")
                         .IsRequired()
                         .HasMaxLength(64)
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Grounding")
+                        .IsRequired()
                         .HasColumnType("TEXT");
 
                     b.Property<DateTime>("OccurredUtc")
