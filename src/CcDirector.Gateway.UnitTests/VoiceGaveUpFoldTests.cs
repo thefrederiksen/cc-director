@@ -18,11 +18,13 @@ public sealed class VoiceGaveUpFoldTests
     private static readonly DateTime Now = new(2026, 8, 12, 12, 0, 0, DateTimeKind.Utc);
 
     private static VoiceDisplay Fold(DateTime? waitingSince, bool generating = false, bool hasAudio = false,
-        HostedAiState? unavailable = null, bool nothingToNarrate = false)
+        HostedAiState? unavailable = null, bool nothingToNarrate = false, int attempts = 0)
         => VoiceDisplayFold.Fold(
             voiceMode: true, agentWorking: false, hasAudio: hasAudio, generating: generating,
             unavailable: unavailable, nothingToNarrate: nothingToNarrate,
-            waitingSince: waitingSince, utcNow: Now);
+            waitingSince: waitingSince, utcNow: Now, automaticAttempts: attempts);
+
+    private const int Spent = VoiceRetryPolicy.MaxAutomaticAttempts;
 
     [Fact]
     public void PastTheThreshold_TheVerdictIsGaveUp_AndSaysHowLong()
@@ -33,8 +35,95 @@ public sealed class VoiceGaveUpFoldTests
         Assert.Equal("Voice did not arrive after 48m", v.Label);
         Assert.Equal("48m", v.WaitedLabel);
         Assert.False(v.CanPlay);
-        // No Generate button: it would re-run the same thing that has already failed for 48 minutes, and a
-        // button that cannot succeed invites the reader to keep pressing and blame themselves.
+        // No Generate button YET: with no attempts recorded the Gateway's own retry schedule is still ahead
+        // of it, and a press would race the retry that is about to happen. The button belongs to the moment
+        // the schedule is spent - see the tests below.
+        Assert.False(v.CanGenerate);
+        Assert.Contains($"up to {Spent} times", v.Message);
+    }
+
+    // ------------------------------------------------------------------------------------------------
+    // The retry schedule (VoiceRetryPolicy), 1 September 2026. The owner, looking at "Voice did not arrive
+    // after 19m" with nothing to press: try again first, a few times, minutes apart - and when that has not
+    // worked, put a button on the screen. The gave-up verdict therefore has two faces.
+    // ------------------------------------------------------------------------------------------------
+
+    [Fact]
+    public void WhileAutomaticTriesRemain_NoButton_AndTheMessageCountsThem()
+    {
+        var v = Fold(Now - TimeSpan.FromMinutes(7), attempts: 2);
+
+        Assert.Equal("gaveUp", v.Kind);
+        Assert.False(v.CanGenerate);
+        // The reader sees where the schedule is, in the schedule's own numbers - never a bare "still trying".
+        Assert.Contains($"tried 2 of {Spent} times", v.Message);
+        Assert.Contains($"{(int)VoiceRetryPolicy.RetryEvery.TotalMinutes} minutes", v.Message);
+    }
+
+    [Fact]
+    public void OnceTheAutomaticTriesAreSpent_TheButtonComesOn_AndTheMessageSaysTheGatewayStopped()
+    {
+        var v = Fold(Now - TimeSpan.FromMinutes(19), attempts: Spent);
+
+        Assert.Equal("gaveUp", v.Kind);
+        Assert.Equal("red", v.Tone);
+        Assert.Equal("Voice did not arrive after 19m", v.Label);
+        // THE BUTTON. Nothing else is going to try, so offering it is the honest thing - and the message
+        // must not go on saying "still trying" about a Gateway that has stopped.
+        Assert.True(v.CanGenerate);
+        Assert.Contains("stopped trying on its own", v.Message);
+        Assert.Contains($"tried {Spent} times", v.Message);
+        Assert.DoesNotContain("still trying", v.Message);
+    }
+
+    [Fact]
+    public void OneShortOfSpent_IsStillNoButton()
+    {
+        // The boundary in the direction that matters: the button appears exactly when the Gateway stops.
+        Assert.False(Fold(Now - TimeSpan.FromMinutes(19), attempts: Spent - 1).CanGenerate);
+    }
+
+    [Fact]
+    public void ASpentSchedule_GivesUp_EvenIfTheClockHasNot()
+    {
+        // The count is a second key beside the clock: five failed tries is a stopped Gateway whatever the
+        // clock says, and a stopped Gateway with no button is the exact screen this exists to remove.
+        var v = Fold(Now - TimeSpan.FromMinutes(1), attempts: Spent);
+        Assert.Equal("gaveUp", v.Kind);
+        Assert.True(v.CanGenerate);
+    }
+
+    [Fact]
+    public void ASpentSchedule_UnderARetryingState_StillOffersTheButton()
+    {
+        // The last failed attempt typically leaves Retrying behind it. That must not hide the button: the
+        // retry it describes is the one the schedule has just declined to make.
+        var v = Fold(Now - TimeSpan.FromMinutes(15), unavailable: HostedAiState.Retrying, attempts: Spent);
+        Assert.Equal("gaveUp", v.Kind);
+        Assert.True(v.CanGenerate);
+    }
+
+    [Fact]
+    public void ASpentSchedule_IsStillOutrankedByAudio_ALiveAttempt_AndNothingToNarrate()
+    {
+        // The ordering above the gave-up verdict is unchanged by the count. Audio ends the episode; a live
+        // attempt (the manual press itself, most likely) is happening now; a session parked on a menu never
+        // had a narration coming.
+        Assert.Equal("ready", Fold(Now - TimeSpan.FromMinutes(15), hasAudio: true, attempts: Spent).Kind);
+        Assert.Equal("preparing", Fold(Now - TimeSpan.FromMinutes(15), generating: true, attempts: Spent).Kind);
+        Assert.Equal("nothingToNarrate", Fold(Now - TimeSpan.FromMinutes(15), nothingToNarrate: true, attempts: Spent).Kind);
+    }
+
+    [Theory]
+    [InlineData(HostedAiState.ServiceDown, "serviceDown")]
+    [InlineData(HostedAiState.NeedsCredits, "blocked")]
+    [InlineData(HostedAiState.NeedsKey, "blocked")]
+    public void ASpentSchedule_IsStillOutrankedByAnActionableReason(HostedAiState state, string expectedKind)
+    {
+        // Out of credit is still the sentence that tells the reader what to do; a Generate button on top of
+        // it would hit the same wall (the fold's CanGenerate stays false on blocked, as before).
+        var v = Fold(Now - TimeSpan.FromMinutes(15), unavailable: state, attempts: Spent);
+        Assert.Equal(expectedKind, v.Kind);
         Assert.False(v.CanGenerate);
     }
 

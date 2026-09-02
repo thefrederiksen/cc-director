@@ -119,6 +119,32 @@ public sealed class DisplayPushVoiceEnrichmentTests
         Assert.Equal("Nothing to read aloud", s.StateLabel);         // and reached the words
     }
 
+    /// <summary>
+    /// The retry schedule's count rides the push too (VoiceRetryPolicy). Without this delegate the desktop's
+    /// Voice tab would fold with zero attempts and keep the Generate button off after the Gateway had stopped
+    /// trying - the roster and the push disagreeing about the one thing the reader can press.
+    /// </summary>
+    [Fact]
+    public void PushSeam_WhenTheAutomaticRetriesAreSpent_TheVerdictOffersGenerate()
+    {
+        var s = PushedVoiceSession(snapshotAudioReady: false);
+
+        GatewayHost.EnrichVoiceThenFoldForPush(
+            new List<SessionDto> { s },
+            voiceGeneratingFor: _ => false,
+            voiceAudioReadyFor: _ => false,
+            tenant: TenantId.Local,
+            needsYouStampFor: null,
+            snoozeRegistry: null,
+            voiceUnavailableFor: _ => null,
+            nothingToNarrateFor: _ => false,
+            voiceAutomaticAttemptsFor: _ => Wingman.VoiceRetryPolicy.MaxAutomaticAttempts);
+
+        Assert.Equal("gaveUp", s.VoiceDisplay?.Kind);
+        Assert.True(s.VoiceDisplay?.CanGenerate);
+        Assert.Contains("stopped trying on its own", s.VoiceDisplay?.Message);
+    }
+
     [Fact]
     public void PushSeam_WhenVoiceServiceDown_LabelSaysSo_NotPreparingVoice()
     {

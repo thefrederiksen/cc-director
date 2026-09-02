@@ -830,7 +830,7 @@ internal static class GatewayWingmanVoiceEndpoint
                 return Results.Json(new
                 {
                     reply = "",
-                    spoken = "Voice is taking a moment - it will keep trying.",
+                    spoken = "Voice is taking a moment. " + StillTryingLine(voice, reqTenant.Value, sid),
                     replySeconds = 0.0,
                     retrying = true,
                 });
@@ -964,6 +964,18 @@ internal static class GatewayWingmanVoiceEndpoint
     /// view rather than the shared root. A request whose tenant does not resolve is refused (403) by the gate
     /// before any leg body runs - on hosted that means no bound tenant, never a downgrade to Local.
     /// </summary>
+    /// <summary>
+    /// The honest second sentence for a press that produced no audio. "It will keep trying" was a constant
+    /// here, and it became false the day the Gateway got a retry schedule (VoiceRetryPolicy): once a turn's
+    /// automatic attempts are spent, nothing keeps trying, and a person who has just pressed Generate on a
+    /// screen that gave up and been told "it will keep trying" would wait for a retry that is not coming.
+    /// So the sentence is read off the same schedule the sweep runs.
+    /// </summary>
+    private static string StillTryingLine(WingmanVoiceService voice, TenantId tenant, string sid)
+        => VoiceRetryPolicy.IsExhausted(voice.AutomaticAttemptsFor(tenant, sid))
+            ? "The Gateway has used its automatic tries for this turn, so press Generate again when you want another, or read the turn instead."
+            : "It will keep trying.";
+
     private static void MapUtteranceRoutes(IEndpointRouteBuilder app, DictationTenantGate gate,
         Transcription.GatewayTranscriptionService transcription)
     {

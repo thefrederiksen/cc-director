@@ -83,7 +83,11 @@ public static class VoiceDisplayFold
     /// "gave up" instead of another calm "on its way" - see that field for why a promise with no end is
     /// worse than an admission.</param>
     /// <param name="utcNow">Now, injected so the give-up boundary is testable without waiting for it.</param>
-    public static VoiceDisplay Fold(bool voiceMode, bool agentWorking, bool hasAudio, bool generating, HostedAiState? unavailable, bool nothingToNarrate, bool servedViaFallback = false, DateTime? waitingSince = null, DateTime? utcNow = null)
+    /// <param name="automaticAttempts">How many AUTOMATIC narration attempts for this turn have ended with no
+    /// audio (the Gateway's own count, see <see cref="VoiceRetryPolicy"/>). It words the gave-up verdict
+    /// ("2 of 5 tries") and, once the schedule is used up, turns the Generate button ON: the Gateway has had
+    /// its turns, and the one honest thing left to offer is a way to try again on purpose.</param>
+    public static VoiceDisplay Fold(bool voiceMode, bool agentWorking, bool hasAudio, bool generating, HostedAiState? unavailable, bool nothingToNarrate, bool servedViaFallback = false, DateTime? waitingSince = null, DateTime? utcNow = null, int automaticAttempts = 0)
     {
         // Computed once, up front, because more than one verdict below carries it: the calm "on its way"
         // wants it so a healthy wait can be seen climbing, and the give-up verdict wants it in its own
@@ -137,12 +141,14 @@ public static class VoiceDisplayFold
         // calm one forever. IsVoicePreparing's own comment named a terminal gave-up state as the
         // correct answer to that wedge; this is it.
         //
-        // Keyed on ELAPSED TIME rather than on a count of attempts, deliberately. The attempts are made
-        // by two different loops (the turn-end path and the idle sweep) at rates neither controls, so a
-        // count means different things on a busy Gateway and a quiet one, while a clock means the same
-        // thing to the person reading it - which is the only place this number is used. It is therefore
-        // "nothing has arrived in three minutes", NOT "three attempts have failed", and the sweep's
-        // three-per-cycle global cap means those are genuinely different claims.
+        // Keyed on ELAPSED TIME first, because a clock means the same thing to the reader on a busy Gateway
+        // and a quiet one: "nothing has arrived in three minutes". The COUNT of automatic attempts is the
+        // second key, and it became a meaningful one on 1 September 2026, when the sweep stopped retrying
+        // every 45 seconds and started running the schedule in VoiceRetryPolicy - a fixed number of tries,
+        // a fixed number of minutes apart, per turn. The count is what the verdict WORDS ("2 of 5 tries")
+        // and what decides the button: while tries remain, the Gateway is genuinely still trying and the
+        // button stays off; once they are spent, the Gateway has stopped and the button is the only way
+        // forward, so it comes on. An exhausted schedule gives up even if the clock somehow has not.
         //
         // WHERE IT SITS, and the two versions of this that were wrong before review caught them:
         //
@@ -159,11 +165,13 @@ public static class VoiceDisplayFold
         // What gaveUp DOES displace is Retrying and notReady - the two states whose whole content is "be
         // patient". Those are the sentences that were still being said at forty-eight minutes.
         //
-        // Nothing here stops the work: the sweep keeps trying and a success replaces this on the next
-        // fold. What ends is the PROMISE, not the effort.
+        // While automatic tries remain the sweep keeps trying and a success replaces this on the next
+        // fold - what ends is the PROMISE, not the effort. Once the tries are spent the effort ends too,
+        // and the verdict says so and offers the button.
+        var clockRanOut = waitingSince is { } since
+                          && (utcNow ?? DateTime.UtcNow) - since >= GaveUpAfter;
         var gaveUp = !nothingToNarrate
-                     && waitingSince is { } since
-                     && (utcNow ?? DateTime.UtcNow) - since >= GaveUpAfter;
+                     && (clockRanOut || VoiceRetryPolicy.IsExhausted(automaticAttempts));
 
         // An ANSWERED or in-progress hosted-AI condition. Reuse the single-source copy so the voice screen
         // matches the roster and every other surface for the same state - never a hand-written string here.
@@ -172,7 +180,7 @@ public static class VoiceDisplayFold
             case HostedAiState.Retrying:
                 // "Voice on its way" is true for a minute and a lie at forty-eight. Past the threshold the
                 // retry stops being news and becomes the thing being reported.
-                if (gaveUp) return GaveUpDisplay(waited);
+                if (gaveUp) return GaveUpDisplay(waited, automaticAttempts);
                 return new VoiceDisplay
                 {
                     Kind = "retrying",
@@ -224,7 +232,7 @@ public static class VoiceDisplayFold
         // window (just entered voice, or a fresh turn before the sweep runs). Here - and ONLY here -
         // offering "Generate narration now" is honest, because there may be a text reply waiting to narrate.
         // The same rule for the plain "not made yet" window: honest for a moment, misleading for an hour.
-        if (gaveUp) return GaveUpDisplay(waited);
+        if (gaveUp) return GaveUpDisplay(waited, automaticAttempts);
 
         return new VoiceDisplay
         {
@@ -256,17 +264,47 @@ public static class VoiceDisplayFold
     public static bool IsWaitingForVoice(bool voiceMode, bool hasAudio, bool agentWorking)
         => voiceMode && !hasAudio && !agentWorking;
 
-    /// <summary>The terminal verdict, in one place so the two arms that reach it cannot word it differently.</summary>
-    private static VoiceDisplay GaveUpDisplay(string? waited) => new()
+    /// <summary>
+    /// The terminal verdict, in one place so the two arms that reach it cannot word it differently. It has
+    /// two faces, decided by whether the Gateway's own retry schedule (<see cref="VoiceRetryPolicy"/>) is
+    /// used up:
+    ///
+    ///   still trying - the Gateway has automatic tries left. The message says how many it has used and
+    ///                  that it tries again in a few minutes, and there is NO button: a press would race
+    ///                  the very retry that is about to happen, and the reader was promised the Gateway
+    ///                  would try first.
+    ///   stopped      - every automatic try is spent. The message says the Gateway has stopped trying on
+    ///                  its own, and the Generate button comes ON. This is the face the owner asked for on
+    ///                  1 September 2026, looking at "did not arrive after 19m" with nothing to press.
+    ///
+    /// The numbers in the words come from the same policy the sweep runs, never typed here, so the
+    /// schedule the screen describes cannot drift from the schedule being kept.
+    /// </summary>
+    private static VoiceDisplay GaveUpDisplay(string? waited, int automaticAttempts)
     {
-        Kind = "gaveUp",
-        Tone = "red",
-        Label = waited is null ? "Voice did not arrive" : $"Voice did not arrive after {waited}",
-        Message = "This turn's narration has not been produced. The Gateway is still trying, "
-                + "and you can read the turn instead.",
-        // No Generate button: it would re-run exactly what has already not worked for the whole wait.
-        WaitedLabel = waited,
-    };
+        var max = VoiceRetryPolicy.MaxAutomaticAttempts;
+        var minutes = (int)VoiceRetryPolicy.RetryEvery.TotalMinutes;
+        var stopped = VoiceRetryPolicy.IsExhausted(automaticAttempts);
+        var message = stopped
+            ? $"The Gateway tried {max} times and could not produce this turn's narration, so it has stopped "
+              + "trying on its own. Generate it now to try again, or read the turn instead."
+            : automaticAttempts <= 0
+                ? $"This turn's narration has not been produced. The Gateway will try up to {max} times, "
+                  + $"at least {minutes} minutes apart, and you can read the turn instead."
+                : $"This turn's narration has not been produced. The Gateway has tried {automaticAttempts} of {max} times "
+                  + $"and tries again after at least {minutes} minutes; you can read the turn instead.";
+        return new VoiceDisplay
+        {
+            Kind = "gaveUp",
+            Tone = "red",
+            Label = waited is null ? "Voice did not arrive" : $"Voice did not arrive after {waited}",
+            Message = message,
+            // The button only once the Gateway has stopped: while it is still on the schedule a press would
+            // re-run what is about to be re-run anyway; after it, the press is the only remaining way.
+            CanGenerate = stopped,
+            WaitedLabel = waited,
+        };
+    }
 
     /// <summary>The short badge headline for a blocked (account) state - the body text and the call-to-
     /// action still come from the shared <see cref="HostedAiMessages"/> / <see cref="HostedAiHttp.Dto"/>.</summary>

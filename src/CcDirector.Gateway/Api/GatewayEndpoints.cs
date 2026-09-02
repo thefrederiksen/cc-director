@@ -74,6 +74,10 @@ internal static class GatewayEndpoints
         Func<TenantId, string, Core.HostedAi.HostedAiState?>? voiceUnavailableFor = null,
         Func<TenantId, string, bool>? nothingToNarrateFor = null,
         Func<TenantId, string, bool>? servedViaFallbackFor = null,
+        /// <summary>How many automatic narration attempts this session's current turn has already failed
+        /// (VoiceRetryPolicy). Words the gave-up verdict and turns its Generate button on once the schedule is
+        /// spent. A null delegate reads as zero attempts, which is the pre-existing verdict.</summary>
+        Func<TenantId, string, int>? voiceAutomaticAttemptsFor = null,
         /// <summary>Issue #2576: stamps and returns SessionDto.VoiceWaitingSince - when this session's wait
         /// for voice began, or null when it is not waiting. Null delegate leaves the field unset, so a caller
         /// that has no voice state (a test, a diagnostic route) is unchanged.</summary>
@@ -1511,7 +1515,8 @@ internal static class GatewayEndpoints
                         unavailable: voiceUnavailableFor?.Invoke(reqTenant.Value, s.SessionId),
                         nothingToNarrate: nothingToNarrateFor?.Invoke(reqTenant.Value, s.SessionId) ?? false,
                         servedViaFallback: servedViaFallbackFor?.Invoke(reqTenant.Value, s.SessionId) ?? false,
-                        waitingSince: s.VoiceWaitingSince);
+                        waitingSince: s.VoiceWaitingSince,
+                        automaticAttempts: voiceAutomaticAttemptsFor?.Invoke(reqTenant.Value, s.SessionId) ?? 0);
                     // Orange "Transcribing..." while a dictated utterance is uploading/transcribing in
                     // the background for this session (mobile Speak -> Send released the screen). Stamped
                     // BEFORE the NeedsYouSince clock below so the EffectiveColor fold already sees orange

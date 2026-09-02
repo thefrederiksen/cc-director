@@ -1502,6 +1502,12 @@ public sealed class GatewayHost : IAsyncDisposable
                 nothingToNarrateFor: sid => _tenantPass.Current is { } t
                     && Wingman.WingmanVoiceService.CanNameVoicePartition(t)
                     && _voiceService?.NothingToNarrateFor(t, sid) == true,
+                // The schedule's count rides the push as well as the roster, so the desktop's Voice tab and
+                // the phone turn the Generate button on at the same moment.
+                voiceAutomaticAttemptsFor: sid => _tenantPass.Current is { } t
+                    && Wingman.WingmanVoiceService.CanNameVoicePartition(t)
+                        ? _voiceService?.AutomaticAttemptCountFor(t, sid) ?? 0
+                        : 0,
                 voiceWaitingStampFor: (sid, waiting) => _tenantPass.Current is { } t
                     ? _voiceWaitingClock.Stamp(t, sid, waiting)
                     : null),
@@ -2167,6 +2173,14 @@ public sealed class GatewayHost : IAsyncDisposable
                     // skip existed, no later sweep could have found the recovery. ShouldSkipSweep carries its
                     // own revalidation deadline, so the read happens again on its own (found in review).
                     if (vs.ShouldSkipSweep(tenant, sid)) continue;
+                    // THE RETRY SCHEDULE (VoiceRetryPolicy). A session whose last automatic attempt failed is
+                    // tried again only once that attempt is a few minutes old, and only while this turn has
+                    // attempts left; once they are spent the sweep leaves it alone and the Voice screen offers
+                    // the person the Generate button instead. This replaces retrying on every 45-second pass
+                    // forever, which hammered a fault that needed minutes to clear and never reached a moment
+                    // where "the Gateway has stopped" could honestly be said. A turn that has not failed yet is
+                    // always due, so the ordinary pre-build path is unchanged.
+                    if (!vs.IsDueForAutomaticRetry(tenant, sid)) continue;
                     var located = PushedSessions.TryLocate(tenant, sid, stale);
                     if (located is not { } loc) continue;            // not owned by any of this tenant's directors
                     var director = Registry.Get(tenant, loc.DirectorId);
@@ -3004,6 +3018,10 @@ public sealed class GatewayHost : IAsyncDisposable
             // was overloaded and the cloud proxy failed over). Feeds the folded VoiceDisplay so the screen
             // shows the generic backup-voice notice. A success-with-a-note, never an outage state.
             servedViaFallbackFor: (tenant, sid) => _voiceService?.ServedViaFallbackFor(tenant, sid) == true,
+            // How many automatic narration attempts this turn has already failed (VoiceRetryPolicy). Feeds the
+            // folded VoiceDisplay so the gave-up verdict can say "2 of 5 tries" and, once the schedule is
+            // spent, turn the Generate button on - the client rules on none of it.
+            voiceAutomaticAttemptsFor: (tenant, sid) => _voiceService?.AutomaticAttemptCountFor(tenant, sid) ?? 0,
             // Issue #2576: the wait-for-voice clock, so a stuck session can finally say HOW LONG. Separate
             // from the needs-you clock below because that one only runs on red and this state is yellow.
             voiceWaitingStampFor: (tenant, sid, waiting) => _voiceWaitingClock.Stamp(tenant, sid, waiting),
@@ -4060,7 +4078,8 @@ public sealed class GatewayHost : IAsyncDisposable
         Snooze.SnoozeRegistry? snoozeRegistry,
         Func<string, Core.HostedAi.HostedAiState?>? voiceUnavailableFor = null,
         Func<string, bool>? nothingToNarrateFor = null,
-        Func<string, bool, DateTime?>? voiceWaitingStampFor = null)
+        Func<string, bool, DateTime?>? voiceWaitingStampFor = null,
+        Func<string, int>? voiceAutomaticAttemptsFor = null)
     {
         foreach (var s in sessions)
         {
@@ -4089,7 +4108,8 @@ public sealed class GatewayHost : IAsyncDisposable
                 generating: s.VoiceGenerating,
                 unavailable: unavailable,
                 nothingToNarrate: nothingToNarrateFor?.Invoke(s.SessionId) ?? false,
-                waitingSince: s.VoiceWaitingSince);
+                waitingSince: s.VoiceWaitingSince,
+                automaticAttempts: voiceAutomaticAttemptsFor?.Invoke(s.SessionId) ?? 0);
         }
         Api.GatewayEndpoints.StampFleetRolesAndFold(sessions, sessions, needsYouStampFor, snoozeRegistry, tenant);
     }

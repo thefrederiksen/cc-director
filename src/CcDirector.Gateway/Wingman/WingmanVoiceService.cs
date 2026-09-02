@@ -92,6 +92,11 @@ public sealed class WingmanVoiceService
         public readonly ConcurrentDictionary<string, byte> NothingToNarrate = new();       // sid -> the last turn has no text reply to read aloud (waiting on a prompt)
         public readonly ConcurrentDictionary<string, DateTime> PreferBackupUntil = new();  // sid -> UTC deadline while this session routes past a silent primary (issue devthrottle_internal#405)
         public readonly ConcurrentDictionary<string, byte> InFlight = new();               // sid -> a generation is running now
+        /// <summary>sid -> the AUTOMATIC attempts for one turn that ended with no playable audio, and which
+        /// turn they were for. The schedule in <see cref="VoiceRetryPolicy"/> runs on this: the sweep asks it
+        /// whether a session is due, and the display fold words the gave-up verdict from it and turns the
+        /// Generate button on once the schedule is spent.</summary>
+        public readonly ConcurrentDictionary<string, VoiceAttempts> Attempts = new();
 
         /// <summary>
         /// Why the TRANSCRIPT READ for this session did not produce a conversation, or absent when the last
@@ -720,6 +725,55 @@ public sealed class WingmanVoiceService
     /// successful transcript read has no evidence about.</summary>
     public void ClearReadFailed(TenantId tenant, string sid) => StateFor(tenant).ReadFailed.TryRemove(sid, out _);
 
+    /// <summary>A short, stable name for the turn a narration is being made from - a digest of the reply, so
+    /// that "is this the same turn?" is a comparison rather than a guess about which events were observed.</summary>
+    internal static string TurnKeyFor(string? reply, int conversationLength = 0)
+        => string.IsNullOrEmpty(reply)
+            ? ""
+            : conversationLength.ToString(System.Globalization.CultureInfo.InvariantCulture) + ":"
+              + Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(reply)))[..16];
+
+    /// <summary>The automatic attempts recorded for this session's current turn, or null when none has
+    /// failed. See <see cref="VoiceRetryPolicy"/> for the schedule they feed.</summary>
+    public VoiceAttempts? AutomaticAttemptsFor(TenantId tenant, string sid)
+        => StateFor(tenant).Attempts.TryGetValue(sid, out var a) ? a : (VoiceAttempts?)null;
+
+    /// <summary>The bare count of failed automatic attempts - what the display fold is handed.</summary>
+    public int AutomaticAttemptCountFor(TenantId tenant, string sid) => AutomaticAttemptsFor(tenant, sid)?.Count ?? 0;
+
+    /// <summary>
+    /// Whether the idle sweep should try this session on THIS pass, per the one schedule in
+    /// <see cref="VoiceRetryPolicy"/>. Before the schedule existed the sweep retried a failed session on
+    /// every 45-second pass, forever: a fault that needed minutes to clear was hammered through its whole
+    /// outage, and there was no moment at which the Gateway could honestly say "I have stopped" and offer
+    /// the person the button - so the screen said "still trying" at nineteen minutes with nothing to press.
+    /// </summary>
+    public bool IsDueForAutomaticRetry(TenantId tenant, string sid)
+        => VoiceRetryPolicy.IsDue(AutomaticAttemptsFor(tenant, sid), DateTime.UtcNow);
+
+    /// <summary>
+    /// Record that an automatic generation for <paramref name="turnKey"/> finished with no playable audio.
+    /// A failed read, a model that did not answer, a rate limit, a synthesis that produced nothing and an
+    /// unexpected exception all count the same, because to the person waiting they ARE the same: no voice.
+    /// An attempt against a different turn than the one recorded starts the count again - see
+    /// <see cref="VoiceAttempts.TurnKey"/> for why identity beats an observed transition.
+    /// </summary>
+    internal void NoteAutomaticAttemptProducedNoAudio(TenantId tenant, string sid, string turnKey)
+    {
+        var now = DateTime.UtcNow;
+        var recorded = StateFor(tenant).Attempts.AddOrUpdate(sid,
+            _ => new VoiceAttempts(1, now, turnKey),
+            (_, a) => string.Equals(a.TurnKey, turnKey, StringComparison.Ordinal)
+                ? new VoiceAttempts(a.Count + 1, now, turnKey)
+                : new VoiceAttempts(1, now, turnKey));
+        if (recorded.Count == VoiceRetryPolicy.MaxAutomaticAttempts)
+            FileLog.Write($"[WingmanVoiceService] automatic narration attempts exhausted for tenant={tenant.ToLogString()} sid={sid}: "
+                        + $"{recorded.Count} attempts produced no audio; the Gateway stops retrying on its own and the Voice screen offers Generate.");
+        else
+            FileLog.Write($"[WingmanVoiceService] automatic narration attempt {recorded.Count} of {VoiceRetryPolicy.MaxAutomaticAttempts} produced no audio for "
+                        + $"tenant={tenant.ToLogString()} sid={sid}; next automatic try no sooner than {(int)VoiceRetryPolicy.RetryEvery.TotalMinutes} minutes from now.");
+    }
+
     /// <summary>What the last transcript read recorded, or null when it answered. Exposed so the voice sweep
     /// can leave a session whose agent will NEVER have a conversation out of its per-cycle budget.</summary>
     public HostedAiState? ReadFailedFor(TenantId tenant, string sid)
@@ -812,6 +866,7 @@ public sealed class WingmanVoiceService
         state.Unavailable.TryRemove(sid, out _);        // voice is off, so its unavailable-state is moot (issue #939)
         state.ReadFailed.TryRemove(sid, out _);         // ...and so is whatever the last transcript read recorded
         state.NothingToNarrate.TryRemove(sid, out _);   // voice is off, so "nothing to narrate" is moot too
+        state.Attempts.TryRemove(sid, out _);           // ...and so is the retry schedule for its turn
         state.PreferBackupUntil.TryRemove(sid, out _);  // voice is off, so the backup-routing window is moot too (issue devthrottle_internal#405)
         if (state.Ready.TryRemove(sid, out _))
             DeleteReadyAudio(tenant, sid);   // keep the durable cache in step so a stale tap can't 404
@@ -834,6 +889,7 @@ public sealed class WingmanVoiceService
         state.Unavailable.TryRemove(sid, out _);        // a fresh turn clears the old unavailable-state (dismissible, issue #939)
         state.ReadFailed.TryRemove(sid, out _);         // ...and re-opens the read: a new turn is a new transcript to try
         state.NothingToNarrate.TryRemove(sid, out _);   // a fresh turn supersedes "nothing to narrate" - re-evaluated on its turn-end
+        state.Attempts.TryRemove(sid, out _);           // a fresh turn gets a fresh retry schedule (VoiceRetryPolicy)
         if (state.Ready.TryRemove(sid, out _))
         {
             DeleteReadyAudio(tenant, sid);   // issue #553: keep the durable cache in step so a stale tap can't 404
@@ -880,6 +936,7 @@ public sealed class WingmanVoiceService
         var state = StateFor(tenant);
         state.Ready[sid] = ready;
         state.NothingToNarrate.TryRemove(sid, out _);   // audio exists, so there was something to narrate after all
+        state.Attempts.TryRemove(sid, out _);           // audio arrived - this turn's retry schedule is over
         SaveReadyAudio(tenant, sid, ready);
     }
 
@@ -934,9 +991,16 @@ public sealed class WingmanVoiceService
         var state = StateFor(tenant);
         if (!state.InFlight.TryAdd(sid, 1))
             return;
+        // WHICH TURN this attempt was for and WHAT REPLY it was narrating, written into the box the moment
+        // they are known rather than returned at the end. A return value only arrives on the paths that
+        // complete: a synthesis that throws, a rate limit, any unexpected failure after the reply was read
+        // would leave it empty, no attempt would be recorded, and the sweep would retry that turn on every
+        // pass for ever while the button never appeared (found in review). Empty still means it never got as
+        // far as a reply - nothing stored, or nothing to narrate - and those are genuinely not attempts.
+        var attempted = new System.Runtime.CompilerServices.StrongBox<(string TurnKey, string Reply)>(("", ""));
         try
         {
-            await GenerateOnceAsync(tenant, sid, route, ct, showReadingWindow);
+            await GenerateOnceAsync(tenant, sid, route, ct, showReadingWindow, attempted);
         }
         catch (WingmanModelRateLimitedException rl)
         {
@@ -951,7 +1015,24 @@ public sealed class WingmanVoiceService
         {
             FileLog.Write($"[WingmanVoiceService] GenerateAsync sid={sid} FAILED: {ex.Message}");
         }
-        finally { state.InFlight.TryRemove(sid, out _); }
+        finally
+        {
+            state.InFlight.TryRemove(sid, out _);
+            // THE RETRY SCHEDULE'S ONE INPUT (VoiceRetryPolicy). Judged on the OUTCOME, not on which branch
+            // ran: an attempt that had a reply to narrate and left this turn with no playable audio is a
+            // failed attempt, whichever of the model, the rate limit, the synthesis or an unexpected
+            // exception is to blame. An attempt that never reached a reply is not counted - a wait for the
+            // Director's push has nothing to do with voice, and spending the turn's budget on it would make
+            // the limit mean something other than what the screen says it means.
+            // Judged on THIS TURN's audio, not the session's. A missed Working transition can leave the
+            // previous turn's clip cached, and a session-level check would then read that stale clip as
+            // success and record nothing - so a failing new turn would be retried for ever and never reach
+            // the button (found in review). ShouldRegenerate answers the precise question: is the reply we
+            // just tried to narrate still un-narrated?
+            var (turnKey, reply) = attempted.Value;
+            if (turnKey.Length > 0 && ShouldRegenerate(tenant, sid, reply))
+                NoteAutomaticAttemptProducedNoAudio(tenant, sid, turnKey);
+        }
     }
 
     /// <summary>
@@ -965,7 +1046,8 @@ public sealed class WingmanVoiceService
     /// no longer needs the distinction now that the shared rate-limit gate is gone, but it is kept because
     /// it honestly reports whether the provider was reached.
     /// </summary>
-    private async Task<bool> GenerateOnceAsync(TenantId tenant, string sid, SessionVerbClient route, CancellationToken ct, bool showReadingWindow)
+    private async Task GenerateOnceAsync(TenantId tenant, string sid, SessionVerbClient route, CancellationToken ct, bool showReadingWindow,
+        System.Runtime.CompilerServices.StrongBox<(string TurnKey, string Reply)> attempted)
     {
         var state = StateFor(tenant);
 
@@ -999,7 +1081,7 @@ public sealed class WingmanVoiceService
             // Nothing here stands the sweep down: ShouldSkipSweep keys on a terminal read verdict only.
             SetNothingToNarrate(tenant, sid, false);
             FileLog.Write($"[WingmanVoiceService] no conversation stored yet for sid={sid} - nothing to narrate from, and not counted as an attempt; the Director pushes it and the sweep comes back");
-            return false;
+            return;
         }
         // THE ONE TERMINAL ANSWER LEFT. This agent keeps no readable conversation at all, so no amount of
         // waiting or retrying produces words to narrate. It is recorded as the terminal verdict so the voice
@@ -1010,7 +1092,7 @@ public sealed class WingmanVoiceService
         {
             NoteReadFailed(tenant, sid, HostedAiState.Unavailable);
             FileLog.Write($"[WingmanVoiceService] sid={sid}: this agent keeps no conversation that can be read - TERMINAL, so the screen says so and the sweep stands down until the verdict is revalidated");
-            return false;
+            return;
         }
         var widgets = stored.Value.Widgets;
         // The read answered, so whatever the last failed read recorded is over. Cleared HERE, before the
@@ -1030,9 +1112,32 @@ public sealed class WingmanVoiceService
             // screen (via VoiceDisplayFold) says so, instead of offering a Generate button that would re-run
             // this same empty read and never produce audio.
             state.NothingToNarrate[sid] = 1;
-            return false;  // nothing to say yet - the provider was not called
+            return;  // nothing to say yet - the provider was not called
         }
         state.NothingToNarrate.TryRemove(sid, out _);   // there IS a text reply now - clear any stale "nothing to narrate"
+        // WHICH TURN this attempt is for. Everything from here on is an attempt at narrating THIS reply, and
+        // the retry schedule counts against it by name rather than trusting an observed transition to tell
+        // it when a new turn began (see VoiceAttempts.TurnKey).
+        //
+        // The conversation's LENGTH is part of the name, not just the reply's text. Two different turns can
+        // legitimately say the same thing - "Done." is the obvious one - and a name made of the text alone
+        // would let the second one inherit the first one's spent schedule and show the button before it had
+        // been tried once (found in review). The length differs whenever the conversation has moved on, which
+        // is exactly when the turn is a different turn.
+        var turnKey = TurnKeyFor(lastReply, widgets.Count);
+        attempted.Value = (turnKey, lastReply!);
+
+        // THE SPENT SCHEDULE, CHECKED AGAINST THE TURN. The sweep is let through again after a long interval
+        // so a turn that changed unobserved is never stranded (VoiceRetryPolicy.RevalidateSpentAfter) - but
+        // that pass is a LOOK, not another try. Having now read the conversation, if this is still the same
+        // turn whose tries are spent, stop here: no model call, no attempt recorded, and the screen goes on
+        // saying the Gateway has stopped, which stays true.
+        if (!VoiceRetryPolicy.IsDue(AutomaticAttemptsFor(tenant, sid), DateTime.UtcNow, turnKey))
+        {
+            attempted.Value = ("", "");   // a look is not an attempt
+            FileLog.Write($"[WingmanVoiceService] sid={sid}: the automatic tries for this turn are spent and the turn has not changed - looked, did not try again");
+            return;
+        }
         // Identity-aware skip (issue #1322 done right): only skip when the CURRENT last reply is the
         // exact one already narrated. Unlike the old bare HasVoice guard this does not depend on having
         // observed the Working transition, so a genuinely new/changed reply is never suppressed by a
@@ -1041,7 +1146,7 @@ public sealed class WingmanVoiceService
         if (!ShouldRegenerate(tenant, sid, lastReply))
         {
             FileLog.Write($"[WingmanVoiceService] GenerateOnce skip (same reply already narrated): sid={sid}");
-            return false;   // nothing to do - the provider was not called, so we know nothing new about it
+            return;   // nothing to do - the provider was not called, so we know nothing new about it
         }
         // Recent conversation so the wingman can add context to a short/terse latest reply.
         var recentContext = WingmanTranslator.BuildRecentContext(widgets);
@@ -1078,7 +1183,9 @@ public sealed class WingmanVoiceService
                 // other session; the shared cooldown that used to do so is gone).
                 state.Unavailable[sid] = HostedAiState.Retrying;
                 FileLog.Write($"[WingmanVoiceService] model did not answer for sid={sid}: {ex.Message} - Retrying (audio on its way); the session retries on its own");
-                return false;   // nothing produced; the provider was not usefully reached
+                // Nothing produced, but this WAS an attempt at this turn - a real try that reached for the
+                // model and came back empty-handed. It counts, which is exactly what the schedule is for.
+                return;
             }
             // Announce a waiting menu AS THE TURN IS READ (issue #2193). A turn that ends on a picker is the
             // one case where the narration alone is misleading: the agent's words are read out, the person
@@ -1109,7 +1216,7 @@ public sealed class WingmanVoiceService
             // The model leg ran and answered - TranslateAsync returned rather than throwing
             // WingmanModelRateLimitedException. Reported as true purely so the return honestly says the
             // provider was reached (no caller acts on it now that the shared gate is gone).
-            return true;
+            return;
         }
         finally { if (showReadingWindow) EndGenerating(tenant, sid); }
     }

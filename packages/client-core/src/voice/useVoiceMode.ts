@@ -64,6 +64,9 @@ function sameSessionForVoice(a: SessionDto | null, b: SessionDto | null): boolea
     && (a.voiceDisplay?.kind ?? null) === (b.voiceDisplay?.kind ?? null)
     && Boolean(a.voiceDisplay?.canGenerate) === Boolean(b.voiceDisplay?.canGenerate)
     && (a.voiceDisplay?.label ?? null) === (b.voiceDisplay?.label ?? null)
+    // The message now counts the Gateway's retries ("tried 2 of 5 times"), which moves while the kind and
+    // the label stand still - so it has to count as a change, or the number on screen freezes.
+    && (a.voiceDisplay?.message ?? null) === (b.voiceDisplay?.message ?? null)
     && a.statusColor === b.statusColor
     && a.assessedState === b.assessedState
     && a.activityState === b.activityState;
@@ -506,6 +509,11 @@ export function useVoiceMode(
       // Nothing to narrate yet (a fresh/text-only session): show the truthful note, which moves the
       // screen to the working card. Otherwise the clip is now cached and the poll picks it up.
       setEnableNote(explained.nothingYet ? explained.spoken : "");
+      // The press produced no audio - the words have not reached the Gateway, or the model did not answer.
+      // Say so, in the Gateway's own sentence, because it is the one that knows whether anything will try
+      // again or whether pressing again is now the only way. A button that does nothing and says nothing
+      // reads as broken, and this button exists precisely for a person who has run out of patience.
+      if (explained.retrying) setError(explained.spoken);
     } catch (err) {
       // A 402 (out of credits / no key) already raised the shared app-level credits notice and its
       // message is the shared copy. An offline owning Director resolves to 404 here - say so plainly

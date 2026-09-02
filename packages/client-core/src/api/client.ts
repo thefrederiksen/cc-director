@@ -2397,6 +2397,9 @@ export interface WingmanExplain {
   replySeconds: number;
   /** True for a fresh/text-only session with nothing to summarize yet (no audio was produced). */
   nothingYet: boolean;
+  /** True when the press produced no audio and `spoken` carries the Gateway's sentence about what happens
+   *  next - whether anything will try again, or whether pressing again is now the only way. */
+  retrying: boolean;
 }
 
 /** The precomputed spoken summary + readiness metadata for a session (GET .../wingman/voice). */
@@ -2455,6 +2458,7 @@ export async function markVoiceAndExplain(sessionId: string, signal?: AbortSigna
     spoken: body.spoken ?? "",
     replySeconds: Number(body.replySeconds ?? 0),
     nothingYet: Boolean(body.nothingYet),
+    retrying: Boolean(body.retrying),
   };
 }
 
