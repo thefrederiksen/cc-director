@@ -106,6 +106,21 @@ POST /gateway/rules/e34f821a-d59d-4940-b7d1-9c5c8938faf0/promote
 
 A rule cannot promote itself; there is no route by which it could.
 
+> **That call no longer works as written, and the block above is left exactly as it happened.** It is a
+> record of a run, not a recipe. Fix round A found that promotion took a rule id and a timestamp and
+> nothing else, so anything able to read rules could also make one live. The route now requires the
+> caller the Gateway authenticated and a sentence saying what they are agreeing to, and it records who
+> asked on the rule. An empty POST promotes nothing. The shape today is:
+>
+> ```
+> POST /gateway/rules/{id}/promote
+> { "acknowledgement": "I have read this rule's dry-run record and I am making it live." }
+> ```
+>
+> A rule's scope has to be said out loud on a write for the same reason: an absent scope used to become
+> every session, which is the widest value there is, reached by omission. Say `"scope": "all-sessions"`
+> or name at least one of agent, repository, machine or mission.
+
 ### The free checks stopping the pass, on the way - unplanned, and worth keeping
 
 The next turn end produced the same screen byte for byte, and the pass stopped before it reached a

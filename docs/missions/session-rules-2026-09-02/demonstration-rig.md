@@ -30,8 +30,15 @@ promotion itself is on the record:
 - The instruction, in English: *"If a session's screen says it has run out of its model allowance,
   type the command that shows me what is left."*
 - The derived trigger words, chosen by the model, not by us.
-- Scope: this one session.
+- Scope: this one session. It has to be SAID - fix round A stopped an absent scope quietly meaning
+  every session, so a write names at least one of agent, repository, machine or mission, or says
+  `"scope": "all-sessions"` on purpose.
 - Cooldown and daily cap: both set, both small.
+
+Promoting it now carries who is asking and what they are agreeing to:
+`POST /gateway/rules/{id}/promote` with
+`{ "acknowledgement": "I have read this rule's dry-run record and I am making it live." }`. An empty
+POST promotes nothing, and the rule records the caller the Gateway authenticated.
 
 **The steps, in order, each one captured.**
 
