@@ -13,14 +13,12 @@ namespace CcDirector.Gateway.Data.Entities;
 /// them is validated against the real signature by <see cref="RuleCallValidator"/> before this row can be
 /// written. A migration able to store a code string would be a mistake even if nothing wrote one.
 ///
-/// <c>tenant_id</c> and the global query filter are inherited from the base, so one account never reads
-/// another's rules.
+/// <c>tenant_id</c>, the global query filter and the Gateway-minted primary key are inherited from
+/// <see cref="GatewayMintedKeyEntity"/>, so one account never reads another's rules and no caller can
+/// present a rule id - there is nothing to squat and nothing to disclose.
 /// </summary>
-public sealed class SessionRuleEntity : TenantScopedEntity
+public sealed class SessionRuleEntity : GatewayMintedKeyEntity
 {
-    /// <summary>The rule's identifier (primary key), minted in code.</summary>
-    public Guid Id { get; set; }
-
     /// <summary>THE AUTHORITY: the sentence the account said, in their own words, unaltered.</summary>
     public string Instruction { get; set; } = "";
 

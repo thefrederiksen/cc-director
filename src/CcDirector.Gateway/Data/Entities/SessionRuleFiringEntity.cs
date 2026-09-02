@@ -10,11 +10,8 @@ namespace CcDirector.Gateway.Data.Entities;
 /// A dry-run firing is a real firing: it records what WOULD have been done and types nothing, which is
 /// what makes dry run reviewable rather than invisible.
 /// </summary>
-public sealed class SessionRuleFiringEntity : TenantScopedEntity
+public sealed class SessionRuleFiringEntity : GatewayMintedKeyEntity
 {
-    /// <summary>The firing's identifier (primary key), minted in code.</summary>
-    public Guid Id { get; set; }
-
     /// <summary>The rule that fired.</summary>
     public Guid RuleId { get; set; }
 

@@ -103,7 +103,6 @@ public sealed class SessionRuleStore
             using var ctx = _db.CreateContext();
             var entity = new SessionRuleEntity
             {
-                Id = Guid.NewGuid(),
                 TenantId = ctx.ActiveTenant!,
                 Instruction = sentence,
                 ScreenDescription = description,
@@ -227,7 +226,6 @@ public sealed class SessionRuleStore
 
             var entity = new SessionRuleFiringEntity
             {
-                Id = Guid.NewGuid(),
                 TenantId = ctx.ActiveTenant!,
                 RuleId = ruleId,
                 SessionId = sessionId ?? "",
