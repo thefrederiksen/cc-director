@@ -2904,6 +2904,16 @@ public sealed class GatewayHost : IAsyncDisposable
             gatewayPort: () => Port,
             // Not-ready until the database is open - see the /healthz handler.
             databaseReady: () => _gatewayDb.IsOpen,
+            // Per-subsystem readiness on /healthz, so a deploy can tell "the process is up" apart from
+            // "the pages work". Statistics is the one subsystem that is designed to fail on its own without
+            // stopping the Gateway, so it is the one that can be silently down after a green deploy - which
+            // is exactly what happened on 2 September 2026. Asked on every request, never cached: the store
+            // can come up late and can now come BACK on its own. Status words only; the reason names the
+            // database host and this endpoint is public. See HealthDto.Subsystems.
+            subsystems: () => new Dictionary<string, string>
+            {
+                ["statistics"] = InputStatsHandle.IsAvailable ? "available" : "unavailable",
+            },
             knownRepositories: _knownRepositories,
             // Store injection points: hand the phone-recorder ingest (RecordingEndpoints) the host's single
             // key vault + transcription history + audio archive, so it stops newing its own copies.

@@ -639,6 +639,7 @@ function statusSentence(status: number, what?: string): string {
 
 type GatewayErrorBody = {
   error?: unknown;
+  reason?: unknown;
   detail?: unknown;
   message?: unknown;
   code?: unknown;
@@ -655,6 +656,15 @@ function stringFromErrorBody(body: unknown): string | undefined {
     const code = typeof nested.code === "string" ? nested.code : undefined;
     return [message, code].filter(Boolean).join(" ") || undefined;
   }
+  // `reason` is the availability surfaces' spelling: the statistics feed answers
+  // `{ available: false, reason }` on 503, and the Gateway writes a full operator-facing sentence into it.
+  // It was NOT read here, and the cost was an incident (devthrottle_internal, 2 September 2026). With no
+  // reason found, a 503 falls through to the unreachable-status branch in gatewayErrorMessage and Your
+  // Throttle rendered "Can't reach the Gateway - retrying." for hours - pointing at a dead Gateway that was
+  // healthy the whole time and serving every other page, while the true sentence ("the statistics store
+  // could not be reached") sat unread in the body. A reason the server took the trouble to write must never
+  // lose to a sentence we invent from a status number.
+  if (typeof b.reason === "string") return b.reason;
   if (typeof b.detail === "string") return b.detail;
   if (typeof b.message === "string") return b.message;
   if (typeof b.code === "string") return b.code;
