@@ -26,10 +26,20 @@ namespace CcDirector.Gateway.Screens;
 ///    same session id in the same millisecond keep both rows rather than one swallowing the other.
 ///    Capture times are pinned to whole milliseconds on both sides so a row cannot be written at one
 ///    precision and looked up at another.
-///  - BOUNDED PER SESSION. A session keeps at most <see cref="MaxScreensPerSession"/> screens; the
-///    oldest are trimmed at write time. Retention alone is not a bound - a session that ends a hundred
-///    turns an hour would otherwise hold seven days of them - and an unbounded table is a slow read for
-///    every reader that follows.
+///  - BOUNDED PER SESSION, AND THE BOUND IS APPROXIMATE BETWEEN WRITERS. A session keeps at most
+///    <see cref="MaxScreensPerSession"/> screens; the oldest are trimmed at write time. Retention alone
+///    is not a bound - a session that ends a hundred turns an hour would otherwise hold seven days of
+///    them - and an unbounded table is a slow read for every reader that follows.
+///
+///    What the bound actually guarantees, stated exactly rather than optimistically (inspection 01,
+///    finding 6): after any write that is not racing another Gateway process, the session holds at most
+///    the cap. While two processes overlap - which the duplicate-retry below names as a real case during
+///    a deploy swap - each can insert a row, count only its own view, and select the SAME oldest row to
+///    delete, so the session can transiently hold up to the cap plus the number of overlapping writers.
+///    The lock below is per store INSTANCE and cannot see across processes; there is no cross-process
+///    lock here and this comment does not pretend there is one. The excess is repaired by the next
+///    ordinary append, and - for a session that has gone idle and gets no next append - by
+///    <see cref="TrimSessionsOverCap"/>, which <see cref="SessionScreenSweep"/> runs on every pass.
 ///  - THE LATEST IS ONE INDEXED READ. Readers overwhelmingly want "the newest screen for this session",
 ///    which the key's (tenant, session, captured-at) prefix answers directly.
 ///  - IT IS HISTORY, AND ONLY HISTORY. This store never claims a screen is live and is never consulted
@@ -146,7 +156,9 @@ public sealed class SessionScreenStore
     }
 
     /// <summary>Keep only the newest <see cref="MaxScreensPerSession"/> screens for the session. Runs
-    /// inside the push transaction, so the cap holds even under a burst.</summary>
+    /// inside the push transaction, so a burst arriving through ONE store instance is bounded as it lands.
+    /// It cannot bound a burst arriving through two Gateway processes at once - see the class comment for
+    /// what the bound then is, and <see cref="TrimSessionsOverCap"/> for what repairs it.</summary>
     private static int TrimToCap(GatewayDbContext ctx, string sessionId)
     {
         var count = ctx.SessionScreens.Count(s => s.SessionId == sessionId);
@@ -204,6 +216,45 @@ public sealed class SessionScreenStore
                 .ToList()
                 .Select(ToStoredScreen)
                 .ToList();
+        }
+    }
+
+    /// <summary>
+    /// Trim every session that is over the per-session cap back to it, and return how many rows went. Runs
+    /// on the retention sweep's pass.
+    ///
+    /// WHY THIS EXISTS AT ALL (inspection 01, finding 6). The write-time trim bounds what one store instance
+    /// writes. Two Gateway processes overlapping during a deploy swap can each insert a row, each count only
+    /// its own view, and each select the same oldest row to delete - one deletion lands, both inserts commit,
+    /// and the session sits above the cap. An ACTIVE session repairs itself on its next append. An IDLE one
+    /// does not, and used to stay over the advertised bound until retention removed the rows days later. This
+    /// makes the bound true by repair rather than by claiming a cross-process lock the code does not have.
+    ///
+    /// It reads the over-cap sessions FIRST and trims each in its own transaction, so a long tail of sessions
+    /// does not hold one transaction open across the whole table.
+    /// </summary>
+    public int TrimSessionsOverCap()
+    {
+        lock (_gate)
+        {
+            using var ctx = _context();
+            var over = ctx.SessionScreens
+                .GroupBy(s => s.SessionId)
+                .Where(g => g.Count() > MaxScreensPerSession)
+                .Select(g => g.Key)
+                .ToList();
+            if (over.Count == 0) return 0;
+
+            var removed = 0;
+            foreach (var sessionId in over)
+            {
+                using var tx = ctx.Database.BeginTransaction();
+                var went = TrimToCap(ctx, sessionId);
+                tx.Commit();
+                removed += went;
+                FileLog.Write($"[SessionScreenStore] session={sessionId}: was over the {MaxScreensPerSession}-screen cap; trimmed {went} screen(s)");
+            }
+            return removed;
         }
     }
 

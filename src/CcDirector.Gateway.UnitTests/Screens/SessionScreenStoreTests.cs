@@ -299,6 +299,88 @@ public sealed class SessionScreenStoreTests : IDisposable
     }
 
     [Fact]
+    public async Task SweepAsync_RepairsASessionLeftOverTheCap_AndKeepsTheNewest()
+    {
+        // Inspection 01, finding 6. The per-session cap is applied at WRITE time behind a lock that is per
+        // STORE INSTANCE, not cross-process - and the store's own comment names two overlapping Gateway
+        // processes during a deploy swap as a thing that happens. Two of them can each insert a row, each
+        // count only its own view, and each delete the same oldest row: one deletion lands, both inserts
+        // commit, and the session sits at 201. Nothing repaired that until the session was written to again,
+        // so an IDLE session stayed over the advertised bound until retention removed it days later.
+        //
+        // The bound is now made true by REPAIR rather than by claiming a cross-process lock the code does
+        // not have: the retention sweep trims over-cap sessions as well as expired rows. The state is seeded
+        // DIRECTLY through the context, bypassing the write-time trim, because that is the state a lost race
+        // leaves behind - driving it through Append would trim on the way in and prove nothing.
+        using var registryDb = new GatewayDbTestHarness();
+        var store = Store();
+        const int over = 3;
+        var captures = Enumerable.Range(0, SessionScreenStore.MaxScreensPerSession + over)
+            .Select(i => Now.AddMinutes(-(SessionScreenStore.MaxScreensPerSession + over) + i))
+            .ToList();
+        SeedPastTheTrim("s1", captures);
+
+        // The bad state is positively established before the sweep is asked to do anything about it.
+        Assert.Equal(SessionScreenStore.MaxScreensPerSession + over, RawCount("s1"));
+
+        var sweep = new SessionScreenSweep(
+            new HostedTenantBoundary(new SingleTenantContext(), new DeviceRegistry()),
+            new TenantRegistry(registryDb.Open()),
+            store,
+            () => Now);
+
+        var removed = await sweep.SweepAsync();
+
+        Assert.Equal(over, removed);
+        Assert.Equal(SessionScreenStore.MaxScreensPerSession, RawCount("s1"));
+        // The NEWEST are what survived, and the cut was at the boundary rather than deeper: the oldest
+        // survivor is the row immediately after the three that went.
+        var held = store.ReadRecent("s1", SessionScreenStore.MaxScreensPerSession);
+        Assert.Equal(captures[^1], held[0].CapturedAtUtc);
+        Assert.Equal(captures[over], held[^1].CapturedAtUtc);
+        foreach (var trimmed in captures.Take(over))
+            Assert.DoesNotContain(trimmed, held.Select(h => h.CapturedAtUtc));
+
+        // And it is not a pass that always removes something: a second sweep over a session already at the
+        // cap answers 0 and leaves the rows alone.
+        Assert.Equal(0, await sweep.SweepAsync());
+        Assert.Equal(SessionScreenStore.MaxScreensPerSession, RawCount("s1"));
+    }
+
+    /// <summary>Write rows straight through the context, past <c>Append</c> and therefore past the
+    /// write-time trim - the state an overlapping writer leaves behind.</summary>
+    private void SeedPastTheTrim(string sessionId, IEnumerable<DateTime> capturedAt, string tenant = "local")
+    {
+        using var ctx = _db.ContextFor(tenant)();
+        foreach (var at in capturedAt)
+        {
+            ctx.SessionScreens.Add(new CcDirector.Gateway.Data.Entities.SessionScreenEntity
+            {
+                TenantId = tenant,
+                SessionId = sessionId,
+                CapturedAtUtc = SessionScreenStore.CapturePrecision(at),
+                DirectorId = "d1",
+                RowsJson = "[\"row " + at.Ticks + "\"]",
+                HasGrid = true,
+                BufferBytes = 4096,
+                ActivityState = "WaitingForInput",
+                Agent = "ClaudeCode",
+                ReceivedAtUtc = Now,
+            });
+        }
+        ctx.SaveChanges();
+    }
+
+    /// <summary>Every row the session holds, counted through the context rather than through a read that is
+    /// itself capped at <see cref="SessionScreenStore.MaxScreensPerSession"/> - which would report the cap
+    /// as held whether or not it was.</summary>
+    private int RawCount(string sessionId, string tenant = "local")
+    {
+        using var ctx = _db.ContextFor(tenant)();
+        return ctx.SessionScreens.Count(s => s.SessionId == sessionId);
+    }
+
+    [Fact]
     public void Append_ACaptureTimeWithSubMillisecondTicks_IsStored_AndFoundAgainByReadLatest()
     {
         // Postgres keeps microseconds and .NET keeps hundred-nanosecond ticks. A time written at full

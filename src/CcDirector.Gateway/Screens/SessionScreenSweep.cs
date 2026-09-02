@@ -34,19 +34,31 @@ public sealed class SessionScreenSweep : TenantScopedSweep
         _nowUtc = nowUtc ?? (() => DateTime.UtcNow);
     }
 
-    /// <summary>One pass: delete each tenant's expired screens. Returns how many rows were removed across
-    /// every tenant, so a caller - the host's timer, or a proof run - can state a NUMBER rather than
-    /// report that a method was called.</summary>
+    /// <summary>
+    /// One pass: delete each tenant's expired screens, AND trim any session left over the per-session cap.
+    /// Returns how many rows were removed across every tenant, so a caller - the host's timer, or a proof
+    /// run - can state a NUMBER rather than report that a method was called.
+    ///
+    /// THE CAP TRIM IS PART OF RETENTION, not a separate job (inspection 01, finding 6). The store's
+    /// write-time trim bounds one store instance's writes and cannot bound two Gateway processes writing at
+    /// once, which is a real case during a deploy swap. An active session repairs itself on its next append;
+    /// an idle one has no next append, and used to sit above the advertised bound until these rows expired
+    /// days later. This pass is the thing that makes the bound true for a session nobody is writing to.
+    /// </summary>
     public async Task<int> SweepAsync(CancellationToken ct = default)
     {
-        var removed = 0;
+        var expired = 0;
+        var overCap = 0;
         var cutoff = _nowUtc() - Retention;
         await ForEachTenantAsync(() =>
         {
-            removed += _store.PurgeOlderThan(cutoff);
+            expired += _store.PurgeOlderThan(cutoff);
+            overCap += _store.TrimSessionsOverCap();
             return Task.CompletedTask;
         }, ct).ConfigureAwait(false);
-        FileLog.Write($"[SessionScreenSweep] pass complete: removed {removed} screen(s) received before {cutoff:O} (retention {Retention.TotalDays:0} days)");
-        return removed;
+        FileLog.Write($"[SessionScreenSweep] pass complete: removed {expired} screen(s) received before {cutoff:O} "
+            + $"(retention {Retention.TotalDays:0} days) and trimmed {overCap} screen(s) from sessions over the "
+            + $"{SessionScreenStore.MaxScreensPerSession}-screen cap");
+        return expired + overCap;
     }
 }
