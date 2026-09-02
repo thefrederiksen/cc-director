@@ -166,8 +166,15 @@ the inspection; `SessionScreenStore.cs:89-91` names it as the reason for the dup
   `InstallAsync_FailedVenvRebuild_LeavesNoManagedShim` failed after about thirty seconds. That unrelated
   case passed by itself immediately afterward (1 executed, 1 passed), but the gate result remains red and
   must not be reported as a clean run.
-- Parked gate: pending the machine-wide Gateway lock at the time this draft was written; replace this line
-  with the runner's final presence-based verdict before handoff.
+- Full parked gate: Core completed with 4,374 passed, 8 skipped, 0 failed. Gateway completed with
+  2,316 passed, 4 skipped, 2 failed after 39m40s, so the parked gate is red. Both failures were configured
+  Postgres entitlement proofs opening the shared throwaway database: migration failed after 21 attempts
+  with SQLSTATE 42P07, `relation "session_screens" already exists`. A read-only catalog query established
+  the exact disagreement: the database contains `gateway.session_screens` and history row
+  `20260902105640_AddSessionScreens`, while this branch carries
+  `20260902115702_AddSessionScreens`. This is consistent with the report's warning that the migration is
+  provisional and will be deleted/regenerated, but it means the current full parked gate and configured
+  Postgres-open proof are not clean and must not be reported as such.
 
 No production fix was made. All temporary repro and mutation edits were reverted. This inspection file
 is intentionally left uncommitted for the Manager.
