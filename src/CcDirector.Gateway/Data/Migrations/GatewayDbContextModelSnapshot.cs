@@ -996,6 +996,124 @@ namespace CcDirector.Gateway.Data.Migrations
                     b.ToTable("session_spend", (string)null);
                 });
 
+            modelBuilder.Entity("CcDirector.Gateway.Data.Entities.SessionTurnEntity", b =>
+                {
+                    b.Property<string>("TenantId")
+                        .HasColumnType("TEXT")
+                        .HasColumnName("tenant_id");
+
+                    b.Property<string>("SessionId")
+                        .HasMaxLength(64)
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Generation")
+                        .HasMaxLength(64)
+                        .HasColumnType("TEXT");
+
+                    b.Property<int>("Ordinal")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("ContextId")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("DirectorId")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("TEXT");
+
+                    b.Property<bool>("IsMeta")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<bool>("IsSidechain")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("PartsJson")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTime>("ReceivedAtUtc")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Role")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTime?>("TimestampUtc")
+                        .HasColumnType("TEXT");
+
+                    b.HasKey("TenantId", "SessionId", "Generation", "Ordinal");
+
+                    b.HasIndex("TenantId");
+
+                    b.HasIndex("TenantId", "ReceivedAtUtc");
+
+                    b.ToTable("session_turns", (string)null);
+                });
+
+            modelBuilder.Entity("CcDirector.Gateway.Data.Entities.SessionTurnHeadEntity", b =>
+                {
+                    b.Property<string>("TenantId")
+                        .HasColumnType("TEXT")
+                        .HasColumnName("tenant_id");
+
+                    b.Property<string>("SessionId")
+                        .HasMaxLength(64)
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Agent")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("TEXT");
+
+                    b.Property<int>("Count")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("DirectorId")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Generation")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("GenerationSource")
+                        .IsRequired()
+                        .HasMaxLength(1024)
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTime>("GenerationStartedUtc")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("HistoryState")
+                        .HasColumnType("TEXT");
+
+                    b.Property<bool>("IsRawText")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<bool>("IsSupported")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<long>("Revision")
+                        .IsConcurrencyToken()
+                        .HasColumnType("INTEGER");
+
+                    b.Property<DateTime>("UpdatedAtUtc")
+                        .HasColumnType("TEXT");
+
+                    b.HasKey("TenantId", "SessionId");
+
+                    b.HasIndex("TenantId");
+
+                    b.HasIndex("TenantId", "DirectorId");
+
+                    b.HasIndex("TenantId", "UpdatedAtUtc");
+
+                    b.ToTable("session_turn_heads", (string)null);
+                });
+
             modelBuilder.Entity("CcDirector.Gateway.Data.Entities.SkillEntity", b =>
                 {
                     b.Property<string>("TenantId")

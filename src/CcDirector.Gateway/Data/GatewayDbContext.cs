@@ -149,6 +149,14 @@ public sealed class GatewayDbContext : DbContext
     /// #2194) - computed once in the background sweep, never on page load.</summary>
     public DbSet<SessionHistoryRollupEntity> SessionHistoryRollups => Set<SessionHistoryRollupEntity>();
 
+    /// <summary>The stored conversation (<c>session_turns</c>): one row per pushed message, the turn-push
+    /// mission's single source for Chat, the transcript view, and the wingman.</summary>
+    public DbSet<SessionTurnEntity> SessionTurns => Set<SessionTurnEntity>();
+
+    /// <summary>One row per session (<c>session_turn_heads</c>): its current generation, the contiguous
+    /// watermark, and the per-session facts a history read needs.</summary>
+    public DbSet<SessionTurnHeadEntity> SessionTurnHeads => Set<SessionTurnHeadEntity>();
+
     /// <summary>Per-tenant setting overrides (<c>tenant_settings</c>, issue #2017) - the per-tenant home the
     /// AI / voice / car-mode / notification settings needed before they could be served on the hosted Gateway.
     /// Tenant-scoped: an absent row means "no override" and the typed resolver returns the operator global
@@ -459,6 +467,41 @@ public sealed class GatewayDbContext : DbContext
             b.HasKey(e => new { e.TenantId, e.SessionId });
             // The reporting cut is a last-observed time window, tenant-leading for the global filter.
             b.HasIndex(e => new { e.TenantId, e.LastObservedUtc });
+        });
+
+        modelBuilder.Entity<SessionTurnEntity>(b =>
+        {
+            b.ToTable("session_turns");
+            // COMPOSITE primary key led by tenant_id, like session_history: the session id, the generation
+            // and the ordinal all arrive on the push stream from the Director, so a key that did not lead
+            // with the tenant would let one tenant squat another's rows. This key is also what makes a
+            // re-sent batch idempotent - the same (session, generation, ordinal) cannot be stored twice.
+            b.HasKey(e => new { e.TenantId, e.SessionId, e.Generation, e.Ordinal });
+            b.Property(e => e.SessionId).HasMaxLength(64);
+            b.Property(e => e.Generation).HasMaxLength(64);
+            b.Property(e => e.DirectorId).HasMaxLength(64);
+            b.Property(e => e.Role).HasMaxLength(16);
+            // Retention cuts on received-at, tenant-leading for the global filter.
+            b.HasIndex(e => new { e.TenantId, e.ReceivedAtUtc });
+        });
+
+        modelBuilder.Entity<SessionTurnHeadEntity>(b =>
+        {
+            b.ToTable("session_turn_heads");
+            b.HasKey(e => new { e.TenantId, e.SessionId });
+            b.Property(e => e.SessionId).HasMaxLength(64);
+            b.Property(e => e.Generation).HasMaxLength(64);
+            b.Property(e => e.GenerationSource).HasMaxLength(1024);
+            // Optimistic concurrency on the head: two Gateways (a deploy swap has two processes for a moment)
+            // each read the head, decide a generation switch or a new watermark, and write. Without a token the
+            // later commit wins even when its decision was made on stale facts; with it the loser gets a
+            // DbUpdateConcurrencyException, re-reads, and decides again (SessionTurnStore.Append retries once).
+            b.Property(e => e.Revision).IsConcurrencyToken();
+            b.Property(e => e.DirectorId).HasMaxLength(64);
+            b.Property(e => e.Agent).HasMaxLength(32);
+            // Hello asks "every session this Director has pushed"; retention cuts on updated-at.
+            b.HasIndex(e => new { e.TenantId, e.DirectorId });
+            b.HasIndex(e => new { e.TenantId, e.UpdatedAtUtc });
         });
 
         modelBuilder.Entity<SessionHistoryEntity>(b =>
@@ -818,6 +861,8 @@ public sealed class GatewayDbContext : DbContext
         ApplyTenantScope<SkillPlacementStateEntity>(modelBuilder);
         ApplyTenantScope<SessionHistoryEntity>(modelBuilder);
         ApplyTenantScope<SessionHistoryRollupEntity>(modelBuilder);
+        ApplyTenantScope<SessionTurnEntity>(modelBuilder);
+        ApplyTenantScope<SessionTurnHeadEntity>(modelBuilder);
 
         ApplyCommonSubsetConventions(modelBuilder);
 
@@ -870,6 +915,10 @@ public sealed class GatewayDbContext : DbContext
             // strings in composite primary keys (issue #2194), same byte-ordinal equality/uniqueness
             // requirement as session_spend.SessionId above - pin both to "C" so the two providers agree.
             modelBuilder.Entity<SessionHistoryEntity>().Property(e => e.SessionId).UseCollation("C");
+            modelBuilder.Entity<SessionTurnEntity>().Property(e => e.SessionId).UseCollation("C");
+            modelBuilder.Entity<SessionTurnEntity>().Property(e => e.Generation).UseCollation("C");
+            modelBuilder.Entity<SessionTurnHeadEntity>().Property(e => e.SessionId).UseCollation("C");
+            modelBuilder.Entity<SessionTurnHeadEntity>().Property(e => e.Generation).UseCollation("C");
             modelBuilder.Entity<SessionHistoryRollupEntity>().Property(e => e.RepoKey).UseCollation("C");
             // The tenants mapping table's natural-key string columns (the tenant id primary key and the
             // account_subject unique index) rely on byte-ordinal equality/uniqueness, same as the keys above,
