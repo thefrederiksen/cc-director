@@ -123,7 +123,8 @@ public sealed class DirectorSpawnMissionAndSeatTests : IDisposable
         var boundary = new HostedTenantBoundary(new SingleTenantContext(), new Pairing.DeviceRegistry());
 
         GatewayEndpoints.Map(app, _registry, version: "test", token: "test-token",
-            tenantBoundary: boundary, sendCommand: send, missions: missions, workflowRuns: runs);
+            tenantBoundary: boundary, screens: Screens.TestScreenReader.Over(_db.Open()),
+            sendCommand: send, missions: missions, workflowRuns: runs);
         MachineEndpoints.Map(app, new LauncherRegistry(), spawner, boundary: boundary,
             missions: missions, workflowRuns: runs);
 

@@ -76,7 +76,11 @@ public sealed class VoiceUploadLimitsTests : IDisposable
             // The boundary is required and non-nullable now (finding I1-01). Self-host harness, so the REAL
             // self-host boundary: built over the SingleTenantContext, it always resolves Local.
             new CcDirector.Gateway.Tenancy.HostedTenantBoundary(
-                new CcDirector.Core.Tenancy.SingleTenantContext(), new CcDirector.Gateway.Pairing.DeviceRegistry()));
+                new CcDirector.Core.Tenancy.SingleTenantContext(), new CcDirector.Gateway.Pairing.DeviceRegistry()),
+            // The screen reader is required and non-nullable for the same reason (Terminal Rules, issue
+            // #2644). Nothing here reads a screen; it is over the settings database this harness already
+            // opens and already disposes.
+            Screens.TestScreenReader.Over(settingsData.Open()));
 
         await app.StartAsync();
         return (app, new HttpClient { BaseAddress = new Uri(app.Urls.First()) });

@@ -193,14 +193,17 @@ public sealed class NullBoundaryHostedGateFailClosedTests
         internal const string LocalDirectorId = "local-director";
 
         private readonly WebApplication _app;
+        private readonly Screens.TestScreenReader _screens;
         private readonly string _dir;
         private readonly string? _priorHosted;
         public DirectorRegistry Registry { get; }
         public HttpClient Http { get; }
 
-        private NullBoundaryHost(WebApplication app, HttpClient http, DirectorRegistry registry, string dir, string? priorHosted)
+        private NullBoundaryHost(WebApplication app, Screens.TestScreenReader screens, HttpClient http,
+            DirectorRegistry registry, string dir, string? priorHosted)
         {
             _app = app;
+            _screens = screens;
             Http = http;
             Registry = registry;
             _dir = dir;
@@ -222,10 +225,11 @@ public sealed class NullBoundaryHostedGateFailClosedTests
             builder.Logging.ClearProviders();
             var app = builder.Build();
             app.Urls.Add("http://127.0.0.1:0");
-            GatewayEndpoints.Map(app, registry, "test", "test-token", tenantBoundary: null!);
+            var screens = new Screens.TestScreenReader();
+            GatewayEndpoints.Map(app, registry, "test", "test-token", tenantBoundary: null!, screens: screens.Reader);
             await app.StartAsync();
 
-            return new NullBoundaryHost(app, new HttpClient
+            return new NullBoundaryHost(app, screens, new HttpClient
             {
                 BaseAddress = new Uri(app.Urls.First()),
                 Timeout = TimeSpan.FromSeconds(30),
@@ -237,6 +241,7 @@ public sealed class NullBoundaryHostedGateFailClosedTests
             Http.Dispose();
             await _app.StopAsync();
             await _app.DisposeAsync();
+            _screens.Dispose();
             Environment.SetEnvironmentVariable("CC_GATEWAY_HOSTED", _priorHosted);
             try { if (Directory.Exists(_dir)) Directory.Delete(_dir, true); } catch { /* cleanup */ }
         }
