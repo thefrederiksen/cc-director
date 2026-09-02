@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cc-scrub"
+version = "0.1.0"
+description = "Find denylisted text in screenshots with the operating system's own OCR engine and destroy it"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.11"
+keywords = ["screenshot", "redaction", "ocr", "privacy", "denylist"]
+dependencies = [
+    "pillow>=10.1.0",
+]
+
+[project.optional-dependencies]
+# The OCR engine is the operating system's own, so the binding is per platform
+# and is selected by the marker, never by a runtime fallback.
+windows = ["winocr>=0.0.15; sys_platform == 'win32'"]
+macos = ["pyobjc-framework-Vision>=12.2; sys_platform == 'darwin'"]
+dev = ["pytest>=7.0.0"]
+
+[project.scripts]
+cc-scrub = "cc_scrub.cli:main_entry"
+
+[tool.setuptools]
+# src/ installs as the unique import package so all tools share one venv.
+packages = ["cc_scrub"]
+package-dir = {"cc_scrub" = "src"}
