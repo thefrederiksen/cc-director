@@ -72,6 +72,17 @@ is the obvious reading, and no evidence gathered so far contradicts it - but nob
 test pass or hang again in isolation. Do not write "it was contention" into anything as fact until a
 clean run says so.
 
+**Two attempts to re-run the single hung test on 2026-09-02 BOTH failed without executing it**, which
+is worth knowing before a third is attempted:
+
+1. With `--blame-hang-timeout 12m`, the watchdog killed the run at 12 minutes while it was still queued
+   for the lock (see below).
+2. Without `--blame-hang`, it waited the full 45-minute `MaxWait` and then REFUSED TO RUN - the holder,
+   another worktree's suite, was still alive at 72 minutes, past the 48.88-minute norm for a full run.
+
+So no clean answer was obtainable on 2026-09-02 while another worktree held the lock. That is not a
+statement about this branch; it is issue #2653.
+
 **How to finish this:** re-run the parked suite against `mission/turn-push` **when the machine is
 quiet** - no other `testhost.exe` from another worktree, and the per-user Gateway lock free
 (`%LOCALAPPDATA%\cc-director	est-locks\gateway-test-suite.lock`). Green means open the pull request
