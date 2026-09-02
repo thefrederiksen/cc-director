@@ -645,7 +645,7 @@ public sealed class GatewayHost : IAsyncDisposable
     private readonly Screens.SessionScreenStore _sessionScreens;
 
     /// <summary>The ONE place the Gateway asks what is on a session's screen - the store for a history
-    /// question, the store-or-tunnel freshness decision for a live one.</summary>
+    /// question; a live one always goes to the owning Director.</summary>
     internal Screens.GatewayScreenReader ScreenReader { get; }
 
     private Screens.SessionScreenSweep? _sessionScreenSweep;
@@ -1673,7 +1673,7 @@ public sealed class GatewayHost : IAsyncDisposable
         _sessionHistory = new History.SessionHistoryStore(_gatewayDb);
         _sessionTurns = new History.SessionTurnStore(_gatewayDb);
         _sessionScreens = new Screens.SessionScreenStore(_gatewayDb);
-        ScreenReader = new Screens.GatewayScreenReader(_sessionScreens, PushedSessions);
+        ScreenReader = new Screens.GatewayScreenReader(_sessionScreens);
         // The machine name and the Director version are stamped from the CONNECTION record, not
         // from the pushed session: the pushed machine name is hard-coded empty on every client in
         // the field, and the version has never been on the session payload at all. Reading them

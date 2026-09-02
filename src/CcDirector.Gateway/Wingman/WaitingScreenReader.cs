@@ -14,10 +14,10 @@ namespace CcDirector.Gateway.Wingman;
 /// menu guard, and the narration generator.
 ///
 /// The read goes through <see cref="GatewayScreenReader.ReadLiveAsync"/> (the Terminal Rules mission,
-/// issue #2644), so it is answered from the Gateway's own screen store when the store can PROVE the
-/// stored screen is still what is on that terminal, and by a live tunnel pull otherwise. A read neither
-/// can answer is UNREADABLE and arrives here as a null grid - the same null the tunnel pull returned
-/// before the store existed, so every fail-closed branch below is unchanged.
+/// issue #2644), which always asks the OWNING DIRECTOR: a keystroke can follow this answer, and the
+/// Gateway's screen store holds turn-end history rather than live truth. A read the Director cannot
+/// answer is UNREADABLE and arrives here as a null grid - the same null the tunnel pull returned before
+/// the store existed, so every fail-closed branch below is unchanged.
 ///
 /// It costs at most one tunnel read and NO model call - the classifier is pure. That is what makes it usable
 /// on the send path (where a model call would add seconds to every spoken reply) and on the narration
@@ -49,9 +49,9 @@ internal static class WaitingScreenReader
     public static async Task<WaitingScreenKind> ClassifyAsync(
         GatewayScreenReader screens, TenantId tenant, SessionVerbClient route, string sid, CancellationToken ct = default)
     {
-        // ReadLiveAsync owns the store-or-tunnel decision and never throws for a failed read: an unreadable
-        // screen comes back as a null grid, which is what this method has always treated as Blocked.
-        var read = await screens.ReadLiveAsync(tenant, route, sid, ct);
+        // ReadLiveAsync never throws for a failed read: an unreadable screen comes back as a null grid,
+        // which is what this method has always treated as Blocked.
+        var read = await screens.ReadLiveAsync(route, sid, ct);
         var grid = read.Grid;
         if (grid is null)
             return WaitingScreenKind.Blocked;
@@ -90,7 +90,7 @@ internal static class WaitingScreenReader
         GatewayScreenReader screens, SessionVerbClient route, string sid, TenantId tenant,
         WingmanTranslator? translator, CancellationToken ct = default)
     {
-        var read = await screens.ReadLiveAsync(tenant, route, sid, ct);
+        var read = await screens.ReadLiveAsync(route, sid, ct);
         var grid = read.Grid;
         if (grid is null || grid.Rows is null || grid.Rows.Count == 0) return false;
 

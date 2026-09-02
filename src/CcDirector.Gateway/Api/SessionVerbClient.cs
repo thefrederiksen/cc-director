@@ -33,10 +33,19 @@ internal sealed class SessionVerbClient
 
     private static long _screenGridPulls;
 
-    /// <summary>How many <c>screen-grid</c> reads this Gateway process has sent down a tunnel since it
-    /// started. Process-wide and monotonic, so a proof reads it before and after and states the DIFFERENCE.
-    /// The number that matters is a difference of zero across a voice turn, with a control run showing the
-    /// same counter DOES move when the store cannot answer - a counter that never moves proves nothing.</summary>
+    /// <summary>
+    /// How many <c>screen-grid</c> reads this Gateway process has sent down a tunnel since it started.
+    /// Process-wide and monotonic, so a proof reads it before and after and states the DIFFERENCE.
+    ///
+    /// ITS PURPOSE IS NOW THE OPPOSITE OF THE ONE IT WAS BUILT FOR, and that is worth saying out loud. It
+    /// was added to show the Gateway's screen store SAVED tunnel round trips: the number that mattered was
+    /// a difference of zero across a voice turn. The Terminal Rules mission then established that a stored
+    /// screen may never answer a live question at all (see <see cref="Screens.GatewayScreenReader"/>), so
+    /// the number that matters now is a difference of ONE across a live read - it is the instrument that
+    /// shows the read really did reach the owning Director. A change that quietly reintroduced
+    /// store-answered live reads would make this counter move the wrong way, which is exactly what it is
+    /// kept for.
+    /// </summary>
     public static long ScreenGridPulls => Interlocked.Read(ref _screenGridPulls);
 
     /// <summary>

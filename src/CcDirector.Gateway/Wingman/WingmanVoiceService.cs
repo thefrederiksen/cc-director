@@ -1067,7 +1067,7 @@ public sealed class WingmanVoiceService
             // remove. ReadLiveAsync still falls to the tunnel whenever it cannot prove the stored screen
             // is current, and an unreadable screen comes back null - the same "narrating without a screen
             // verdict" this path has always handled.
-            var read = await _screens.ReadLiveAsync(tenant, route, sid, ct);
+            var read = await _screens.ReadLiveAsync(route, sid, ct);
             screenGrid = read.Grid;
             if (screenGrid is null)
                 FileLog.Write($"[WingmanVoiceService] no screen for sid={sid} ({read.Why}) - narrating without a screen verdict");

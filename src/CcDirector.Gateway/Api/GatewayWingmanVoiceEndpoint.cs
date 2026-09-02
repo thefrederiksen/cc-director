@@ -1136,7 +1136,7 @@ internal static class GatewayWingmanVoiceEndpoint
         // Terminal Rules (issue #2644): the store answers when it can PROVE it still describes that
         // terminal, the tunnel otherwise, and a read neither can answer is UNREADABLE - which arrives as a
         // null grid and fails closed exactly as an unanswered tunnel pull always did.
-        var read = await screens.ReadLiveAsync(tenant, route, sid, ct);
+        var read = await screens.ReadLiveAsync(route, sid, ct);
         var grid = read.Grid;
         if (grid is null)
         {

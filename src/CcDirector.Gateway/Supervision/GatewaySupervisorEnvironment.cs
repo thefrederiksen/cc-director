@@ -104,7 +104,7 @@ internal sealed class GatewaySupervisorEnvironment : ISupervisorEnvironment
             // what is on that terminal, otherwise this is the same tunnel pull it always was. The supervisor
             // runs at turn end, which is exactly when the store holds a screen, so this is one of the round
             // trips the store exists to remove.
-            var read = await _screens.ReadLiveAsync(tenant, route, sessionId, ct).ConfigureAwait(false);
+            var read = await _screens.ReadLiveAsync(route, sessionId, ct).ConfigureAwait(false);
             var grid = read.Grid;
             if (grid is null || !grid.HasGrid) return null;
             return grid.Rows;

@@ -30,10 +30,11 @@ namespace CcDirector.Gateway.Screens;
 ///    every reader that follows.
 ///  - THE LATEST IS ONE INDEXED READ. Readers overwhelmingly want "the newest screen for this session",
 ///    which the (tenant, session, captured-at) key answers directly.
-///  - CURRENCY IS THE CALLER'S, AND IT IS A PROOF. This store never claims a screen is live. It hands
-///    back <see cref="StoredScreen.BufferBytes"/> - the session's total bytes written at capture - and
-///    the reader serves it as the live screen only while the session's pushed snapshot still reports the
-///    same number. See <see cref="GatewayScreenReader"/>.
+///  - IT IS HISTORY, AND ONLY HISTORY. This store never claims a screen is live and is never consulted
+///    for a live read. An earlier design let a stored screen answer "what is on screen right now?" while
+///    its byte mark still matched the session's pushed total; that mark is not refreshed when the terminal
+///    is written to, so it could not establish what its name claimed. See <see cref="GatewayScreenReader"/>
+///    for the whole argument, and ruling 13 for why the mechanism was removed rather than repaired.
 /// </summary>
 public sealed class SessionScreenStore
 {

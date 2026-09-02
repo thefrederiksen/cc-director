@@ -24,8 +24,9 @@ internal sealed class TestScreenReader : IDisposable
 {
     private readonly GatewayDbTestHarness _harness = new();
 
-    /// <summary>The pushed-snapshot store the reader reads liveness and the buffer mark from. Either the
-    /// one the test already drives, or a private empty one when the test has none.</summary>
+    /// <summary>The pushed-snapshot store the surrounding test drives, kept here only so a caller that
+    /// already had one keeps the same object. The READER no longer reads it: a live screen read always goes
+    /// to the owning Director (Terminal Rules ruling 13).</summary>
     public PushedSessionStore Pushed { get; }
 
     public GatewayScreenReader Reader { get; }
@@ -33,7 +34,7 @@ internal sealed class TestScreenReader : IDisposable
     public TestScreenReader(PushedSessionStore? pushed = null)
     {
         Pushed = pushed ?? new PushedSessionStore();
-        Reader = new GatewayScreenReader(new SessionScreenStore(_harness.Open(new SingleTenantContext())), Pushed);
+        Reader = new GatewayScreenReader(new SessionScreenStore(_harness.Open(new SingleTenantContext())));
     }
 
     public void Dispose() => _harness.Dispose();
@@ -41,5 +42,5 @@ internal sealed class TestScreenReader : IDisposable
     /// <summary>The reader over a database the test ALREADY owns and already disposes - the several harnesses
     /// that hold a <see cref="GatewayDbTestHarness"/> for their own settings store need no second one.</summary>
     public static GatewayScreenReader Over(GatewayDatabase db, PushedSessionStore? pushed = null)
-        => new(new SessionScreenStore(db), pushed ?? new PushedSessionStore());
+        => new(new SessionScreenStore(db));
 }
