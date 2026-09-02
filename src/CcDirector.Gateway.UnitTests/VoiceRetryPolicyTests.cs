@@ -63,12 +63,34 @@ public sealed class VoiceRetryPolicyTests
         // is sampled and can be missed - or coalesced away while the previous turn's last attempt is still
         // running - and if the sweep were held back for ever, nothing left in the system could discover that
         // the reply had changed. The session would sit silent, offering a button to re-narrate a turn that is
-        // no longer the current one. The caller turns this pass into a LOOK: it stops again, without trying,
-        // the moment it sees the same turn.
+        // no longer the current one.
+        //
+        // The UNNAMED ask - the sweep, before it has read anything - is the one that is let through.
         Assert.True(VoiceRetryPolicy.IsDue(
             After(VoiceRetryPolicy.MaxAutomaticAttempts, VoiceRetryPolicy.RevalidateSpentAfter), Now));
         Assert.True(VoiceRetryPolicy.RevalidateSpentAfter > VoiceRetryPolicy.RetryEvery,
             "a spent schedule must be looked at far less often than an ordinary retry, or stopping means nothing");
+    }
+
+    [Fact]
+    public void TheLookIsNotATry_ASpentTurnIsRefusedForeverOnceItIsNamed()
+    {
+        // FOUND IN REVIEW, and the reason the policy asks two different questions. The revalidation interval
+        // used to apply to the named ask as well, so ten minutes after the fifth failure BOTH calls said
+        // "due": the sweep looked, the caller read the conversation, found the same turn, asked again by name,
+        // was told yes, and called the model. That recorded a sixth attempt, then a seventh, every ten minutes
+        // for the life of the session - while the Voice screen said the Gateway had stopped trying and offered
+        // a button. A comment in the caller claimed the pass was "a LOOK, not another try"; this is the
+        // assertion that makes the claim true rather than aspirational.
+        var spent = After(VoiceRetryPolicy.MaxAutomaticAttempts, VoiceRetryPolicy.RevalidateSpentAfter);
+
+        Assert.True(VoiceRetryPolicy.IsDue(spent, Now));                 // unnamed: go and look
+        Assert.False(VoiceRetryPolicy.IsDue(spent, Now, Turn));          // named, same turn: do not try again
+        Assert.True(VoiceRetryPolicy.IsDue(spent, Now, "another-turn")); // named, different turn: start clean
+
+        // ...and it does not come back an hour later, or a day later, either.
+        var ancient = After(VoiceRetryPolicy.MaxAutomaticAttempts, TimeSpan.FromDays(1));
+        Assert.False(VoiceRetryPolicy.IsDue(ancient, Now, Turn));
     }
 
     [Fact]
@@ -110,8 +132,14 @@ public sealed class VoiceRetryPolicyTests
     [Fact]
     public void TheScheduleIsTheOwnersShape_AFewTries_MinutesApart()
     {
-        // "Three to five attempts, three to five minutes in between." A change to either number is a product
-        // decision, so it fails a test rather than slipping through.
+        // "Three to five attempts, three to five minutes in between" - the owner's words, and a RANGE, so
+        // this asserts the range and nothing tighter. Be clear about what that does and does not buy: moving
+        // the count from five to four would not fail here, because the owner sanctioned four. Moving it to
+        // one, or to fifty, or making the spacing seconds, would - and those are the changes that would stop
+        // the screen's sentence from describing the schedule being run.
+        //
+        // What this test does NOT do (said plainly, because a reviewer read the old wording as a promise that
+        // it did): it does not pin the exact shipped numbers, so a change within the sanctioned range passes.
         Assert.InRange(VoiceRetryPolicy.MaxAutomaticAttempts, 3, 5);
         Assert.InRange(VoiceRetryPolicy.RetryEvery, TimeSpan.FromMinutes(3), TimeSpan.FromMinutes(5));
     }

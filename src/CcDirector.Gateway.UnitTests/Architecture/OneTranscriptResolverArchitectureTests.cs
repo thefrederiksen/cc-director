@@ -1,6 +1,4 @@
 using CcDirector.Core.History;
-using Mono.Cecil;
-using Mono.Cecil.Cil;
 using Xunit;
 
 namespace CcDirector.Gateway.Tests.Architecture;
@@ -15,13 +13,14 @@ namespace CcDirector.Gateway.Tests.Architecture;
 /// because the formula would never produce a different answer. Chat was unaffected in the same session,
 /// because Chat followed the pointer the agent's own hook reports instead of computing one.
 ///
-/// Two claims are checked here, and both are read off the intermediate language with Mono.Cecil, so they
-/// cannot be walked around by an alias, a <c>using static</c>, a wrapper, or a differently-named local:
+/// The claims are read off the intermediate language with Mono.Cecil, not off the source text, so an alias,
+/// a <c>using static</c> or a differently-named local cannot hide a call that is actually made:
 ///
-///   1. NOTHING in the Director's command surface derives a transcript path for itself. Every call site goes
-///      through <see cref="SessionHistoryReader.ResolveTranscriptPath"/>, which prefers the hook-reported
-///      pointer and only falls back to a lookup by the transcript's own identifier.
-///   2. The GATEWAY never resolves a transcript path at all. It has no business touching one: it reads
+///   1. NOTHING in the Director's command surface derives a transcript path for itself, AND that surface
+///      still calls <see cref="SessionHistoryReader.ResolveTranscriptPath"/> - which prefers the
+///      hook-reported pointer and only falls back to a lookup by the transcript's own identifier. Both
+///      halves are needed: the absence alone would go on passing if every call site were simply deleted.
+///   2. The GATEWAY resolves a transcript path by NEITHER route. It has no business touching one: it reads
 ///      conversations out of its own store, which the Director pushes to it. A hosted Gateway could not open
 ///      the file even if it tried - the disk is a different machine - so a call appearing here would be a
 ///      read that always fails, which is exactly the shape that silenced session 111.
@@ -29,11 +28,21 @@ namespace CcDirector.Gateway.Tests.Architecture;
 /// The detector is proven against a known-positive rather than trusted: <see cref="TheDetectorFindsTheCall"/>
 /// points it at the assembly that legitimately DOES compute the path and requires it to find one. Without
 /// that, a typo in the member name would make every other test in this file pass by finding nothing.
+///
+/// WHAT THIS DOES NOT CATCH, said plainly because a reviewer read the first draft as claiming more than it
+/// delivers. This scans for calls to two NAMED members. Someone who wrapped the path formula behind a new
+/// helper in CcDirector.Core, or who rebuilt the path inline with <c>Path.Combine</c>, would defeat it - the
+/// scan would find no call to either name and report a pass. It is a guard against the defect coming back
+/// the way it was written, not a proof that no transcript path can ever be computed anywhere. The narrower
+/// claim is still worth having: the eight call sites this mission changed are exactly the shape it detects.
 /// </summary>
 public sealed class OneTranscriptResolverArchitectureTests
 {
     /// <summary>The path-by-formula call. It is legitimate in exactly one assembly (see the class summary).</summary>
     private const string DerivesATranscriptPath = "CcDirector.Core.Claude.ClaudeSessionReader::GetJsonlPath";
+
+    /// <summary>THE one resolver. Pointer first, formula only as its own fallback.</summary>
+    private const string TheOneResolver = "CcDirector.Core.History.SessionHistoryReader::ResolveTranscriptPath";
 
     [Fact]
     public void TheDirectorsCommandSurface_neverDerivesATranscriptPathForItself()
@@ -50,9 +59,28 @@ public sealed class OneTranscriptResolverArchitectureTests
     }
 
     [Fact]
-    public void TheGateway_neverResolvesATranscriptPathAtAll()
+    public void TheDirectorsCommandSurface_stillGoesThroughTheOneResolver()
     {
-        var callers = CallersOf(DerivesATranscriptPath, "CcDirector.Gateway.dll");
+        // The other half of claim 1, and the reason the absence check above is not enough on its own: it
+        // would pass just as happily if every one of these call sites were deleted, or quietly rewritten to
+        // build the path some third way. Requiring the resolver to still be CALLED pins what replaced them.
+        var callers = CallersOf(TheOneResolver, "CcDirector.ControlApi.dll");
+
+        Assert.True(callers.Count > 0,
+            "Nothing in the Director's command surface calls SessionHistoryReader.ResolveTranscriptPath any " +
+            "more. Either the transcript reads have gone (in which case delete this test and say so), or " +
+            "they are resolving the path some other way - which is the defect this mission removed.");
+    }
+
+    [Fact]
+    public void TheGateway_neverResolvesATranscriptPath_byEitherRoute()
+    {
+        // BOTH names, deliberately. Checking only the formula would let the Gateway call the resolver itself
+        // and still pass - and the Gateway has no business resolving a transcript by ANY route, because the
+        // file is on the user's machine and this process is somewhere else entirely.
+        var callers = CallersOf(DerivesATranscriptPath, "CcDirector.Gateway.dll")
+            .Concat(CallersOf(TheOneResolver, "CcDirector.Gateway.dll"))
+            .ToList();
 
         Assert.True(callers.Count == 0,
             "The Gateway reads conversations from its own store, which the Director pushes to it. It must " +
@@ -78,51 +106,6 @@ public sealed class OneTranscriptResolverArchitectureTests
             "file are passing by finding nothing rather than by nothing being there. Update the constant.");
     }
 
-    /// <summary>
-    /// Every method in <paramref name="assemblyFile"/> whose intermediate language calls
-    /// <paramref name="member"/>, as "Declaring.Type::Method". Read off the compiled metadata, so a wrapper,
-    /// an alias or a rename in the source cannot hide a call.
-    /// </summary>
     private static List<string> CallersOf(string member, string assemblyFile)
-    {
-        var baseDir = Path.GetDirectoryName(typeof(SessionHistoryReader).Assembly.Location)!;
-        var path = Path.Combine(baseDir, assemblyFile);
-        if (!File.Exists(path))
-            throw new FileNotFoundException(
-                $"'{assemblyFile}' is not in the test output directory ('{baseDir}'), so this scan would " +
-                "silently cover nothing while reporting a pass. Restore the project reference that brings it here.",
-                path);
-
-        var found = new List<string>();
-        using var module = ModuleDefinition.ReadModule(path);
-        foreach (var type in AllTypes(module))
-            foreach (var method in type.Methods)
-            {
-                if (!method.HasBody) continue;
-                foreach (var instruction in method.Body.Instructions)
-                {
-                    if (instruction.OpCode.Code is not (Code.Call or Code.Callvirt or Code.Ldftn)) continue;
-                    if (instruction.Operand is not MethodReference called) continue;
-                    if ($"{called.DeclaringType.FullName}::{called.Name}" == member)
-                        found.Add($"{type.FullName}::{method.Name}");
-                }
-            }
-
-        return found.Distinct().ToList();
-    }
-
-    private static IEnumerable<TypeDefinition> AllTypes(ModuleDefinition module)
-    {
-        foreach (var top in module.Types)
-            foreach (var nested in Flatten(top))
-                yield return nested;
-    }
-
-    private static IEnumerable<TypeDefinition> Flatten(TypeDefinition type)
-    {
-        yield return type;
-        foreach (var nested in type.NestedTypes)
-            foreach (var inner in Flatten(nested))
-                yield return inner;
-    }
+        => CompiledCalls.Of(member, assemblyFile, typeof(SessionHistoryReader));
 }

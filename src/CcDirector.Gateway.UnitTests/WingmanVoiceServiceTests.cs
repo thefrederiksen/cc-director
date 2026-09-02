@@ -860,6 +860,56 @@ public sealed class WingmanVoiceServiceTests : IDisposable
             stub.SendCommand);
 
     [Fact]
+    public async Task GenerateAsync_ACallerThatLosesTheCoalescingRace_IsServed_NotDropped()
+    {
+        // FOUND IN REVIEW, and it is the same silent-session shape the whole mission is about.
+        //
+        // Two generations for one session must never run at once, so the second caller returns immediately.
+        // Returning and FORGETTING was the defect: the caller that loses this race is typically the turn-end
+        // path carrying a brand new reply. The in-flight attempt finishes, stores the PREVIOUS turn's audio,
+        // and the idle sweep then skips the session for good because audio exists (the bare has-audio guard
+        // in GatewayHost's sweep). The new answer is never spoken, and nothing left in the system is looking
+        // for it - exactly how session 111 went quiet, by a different route.
+        //
+        // The proof is the number of times the service went and READ the stored conversation. One read is
+        // the losing caller having been dropped. Two is the winner having come back for the turn it was told
+        // about. The first read blocks until this test lets it go, so the race is arranged rather than raced.
+        var releaseFirstRead = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var reads = 0;
+        Func<TenantId, string, CcDirector.Gateway.History.StoredConversation?> reader = (_, _) =>
+        {
+            if (Interlocked.Increment(ref reads) == 1)
+                releaseFirstRead.Task.GetAwaiter().GetResult();
+            return null;   // nothing stored: each pass ends cheaply, with no brain call and no attempt recorded
+        };
+
+        var dir = Path.Combine(Path.GetTempPath(), "wmvs-coalesce-" + Guid.NewGuid().ToString("N"));
+        var svc = ServiceWithBrainAndTts(new RecordingBrain(), new byte[] { 1, 2, 3 },
+            Path.Combine(dir, "voice-sessions.json"), reader);
+        var route = RouteFor(new TunnelStub());
+
+        // The winner, started off this thread because its first read blocks synchronously.
+        var winner = Task.Run(() => svc.GenerateAsync(TenantId.Local, "sid-1", route));
+
+        var waited = System.Diagnostics.Stopwatch.StartNew();
+        while (Volatile.Read(ref reads) == 0 && waited.Elapsed < TimeSpan.FromSeconds(10))
+            await Task.Delay(10);
+        Assert.Equal(1, Volatile.Read(ref reads));   // the winner is inside, holding the guard
+
+        // The loser. It must not block and must not run a generation of its own.
+        await svc.GenerateAsync(TenantId.Local, "sid-1", route);
+        Assert.Equal(1, Volatile.Read(ref reads));
+
+        releaseFirstRead.SetResult();
+        await winner;
+
+        Assert.Equal(2, Volatile.Read(ref reads));
+
+        // ...and it stops there. The rerun is bounded, so a marker set during the second pass does not spin.
+        Assert.Equal(2, Volatile.Read(ref reads));
+    }
+
+    [Fact]
     public async Task GenerateAsync_WhenCurrentReplyDiffersFromCache_Regenerates()
     {
         // THE FIX (regression for the #1322 bare-HasVoice guard): when the session's CURRENT last reply

@@ -68,8 +68,12 @@ public static class VoiceRetryPolicy
     /// would sit silent with a button offering to re-narrate a turn that is no longer the current one.
     ///
     /// Ten minutes: long enough that a genuinely stuck turn is not being hammered, short enough that a
-    /// stranded new turn is picked up before anyone is still looking at the screen wondering. The re-read
-    /// does NOT retry the failed turn - see the caller, which stops again the moment it sees the same turn.
+    /// stranded new turn is picked up before anyone is still looking at the screen wondering.
+    ///
+    /// This interval governs the UNNAMED ask only - the sweep, before it has read anything. The moment the
+    /// caller knows which turn it is holding it asks again by name, and a spent schedule for that same turn
+    /// refuses it outright. That is what makes the pass a look rather than another try, and it is enforced
+    /// in <see cref="IsDue"/> rather than left to the caller to remember.
     /// </summary>
     public static readonly TimeSpan RevalidateSpentAfter = TimeSpan.FromMinutes(10);
 
@@ -79,16 +83,33 @@ public static class VoiceRetryPolicy
     /// has automatic attempts left. Pure and total, with the clock injected, so the boundary is tested
     /// rather than waited for.
     /// </summary>
-    /// <param name="turnKey">The turn being considered now. Attempts recorded against a DIFFERENT turn say
-    /// nothing about this one, so they never hold it back. Null means the turn is not known yet, which is the
-    /// sweep asking before it has read anything - treat it as due and let the read decide.</param>
+    /// <param name="turnKey">The turn being considered now, or null when the caller does not know it yet.
+    ///
+    /// The two are asked DIFFERENT questions, and this is the whole of the revalidation design:
+    ///
+    /// * <b>Null - the sweep, before it has read anything.</b> It cannot name the turn, so it cannot know
+    ///   whether the spent schedule it can see belongs to the reply that is current now. Once
+    ///   <see cref="RevalidateSpentAfter"/> has passed it is let through to go and LOOK.
+    /// * <b>Named - the same pass, after reading.</b> Now the turn is known. Attempts recorded against a
+    ///   DIFFERENT turn say nothing about this one and never hold it back. Attempts recorded against THIS
+    ///   turn, once spent, stop it - permanently, however long ago they were made. There is no second
+    ///   revalidation here, because there is nothing left to revalidate: the caller has just read the
+    ///   conversation and the answer to "has the turn changed?" is no.
+    ///
+    /// FOUND IN REVIEW, and it is the defect this shape exists to prevent. When the exhausted branch applied
+    /// the revalidation interval to the named ask as well, both calls said "due" ten minutes after the fifth
+    /// failure, the model was called again, the attempt was recorded as a sixth - and then a seventh, and an
+    /// eighth, every ten minutes for as long as the session lived. The Voice screen said the Gateway had
+    /// stopped trying and offered a button, while the Gateway had not stopped at all. A comment in the caller
+    /// claimed the pass was "a LOOK, not another try"; only this line makes that true.</param>
     public static bool IsDue(VoiceAttempts? attempts, DateTime utcNow, string? turnKey = null)
     {
         if (attempts is not { } a || a.Count == 0) return true;
         if (turnKey is not null && !string.Equals(a.TurnKey, turnKey, StringComparison.Ordinal)) return true;
-        // A spent schedule stops the retrying, but not for ever: after a long interval one read is allowed,
-        // so a turn that changed without anyone observing it is never stranded. See RevalidateSpentAfter.
-        if (IsExhausted(a)) return utcNow - a.LastAttemptUtc >= RevalidateSpentAfter;
+        // Spent. An unnamed ask is let through after a long interval so a turn that changed unobserved is
+        // never stranded (see RevalidateSpentAfter); a NAMED ask has already established that the turn is
+        // this same spent one, and is refused for good.
+        if (IsExhausted(a)) return turnKey is null && utcNow - a.LastAttemptUtc >= RevalidateSpentAfter;
         return utcNow - a.LastAttemptUtc >= RetryEvery;
     }
 

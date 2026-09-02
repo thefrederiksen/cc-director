@@ -119,6 +119,16 @@ public sealed class TunnelMechanismProofTests : IAsyncLifetime
             try { if (Directory.Exists(dir)) Directory.Delete(dir, true); } catch { /* best effort */ }
     }
 
+    /// <summary>How many reads for the missing session actually REACHED the Director stub. Without this the
+    /// 404 test asserts a status that a Gateway-side check could produce on its own.</summary>
+    private int _missingReadCount;
+
+    private DirectorCommandResult RecordMissingRead()
+    {
+        Interlocked.Increment(ref _missingReadCount);
+        return DirectorCommandResult.Fail(DirectorCommandStatus.NotFound, "session not found");
+    }
+
     // The Director-side Command handler: stream verbs run the REAL handler; the rest return typed results.
     private DirectorCommandResult Dispatch(DirectorCommand cmd)
     {
@@ -133,7 +143,7 @@ public sealed class TunnelMechanismProofTests : IAsyncLifetime
             // claims here were never about turns, they are about the tunnel carrying a read and its error
             // status, so they now travel a read that still exists.
             "usage" => cmd.SessionId == MissingSid
-                ? DirectorCommandResult.Fail(DirectorCommandStatus.NotFound, "session not found")
+                ? RecordMissingRead()
                 : DirectorCommandResult.Success(JsonSerializer.Serialize(new { sessionId = cmd.SessionId, status = "ok", widgets = Array.Empty<object>() })),
             "prompt" => DirectorCommandResult.Success(JsonSerializer.Serialize(new { accepted = true })),
             _ => DirectorCommandResult.Success(),
@@ -169,13 +179,23 @@ public sealed class TunnelMechanismProofTests : IAsyncLifetime
     // ------------------------------------------------------------------------------- error parity ----
 
     [Fact]
-    public async Task A_read_forAMissingSession_is404_overTheTunnel()
+    public async Task A_read_forAMissingSession_is404_thatCameFromTheDirector()
     {
-        // Deliberately NOT the turns path. That path is unmapped now, so it would answer 404 because no verb
+        // TWO things, and the status alone is not one of them.
+        //
+        // Deliberately NOT the turns path: that path is unmapped now, so it would answer 404 because no verb
         // claims it - the same status this test asserts, arrived at without the tunnel being involved at all.
-        // A check that passes for a reason it was not written to prove is worse than no check.
+        //
+        // And deliberately not the status alone even on a live path: a Gateway-side session check that
+        // answered 404 before sending anything upstream would satisfy it while proving nothing about error
+        // parity over the tunnel. The Director stub records that the request REACHED it, so the assertion is
+        // that the Director's own NotFound became this 404 (found in review).
+        var before = Volatile.Read(ref _missingReadCount);
+
         var resp = await _http.GetAsync($"sessions/{MissingSid}/usage");
+
         Assert.Equal(HttpStatusCode.NotFound, resp.StatusCode);
+        Assert.Equal(before + 1, Volatile.Read(ref _missingReadCount));
     }
 
     [Fact]

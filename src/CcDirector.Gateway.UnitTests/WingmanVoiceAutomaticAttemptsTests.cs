@@ -11,8 +11,13 @@ namespace CcDirector.Gateway.Tests;
 
 /// <summary>
 /// The bookkeeping behind the narration retry schedule (<see cref="VoiceRetryPolicy"/>): the voice service
-/// counts each automatic attempt that produced no audio, tells the sweep when a session is due, and drops the
-/// count at the three moments that end a turn's episode - a new turn, audio arriving, voice turned off.
+/// counts each automatic attempt that produced no audio, and tells the sweep when a session is due.
+///
+/// WHAT ENDS A TURN'S EPISODE, precisely, because a review found this list wrong once already. The count is
+/// dropped when AUDIO ARRIVES and when VOICE IS TURNED OFF. It is NOT dropped on an observed Working
+/// transition: the count is keyed on the turn, so a genuinely different reply starts clean without being
+/// told, and clearing on the sampled edge would let a work cycle that produced no new reply re-arm a spent
+/// turn for another five tries.
 /// </summary>
 public sealed class WingmanVoiceAutomaticAttemptsTests : IDisposable
 {
@@ -102,8 +107,19 @@ public sealed class WingmanVoiceAutomaticAttemptsTests : IDisposable
     }
 
     [Fact]
-    public void ANewTurn_ResetsTheSchedule()
+    public void AnObservedWorkingTransition_DoesNOTResetTheSchedule()
     {
+        // THIS TEST ASSERTED THE OPPOSITE UNTIL A REVIEW LOOKED AT IT, and it passed - by calling
+        // OnSessionWorking and CALLING that "a new turn" in its own name. It never supplied a different
+        // reply, so it proved nothing about turns at all; it proved that clearing on the transition cleared
+        // on the transition.
+        //
+        // Clearing here is a real weakening, not a harmless one. A work cycle that produces no new reply - a
+        // cancelled turn, an agent that thinks and answers nothing, a duplicate or delayed state
+        // notification - would re-arm the SAME spent turn for another five attempts, and a session that kept
+        // twitching would keep the Generate button off the screen indefinitely while the Gateway hammered a
+        // turn it had already given up on. The whole reason the count is keyed on the turn is that this edge
+        // is sampled and cannot be trusted; resetting on it puts the trust straight back.
         var svc = Service();
         for (var i = 0; i < VoiceRetryPolicy.MaxAutomaticAttempts; i++)
             svc.NoteAutomaticAttemptProducedNoAudio(TenantId.Local, "sid", Turn);
@@ -111,8 +127,21 @@ public sealed class WingmanVoiceAutomaticAttemptsTests : IDisposable
 
         svc.OnSessionWorking(TenantId.Local, "sid");
 
-        Assert.Equal(0, svc.AutomaticAttemptCountFor(TenantId.Local, "sid"));
-        Assert.True(svc.IsDueForAutomaticRetry(TenantId.Local, "sid"));
+        Assert.Equal(VoiceRetryPolicy.MaxAutomaticAttempts, svc.AutomaticAttemptCountFor(TenantId.Local, "sid"));
+    }
+
+    [Fact]
+    public void ARealNewTurn_ResetsTheSchedule_BecauseItIsADifferentReply()
+    {
+        // What actually restores the schedule: an attempt at a DIFFERENT turn. No transition needs to have
+        // been observed, which is the point - see AnAttemptAtADifferentTurn_StartsTheCountAgain above for
+        // the same claim on the counting side, and VoiceAttempts.TurnKey for why identity beats the edge.
+        var svc = Service();
+        for (var i = 0; i < VoiceRetryPolicy.MaxAutomaticAttempts; i++)
+            svc.NoteAutomaticAttemptProducedNoAudio(TenantId.Local, "sid", Turn);
+
+        Assert.False(VoiceRetryPolicy.IsDue(svc.AutomaticAttemptsFor(TenantId.Local, "sid"), DateTime.UtcNow, Turn));
+        Assert.True(VoiceRetryPolicy.IsDue(svc.AutomaticAttemptsFor(TenantId.Local, "sid"), DateTime.UtcNow, "a-different-turn"));
     }
 
     [Fact]
