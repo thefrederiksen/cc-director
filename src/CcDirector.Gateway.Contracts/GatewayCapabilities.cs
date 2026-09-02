@@ -52,4 +52,21 @@ public sealed class GatewayCapabilities
     /// methods added after this type was written without needing a new field for each one.
     /// </summary>
     public List<string> HubMethods { get; set; } = new();
+
+    /// <summary>
+    /// What the Gateway already holds of each of this Director's sessions' conversations (the turn-push
+    /// mission): one watermark per session it has stored turns for. A reconnecting Director resends only
+    /// what is above these; a Director this Gateway has never heard from gets an empty list and sends
+    /// everything. Empty from a Gateway built before the store existed.
+    /// </summary>
+    public List<TurnWatermark> TurnWatermarks { get; set; } = new();
+
+    /// <summary>
+    /// Whether <see cref="TurnWatermarks"/> is an ANSWER rather than a silence. True when the Gateway read
+    /// its store, even if the answer was "nothing for you" - which is a real fact a Director acts on, by
+    /// pushing every conversation from the start. False when it could not read (or has no store at all, or
+    /// is too old to have one), which is NOT that fact: a Director that treated the two alike would re-push
+    /// every conversation it has on any database hiccup.
+    /// </summary>
+    public bool TurnWatermarksKnown { get; set; }
 }

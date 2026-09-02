@@ -118,8 +118,10 @@ public sealed class GatewayStreamClient : IAsyncDisposable
         Func<string?>? displayName = null,
         Func<List<SessionKeyRegistration>>? sessionKeys = null,
         Func<List<string>>? pendingRevocations = null,
-        Action<string>? onRevocationConfirmed = null)
+        Action<string>? onRevocationConfirmed = null,
+        Action<GatewayCapabilities>? onHello = null)
     {
+        _onHello = onHello;
         _sessionKeys = sessionKeys;
         _pendingRevocations = pendingRevocations;
         _onRevocationConfirmed = onRevocationConfirmed;
@@ -284,6 +286,7 @@ public sealed class GatewayStreamClient : IAsyncDisposable
         _connection.Reconnecting += ex =>
         {
             FileLog.Write($"[GatewayStreamClient] reconnecting: {ex?.Message}");
+            _capabilities = null;   // unknown until the reconnect's Hello answers
             // Gateway Cleanup Phase 0 (Architect ruling A): the tunnel dropped, so no frame can reach the
             // Gateway - tear down every live up-stream instead of leaving a producer sending into a dead socket.
             _upStreamHandler?.CancelAll();
@@ -292,7 +295,9 @@ public sealed class GatewayStreamClient : IAsyncDisposable
         };
         _connection.Reconnected += async _ => { await ReseedAsync(); _monitor?.MarkTunnelConnected(); };
         // Also tear streams down on a full close (auto-reconnect gave up); the supervise loop then re-dials.
-        _connection.Closed += _ => { _upStreamHandler?.CancelAll(); _monitor?.MarkTunnelConnecting(); return Task.CompletedTask; };
+        // The capabilities go with the connection: the next dial may reach a different (older) Gateway, and a
+        // caller must not act on the last one's answer until the new Hello has answered.
+        _connection.Closed += _ => { _capabilities = null; _upStreamHandler?.CancelAll(); _monitor?.MarkTunnelConnecting(); return Task.CompletedTask; };
 
         // Issue #1176 (Phase 1b): the down-channel proof. The Gateway can call this and await the reply
         // over the same connection (SignalR client results), demonstrating request-both-ways on one
@@ -483,8 +488,36 @@ public sealed class GatewayStreamClient : IAsyncDisposable
     /// </summary>
     private static readonly string[] MethodsThisDirectorNeeds =
     {
-        "RegisterSessionKey", "RevokeSessionKey", "PushSnapshot", "PushDelta", "PushRepoSnapshot",
+        "RegisterSessionKey", "RevokeSessionKey", "PushSnapshot", "PushDelta", "PushRepoSnapshot", "PushTurns",
     };
+
+    /// <summary>What the Gateway answered on the last Hello, so callers can ask whether it has a hub method
+    /// before calling it. Null until the first Hello has answered.</summary>
+    private GatewayCapabilities? _capabilities;
+
+    /// <summary>Told every time a Hello answers (turn-push mission: the TurnPusher seeds its watermarks from
+    /// the answer and backfills). Called after the capability line is logged.</summary>
+    private readonly Action<GatewayCapabilities>? _onHello;
+
+    /// <summary>Whether the Gateway on the other end has this hub method. False before the first Hello and
+    /// against a Gateway built before the method existed - the caller then does not call it.</summary>
+    public bool GatewaySupports(string hubMethod)
+        => _capabilities?.HubMethods.Contains(hubMethod, StringComparer.Ordinal) == true;
+
+    /// <summary>
+    /// Push one batch of a session's conversation (turn-push mission) and return the watermark the Gateway
+    /// holds afterwards. Null when the Gateway refused the batch. Throws when the tunnel is not connected -
+    /// the caller (TurnPusher) logs and resumes from the Gateway's watermark on the next trigger.
+    /// </summary>
+    public async Task<TurnWatermark?> PushTurnsAsync(TurnPushBatch batch, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(batch);
+        var conn = _connection;
+        if (conn is null || conn.State != HubConnectionState.Connected)
+            throw new InvalidOperationException("the Gateway stream is not connected");
+        var seq = Interlocked.Increment(ref _sequence);
+        return await conn.InvokeAsync<TurnWatermark?>("PushTurns", seq, batch, ct).ConfigureAwait(false);
+    }
 
     /// <summary>The capability line already reported, so a ten-second reseed does not repeat it forever.</summary>
     private string _lastCapabilityReport = "";
@@ -571,6 +604,12 @@ public sealed class GatewayStreamClient : IAsyncDisposable
             });
             awaitGateway += DateTime.UtcNow - helloStarted;
             ReportGatewayCapabilities(capabilities);
+            _capabilities = capabilities;
+            if (capabilities is not null && _onHello is not null)
+            {
+                try { _onHello(capabilities); }
+                catch (Exception ex) { FileLog.Write($"[GatewayStreamClient] Hello callback FAILED: {ex.Message}"); }
+            }
 
             // OUR work, on this machine: assembling the roster. Timed apart from the send because a slow build
             // is a local problem (a starved machine, a lock held too long) and a slow send is the Gateway's -

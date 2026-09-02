@@ -157,6 +157,21 @@ guard land together. Every phase says what it does NOT prove.
 
 ---
 
+## Seats and their names
+
+**The mission's name is "Turn Push", and every seat on it is named `Turn Push - <Role>`** - mission first,
+a dash, then the role, as the conduct file requires. The seats:
+
+- `Turn Push - Architect` - holds the design, this brief, and the merge authority. One at a time.
+- `Turn Push - Manager` - drives a phase. Seated per phase from `handoff.md`, killed when the phase ends.
+- `Turn Push - Worker` - one task, then gone.
+- `Turn Push - Inspector` - a different agent family, reads the diff, writes its review to a file.
+
+A seat whose name does not start with `Turn Push -` is not on this mission, whatever it is doing. This
+matters on a machine running several missions at once: the roster is how the owner sees which seats belong
+to which piece of work, and a seat named for its repository or its symptom tells him nothing about why it
+exists.
+
 ## How this mission is run
 
 Standalone-with-review per slice, seated in this worktree, with a Codex inspector run inline on each
