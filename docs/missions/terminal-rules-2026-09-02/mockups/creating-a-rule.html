@@ -246,10 +246,10 @@
         <p><b>Then I check</b> that the session really has stopped on a provider problem rather than
            just mentioning one - an agent discussing rate limits in its own output is not a session
            that is stuck.</p>
-        <p><b>I read the retry time off the screen</b> and work out the wait with a small piece of
-           code rather than by eye, because "back at 5pm" versus "in 4 minutes" versus a reset
-           timestamp is arithmetic, and arithmetic is where I would make a quiet mistake. You can
-           read that code below.</p>
+        <p><b>I read the retry time off the screen</b> and hand it to DevThrottle's own
+           work-out-the-wait check rather than doing the sum myself, because "back at 5pm" versus
+           "in 4 minutes" versus a reset timestamp is arithmetic, and arithmetic is where I would
+           make a quiet mistake. I choose the check and supply the values; I do not write it.</p>
         <p><b>Then I snooze the session</b> for that long, and when it wakes I type
            <code>continue</code>.</p>
         <p><b>If it is still failing an hour after the first failure</b> I stop retrying and wake
@@ -308,14 +308,19 @@
              <code>yes / no</code> <code>proceed?</code></div>
       </div>
       <div class="fld" style="margin:0">
-        <label>THE CODE IT USES TO DECIDE - path containment, not eyeballed</label>
-<pre><span class="c"># Is the thing being asked about inside this session's repo?</span>
-<span class="c"># Resolved and normalised first, so ../ cannot walk out and a symlink</span>
-<span class="c"># cannot pretend to be inside.</span>
-<span class="k">def</span> inside_repo(target, repo_root):
-    t = Path(target).expanduser().resolve()
-    r = Path(repo_root).resolve()
-    <span class="k">return</span> r == t <span class="k">or</span> r <span class="k">in</span> t.parents</pre>
+        <label>THE EXACT CHECK IT USES - not judged by eye, and not code anyone here wrote</label>
+        <div style="background:var(--code);border:1px solid var(--border);border-radius:7px;
+             padding:11px 14px;font-size:13px;color:var(--dim)">
+          <b style="color:var(--text)">Is this path inside this directory?</b>
+          <span class="pill code" style="margin-left:6px">built in</span>
+          <p style="margin:7px 0 0;max-width:70ch">One of DevThrottle's own checks, written and
+             reviewed by us and shipped like any other feature. It resolves the path first, so
+             <code>..</code> cannot walk out of the repo and a symlink cannot pretend to be inside.
+             The rule supplies the two values; it does not supply the check.</p>
+          <p style="margin:7px 0 0;max-width:70ch"><b style="color:var(--text)">You cannot edit this,
+             and neither can the model.</b> It picks which check to use and what to pass it. Nothing
+             it writes is ever executed.</p>
+        </div>
       </div>
     </div>
 
@@ -360,9 +365,9 @@
   <p>There is nothing in it that has to be <i>exact</i> rather than <i>understood</i>, so there is
      nothing for code to do.</p>
 
-  <h3>So when does code appear?</h3>
-  <p>When being exactly right matters more than being able to read. Three tests, and a rule needs
-     code if any is true:</p>
+  <h3>So when does it use an exact check instead of judgement?</h3>
+  <p>When being exactly right matters more than being able to read. Three tests, and a rule reaches
+     for a built-in check if any is true:</p>
   <ul>
     <li><b>Arithmetic.</b> "Back at 5pm" into a wait in seconds, across a timezone. Models are
         unreliable at this in a way that is quiet.</li>
@@ -391,15 +396,31 @@
     </tbody>
   </table>
 
-  <p style="margin-top:14px"><b>The line, in one sentence:</b> the model decides, and code is used
-     wherever being exactly right matters more than being able to read. You never choose which - it
-     picks, tells you which it picked and why, and the code is short enough to read in the rule.</p>
+  <p style="margin-top:14px"><b>The line, in one sentence:</b> the model decides, and a built-in
+     check is used wherever being exactly right matters more than being able to read. You never
+     choose which - it picks, and it tells you which it picked and why.</p>
 
-  <h3>One consequence worth deciding</h3>
-  <p>If a rule can carry generated code, that code runs on the Gateway. It must run with no access to
-     anything but the values the rule hands it - no network, no filesystem, no environment - and a
-     hard time limit. That is a real piece of engineering and it is the reason to keep code to the
-     narrow cases above rather than making it the default shape of a rule.</p>
+  <h3>Nothing generated ever runs on the Gateway</h3>
+  <p>The obvious version of this feature has the model write a bit of code and the server run it.
+     That was the earlier draft of this page and it was wrong - it would mean running code we did not
+     write, on our server, derived from what a customer typed. No sandbox makes that a good trade for
+     a feature whose job is already to type into people's sessions.</p>
+  <p><b>So nothing generated runs.</b> DevThrottle ships a small set of checks we wrote and reviewed
+     - is this path inside that directory, how long until this retry time, how long since this first
+     failed. The model's job is to <b>pick one and supply the values</b>. What gets stored in the
+     rule is a call - a name and its arguments, validated against that check's signature before it is
+     used. Never a program, an expression, or a snippet.</p>
+  <p>That removes the problem rather than containing it. There is no interpreter, so there is no
+     escape to find and no resource limit to tune. The worst a wrong choice can do is pass wrong
+     values to a function that already has its own unit tests - a wrong answer, not a compromised
+     server. And <b>no user ever writes or edits code here</b>: the only thing anyone types is
+     English.</p>
+  <p><b>The cost, which is real:</b> some rules will not be expressible. When an instruction needs an
+     exactness no built-in check provides, it says so and either builds the rule without that part or
+     declines - and if the gap is worth closing, we add a check, which is an ordinary product change
+     with human review. What it must never do is route around the gap with a general-purpose check
+     that takes an arbitrary pattern or expression. That is the interpreter coming back under a
+     different name.</p>
 </div>
 
 </body>
