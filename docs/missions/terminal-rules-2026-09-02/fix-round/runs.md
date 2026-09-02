@@ -178,6 +178,58 @@ cannot go there. That set is subtracted from the DERIVED KEY columns and exists 
 NO collation - the opposite shape - and its own comment says a new column may not be added to it. The
 new sibling set carries the same meaning for the direction these columns are in.
 
+### The new list is hand-kept, so it is guarded - and the guard was proven
+
+The Architect's point, and it is this mission's own lesson pointed at our own new list: every hand-kept
+list in this file has rotted. The allow-list this check replaced went stale twice and sat red on `main`
+through two release tags. A list with no guard is silently wrong from the moment one of its entries is
+fixed properly, and shipping a new unguarded one would be answering the defect and committing it in the
+same change.
+
+Two assertions now fail BY NAME when an entry stops describing reality, mirroring the guard the other
+debt list already has. Both were proven by pointing them at an entry that does not hold:
+
+```
+GREEN BASELINE                          1 passed, exit 0
+
+ARM A - a listed entry the MODEL now declares as a key column
+  added ("session_screens", "SessionId")
+  FAILED, exit 1:
+  these columns are listed as inherited collated non-key columns but the MODEL now declares them as
+  string key columns, so the derived set already covers them - delete them from
+  InheritedCollatedNonKeyColumns: session_screens.SessionId
+
+ARM B - a listed entry that is not a collated column in the live catalog at all
+  added ("known_repositories", "NoSuchColumnAnyMore")
+  FAILED, exit 1:
+  these columns are listed as inherited collated non-key columns but no longer carry an explicit C
+  collation in the live catalog - the collation was dropped, or the column or table is gone. Delete
+  them from InheritedCollatedNonKeyColumns: known_repositories.NoSuchColumnAnyMore
+
+BOTH REVERTED                           6 passed, 0 failed, exit 0
+```
+
+Arm A matters more than it looks: a column listed here is excluded from the reverse comparison whether
+or not it deserves to be, so a stale entry does not merely go unnoticed - it actively hides a real
+regression in the column it names.
+
+**`CollationExtras` has the same exposure and is NOT guarded.** It is hand-kept too, and an entry there
+that has since become a derived key column or lost its collation would rot exactly the same way. It was
+left alone because it is not this round's list and adding a guard to it could turn the suite red for
+reasons outside this round - which is a trade for the seat that owns it, not one to take in passing. It
+is raised here so it is a decision rather than an oversight.
+
+### One thing this proof nearly got wrong
+
+After reverting the mutations the test still failed, naming the mutated entry, while the source file on
+disk was demonstrably clean. The restore had copied a backup whose timestamp was OLDER than the built
+assembly, so MSBuild considered the project up to date and skipped the rebuild - the run described code
+that was not on disk. Refreshing the file's timestamp and re-running gave 6 passed, exit 0.
+
+It is recorded because it is the same family as everything else here: a green or a red is evidence about
+the BINARY that ran, and a source file is not a binary. A revert that leaves an older timestamp is a
+silent way to test something other than what you are looking at.
+
 Note also what this same run says about finding 3:
 `SessionScreens_IdempotentOnTheNaturalKey_AndByteOrdinalAboutIt_OnRealPostgres` **PASSED (216 ms)** -
 the only exercise of the screen store's key on the provider the hosted Gateway actually runs, with

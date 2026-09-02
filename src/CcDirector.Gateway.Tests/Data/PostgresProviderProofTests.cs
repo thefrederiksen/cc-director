@@ -278,6 +278,14 @@ public sealed class PostgresProviderProofTests
     /// exception is the allow-list failure returning in the new list's clothes: it turns "nobody has
     /// looked at this" into "we looked at this and it is fine", which is precisely the direction that
     /// made the previous check silent about the thing it existed to catch.
+    ///
+    /// IT IS HAND-KEPT, SO IT IS GUARDED. Every hand-kept list in this file has rotted - the allow-list
+    /// this check replaced went stale twice and sat red on main through two release tags - and a list
+    /// with no guard is silently wrong from the moment one of its entries is fixed properly. Two
+    /// assertions in the proof below fail BY NAME when an entry stops describing reality: when the model
+    /// has since made the column a key column, and when it no longer carries an explicit C collation in
+    /// the live catalog at all. Both were proven by pointing them at an entry that does not hold and
+    /// watching them go red.
     /// </summary>
     private static readonly HashSet<(string Table, string Column)> InheritedCollatedNonKeyColumns = new()
     {
@@ -398,6 +406,36 @@ public sealed class PostgresProviderProofTests
             "these columns are listed as inherited debt but now DO carry an explicit C collation - delete "
             + "them from InheritedUncollatedKeyColumns: "
             + string.Join(", ", fixedSince.Select(f => f.Table + "." + f.Column)));
+
+        // THE SAME STALENESS GUARD FOR THE OTHER DEBT LIST, and it exists because that list is HAND-KEPT
+        // and every hand-kept list in this file has rotted. The allow-list this check replaced went stale
+        // twice and sat red on main through the v2.0.0 and v2.0.1 tags. A list with no guard is silently
+        // wrong from the moment somebody fixes one of its entries properly, and nothing says so - which is
+        // the exact defect this whole check exists to answer, so shipping a new unguarded list would be
+        // answering it and committing it in the same change.
+        //
+        // Two ways an entry stops describing reality, and each FAILS BY NAME rather than by count.
+        //
+        // One: the model has since made it a key column, so the derived set covers it and the entry is not
+        // debt any more - it is a duplicate that would hide a real regression, because a column listed here
+        // is excluded from the reverse comparison whether or not it deserves to be.
+        var nowDerived = InheritedCollatedNonKeyColumns.Where(pair => required.Contains(pair)).ToList();
+        Assert.True(nowDerived.Count == 0,
+            "these columns are listed as inherited collated non-key columns but the MODEL now declares them "
+            + "as string key columns, so the derived set already covers them - delete them from "
+            + "InheritedCollatedNonKeyColumns: "
+            + string.Join(", ", nowDerived.Select(f => f.Table + "." + f.Column)));
+
+        // Two: it is no longer a collated column in the live catalog at all - the collation was dropped, or
+        // the column was renamed, or the table is gone. Whichever it is, the entry now describes nothing,
+        // and an entry that describes nothing quietly widens the exemption for a name that may come back
+        // later meaning something else.
+        var goneFromCatalog = InheritedCollatedNonKeyColumns.Where(pair => !actual.Contains(pair)).ToList();
+        Assert.True(goneFromCatalog.Count == 0,
+            "these columns are listed as inherited collated non-key columns but no longer carry an explicit "
+            + "C collation in the live catalog - the collation was dropped, or the column or table is gone. "
+            + "Delete them from InheritedCollatedNonKeyColumns: "
+            + string.Join(", ", goneFromCatalog.Select(f => f.Table + "." + f.Column)));
 
 
         // And no gateway column carries any explicit collation OTHER than the default or "C" - nothing
