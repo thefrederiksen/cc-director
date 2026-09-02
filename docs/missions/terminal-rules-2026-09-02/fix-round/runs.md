@@ -134,6 +134,13 @@ mission's earlier attempt, and it is why that result must not be read as flakine
 the `Gateway.Tests` ASSEMBLY and is taken before any test runs, so a filtered run contends identically to
 a full one; runs of other assemblies do not contend, which is why everything above could proceed.
 
+**The Architect seat was GONE when this report was ready.** `cc-devthrottle message send` answered
+"No session matches", and `cc-devthrottle session list` answered "No sessions are running in the fleet"
+at 15:41 - the Architect, the Gateway seat working the incident, and every other seat had ended. So this
+report was never delivered by message; it is delivered by being on the branch. Whoever picks the mission
+up should read that as "the Manager finished and the seat it reports to had already gone", not as a
+Manager that failed to report.
+
 **The CI fallback needs a decision this seat cannot make.** `.github/workflows/ci.yml` triggers on
 `push` to `main` and on `pull_request` targeting `main` - not on a push to a mission branch. `gh run
 list --branch mission/terminal-rules` returns an empty list, confirming it. So getting CI to run
