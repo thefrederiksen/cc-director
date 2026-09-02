@@ -632,22 +632,57 @@ try {
     $readLog = Join-Path $results 'readback.log'
     # The UNIT project, deliberately: CcDirector.Gateway.Tests takes a machine-wide lock and this step
     # queued behind two other worktrees' suites for ten minutes with the rig alive the whole time.
+    # THE ERROR PREFERENCE IS LOWERED FOR THIS ONE CALL, and that is not a nicety. This script runs with
+    # ErrorActionPreference = Stop, and PowerShell 5.1 turns a native executable's stderr into a terminating
+    # NativeCommandError under that setting - so a FAILING read-back test aborted the script right here, with
+    # its own diagnosis still inside dotnet's output stream and the log file holding nothing but the two
+    # header lines. Measured, on a deliberate known-bad run: the row failed, and the reason it failed was
+    # unreadable. A proof whose failure path prints nothing is the same defect as a proof that cannot fail.
+    $prevEap = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
     & dotnet test (Join-Path $repo 'src\CcDirector.Gateway.UnitTests\CcDirector.Gateway.UnitTests.csproj') `
-        --filter 'FullyQualifiedName~StoredScreenRigRead' --nologo -v q *> $readLog
+        --filter 'FullyQualifiedName~StoredScreenRigRead' --nologo -v n 2>&1 |
+        Out-File -FilePath $readLog -Encoding utf8
     $readExit = $LASTEXITCODE
+    $ErrorActionPreference = $prevEap
+    # And when it fails, SAY WHY in the transcript rather than pointing at a file the caller may not have.
+    if ($readExit -ne 0) {
+        Say '--- the read-back test failure, in full ---'
+        # Narrow on purpose: -v n also prints the build's own chatter, and a dump that buries the one line
+        # that matters is only marginally better than printing nothing.
+        Get-Content $readLog | Where-Object { $_ -match '\[FAIL\]|Error Message|Assert\.|Expected:|Actual:' } |
+            Select-Object -First 20 | ForEach-Object { Say "  $_" }
+    }
     # Print the ROW the test read back, not just the pass line. The acceptance for this row is "show the
     # stored row and the read", and a summary line shows neither.
     Say '--- the stored screen, read back from the Gateway with the machine offline ---'
     if (Test-Path $rowFile) { Get-Content $rowFile | ForEach-Object { Say "  $_" } }
     else { Say '  (the read-back test wrote no row file)' }
 
-    $summary = (Select-String -Path $readLog -Pattern '^(Passed!|Failed!)' | Select-Object -Last 1).Line
-    if ($readExit -ne 0) { Fail "the read-back test did not pass (exit $readExit): $summary" }
-    # A SKIP is not a pass. Without this the row would report success on a test that never ran, which is
-    # the exact defect this mission spent its rulings on.
-    if (-not $summary -or $summary -notmatch 'Passed:\s*1\b') {
-        Fail "the read-back test did not RUN as one passing test - summary was: $summary"
+    $summary = (Select-String -Path $readLog -Pattern '(Passed!|Failed!)' | Select-Object -Last 1).Line
+    if ($readExit -ne 0) { Fail "the read-back test did not pass (exit $readExit). Its log is $readLog" }
+
+    # A SKIP IS NOT A PASS, and this is where that is enforced. It used to be enforced by matching
+    # "Passed: 1" in the runner's summary line, which made this row's verdict depend on the wording of
+    # somebody else's console output - and a run whose comparison had genuinely PASSED then failed here,
+    # because that line was not where the parser expected it. The verdict now rests on an ARTIFACT THE RUN
+    # PRODUCED: the read-back test writes the row file only on its success path, so that file existing and
+    # naming THIS run's session and THIS run's three markers cannot happen unless the test really ran and
+    # really made the comparison. A skipped test writes nothing and fails this at once.
+    if (-not (Test-Path $rowFile)) {
+        Fail "the read-back test wrote no row file, so it never reached its success path (runner said: $summary)"
     }
+    $rowText = Get-Content $rowFile -Raw
+    if ($rowText -notmatch [regex]::Escape("session=$sid")) {
+        Fail "the row file does not name the session this run drove ($sid), so it describes some other read"
+    }
+    foreach ($m in @($markerA, $markerB, $markerC)) {
+        if ($rowText -notmatch [regex]::Escape($m)) {
+            Fail "the row file does not carry this run's marker $m, so what it reports is not this run's comparison"
+        }
+    }
+    Say "read-back verdict rests on $rowFile, which names session $sid and all three of this run's markers"
+    if ($summary) { Say "runner summary: $summary" }
     Say 'STEP 4 PASS: the real store read the screen back over the real migrated schema, machine offline'
 
     Say ''
