@@ -128,6 +128,12 @@ public class GatewayCapabilityHandshakeTests
             {
                 "Hello", "RegisterSessionKey", "RevokeSessionKey",
                 "PushSnapshot", "PushDelta", "PushRepoSnapshot",
+                // Terminal Rules (issue #2644). A Gateway too old for PushScreen stores no screens, so
+                // every reader falls back to a tunnel pull and nothing anywhere says why - which is
+                // exactly the class of silence this handshake exists to break. This list is written out
+                // by hand ON PURPOSE: deriving it from MethodsThisDirectorNeeds would make the test
+                // incapable of failing, and its failing is what caught this addition.
+                "PushScreen",
             },
         });
 
@@ -157,7 +163,7 @@ public class GatewayCapabilityHandshakeTests
             HubMethods = new List<string>
             {
                 "Hello", "RegisterSessionKey", "RevokeSessionKey",
-                "PushSnapshot", "PushDelta", "PushRepoSnapshot",
+                "PushSnapshot", "PushDelta", "PushRepoSnapshot", "PushScreen",
             },
         });
 
