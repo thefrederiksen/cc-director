@@ -161,10 +161,22 @@ That is the check working, and it is a consequence of the MERGE rather than of e
 Those columns arrived on main while this mission was replacing the hand-written allow-list with the
 model-derived check (rulings 9 and 10), and the two met for the first time when main was merged. They
 sit in a non-unique index rather than a key, so the derived enumeration cannot see them - which is
-exactly the case the inverted exception list exists for. Fixed by adding them WITH their argument: they
-are normalized lookup values matched as exact indexed predicates, so the providers must agree on which
-of them are equal or a search returns a different candidate set on the hosted Gateway than on a local
-install.
+exactly the case the inverted exception list exists for. The first fix put them in `CollationExtras`, the list whose entries each carry a written argument.
+**That was wrong and the Architect caught it.** An entry there records a DECISION - that a column does
+not need what the model would otherwise demand - and nobody decided anything here: these are another
+mission's brand-new columns and they were MET, not reasoned about. Recording debt as a reasoned
+exception is the allow-list failure returning in the new list's clothes, turning "nobody has looked at
+this" into "we looked at this and it is fine".
+
+They now sit in `InheritedCollatedNonKeyColumns`, whose comment says they are an open question, with
+the date, the fact that they arrived on main mid-round, and the three ways whoever owns those columns
+could resolve it.
+
+One correction to the instruction, reported because it is a fact about the code rather than a
+disagreement: the Architect named `InheritedUncollatedKeyColumns` as the list to move them to, and they
+cannot go there. That set is subtracted from the DERIVED KEY columns and exists for key columns carrying
+NO collation - the opposite shape - and its own comment says a new column may not be added to it. The
+new sibling set carries the same meaning for the direction these columns are in.
 
 Note also what this same run says about finding 3:
 `SessionScreens_IdempotentOnTheNaturalKey_AndByteOrdinalAboutIt_OnRealPostgres` **PASSED (216 ms)** -
