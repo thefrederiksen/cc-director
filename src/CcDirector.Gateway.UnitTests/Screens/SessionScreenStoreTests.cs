@@ -41,7 +41,29 @@ public sealed class SessionScreenStoreTests : IDisposable
     /// the other through its own, against one set of tables.</summary>
     private SessionScreenStore Store(string tenant = "local") => new(Db(tenant));
 
-    private GatewayDatabase Db(string tenant) => _db.Open(new FixedTenantContext(new TenantId(tenant)));
+    /// <summary>
+    /// ONE <see cref="GatewayDatabase"/> per tenant, CACHED - and the caching is load-bearing, not tidiness.
+    ///
+    /// <c>GatewayDatabase.Dispose</c> calls <c>SqliteConnection.ClearAllPools()</c>, which is PROCESS-GLOBAL:
+    /// it yanks pooled connections out from under every other database test running at that moment. Opening
+    /// a fresh database per helper call meant this class accumulated a dozen of them and then disposed them
+    /// all in a burst at teardown, and a full run failed one unrelated database test in another class -
+    /// <c>TenantSettingsResolverTests</c>, with "Cannot access a disposed object: SQLitePCL.sqlite3" - while
+    /// every screen test passed. That is the exact symptom <see cref="GatewayDbTestHarness"/>'s own comment
+    /// records from the last time something cleared that pool under a running suite, and it is why the
+    /// template there is held as bytes rather than copied through a pool clear.
+    ///
+    /// Two databases per class - one per tenant - is what the partition row needs and no more than that.
+    /// </summary>
+    private GatewayDatabase Db(string tenant)
+    {
+        if (_perTenant.TryGetValue(tenant, out var existing)) return existing;
+        var db = _db.Open(new FixedTenantContext(new TenantId(tenant)));
+        _perTenant[tenant] = db;
+        return db;
+    }
+
+    private readonly Dictionary<string, GatewayDatabase> _perTenant = new(StringComparer.Ordinal);
 
     /// <summary>A well-formed push. Every malformed case below starts from one of these and breaks exactly
     /// one thing, so the fault under test is the only difference from a push that is known to be accepted.</summary>
