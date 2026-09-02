@@ -45,6 +45,12 @@
     be invoked by hand; a gate that depends on remembering two extra commands is one that will eventually
     be run without them, and a release is the one place there is no fixing it forward.
 
+    A RUN THAT COLLECTED ZERO TESTS IS REFUSED, WITH ITS OWN EXIT CODE. A filter that matches nothing
+    used to exit 0 from every project and end on "all projects exited zero" - a green that means nothing
+    ran. Red-first evidence is gathered with this command, so that shape of green is now a failure:
+    exit 3 means zero tests were collected anywhere, and exit 4 means a project exited zero without
+    writing a result file. Neither is a test failure (exit 1) and neither is ever evidence.
+
     EVERY RUN WRITES A TRX FILE AND PRINTS ITS OUTCOME AND TEST COUNT. That pair, not the console
     "Passed!" line, is the verdict - see the comment above the run loop for why. A green with a collapsed
     count is the result most worth being able to go back and check.
@@ -321,6 +327,50 @@ if ($overBudget.Count -gt 0) {
     Write-Host "the ceiling is the point, and every second added to it is paid by every person and agent"
     Write-Host "on every change, forever."
     exit 1
+}
+
+# A RUN THAT COLLECTED ZERO TESTS IS A BROKEN INSTRUMENT, NOT A PASS.
+#
+# This is the fail-open that let a mission report two red-first claims that could not be reproduced. A
+# filtered run whose filter matches nothing exits ZERO from every project, prints "Passed!", writes a TRX
+# saying outcome=Completed with total=0, and this script used to end on "RESULT: all projects exited zero."
+# Nothing anywhere said that nothing had run. Red-first evidence is gathered with exactly this command, and
+# a filter that has drifted from the test name it was written for - or a test file that is not in the
+# checkout yet - produces a green that means nothing.
+#
+# So the pass condition is stated as a PRESENCE: at least one test must have been COLLECTED across the run.
+# A per-project zero is normal and is not failed - a filter naming a Gateway test legitimately collects
+# nothing in the Avalonia suite - but a run in which NOTHING ran anywhere is refused, loudly, with its own
+# exit code so a caller can tell it apart from a test failure.
+$collected = 0
+foreach ($r in $running) { $collected += [int] $r.Total }
+$noTrx = @($running | Where-Object { $_.Outcome -eq "NO-TRX" -and $_.Process.ExitCode -eq 0 })
+
+if ($noTrx.Count -gt 0) {
+    Write-Host ""
+    Write-Host "RESULT: NO RESULT FILE - $($noTrx.Count) project(s) exited zero without writing a TRX:"
+    foreach ($r in $noTrx) { Write-Host "  $($r.Name) -> $($r.Log)" }
+    Write-Host ""
+    Write-Host "A project that exited zero and produced no result file did not report a run. That is a"
+    Write-Host "broken instrument, not a pass. Do not quote a number from this run."
+    exit 4
+}
+
+if ($collected -eq 0) {
+    Write-Host ""
+    Write-Host "RESULT: ZERO TESTS COLLECTED - nothing ran, so this is not a pass."
+    if ($Filter -ne "") {
+        Write-Host "The filter was: $Filter"
+        Write-Host "No test in any project matched it. Check the test name, and check that the test file is"
+        Write-Host "actually in THIS checkout - a filter naming a class that does not exist here exits zero"
+        Write-Host "with 'No test matches', which is the shape of a green and the substance of nothing."
+    } else {
+        Write-Host "No filter was passed, so a total of zero means the run did not execute at all."
+    }
+    Write-Host ""
+    Write-Host "A run that collected zero tests is a broken instrument. It is never evidence, and a red-first"
+    Write-Host "claim must never be quoted from one."
+    exit 3
 }
 
 if ($failed.Count -eq 0) {
