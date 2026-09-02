@@ -31,6 +31,7 @@ namespace CcDirector.Gateway.UnitTests.Screens;
 /// <b>Proven against the mapped model, not the migrated schema, and proven from the store inwards with
 /// the push path unexercised.</b> See <see cref="ScreenStoreTestDb"/>.
 /// </summary>
+[Collection(ScreenPullCounterCollection.Name)]
 public class GatewayScreenReaderFreshnessTests
 {
     private const string Tenant = "local";
