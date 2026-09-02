@@ -130,6 +130,10 @@ internal static class GatewayWingmanVoiceEndpoint
         // in a defaulted position: a forgotten boundary must be a compile error, never a silent default.
         // Self-host callers construct it over the SingleTenantContext.
         Tenancy.HostedTenantBoundary tenantBoundary,
+        // One session's stored conversation as the widget list the wingman reads (turn-push mission, phase 3).
+        // Null answers "nothing stored yet", which is a wait rather than a failure. The caller enters the
+        // tenant's scope and hands over the finished list.
+        Func<TenantId, string, History.StoredConversation?>? conversationReader = null,
         Streaming.PushedSessionStore? pushedSessions = null,
         DirectorCommandRouter.SendDirectorCommandAsync? sendCommand = null,
         SessionOwnerCache? owners = null,
@@ -716,45 +720,51 @@ internal static class GatewayWingmanVoiceEndpoint
             if (!Guid.TryParse(sid, out _))
                 return Results.Json(new { error = "invalid session id format" }, statusCode: StatusCodes.Status400BadRequest);
 
+            // NO LONGER 404 WHEN THE DIRECTOR IS UNREACHABLE. This route reads the conversation from the
+            // Gateway's own store, so a stored conversation can be narrated whether or not the machine that
+            // produced it is currently reachable - refusing here would have kept the old dependency alive in
+            // the one place a person presses a button to escape it (found in review). The route is resolved
+            // only so a session this Gateway has never heard of is still an honest 404.
             var route = await ResolveRouteAsync(reqTenant.Value, sid);
-            if (route is null)
-                return Results.Json(new { error = "session not found on any director" }, statusCode: StatusCodes.Status404NotFound);
-
-            var turns = await route.GetTurnsAsync(sid, ct);
 
             voice.Mark(reqTenant.Value, sid);   // opening voice on a session makes it a voice session (kept fresh on turn-end)
 
-            // A FAILED READ IS NOT "NOTHING TO SUMMARIZE" (issue #2561). GetTurnsAsync answers null when the
-            // tunnel call failed, and otherwise carries the real outcome in Status - a failed read arrives as
-            // a SUCCESS with an empty widget list, because the transport worked even though the read did not.
+            // THE CONVERSATION COMES FROM THE GATEWAY'S OWN STORE (turn-push mission, phase 3). This route is
+            // the button a person presses when a narration has not appeared, so what it can honestly say
+            // matters more here than anywhere: it used to send a command down the tunnel asking the Director
+            // to re-read the transcript, and a failed read there arrived as a SUCCESS with no widgets, which
+            // is how this route came to tell people "this session has not produced anything to summarize yet"
+            // about sessions that had said plenty (issue #2561).
             //
-            // Reading only the widgets makes this route tell the person "this session has not produced
-            // anything to summarize yet" - a confident, wrong sentence about their own session - and record
-            // the never-retried "nothing to narrate" fact behind it. It is the same mistake the automatic
-            // path made, and on THIS route it is the one the owner presses a button to see. The honest answer
-            // is the one the model-leg timeout below already gives: say it is still coming, record Retrying so
-            // the screen says so, and let the voice sweep try again.
-            if (turns is null || !string.Equals(turns.Status, "ok", StringComparison.OrdinalIgnoreCase))
+            // There is no read to fail any more. Either the words are stored or they have not arrived yet,
+            // and the second is a wait on the Director rather than anything voice can fix by trying harder.
+            var stored = conversationReader?.Invoke(reqTenant.Value, sid);
+            if (stored is null && route is null)
+                return Results.Json(new { error = "session not found on any director" }, statusCode: StatusCodes.Status404NotFound);
+            if (stored is { IsSupported: false })
             {
-                // "unsupported" is TERMINAL - this agent exposes no conversation history at all, so no amount
-                // of retrying will produce one and saying "it will keep trying" would be the same lie in a new
-                // costume. Everything else here can become readable on a later pass. Recorded through
-                // NoteReadFailed, into the read's own store, so it can never overwrite a standing account
-                // condition (see TenantVoiceState.ReadFailed).
-                var terminal = string.Equals(turns?.Status, "unsupported", StringComparison.OrdinalIgnoreCase);
-                voice.NoteReadFailed(reqTenant.Value, sid, terminal ? HostedAiState.Unavailable : HostedAiState.Retrying);
-                FileLog.Write(
-                    $"[GatewayWingmanVoice] explain sid={sid}: turns read FAILED "
-                    + $"(status={turns?.Status ?? "(no answer)"} error={turns?.Error ?? "(none)"}) "
-                    + $"- {(terminal ? "TERMINAL" : "Retrying")}; NOT reported as nothing-to-summarize (issue #2561).");
+                // Terminal, and the person pressed a button to find out: say the thing that is true rather
+                // than promising another try that cannot help.
+                voice.NoteReadFailed(reqTenant.Value, sid, HostedAiState.Unavailable);
+                FileLog.Write($"[GatewayWingmanVoice] explain sid={sid}: this agent keeps no conversation that can be read - TERMINAL.");
                 return Results.Json(new
                 {
                     reply = "",
-                    spoken = terminal
-                        ? "This agent does not keep a conversation I can read back to you."
-                        : "I could not read this session's conversation just now - it will keep trying.",
+                    spoken = "This agent does not keep a conversation I can read back to you.",
                     replySeconds = 0.0,
-                    retrying = !terminal,
+                    retrying = false,
+                });
+            }
+            var widgets = stored?.Widgets;
+            if (widgets is null)
+            {
+                FileLog.Write($"[GatewayWingmanVoice] explain sid={sid}: no conversation stored yet - the Director has not pushed it. Not a read failure, and not a statement about the session.");
+                return Results.Json(new
+                {
+                    reply = "",
+                    spoken = "This session's conversation has not reached here yet. It should arrive in a moment.",
+                    replySeconds = 0.0,
+                    retrying = true,
                 });
             }
 
@@ -765,8 +775,7 @@ internal static class GatewayWingmanVoiceEndpoint
             // fact is cleared - the model and speech states clear where they were set.
             voice.ClearReadFailed(reqTenant.Value, sid);
 
-            var widgets = turns.Widgets ?? new List<TurnWidgetDto>();
-            var lastReply = widgets.LastOrDefault(w => w.Kind == "Text")?.Content;
+            var lastReply = History.StoredConversationWidgets.LastAgentText(widgets);
             // Recent conversation so the wingman can give context to a short/terse reply.
             var recentContext = WingmanTranslator.BuildRecentContext(widgets);
 

@@ -130,6 +130,13 @@ public sealed class WingmanVoiceService
     private readonly string _baseDir;
     private readonly HttpClient? _ttsHttp;   // test seam for TtsAsync (issue #939); the shared static when null
     private readonly Func<TenantId, string, string?>? _sessionTitleResolver;   // tenant + sid -> session title, spoken first
+    /// <summary>Reads one session's stored conversation as the widget list the wingman already understands
+    /// (turn-push mission, phase 3). Null answers "nothing stored for this session yet" - which is not a
+    /// failure. Supplied by the host, which owns entering the tenant's scope before touching the store; this
+    /// service is handed the finished answer so an asynchronous continuation can never read it under the
+    /// wrong account. Null delegate leaves narration with nothing to read, which is what a Gateway with no
+    /// store would honestly be.</summary>
+    private readonly Func<TenantId, string, History.StoredConversation?>? _conversationReader;
 
     /// <summary>
     /// True only for the EXACT form <see cref="Tenancy.TenantRegistry"/> mints: a canonical lowercase GUID.
@@ -327,8 +334,10 @@ public sealed class WingmanVoiceService
         string? persistPath = null,
         Func<string>? instructionsProvider = null,
         HttpClient? ttsHttpClient = null,
-        Func<TenantId, string, string?>? sessionTitleResolver = null)
+        Func<TenantId, string, string?>? sessionTitleResolver = null,
+        Func<TenantId, string, History.StoredConversation?>? conversationReader = null)
     {
+        _conversationReader = conversationReader;
         _vault = vault ?? throw new ArgumentNullException(nameof(vault));
         _tenantSettings = tenantSettings ?? throw new ArgumentNullException(nameof(tenantSettings));
         // The account's spoken language comes from the same per-tenant resolver this service already
@@ -959,56 +968,51 @@ public sealed class WingmanVoiceService
     private async Task<bool> GenerateOnceAsync(TenantId tenant, string sid, SessionVerbClient route, CancellationToken ct, bool showReadingWindow)
     {
         var state = StateFor(tenant);
-        var turns = await route.GetTurnsAsync(sid, ct);
-        // A FAILED READ IS NOT "NOTHING TO SAY". This is the whole of issue #2561, and it is why sessions
-        // went permanently silent with no error raised anywhere.
+
+        // THE CONVERSATION COMES FROM THE GATEWAY'S OWN STORE (turn-push mission, phase 3), not from a
+        // command sent down the tunnel asking the owning Director to re-read the user's transcript.
         //
-        // GetTurnsAsync answers null when the tunnel call failed (the owning Director is not connected), and
-        // otherwise hands back a TurnsResponse whose Status carries the REAL outcome - "ok", or one of
-        // "unsupported" / "no_session_id" / "no_jsonl" / "no_transcript" / "parse_error". Every one of those
-        // failures arrives as a SUCCESSFUL command result with an EMPTY widget list, because the transport
-        // worked even though the read did not.
+        // What that removes is an entire class of failure that this method used to have to reason about.
+        // A tunnel read answered null when the Director was not connected, and otherwise carried a status -
+        // "no_jsonl", "no_transcript", "parse_error", "unsupported" - each arriving as a SUCCESSFUL command
+        // with an empty widget list, because the transport worked even though the read did not. Telling
+        // those apart from "this session is waiting on a prompt" was issue #2561, and getting it wrong is
+        // what left a session silent for forty-eight minutes with nothing raised anywhere. It is also what
+        // left session 111 silent for hours on 1 September: the Director was looking for a transcript that
+        // had moved, and answered no_jsonl to every attempt.
         //
-        // This method used to read the widgets and nothing else. So a missing transcript, an unreadable
-        // transcript, a parse exception and an agent with no history provider all looked identical to a
-        // session that was simply waiting on a prompt - and were recorded as NothingToNarrate, which is a
-        // NON-failure that is never retried and produces no log line, no Retrying state, and no error on any
-        // screen. Observed 12 August: a Pi session sat silent for 48 minutes while the roster showed it
-        // "Preparing voice".
+        // None of that can happen here. A read of the store answers one of exactly two things: rows, or
+        // nothing stored yet. There is no transport to fail, no file to be missing, no parse to go wrong.
+        // The narration path therefore has ONE remaining reason to retry - the model or the speech service
+        // did not answer - which is the whole promise of this mission.
         //
-        // The correct treatment is the one the MODEL leg already applies a few dozen lines below (see
-        // IsModelDidNotAnswer): a read that did not answer is evidence about the READ, not about the
-        // conversation, so it is recorded as a read failure and picked up again by the voice sweep.
-        //
-        // NOT EVERY FAILED READ IS RETRYABLE, and the difference is recorded rather than flattened (found in
-        // review). "unsupported" means this agent exposes no conversation history AT ALL - retrying cannot
-        // change that, and telling the owner "voice on its way" forever would be the same lie in a new
-        // costume. It takes the terminal HostedAiState.Unavailable, which folds to a plain "Voice
-        // unavailable". Everything else here CAN become readable on a later pass - the tunnel comes back, the
-        // transcript appears once the agent writes its first turn, a half-written line finishes - so those
-        // stay Retrying.
-        //
-        // The state is recorded through NoteReadFailed, into the read's OWN store, never over the account /
-        // provider state - see TenantVoiceState.ReadFailed for why writing it into Unavailable was wrong in
-        // both directions.
-        if (turns is null)
+        // NOTHING STORED IS NOT A FAILURE AND NOT AN ATTEMPT. The words have not reached the Gateway yet;
+        // the Director will push them, and the Chat screen already says so in its own words. Recording a
+        // failure here would burn this turn's retry budget on a wait that has nothing to do with voice.
+        var stored = _conversationReader?.Invoke(tenant, sid);
+        if (stored is null)
         {
-            NoteReadFailed(tenant, sid, HostedAiState.Retrying);
-            FileLog.Write(
-                $"[WingmanVoiceService] turns read did not answer for sid={sid} (owning Director not connected) "
-                + "- Retrying; the voice sweep picks it up again. NOT recorded as nothing-to-narrate (issue #2561).");
+            // Clear any standing "nothing to read aloud" first. That sentence means the session is parked on
+            // a prompt with no reply to narrate; it does NOT mean "we do not have the words yet". Leaving it
+            // up while the push is in flight tells the reader the conversation is empty when it is merely
+            // late - a small version of the exact confusion this mission exists to remove (found in review).
+            // Nothing here stands the sweep down: ShouldSkipSweep keys on a terminal read verdict only.
+            SetNothingToNarrate(tenant, sid, false);
+            FileLog.Write($"[WingmanVoiceService] no conversation stored yet for sid={sid} - nothing to narrate from, and not counted as an attempt; the Director pushes it and the sweep comes back");
             return false;
         }
-        if (!string.Equals(turns.Status, "ok", StringComparison.OrdinalIgnoreCase))
+        // THE ONE TERMINAL ANSWER LEFT. This agent keeps no readable conversation at all, so no amount of
+        // waiting or retrying produces words to narrate. It is recorded as the terminal verdict so the voice
+        // screen says "Voice unavailable" instead of an endless quiet wait, and so the sweep stops spending
+        // its small per-cycle budget on a session that can never answer. Losing the tunnel read all but lost
+        // this - see StoredConversation for why the flag is carried.
+        if (!stored.Value.IsSupported)
         {
-            var terminal = string.Equals(turns.Status, "unsupported", StringComparison.OrdinalIgnoreCase);
-            NoteReadFailed(tenant, sid, terminal ? HostedAiState.Unavailable : HostedAiState.Retrying);
-            FileLog.Write(
-                $"[WingmanVoiceService] turns read FAILED for sid={sid}: status={turns.Status} "
-                + $"error={turns.Error ?? "(none)"} - {(terminal ? "TERMINAL (this agent exposes no conversation history)" : "Retrying; the voice sweep picks it up again")}. "
-                + "NOT recorded as nothing-to-narrate (issue #2561).");
+            NoteReadFailed(tenant, sid, HostedAiState.Unavailable);
+            FileLog.Write($"[WingmanVoiceService] sid={sid}: this agent keeps no conversation that can be read - TERMINAL, so the screen says so and the sweep stands down until the verdict is revalidated");
             return false;
         }
+        var widgets = stored.Value.Widgets;
         // The read answered, so whatever the last failed read recorded is over. Cleared HERE, before the
         // reply check, because VoiceDisplayFold consults the unavailable state BEFORE nothingToNarrate - a
         // stale read failure would mask the honest "nothing to read aloud" verdict on the very next pass.
@@ -1018,8 +1022,7 @@ public sealed class WingmanVoiceService
         // new turn). An earlier version of this line cleared any Retrying in the shared Unavailable map and
         // therefore erased model-leg and speech-leg states it had not established.
         ClearReadFailed(tenant, sid);
-        var widgets = turns.Widgets ?? new List<TurnWidgetDto>();
-        var lastReply = widgets.LastOrDefault(w => w.Kind == "Text")?.Content;
+        var lastReply = History.StoredConversationWidgets.LastAgentText(widgets);
         if (string.IsNullOrWhiteSpace(lastReply))
         {
             // The read SUCCEEDED and there is no text reply in it - the session is waiting on a prompt /

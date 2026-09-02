@@ -56,13 +56,103 @@ public sealed class WingmanVoiceServiceTests : IDisposable
         return Path.Combine(dir, "voice-sessions.json");
     }
 
-    private WingmanVoiceService NewService()
+    private WingmanVoiceService NewService(
+        Func<TenantId, string, CcDirector.Gateway.History.StoredConversation?>? conversationReader = null)
     {
         // The flag methods never touch the brain; a provider that throws proves that.
         Func<TenantId, WingmanModelRole, CancellationToken, Task<IAgentBrain>> brain =
             (_, _, _) => throw new InvalidOperationException("brain must not be called for flag state");
         var vaultPath = Path.Combine(Path.GetTempPath(), "wmvs-" + Guid.NewGuid().ToString("N") + ".vault");
-        return new WingmanVoiceService(brain, new KeyVault(vaultPath), Settings, TempPersist());
+        return new WingmanVoiceService(brain, new KeyVault(vaultPath), Settings, TempPersist(),
+            conversationReader: conversationReader);
+    }
+
+    /// <summary>
+    /// The conversation the Gateway has STORED for a session, in the widget shape the narration reads
+    /// (turn-push mission, phase 3). This is the seam that replaced the "turns" command the narration used
+    /// to send down the tunnel, so it is the seam every generation test now sets up.
+    ///
+    /// It is a small class rather than a bare lambda for two reasons that tests here depend on. It COUNTS
+    /// the reads, which is how a test can still prove the service looked at the conversation before deciding
+    /// to skip - the assertion that used to be made against the tunnel stub's hit counter. And the stored
+    /// value is settable, so one test can drive the sequence that actually happens in production: nothing
+    /// stored yet, then the Director pushes the turn, then the next sweep narrates it.
+    /// </summary>
+    private sealed class StoredConversationStub
+    {
+        private IReadOnlyList<CcDirector.Gateway.Contracts.TurnWidgetDto>? _widgets;
+        private int _reads;
+
+        private StoredConversationStub(IReadOnlyList<CcDirector.Gateway.Contracts.TurnWidgetDto>? widgets)
+            => _widgets = widgets;
+
+        /// <summary>How many times the service asked for this session's conversation.</summary>
+        public int Reads => _reads;
+
+        /// <summary>A conversation of the given widgets, in order, as (kind, content) pairs. "Text" is the
+        /// agent's own words - the last of those is what a narration is made from.</summary>
+        public static StoredConversationStub Of(params (string Kind, string Content)[] widgets)
+            => new(Build(widgets));
+
+        /// <summary>Nothing has been stored for this session yet - the Director has not pushed its turn.
+        /// This is a WAIT, not a failure, and the service must treat it as one.</summary>
+        public static StoredConversationStub NothingStored() => new(null);
+
+        /// <summary>An agent that keeps no readable conversation AT ALL. Terminal: no wait and no retry will
+        /// ever produce words to narrate, so the service must say so rather than wait quietly forever.</summary>
+        public static StoredConversationStub NoConversationEverKept() => new(Build(Array.Empty<(string, string)>())) { _supported = false };
+
+        /// <summary>The Director's push arrives: from now on the reader answers with these widgets.</summary>
+        public void Store(params (string Kind, string Content)[] widgets) => _widgets = Build(widgets);
+
+        private bool _supported = true;
+
+        /// <summary>The delegate the service is constructed with.</summary>
+        public Func<TenantId, string, CcDirector.Gateway.History.StoredConversation?> Reader
+            => (_, _) =>
+            {
+                Interlocked.Increment(ref _reads);
+                return _widgets is null
+                    ? null
+                    : new CcDirector.Gateway.History.StoredConversation(_supported, _widgets);
+            };
+
+        private static List<CcDirector.Gateway.Contracts.TurnWidgetDto> Build((string Kind, string Content)[] widgets)
+        {
+            var built = new List<CcDirector.Gateway.Contracts.TurnWidgetDto>();
+            foreach (var (kind, content) in widgets)
+                built.Add(new CcDirector.Gateway.Contracts.TurnWidgetDto { Kind = kind, Content = content });
+            return built;
+        }
+    }
+
+    [Fact]
+    public async Task GenerateAsync_WhenTheAgentKeepsNoConversation_IsTerminal_AndStandsTheSweepDown()
+    {
+        // THE CAPABILITY THAT NEARLY WENT WITH THE TUNNEL READ. An agent with no conversation to read used to
+        // answer "unsupported" on the transcript read, which recorded a terminal verdict: the voice screen
+        // said "Voice unavailable" and the sweep stopped spending its small per-cycle budget on a session
+        // that could never produce a narration. Reading the store removed the failing read and, with it, the
+        // only producer of that verdict - such a session would have read as an ordinary quiet wait, forever,
+        // with nothing said anywhere. The Director already pushes the fact, so the store carries it.
+        var conversation = StoredConversationStub.NoConversationEverKept();
+        var dir = Path.Combine(Path.GetTempPath(), "wmvs-terminal-" + Guid.NewGuid().ToString("N"));
+        var persistPath = Path.Combine(dir, "voice-sessions.json");
+        try
+        {
+            var svc = ServiceWithBrainAndTts(new RecordingBrain(), new byte[] { 1, 2, 3 }, persistPath, conversation.Reader);
+            var tunnel = new TunnelStub();
+
+            await svc.GenerateAsync(TenantId.Local, "sid-1", RouteFor(tunnel));
+
+            Assert.Equal(HostedAiState.Unavailable, svc.ReadFailedFor(TenantId.Local, "sid-1"));
+            Assert.True(svc.ShouldSkipSweep(TenantId.Local, "sid-1"));
+            Assert.False(svc.HasVoice(TenantId.Local, "sid-1"));
+            // And NOT the honest-but-wrong "waiting on a prompt" answer, which is what a reader would be told
+            // to keep waiting for.
+            Assert.False(svc.NothingToNarrateFor(TenantId.Local, "sid-1"));
+        }
+        finally { try { Directory.Delete(dir, recursive: true); } catch (IOException) { } }
     }
 
     [Fact]
@@ -238,26 +328,26 @@ public sealed class WingmanVoiceServiceTests : IDisposable
 
     // ---------- Re-narrate only when the reply actually changed (issue #1322, identity-aware) ----------
 
-    /// <summary>Gateway Cleanup mission (the cut): a tunnel-connected "Director" whose "turns" verb returns a
-    /// fixed JSON body and counts how many times it was read. GenerateAsync reads the session over the
-    /// TUNNEL-ONLY SessionVerbClient now (the HTTP fallback is gone), so this stub is the sendCommand the client
-    /// dispatches to - it proves whether GenerateAsync fetched and what it did with the result.</summary>
-    private sealed class TunnelReadStub
+    /// <summary>
+    /// A tunnel-connected "Director" that answers every verb successfully and counts how many commands it
+    /// was sent. GenerateAsync still reaches the owning Director over the TUNNEL-ONLY SessionVerbClient, so
+    /// this stub is the sendCommand the client dispatches to.
+    ///
+    /// It no longer serves a "turns" body. The narration used to fetch the session's conversation by sending
+    /// that verb down the tunnel; since the turn-push mission's third phase it reads the conversation the
+    /// Gateway has already stored, so the only thing left riding this transport during a generation is the
+    /// LIVE SCREEN read. A test that wants to say something about the conversation sets up a
+    /// <see cref="StoredConversationStub"/> instead, and its own read counter is the signal that used to be
+    /// read off this one.
+    /// </summary>
+    private sealed class TunnelStub
     {
-        private readonly string _turnsJson;
         private int _hits;
         public int Hits => _hits;
 
-        public TunnelReadStub(string turnsJson) => _turnsJson = turnsJson;
-
-        public CcDirector.Gateway.Api.DirectorCommandRouter.SendDirectorCommandAsync SendCommand => (_, command, _) =>
+        public CcDirector.Gateway.Api.DirectorCommandRouter.SendDirectorCommandAsync SendCommand => (_, _, _) =>
         {
-            if (string.Equals(command.Verb, "turns", StringComparison.Ordinal))
-            {
-                Interlocked.Increment(ref _hits);
-                return Task.FromResult<CcDirector.Gateway.Contracts.DirectorCommandResult?>(
-                    CcDirector.Gateway.Contracts.DirectorCommandResult.Success(_turnsJson));
-            }
+            Interlocked.Increment(ref _hits);
             return Task.FromResult<CcDirector.Gateway.Contracts.DirectorCommandResult?>(
                 CcDirector.Gateway.Contracts.DirectorCommandResult.Success());
         };
@@ -313,13 +403,14 @@ public sealed class WingmanVoiceServiceTests : IDisposable
         // is stuck and generate does nothing". The model leg now mirrors the speech leg: a non-answer is
         // Retrying (calm "voice on its way", the sweep retries), never a silent failure and never
         // ServiceDown. Nothing plays, but the phone knows why - and it is one session's state, nobody else's.
-        var director = new TunnelReadStub("{\"widgets\":[{\"kind\":\"Text\",\"content\":\"the reply to narrate\"}]}");
+        var director = new TunnelStub();
+        var conversation = StoredConversationStub.Of(("Text", "the reply to narrate"));
         var dir = Path.Combine(Path.GetTempPath(), "wmvs-modeltimeout-" + Guid.NewGuid().ToString("N"));
         var persistPath = Path.Combine(dir, "voice-sessions.json");
         try
         {
             var brain = new TimingOutBrain();
-            var svc = ServiceWithBrainAndTts(brain, new byte[] { 7, 7, 7 }, persistPath);
+            var svc = ServiceWithBrainAndTts(brain, new byte[] { 7, 7, 7 }, persistPath, conversation.Reader);
 
             await svc.GenerateAsync(TenantId.Local, "sid-1", RouteFor(director), CancellationToken.None, showReadingWindow: true);
 
@@ -351,13 +442,14 @@ public sealed class WingmanVoiceServiceTests : IDisposable
         // The screenshot's session: waiting on a prompt/menu, so the latest turn has no Text widget. The
         // auto path must record the honest "nothing to narrate" fact (so the Voice screen says so), call
         // no model, produce no audio, and set NO failure reason - it is not a failure, it is just empty.
-        var director = new TunnelReadStub("{\"widgets\":[{\"kind\":\"ToolUse\",\"content\":\"running a tool\"}]}");
+        var director = new TunnelStub();
+        var conversation = StoredConversationStub.Of(("ToolUse", "running a tool"));
         var dir = Path.Combine(Path.GetTempPath(), "wmvs-nothing-" + Guid.NewGuid().ToString("N"));
         var persistPath = Path.Combine(dir, "voice-sessions.json");
         try
         {
             var brain = new RecordingBrain();
-            var svc = ServiceWithBrainAndTts(brain, new byte[] { 1 }, persistPath);
+            var svc = ServiceWithBrainAndTts(brain, new byte[] { 1 }, persistPath, conversation.Reader);
 
             await svc.GenerateAsync(TenantId.Local, "sid-1", RouteFor(director), CancellationToken.None, showReadingWindow: true);
 
@@ -373,13 +465,14 @@ public sealed class WingmanVoiceServiceTests : IDisposable
     public async Task GenerateAsync_WithTextWidget_ClearsStaleNothingToNarrate_AndNarrates()
     {
         // A text reply appeared: the auto path clears any stale "nothing to narrate" and makes the voice.
-        var director = new TunnelReadStub("{\"widgets\":[{\"kind\":\"Text\",\"content\":\"the reply to read\"}]}");
+        var director = new TunnelStub();
+        var conversation = StoredConversationStub.Of(("Text", "the reply to read"));
         var dir = Path.Combine(Path.GetTempPath(), "wmvs-nowtext-" + Guid.NewGuid().ToString("N"));
         var persistPath = Path.Combine(dir, "voice-sessions.json");
         try
         {
             var brain = new RecordingBrain();
-            var svc = ServiceWithBrainAndTts(brain, new byte[] { 9, 9, 9 }, persistPath);
+            var svc = ServiceWithBrainAndTts(brain, new byte[] { 9, 9, 9 }, persistPath, conversation.Reader);
             svc.SetNothingToNarrate(TenantId.Local, "sid-1", true);   // a stale marker from an earlier empty read
 
             await svc.GenerateAsync(TenantId.Local, "sid-1", RouteFor(director), CancellationToken.None, showReadingWindow: false);
@@ -421,57 +514,71 @@ public sealed class WingmanVoiceServiceTests : IDisposable
         Assert.False(svc.NothingToNarrateFor(TenantId.Local, "s"));
     }
 
-    // ---------- A FAILED turns read is not "nothing to say" (issue #2561) ----------
+    // ---------- A FAILED read is not "nothing to say" (issue #2561), and there is no read left to fail ----------
 
     /// <summary>
-    /// The turns verb reports a failed read as a SUCCESSFUL command result carrying an empty widget list and
-    /// a Status naming the real outcome. Before this fix nothing read that Status, so a missing transcript,
-    /// an unreadable transcript, a parse exception and an agent with no history provider were all recorded as
-    /// "nothing to narrate" - a NON-failure that is never retried and raises nothing anywhere. A Pi session
-    /// observed on 12 August sat silent for 48 minutes that way.
+    /// THE LESSON, KEPT: a failed read of a session's conversation must never be mistaken for "this session
+    /// has nothing to say". Getting that wrong is issue #2561 - a missing transcript, an unreadable one, a
+    /// parse exception and an agent with no history provider were all recorded as "nothing to narrate", a
+    /// non-failure that is never retried and raises nothing anywhere, and a Pi session observed on 12 August
+    /// sat silent for 48 minutes because of it.
     ///
-    /// Each of these statuses must record Retrying (so the voice sweep picks it up again and the screen says
-    /// something) and must NOT record nothing-to-narrate.
+    /// The lesson now holds STRUCTURALLY rather than by a check. The narration reads the conversation the
+    /// Gateway has already stored, so there is no tunnel read left to fail: the five statuses this test used
+    /// to enumerate one by one - no_transcript, no_jsonl, parse_error, empty_history and no_session_id - were
+    /// each a shape of a failed "turns" command, and not one of them can arise any more. There is nothing to
+    /// tell apart, so nothing to tell apart wrongly.
+    ///
+    /// What is left in that space is the one honest waiting state: nothing has been stored for this session
+    /// yet, because the Director has not pushed its turn. That is a WAIT, not a failure and not an attempt.
+    /// So the service must record NEITHER a read failure NOR nothing-to-narrate, must not call the model, and
+    /// must produce no audio - it simply comes back on the next sweep.
     /// </summary>
-    [Theory]
-    [InlineData("no_transcript")]
-    [InlineData("no_jsonl")]
-    [InlineData("parse_error")]
-    [InlineData("empty_history")]
-    [InlineData("no_session_id")]
-    public async Task GenerateAsync_WhenTurnsReadFailed_RecordsRetrying_NotNothingToNarrate(string status)
+    [Fact]
+    public async Task GenerateAsync_WhenNothingIsStoredYet_RecordsNeitherAReadFailureNorNothingToNarrate()
     {
-        // A failed read: the transport succeeded, so this is a success carrying no widgets - exactly the
-        // shape that used to be indistinguishable from a session waiting on a prompt.
-        var director = new TunnelReadStub($"{{\"status\":\"{status}\",\"error\":\"the read failed\",\"widgets\":[]}}");
-        var dir = Path.Combine(Path.GetTempPath(), "wmvs-readfail-" + Guid.NewGuid().ToString("N"));
+        var director = new TunnelStub();
+        var conversation = StoredConversationStub.NothingStored();
+        var dir = Path.Combine(Path.GetTempPath(), "wmvs-nostore-" + Guid.NewGuid().ToString("N"));
         var persistPath = Path.Combine(dir, "voice-sessions.json");
         try
         {
             var brain = new RecordingBrain();
-            var svc = ServiceWithBrainAndTts(brain, new byte[] { 1 }, persistPath);
+            var svc = ServiceWithBrainAndTts(brain, new byte[] { 1 }, persistPath, conversation.Reader);
 
             await svc.GenerateAsync(TenantId.Local, "sid-1", RouteFor(director), CancellationToken.None, showReadingWindow: true);
 
-            Assert.Equal(HostedAiState.Retrying, svc.VoiceUnavailableFor(TenantId.Local, "sid-1"));
-            Assert.False(svc.NothingToNarrateFor(TenantId.Local, "sid-1"));   // the lie this fix removes
-            Assert.False(svc.HasVoice(TenantId.Local, "sid-1"));
-            Assert.Equal(0, brain.AskCount);                                  // nothing was read, so nothing to translate
+            Assert.True(conversation.Reads >= 1);                              // it did look for the words
+            Assert.Null(svc.ReadFailedFor(TenantId.Local, "sid-1"));           // ...and a wait is not a failed read
+            Assert.Null(svc.VoiceUnavailableFor(TenantId.Local, "sid-1"));     // ...so the row carries no reason at all
+            Assert.False(svc.NothingToNarrateFor(TenantId.Local, "sid-1"));    // ...and it is NOT "nothing to say" either
+            Assert.False(svc.HasVoice(TenantId.Local, "sid-1"));               // nothing to play yet
+            Assert.Equal(0, brain.AskCount);                                   // and nothing to translate, so no spend
         }
         finally { try { Directory.Delete(dir, recursive: true); } catch { /* best-effort */ } }
     }
 
-    /// <summary>A tunnel read that does not answer at all (the owning Director is not connected) is the same
-    /// class of non-evidence and takes the same Retrying treatment - never "nothing to narrate".</summary>
+    /// <summary>
+    /// The owning Director being unreachable no longer silences the narration, which is the whole gain of
+    /// moving the conversation into the Gateway's own store. It used to be fatal: the conversation was
+    /// fetched by a command sent down the tunnel, so a Director that had dropped off produced no words, and
+    /// this test asserted the consolation prize - that the session at least said "voice on its way" instead
+    /// of the lie "nothing to narrate".
+    ///
+    /// Now the words are already here. The only thing the tunnel still carries during a generation is the
+    /// live screen read, which the narration explicitly does not depend on. So an unreachable Director costs
+    /// this session a screen verdict and nothing else: it still narrates, and it still records no failure.
+    /// </summary>
     [Fact]
-    public async Task GenerateAsync_WhenTurnsReadDoesNotAnswer_RecordsRetrying_NotNothingToNarrate()
+    public async Task GenerateAsync_WhenTheDirectorIsUnreachable_StillNarratesFromTheStoredConversation()
     {
+        var conversation = StoredConversationStub.Of(("Text", "the reply to narrate"));
         var dir = Path.Combine(Path.GetTempPath(), "wmvs-readnull-" + Guid.NewGuid().ToString("N"));
         var persistPath = Path.Combine(dir, "voice-sessions.json");
         try
         {
             var brain = new RecordingBrain();
-            var svc = ServiceWithBrainAndTts(brain, new byte[] { 1 }, persistPath);
+            var svc = ServiceWithBrainAndTts(brain, new byte[] { 1 }, persistPath, conversation.Reader);
             // A null command result is what DirectorCommandRouter yields for an unreachable Director.
             CcDirector.Gateway.Api.DirectorCommandRouter.SendDirectorCommandAsync unreachable =
                 (_, _, _) => Task.FromResult<CcDirector.Gateway.Contracts.DirectorCommandResult?>(null);
@@ -481,28 +588,31 @@ public sealed class WingmanVoiceServiceTests : IDisposable
 
             await svc.GenerateAsync(TenantId.Local, "sid-1", route, CancellationToken.None, showReadingWindow: true);
 
-            Assert.Equal(HostedAiState.Retrying, svc.VoiceUnavailableFor(TenantId.Local, "sid-1"));
-            Assert.False(svc.NothingToNarrateFor(TenantId.Local, "sid-1"));
-            Assert.Equal(0, brain.AskCount);
+            Assert.Equal(1, brain.AskCount);                                   // it translated the stored reply
+            Assert.True(svc.HasVoice(TenantId.Local, "sid-1"));                // and there is something to play
+            Assert.Null(svc.VoiceUnavailableFor(TenantId.Local, "sid-1"));     // no failure was recorded
+            Assert.False(svc.NothingToNarrateFor(TenantId.Local, "sid-1"));    // and never the old lie
         }
         finally { try { Directory.Delete(dir, recursive: true); } catch { /* best-effort */ } }
     }
 
     /// <summary>
-    /// The other direction, so the fix cannot be "record Retrying for everything": a read that SUCCEEDS and
-    /// genuinely contains no text reply is still the honest "nothing to narrate", and still raises no failure.
-    /// This is the state a session waiting on a prompt is actually in, and it must survive the change.
+    /// The other direction, so the fix cannot be "say nothing about everything": a conversation that IS
+    /// stored and genuinely contains no text reply is still the honest "nothing to narrate", and still raises
+    /// no failure. This is the state a session waiting on a prompt is actually in, and it must survive the
+    /// move of the conversation from a tunnel read into the Gateway's own store.
     /// </summary>
     [Fact]
     public async Task GenerateAsync_WhenReadSucceedsWithNoText_StillRecordsNothingToNarrate()
     {
-        var director = new TunnelReadStub("{\"status\":\"ok\",\"widgets\":[{\"kind\":\"ToolUse\",\"content\":\"running a tool\"}]}");
+        var director = new TunnelStub();
+        var conversation = StoredConversationStub.Of(("ToolUse", "running a tool"));
         var dir = Path.Combine(Path.GetTempPath(), "wmvs-oknotext-" + Guid.NewGuid().ToString("N"));
         var persistPath = Path.Combine(dir, "voice-sessions.json");
         try
         {
             var brain = new RecordingBrain();
-            var svc = ServiceWithBrainAndTts(brain, new byte[] { 1 }, persistPath);
+            var svc = ServiceWithBrainAndTts(brain, new byte[] { 1 }, persistPath, conversation.Reader);
 
             await svc.GenerateAsync(TenantId.Local, "sid-1", RouteFor(director), CancellationToken.None, showReadingWindow: true);
 
@@ -522,12 +632,13 @@ public sealed class WingmanVoiceServiceTests : IDisposable
     [Fact]
     public async Task GenerateAsync_WhenReadRecovers_ClearsTheReadFailureRetrying()
     {
-        var director = new TunnelReadStub("{\"status\":\"ok\",\"widgets\":[{\"kind\":\"ToolUse\",\"content\":\"running a tool\"}]}");
+        var director = new TunnelStub();
+        var conversation = StoredConversationStub.Of(("ToolUse", "running a tool"));
         var dir = Path.Combine(Path.GetTempPath(), "wmvs-recover-" + Guid.NewGuid().ToString("N"));
         var persistPath = Path.Combine(dir, "voice-sessions.json");
         try
         {
-            var svc = ServiceWithBrainAndTts(new RecordingBrain(), new byte[] { 1 }, persistPath);
+            var svc = ServiceWithBrainAndTts(new RecordingBrain(), new byte[] { 1 }, persistPath, conversation.Reader);
             svc.NoteReadFailed(TenantId.Local, "sid-1", HostedAiState.Retrying);   // left behind by an earlier failed read
 
             await svc.GenerateAsync(TenantId.Local, "sid-1", RouteFor(director), CancellationToken.None, showReadingWindow: true);
@@ -541,54 +652,80 @@ public sealed class WingmanVoiceServiceTests : IDisposable
 
 
     /// <summary>
-    /// "unsupported" is the one read failure that CANNOT recover: the agent exposes no conversation history
-    /// at all, so retrying can never produce one. It takes the terminal state instead, so the screen says
-    /// "Voice unavailable" rather than promising a narration that is not coming - and so the voice sweep can
-    /// leave it out of its three-per-cycle budget instead of letting it starve sessions that would produce
-    /// audio. Found in review: the first version of this fix retried it forever.
+    /// A session with nothing stored yet must stay IN the sweep, so it narrates the moment its words arrive.
+    ///
+    /// This is the successor to the old "unsupported" case. A tunnel read could answer that the agent exposed
+    /// no conversation history at all, which retrying could never fix, so it took a terminal state - partly so
+    /// the screen stopped promising a narration that was not coming, and partly so such sessions stopped
+    /// starving the sweep's three-generations-a-cycle budget. Neither pressure exists now: a read of the store
+    /// costs nothing and cannot fail, so a session waiting for its first push is simply cheap to ask again.
+    ///
+    /// What must therefore be true, and is what this test pins: the wait never stands the sweep down
+    /// (<see cref="WingmanVoiceService.ShouldSkipSweep"/> stays false), and the session narrates on the very
+    /// next attempt once the Director's push has landed. The alternative - recording something terminal on a
+    /// session that has merely not spoken yet - would be the permanent silence this whole change removes.
     /// </summary>
     [Fact]
-    public async Task GenerateAsync_WhenAgentHasNoConversationHistory_IsTerminal_NotRetriedForever()
+    public async Task GenerateAsync_WhenNothingIsStoredYet_DoesNotStandTheSweepDown_AndNarratesOnceTurnsArrive()
     {
-        var director = new TunnelReadStub("{\"status\":\"unsupported\",\"error\":\"no history provider\",\"widgets\":[]}");
+        var director = new TunnelStub();
+        var conversation = StoredConversationStub.NothingStored();
         var dir = Path.Combine(Path.GetTempPath(), "wmvs-unsup-" + Guid.NewGuid().ToString("N"));
         var persistPath = Path.Combine(dir, "voice-sessions.json");
         try
         {
-            var svc = ServiceWithBrainAndTts(new RecordingBrain(), new byte[] { 1 }, persistPath);
+            var brain = new RecordingBrain();
+            var svc = ServiceWithBrainAndTts(brain, new byte[] { 1 }, persistPath, conversation.Reader);
 
+            // The turn has ended but the Director has not pushed it yet - the sweep finds nothing to read.
             await svc.GenerateAsync(TenantId.Local, "sid-1", RouteFor(director), CancellationToken.None, showReadingWindow: true);
 
-            Assert.Equal(HostedAiState.Unavailable, svc.ReadFailedFor(TenantId.Local, "sid-1"));
-            Assert.Equal(HostedAiState.Unavailable, svc.VoiceUnavailableFor(TenantId.Local, "sid-1"));
+            Assert.False(svc.ShouldSkipSweep(TenantId.Local, "sid-1"));       // still in the sweep - this is what recovers it
+            Assert.Null(svc.ReadFailedFor(TenantId.Local, "sid-1"));          // nothing terminal, nothing retryable
             Assert.False(svc.NothingToNarrateFor(TenantId.Local, "sid-1"));
+            Assert.Equal(0, brain.AskCount);
+            Assert.False(svc.HasVoice(TenantId.Local, "sid-1"));
+
+            // The push lands, and the next sweep of the same session narrates it.
+            conversation.Store(("Text", "the reply the Director finally pushed"));
+            await svc.GenerateAsync(TenantId.Local, "sid-1", RouteFor(director), CancellationToken.None, showReadingWindow: true);
+
+            Assert.Equal(1, brain.AskCount);
+            Assert.True(svc.HasVoice(TenantId.Local, "sid-1"));
+            Assert.Null(svc.VoiceUnavailableFor(TenantId.Local, "sid-1"));
         }
         finally { try { Directory.Delete(dir, recursive: true); } catch { /* best-effort */ } }
     }
 
     /// <summary>
-    /// A failed read must NEVER replace a standing account condition. "Add credit" is actionable and certain;
-    /// a failed transcript read is neither, and says nothing whatever about the account. The first version of
-    /// this fix wrote the read state into the SAME dictionary, so one unreachable tunnel downgraded
-    /// "Voice needs credit" to "voice on its way" - found in review.
+    /// A conversation that is not there yet must NEVER replace a standing account condition. "Add credit" is
+    /// actionable and certain; a session whose words have not been pushed yet says nothing whatever about the
+    /// account. An early version of the read-failure fix wrote the read's state into the SAME dictionary as
+    /// the account's, so one unreachable tunnel downgraded "Voice needs credit" to "voice on its way" - found
+    /// in review, and the reason the two facts are stored apart.
+    ///
+    /// The pressure is lower now, because a wait records nothing at all, which is the second assertion here.
+    /// The precedence still has to hold, though: whatever the narration path learns on a pass where it has no
+    /// words, the reader must still be told the one thing they can act on.
     /// </summary>
     [Fact]
-    public async Task GenerateAsync_WhenReadFails_DoesNotOverwriteAStandingAccountCondition()
+    public async Task GenerateAsync_WhenNothingIsStoredYet_DoesNotOverwriteAStandingAccountCondition()
     {
-        var director = new TunnelReadStub("{\"status\":\"no_transcript\",\"error\":\"not located\",\"widgets\":[]}");
+        var director = new TunnelStub();
+        var conversation = StoredConversationStub.NothingStored();
         var dir = Path.Combine(Path.GetTempPath(), "wmvs-acct-" + Guid.NewGuid().ToString("N"));
         var persistPath = Path.Combine(dir, "voice-sessions.json");
         try
         {
-            var svc = ServiceWithBrainAndTts(new RecordingBrain(), new byte[] { 1 }, persistPath);
+            var svc = ServiceWithBrainAndTts(new RecordingBrain(), new byte[] { 1 }, persistPath, conversation.Reader);
             svc.NoteUnavailableForTest(TenantId.Local, "sid-1", HostedAiState.NeedsCredits);
 
             await svc.GenerateAsync(TenantId.Local, "sid-1", RouteFor(director), CancellationToken.None, showReadingWindow: true);
 
             // The account condition still wins: it is the more actionable and the more certain of the two.
             Assert.Equal(HostedAiState.NeedsCredits, svc.VoiceUnavailableFor(TenantId.Local, "sid-1"));
-            // ...and the read failure is still recorded, in its own store, so nothing is lost either.
-            Assert.Equal(HostedAiState.Retrying, svc.ReadFailedFor(TenantId.Local, "sid-1"));
+            // ...and the wait added nothing of its own to argue with it.
+            Assert.Null(svc.ReadFailedFor(TenantId.Local, "sid-1"));
         }
         finally { try { Directory.Delete(dir, recursive: true); } catch { /* best-effort */ } }
     }
@@ -601,12 +738,13 @@ public sealed class WingmanVoiceServiceTests : IDisposable
     [Fact]
     public async Task GenerateAsync_WhenReadRecovers_DoesNotEraseAModelLegRetrying()
     {
-        var director = new TunnelReadStub("{\"status\":\"ok\",\"widgets\":[{\"kind\":\"ToolUse\",\"content\":\"running a tool\"}]}");
+        var director = new TunnelStub();
+        var conversation = StoredConversationStub.Of(("ToolUse", "running a tool"));
         var dir = Path.Combine(Path.GetTempPath(), "wmvs-modelretry-" + Guid.NewGuid().ToString("N"));
         var persistPath = Path.Combine(dir, "voice-sessions.json");
         try
         {
-            var svc = ServiceWithBrainAndTts(new RecordingBrain(), new byte[] { 1 }, persistPath);
+            var svc = ServiceWithBrainAndTts(new RecordingBrain(), new byte[] { 1 }, persistPath, conversation.Reader);
             svc.NoteRetrying(TenantId.Local, "sid-1");   // the MODEL leg's own state, on the shared map
 
             await svc.GenerateAsync(TenantId.Local, "sid-1", RouteFor(director), CancellationToken.None, showReadingWindow: true);
@@ -684,34 +822,40 @@ public sealed class WingmanVoiceServiceTests : IDisposable
     }
 
     /// <summary>A voice service wired to a recording brain and a text-to-speech stub that returns
-    /// <paramref name="audio"/>, so the full turn-end path (fetch -> translate -> synthesize -> store)
-    /// runs without a live model or provider.</summary>
-    private WingmanVoiceService ServiceWithBrainAndTts(IAgentBrain brain, byte[] audio, string persistPath)
+    /// <paramref name="audio"/>, so the full turn-end path (read the stored conversation -> translate ->
+    /// synthesize -> store) runs without a live model or provider. <paramref name="conversationReader"/> is
+    /// what the narration reads its words from; leaving it null is the honest "this Gateway has stored
+    /// nothing" case, which is what the tests about waiting want.</summary>
+    private WingmanVoiceService ServiceWithBrainAndTts(IAgentBrain brain, byte[] audio, string persistPath,
+        Func<TenantId, string, CcDirector.Gateway.History.StoredConversation?>? conversationReader = null)
     {
         var vaultPath = Path.Combine(Path.GetTempPath(), "wmvs-" + Guid.NewGuid().ToString("N") + ".vault");
         var vault = new KeyVault(vaultPath);
         vault.Set("OPENAI_API_KEY", "sk-test");
         vault.Set("DEVTHROTTLE_API_KEY", "dt_live_test");
         var http = new HttpClient(new TtsStubHandler(HttpStatusCode.OK, "", audio));
-        return new WingmanVoiceService((_, _, _) => Task.FromResult(brain), vault, Settings, persistPath, ttsHttpClient: http);
+        return new WingmanVoiceService((_, _, _) => Task.FromResult(brain), vault, Settings, persistPath,
+            ttsHttpClient: http, conversationReader: conversationReader);
     }
 
     /// <summary>Like <see cref="ServiceWithBrainAndTts"/> but with a caller-supplied speech transport, so a
     /// test can drive the full GenerateAsync path (model translation + speech) against a stateful handler.</summary>
-    private WingmanVoiceService ServiceWithBrainAndHandler(IAgentBrain brain, HttpMessageHandler handler, string persistPath)
+    private WingmanVoiceService ServiceWithBrainAndHandler(IAgentBrain brain, HttpMessageHandler handler, string persistPath,
+        Func<TenantId, string, CcDirector.Gateway.History.StoredConversation?>? conversationReader = null)
     {
         var vaultPath = Path.Combine(Path.GetTempPath(), "wmvs-" + Guid.NewGuid().ToString("N") + ".vault");
         var vault = new KeyVault(vaultPath);
         vault.Set("OPENAI_API_KEY", "sk-test");
         vault.Set("DEVTHROTTLE_API_KEY", "dt_live_test");
         var http = new HttpClient(handler);
-        return new WingmanVoiceService((_, _, _) => Task.FromResult(brain), vault, Settings, persistPath, ttsHttpClient: http);
+        return new WingmanVoiceService((_, _, _) => Task.FromResult(brain), vault, Settings, persistPath,
+            ttsHttpClient: http, conversationReader: conversationReader);
     }
 
     /// <summary>Gateway Cleanup mission (the cut): GenerateAsync takes a tunnel-only SessionVerbClient. This
-    /// binds one to the stub's sendCommand so the "turns" read rides the tunnel (the HTTP fallback is gone);
-    /// the stub's Hits still counts the reads, the exact signal these tests assert.</summary>
-    private static CcDirector.Gateway.Api.SessionVerbClient RouteFor(TunnelReadStub stub) =>
+    /// binds one to the stub's sendCommand, which is now the transport for the LIVE SCREEN read alone - the
+    /// conversation itself comes from the stored-conversation reader, not from the tunnel.</summary>
+    private static CcDirector.Gateway.Api.SessionVerbClient RouteFor(TunnelStub stub) =>
         new(new CcDirector.Gateway.Contracts.DirectorDto { DirectorId = "d1", ControlEndpoint = "http://tunnel-only" },
             stub.SendCommand);
 
@@ -722,13 +866,14 @@ public sealed class WingmanVoiceServiceTests : IDisposable
         // differs from the one already narrated, the turn-end MUST regenerate - even though a cached clip
         // exists. The old guard skipped here whenever the Working transition was missed, leaving the
         // phone replaying a stale interim narration while the history had moved on to the real answer.
-        var director = new TunnelReadStub("{\"widgets\":[{\"kind\":\"Text\",\"content\":\"the NEW final answer\"}]}");
+        var director = new TunnelStub();
+        var conversation = StoredConversationStub.Of(("Text", "the NEW final answer"));
         var dir = Path.Combine(Path.GetTempPath(), "wmvs-regen-" + Guid.NewGuid().ToString("N"));
         var persistPath = Path.Combine(dir, "voice-sessions.json");
         try
         {
             var brain = new RecordingBrain();
-            var svc = ServiceWithBrainAndTts(brain, new byte[] { 4, 4, 4 }, persistPath);
+            var svc = ServiceWithBrainAndTts(brain, new byte[] { 4, 4, 4 }, persistPath, conversation.Reader);
             svc.StoreReadyAudioForTest(TenantId.Local, "sid-1", "old spoken", "the OLD interim reply", new byte[] { 1, 2, 3 });
             Assert.True(svc.HasVoice(TenantId.Local, "sid-1"));
 
@@ -746,22 +891,23 @@ public sealed class WingmanVoiceServiceTests : IDisposable
     public async Task GenerateAsync_WhenCurrentReplyMatchesCache_SkipsQuietly()
     {
         // Issue #1322 preserved: when the CURRENT last reply is the EXACT one already narrated, the
-        // turn-end fetches to compare but does NOT regenerate - it never calls the brain, never re-mints
-        // audio, and never flips the session yellow, so a client mid-play is not disturbed.
-        var director = new TunnelReadStub("{\"widgets\":[{\"kind\":\"Text\",\"content\":\"the same reply\"}]}");
+        // turn-end reads the conversation to compare but does NOT regenerate - it never calls the brain,
+        // never re-mints audio, and never flips the session yellow, so a client mid-play is not disturbed.
+        var director = new TunnelStub();
+        var conversation = StoredConversationStub.Of(("Text", "the same reply"));
         var dir = Path.Combine(Path.GetTempPath(), "wmvs-same-" + Guid.NewGuid().ToString("N"));
         var persistPath = Path.Combine(dir, "voice-sessions.json");
         try
         {
             var brain = new RecordingBrain();
-            var svc = ServiceWithBrainAndTts(brain, new byte[] { 9, 9 }, persistPath);
+            var svc = ServiceWithBrainAndTts(brain, new byte[] { 9, 9 }, persistPath, conversation.Reader);
             svc.StoreReadyAudioForTest(TenantId.Local, "sid-1", "old spoken", "the same reply", new byte[] { 1, 2, 3 });
             Assert.True(svc.HasVoice(TenantId.Local, "sid-1"));
 
             await svc.GenerateAsync(TenantId.Local, "sid-1", RouteFor(director), CancellationToken.None, showReadingWindow: true);
 
             Assert.Equal(0, brain.AskCount);              // never regenerated
-            Assert.True(director.Hits >= 1);              // but it DID fetch to compare (identity-aware, not blind)
+            Assert.True(conversation.Reads >= 1);         // but it DID read the conversation to compare (identity-aware, not blind)
             Assert.True(svc.HasVoice(TenantId.Local, "sid-1"));           // the existing clip is untouched
             Assert.False(svc.IsGenerating(TenantId.Local, "sid-1"));      // and it never flipped the session yellow
             Assert.Equal(new byte[] { 1, 2, 3 }, svc.GetAudio(TenantId.Local, "sid-1"));   // same original audio, not re-minted
@@ -1193,13 +1339,14 @@ public sealed class WingmanVoiceServiceTests : IDisposable
         // new code there is no gate, so BOTH reach the provider and BOTH get audio. The probe is held
         // in-flight (the handler blocks), so the skip - if the gate still existed - is observed
         // deterministically, not on a timer.
-        var director = new TunnelReadStub("{\"widgets\":[{\"kind\":\"Text\",\"content\":\"the reply to narrate\"}]}");
+        var director = new TunnelStub();
+        var conversation = StoredConversationStub.Of(("Text", "the reply to narrate"));
         var dir = Path.Combine(Path.GetTempPath(), "wmvs-nogate-" + Guid.NewGuid().ToString("N"));
         var persistPath = Path.Combine(dir, "voice-sessions.json");
         try
         {
             var handler = new FirstFails5xxThenBlockingSuccessHandler(new byte[] { 5, 5, 5 });
-            var svc = ServiceWithBrainAndHandler(new RecordingBrain(), handler, persistPath);
+            var svc = ServiceWithBrainAndHandler(new RecordingBrain(), handler, persistPath, conversation.Reader);
 
             // A fails 5xx first - on the OLD code this armed the shared cooldown before B/C ever ask.
             await svc.GenerateAsync(TenantId.Local, "sid-A", RouteFor(director), CancellationToken.None, showReadingWindow: false);
