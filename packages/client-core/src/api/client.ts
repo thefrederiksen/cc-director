@@ -1626,6 +1626,32 @@ export async function getRepos(directorId: string, signal?: AbortSignal): Promis
   return list;
 }
 
+// GET /directors/{id}/known-repositories - every repository the Gateway has durably observed on the
+// selected Director's machine. This is intentionally separate from getRepos: getRepos is the live
+// Director registry used for the five zero-query recent choices, while this complete catalog is the
+// search source and remains available when the Director tunnel is temporarily disconnected.
+export async function getKnownRepositories(directorId: string, signal?: AbortSignal): Promise<RepoInfo[]> {
+  const id = encodeURIComponent(directorId);
+  const res = await gatewayFetch(`/directors/${id}/known-repositories`, {
+    method: "GET",
+    headers: { Accept: "application/json", ...authHeaders() },
+    signal,
+  });
+  if (!res.ok) {
+    throw await GatewayError.from(res, "load that machine's repository history");
+  }
+  const raw = (await res.json()) as Array<Record<string, unknown>>;
+  const list: RepoInfo[] = raw
+    .map((repository) => ({
+      name: String(repository.name ?? ""),
+      path: String(repository.path ?? ""),
+      lastUsed: String(repository.lastUsed ?? ""),
+    }))
+    .filter((repository) => repository.path.length > 0);
+  list.sort((left, right) => right.lastUsed.localeCompare(left.lastUsed));
+  return list;
+}
+
 // GET /directors/{id}/agents - a machine's configured, enabled agents (one per kind) for the New
 // Session dialog's agent picker (issue #1497). The Director already de-duplicates by kind and orders by
 // the configured order, so the list is used as-is. Entries with no type are dropped. Throws GatewayError

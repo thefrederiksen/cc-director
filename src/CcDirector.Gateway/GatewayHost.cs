@@ -637,6 +637,7 @@ public sealed class GatewayHost : IAsyncDisposable
     // ticks every two minutes so an interrupted ruling lands within minutes of the threshold; guarded
     // against overlap like the cron sweep. Created in StartAsync, disposed in StopAsync.
     private readonly History.SessionHistoryStore _sessionHistory;
+    private readonly History.KnownRepositoryStore _knownRepositories;
     /// <summary>The stored conversation (turn-push mission): what Directors push and every reader reads.</summary>
     private readonly History.SessionTurnStore _sessionTurns;
     private readonly History.SessionHistoryRecorder _sessionHistoryRecorder;
@@ -1653,6 +1654,7 @@ public sealed class GatewayHost : IAsyncDisposable
         // through, resolved at call time (the dictionary-screening precedent) - summarisation is a
         // background digest, and the fast leg is the cheap one. The per-pass caps live in the sweep.
         _sessionHistory = new History.SessionHistoryStore(_gatewayDb);
+        _knownRepositories = new History.KnownRepositoryStore(_gatewayDb);
         _sessionTurns = new History.SessionTurnStore(_gatewayDb);
         // The machine name and the Director version are stamped from the CONNECTION record, not
         // from the pushed session: the pushed machine name is hard-coded empty on every client in
@@ -1666,7 +1668,8 @@ public sealed class GatewayHost : IAsyncDisposable
                 var d = Registry.Get(tenant, directorId);
                 return d is null ? History.DirectorFacts.Unknown
                                  : new History.DirectorFacts(d.MachineName, d.Version);
-            });
+            },
+            _knownRepositories);
         var historySummarizer = new History.SessionHistorySummarizer(_sessionHistory, _promptLog,
             (tenant, ct) =>
             {
@@ -2840,6 +2843,7 @@ public sealed class GatewayHost : IAsyncDisposable
             gatewayPort: () => Port,
             // Not-ready until the database is open - see the /healthz handler.
             databaseReady: () => _gatewayDb.IsOpen,
+            knownRepositories: _knownRepositories,
             // Store injection points: hand the phone-recorder ingest (RecordingEndpoints) the host's single
             // key vault + transcription history + audio archive, so it stops newing its own copies.
             recordingKeyVault: _keyVault,
