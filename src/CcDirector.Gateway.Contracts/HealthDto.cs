@@ -1,3 +1,5 @@
+using System.Collections.Generic;
+
 namespace CcDirector.Gateway.Contracts;
 
 /// <summary>
@@ -38,6 +40,30 @@ public sealed class HealthDto
     /// </summary>
     [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
     public string? Commit { get; set; }
+
+    /// <summary>
+    /// Per-SUBSYSTEM readiness: one entry per part of the Gateway that can be down on its own while the
+    /// process serves, each either "available" or "unavailable". NULL when the responder computes none, in
+    /// which case it is omitted rather than serialized as an empty object claiming everything is fine.
+    ///
+    /// WHY A LIVENESS PROBE CARRIES THIS. "The Gateway is up" and "the Gateway's pages work" are different
+    /// statements, and on 2 September 2026 the difference cost hours: the deploy's own health poll saw a
+    /// sustained 200 carrying the new commit and called the release good, while Your Throttle answered 503
+    /// to every request and the owner's turns went unrecorded. Nothing in the pipeline was WRONG - it
+    /// checked what it checked. It simply had no way to ask whether the parts behind the pages had come up,
+    /// because the process reported one status for the whole of itself.
+    ///
+    /// So a subsystem that fails without taking the process down has to say so where the deploy can read
+    /// it. The deploy asserts every entry here is "available" after the swap; see the "Prove every
+    /// subsystem came up" step in deploy-hosted-gateway.yml.
+    ///
+    /// STATUS WORDS ONLY, AND DELIBERATELY NOTHING MORE. This endpoint is PUBLIC and unauthenticated. The
+    /// reason a subsystem is down is a full operator sentence that names the database host, so it belongs
+    /// on the authenticated feed and in the Gateway log - never here. A caller who can read this learns
+    /// that statistics are down, which is a fact about our service, and nothing about our infrastructure.
+    /// </summary>
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public IReadOnlyDictionary<string, string>? Subsystems { get; set; }
 
     public DateTime ServerTime { get; set; } = DateTime.UtcNow;
 

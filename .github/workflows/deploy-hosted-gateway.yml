@@ -842,6 +842,91 @@ jobs:
           fi
           echo "Production stayed available for the full ${WATCH_SECONDS}s window past the swap."
 
+      # PROVE THE PAGES WORK, NOT JUST THAT THE PROCESS ANSWERS.
+      #
+      # Everything above this point measures ONE thing: is there a Gateway on the other end of the port,
+      # serving the commit we shipped. On 2 September 2026 the answer was yes for the whole watch window
+      # and the release was still broken - Your Throttle answered 503 to every request for hours and the
+      # owner's turns went unrecorded, because the container's statistics store lost a race for a database
+      # connection while production and staging were both up, and nothing retried it. A green deploy and a
+      # dead page, with no contradiction anywhere in this file, because nothing here had ever asked.
+      #
+      # /healthz now reports each subsystem that can be down on its own while the process serves. This step
+      # asserts every one of them is up. It POLLS rather than asking once, because a subsystem is allowed
+      # to come up after the port does - the statistics store publishes late by design, and now retries
+      # itself back after a failure - so a single read right after a swap would fail a release that was
+      # about to be fine.
+      #
+      # IT FAILS THE RUN AND DOES NOT ROLL BACK. A subsystem that is down does not make the new image worse
+      # than the old one, and the swap-back would ship the same code; what it needs is to be seen. The
+      # failure is what makes it impossible to walk away from a deploy that left a page dead.
+      #
+      # AN ABSENT BLOCK IS A FAILURE, NOT A PASS. A missing `subsystems` object means the Gateway serving
+      # production does not report readiness at all - an image older than this contract, or a wiring
+      # regression that dropped the block. Treating that as "nothing to check" would make this step
+      # certify precisely the deploys it cannot see into, which is the failure it exists to remove.
+      - name: Prove every subsystem came up
+        # `always()` IS LOAD-BEARING HERE - WITHOUT IT THIS STEP IS SILENT ON EXACTLY THE DEPLOYS THAT
+        # NEED IT.
+        #
+        # A step whose `if:` does not mention always()/failure() is implicitly ANDed with success(), so a
+        # bare condition here means "...and every earlier step passed". The step above measures the
+        # outage and FAILS the run when it exceeds the budget. So the first time this check mattered -
+        # run 33666956643, the deploy of the incident fix itself - the outage step failed at 36.4s and
+        # this step was SKIPPED. A troubled deploy is the one where "did the pages actually come up?" is
+        # worth asking, and it was the one case that could not ask it.
+        #
+        # That is a check whose pass condition was an absence: nothing failed here, because nothing ran
+        # here, and the run's own summary showed no subsystem complaint. The step exists because a green
+        # signal over a dead page cost four and a half hours on 2 September 2026; shipping it in a form
+        # that goes quiet whenever anything else is wrong would have reproduced that fault inside its own
+        # fix.
+        #
+        # The rest of the guard is unchanged and is a real exclusion, not a convenience: readiness_outcome
+        # is 'healthy' only when a swap actually put the new image into production. A refused deploy
+        # (wrong ref, failed checks) leaves the OLD image serving and must not be held to this contract.
+        if: always() && needs.deploy.outputs.readiness_outcome == 'healthy'
+        run: |
+          deadline=$(( $(date +%s) + 180 ))
+          last=""
+          while [ "$(date +%s)" -lt "$deadline" ]; do
+            body=$(curl -s -m 10 "${GATEWAY_URL}/healthz" 2>/dev/null || echo '')
+            # Every subsystem value, one per line, as "name=state". Empty when the block is absent.
+            last=$(printf '%s' "$body" | jq -r '.subsystems // {} | to_entries[] | "\(.key)=\(.value)"' 2>/dev/null || echo '')
+            down=$(printf '%s\n' "$last" | grep -v '=available$' | grep -v '^$' || true)
+            if [ -n "$last" ] && [ -z "$down" ]; then
+              echo "Every subsystem reports available:"
+              printf '%s\n' "$last" | sed 's/^/  /'
+              exit 0
+            fi
+            if [ -z "$last" ]; then
+              echo "production /healthz carries no subsystems block yet (waiting)"
+            else
+              echo "subsystem(s) not available yet: $(printf '%s' "$down" | tr '\n' ' ')"
+            fi
+            sleep 5
+          done
+
+          echo ""
+          if [ -z "$last" ]; then
+            echo "ERROR: production /healthz reports NO subsystem readiness at all after 180s."
+            echo "       Either the image serving production predates this contract, or the wiring that"
+            echo "       builds the block was dropped. This step cannot certify a deploy it cannot see"
+            echo "       into, so it fails rather than passing on an absence."
+          else
+            echo "ERROR: production is serving, but a subsystem behind the pages never came up:"
+            printf '%s\n' "$last" | sed 's/^/  /'
+            echo ""
+            echo "       The Gateway is healthy and its pages are NOT. This is the 2 September 2026 shape:"
+            echo "       a green deploy over a dead page. Read the Gateway log for the named reason (it is"
+            echo "       not on /healthz on purpose - the reason names the database host and that endpoint"
+            echo "       is public), and check the authenticated feed for the page in question."
+            echo ""
+            echo "       A statistics store that could not be reached now retries itself, so re-check"
+            echo "       before doing anything: it may have come back on its own since this ran."
+          fi
+          exit 1
+
       # Does this deploy carry a schema change to the LIVE Supabase Postgres? Diff the Postgres migration set
       # (the one Database.Migrate() applies on hosted) between the outgoing live commit and the shipped one.
       # "unknown" (never a guess) when the outgoing commit is not readable - the image predated the .commit

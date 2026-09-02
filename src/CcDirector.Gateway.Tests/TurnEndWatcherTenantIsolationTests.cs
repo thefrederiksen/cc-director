@@ -101,6 +101,13 @@ public sealed class TurnEndWatcherTenantIsolationTests : IAsyncLifetime
     {
         var watcher = _gateway.TurnEndWatcherForTest!;
 
+        // The narration reads the Gateway's STORE now, not a "turns" command on the tunnel (turn-push
+        // mission), so each tenant's words are seeded into its own partition and the tunnel command this
+        // waits for is the LIVE SCREEN read the narration still makes. Same routing, same tenant resolution,
+        // same proof - and seeding BOTH tenants under the shared id is itself part of the point.
+        _gateway.SeedStoredConversationForTest(TenantA, "dir-a", SharedSid, ("User", "ask A"), ("Assistant", "A answered"));
+        _gateway.SeedStoredConversationForTest(TenantB, "dir-b", SharedSid, ("User", "ask B"), ("Assistant", "B answered"));
+
         // The interleaving that a bare-sid key gets wrong. Tenant A starts working; tenant B (same id) also
         // works then ENDS its turn first - writing "WaitingForInput" into the shared key. Then tenant A ends
         // its own turn. With a per-tenant key each transition is A's or B's alone; with a bare key A's real
@@ -111,11 +118,11 @@ public sealed class TurnEndWatcherTenantIsolationTests : IAsyncLifetime
         watcher.Observe(TenantA, SharedSid, "WaitingForInput", "dir-a");   // A turn end -> refresh dir-A
 
         // POSITIVE CONTROL: B's turn end reached its own Director, so the watcher is live and the harness works.
-        Assert.NotNull(await WaitForVerb(_seenByB, "turns", SharedSid));
+        Assert.NotNull(await WaitForVerb(_seenByB, "screen-grid", SharedSid));
 
         // THE PARTITION PROOF: A's turn end reached dir-A too - it was NOT suppressed by B sharing the id. A
-        // bare-sid key reddens exactly here (A's transition is swallowed, dir-A sees no "turns" read).
-        Assert.NotNull(await WaitForVerb(_seenByA, "turns", SharedSid));
+        // bare-sid key reddens exactly here (A's transition is swallowed, dir-A sees no narration read).
+        Assert.NotNull(await WaitForVerb(_seenByA, "screen-grid", SharedSid));
     }
 
     /// <summary>

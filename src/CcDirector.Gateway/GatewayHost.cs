@@ -821,6 +821,35 @@ public sealed class GatewayHost : IAsyncDisposable
     /// re-implementation. Null until StartAsync builds it.</summary>
     internal TurnEndWatcher? TurnEndWatcherForTest => _turnEndWatcher;
 
+    /// <summary>
+    /// Put a conversation into this Gateway's store for one session, as the owning Director's push would
+    /// (turn-push mission). Tests need it because the narration path reads the STORE now: before the mission
+    /// they supplied a session's words by answering a "turns" command on the tunnel, and there is no such
+    /// command any more. Enters the tenant's scope itself, so a test cannot seed one account's conversation
+    /// into another's partition by forgetting to.
+    /// </summary>
+    internal void SeedStoredConversationForTest(TenantId tenant, string directorId, string sessionId,
+        params (string Role, string Text)[] messages)
+    {
+        using var scope = _tenantBoundary?.EnterScope(tenant);
+        var batch = new Contracts.TurnPushBatch
+        {
+            SessionId = sessionId,
+            Generation = "seeded:" + sessionId,
+            GenerationStartedUtc = DateTime.UtcNow,
+            Agent = "ClaudeCode",
+            StartOrdinal = 0,
+            TotalCount = messages.Length,
+            Turns = messages.Select((m, i) => new Contracts.PushedTurn
+            {
+                Ordinal = i,
+                Role = m.Role,
+                Parts = { new Contracts.HistoryPartDto { Kind = "Text", Text = m.Text } },
+            }).ToList(),
+        };
+        _sessionTurns.Append(directorId, batch, DateTime.UtcNow);
+    }
+
     /// <summary>Test-only: the session supervisor (issue #915), so a test can drive a real Working -&gt; idle
     /// transition into the REAL engine. Null until StartAsync builds it.</summary>
     internal Supervision.SessionSupervisor? SessionSupervisorForTest => _sessionSupervisor;
@@ -1491,6 +1520,9 @@ public sealed class GatewayHost : IAsyncDisposable
                 nothingToNarrateFor: sid => _tenantPass.Current is { } t
                     && Wingman.WingmanVoiceService.CanNameVoicePartition(t)
                     && _voiceService?.NothingToNarrateFor(t, sid) == true,
+                directorCannotSendConversationFor: sid => _tenantPass.Current is { } t
+                    && Wingman.WingmanVoiceService.CanNameVoicePartition(t)
+                    && _voiceService?.DirectorCannotSendConversationFor(t, sid) == true,
                 voiceWaitingStampFor: (sid, waiting) => _tenantPass.Current is { } t
                     ? _voiceWaitingClock.Stamp(t, sid, waiting)
                     : null),
@@ -2097,6 +2129,28 @@ public sealed class GatewayHost : IAsyncDisposable
             History.StoredConversationWidgets.From(stored.Value.Messages));
     }
 
+    /// <summary>
+    /// Whether the computer that owns this session is CONNECTED but running a build that cannot send its
+    /// conversation - the single reason the Gateway's store will never fill for it, and therefore the single
+    /// reason a wingman narration is never coming without someone updating that machine.
+    ///
+    /// CONNECTION IS ASKED FIRST, and that ordering is the whole correctness of this method rather than a
+    /// tidiness. <see cref="Streaming.TurnPushCapabilityRegistry"/> is in-memory and learns each Director's
+    /// answer from its Hello, so for a Director it has not heard from - one that is away, and every Director
+    /// alive in the seconds after a Gateway restart - it reports "does not push". That is the safe reading
+    /// for Chat, which asks about connection first too and says "that computer has not checked in". Asked in
+    /// the other order here it would be a slander: every session on the fleet would be told its machine
+    /// needed updating for as long as it took the Directors to reconnect after a deploy. So a session whose
+    /// Director is not currently located answers FALSE - no claim about anybody's build.
+    /// </summary>
+    private bool DirectorCannotSendConversation(TenantId tenant, string sessionId)
+    {
+        if (!tenant.IsValid || string.IsNullOrEmpty(sessionId)) return false;
+        // not connected: "that computer is away", never "it is too old"
+        if (PushedSessions.TryLocate(tenant, sessionId, _streamStaleAfter) is not { } located) return false;
+        return !_turnPushCapabilities.PushesTurns(tenant, located.DirectorId);
+    }
+
     private string? ResolveSessionTitle(TenantId tenant, string sessionId)
     {
         if (!tenant.IsValid)
@@ -2448,7 +2502,8 @@ public sealed class GatewayHost : IAsyncDisposable
             // The narration's words now come from the Gateway's own store (turn-push mission, phase 3), not
             // from a tunnel command asking the Director to re-read the user's transcript. See
             // ReadStoredConversation for why the tenant scope is entered there rather than inside the service.
-            conversationReader: ReadStoredConversation);
+            conversationReader: ReadStoredConversation,
+            directorCannotSendConversation: DirectorCannotSendConversation);
 
         // The session supervisor (issue #915). It hangs off the SAME turn-end boundary as the voice refresh
         // below, deliberately: that event is the only thing that can wake it, so a Working session is out of
@@ -2905,6 +2960,16 @@ public sealed class GatewayHost : IAsyncDisposable
             gatewayPort: () => Port,
             // Not-ready until the database is open - see the /healthz handler.
             databaseReady: () => _gatewayDb.IsOpen,
+            // Per-subsystem readiness on /healthz, so a deploy can tell "the process is up" apart from
+            // "the pages work". Statistics is the one subsystem that is designed to fail on its own without
+            // stopping the Gateway, so it is the one that can be silently down after a green deploy - which
+            // is exactly what happened on 2 September 2026. Asked on every request, never cached: the store
+            // can come up late and can now come BACK on its own. Status words only; the reason names the
+            // database host and this endpoint is public. See HealthDto.Subsystems.
+            subsystems: () => new Dictionary<string, string>
+            {
+                ["statistics"] = InputStatsHandle.IsAvailable ? "available" : "unavailable",
+            },
             knownRepositories: _knownRepositories,
             // Store injection points: hand the phone-recorder ingest (RecordingEndpoints) the host's single
             // key vault + transcription history + audio archive, so it stops newing its own copies.
@@ -3001,6 +3066,10 @@ public sealed class GatewayHost : IAsyncDisposable
             // VoiceDisplay so the screen shows an honest "nothing to read aloud" instead of a Generate
             // button that cannot work - the client no longer rules on this.
             nothingToNarrateFor: (tenant, sid) => _voiceService?.NothingToNarrateFor(tenant, sid) == true,
+            // The owning computer is connected but cannot send its conversation, so no narration will ever
+            // be made for this session until it is updated. Feeds the folded VoiceDisplay so the screen says
+            // which computer to update instead of counting a wait that would not end (2026-09-02).
+            directorCannotSendConversationFor: (tenant, sid) => _voiceService?.DirectorCannotSendConversationFor(tenant, sid) == true,
             // TTS fallback: this session's ready clip was made by the backup voice provider (the primary
             // was overloaded and the cloud proxy failed over). Feeds the folded VoiceDisplay so the screen
             // shows the generic backup-voice notice. A success-with-a-note, never an outage state.
@@ -3201,7 +3270,8 @@ public sealed class GatewayHost : IAsyncDisposable
             // The narration's words now come from the Gateway's own store (turn-push mission, phase 3), not
             // from a tunnel command asking the Director to re-read the user's transcript. See
             // ReadStoredConversation for why the tenant scope is entered there rather than inside the service.
-            conversationReader: ReadStoredConversation);
+            conversationReader: ReadStoredConversation,
+            directorCannotSendConversation: DirectorCannotSendConversation);
         // The session's conversation, served from THIS Gateway's store (turn-push mission, phase 2). A
         // literal route, so it outranks the /sessions/{sid}/{**rest} catch-all - whose "history" verb entry
         // is removed in the same change, because the whole point is that reading a conversation no longer
@@ -4068,6 +4138,7 @@ public sealed class GatewayHost : IAsyncDisposable
         Snooze.SnoozeRegistry? snoozeRegistry,
         Func<string, Core.HostedAi.HostedAiState?>? voiceUnavailableFor = null,
         Func<string, bool>? nothingToNarrateFor = null,
+        Func<string, bool>? directorCannotSendConversationFor = null,
         Func<string, bool, DateTime?>? voiceWaitingStampFor = null)
     {
         foreach (var s in sessions)
@@ -4097,6 +4168,7 @@ public sealed class GatewayHost : IAsyncDisposable
                 generating: s.VoiceGenerating,
                 unavailable: unavailable,
                 nothingToNarrate: nothingToNarrateFor?.Invoke(s.SessionId) ?? false,
+                directorCannotSendConversation: directorCannotSendConversationFor?.Invoke(s.SessionId) ?? false,
                 waitingSince: s.VoiceWaitingSince);
         }
         Api.GatewayEndpoints.StampFleetRolesAndFold(sessions, sessions, needsYouStampFor, snoozeRegistry, tenant);
