@@ -281,6 +281,17 @@ public sealed class RulesTypeNothingGuardTests
         Assert.DoesNotContain("CcDirector.Gateway.Data.Entities.CronJobEntity", feature);
     }
 
+    /// <summary>
+    /// A seam with CHAINS behind it, used only to prove the traversal traverses. It is deliberately NOT
+    /// the typing seam, and the reason is worth writing down: with the probe removed, nothing in this
+    /// assembly reaches the prompt verb except by calling it directly, so on that seam a call-graph walk
+    /// and a one-hop read give the same four methods - which is the truth about the code, and useless as a
+    /// test of the walk. The log write is called from all over the Gateway by methods that are themselves
+    /// called, so it exercises the edges. The traversal is one algorithm, so proving it on this seam
+    /// proves it for the seam the guard is about.
+    /// </summary>
+    private const string SeamWithChainsBehindIt = "CcDirector.Core.Utilities.FileLog::Write";
+
     [Fact]
     public void Following_calls_finds_more_than_reading_one_method_at_a_time()
     {
@@ -288,14 +299,30 @@ public sealed class RulesTypeNothingGuardTests
         // exactly what the old one-hop scanner answered, and every assertion built on it would be the old
         // guard wearing a new name. So it has to find strictly more.
         using var module = GatewayModule();
-        var oneHop = MethodsReaching(module, TypingSeam, _ => true).Distinct(StringComparer.Ordinal).ToList();
-        var throughCalls = MethodsReachingThroughCalls(module, TypingSeam, _ => true);
+        var oneHop = MethodsReaching(module, SeamWithChainsBehindIt, _ => true)
+            .Distinct(StringComparer.Ordinal).ToList();
+        var throughCalls = MethodsReachingThroughCalls(module, SeamWithChainsBehindIt, _ => true);
 
         Assert.True(oneHop.Count > 0, "the one-hop scanner found nothing, so the comparison is meaningless.");
         Assert.True(throughCalls.Count > oneHop.Count,
-            "following calls found " + throughCalls.Count + " methods reaching " + TypingSeam +
+            "following calls found " + throughCalls.Count + " methods reaching " + SeamWithChainsBehindIt +
             " and reading one method at a time found " + oneHop.Count +
             ". They are the same, so the traversal is not traversing.");
+    }
+
+    [Fact]
+    public void Nothing_reaches_the_typing_seam_except_by_calling_it_and_that_is_recorded_not_assumed()
+    {
+        // The fact that made the instrument above need a different seam, asserted rather than left as a
+        // remark: today every method that reaches the prompt verb calls it itself. The day that stops
+        // being true this test fails, and whoever reads it will find out from here rather than from a
+        // guard quietly measuring a longer list.
+        using var module = GatewayModule();
+        var oneHop = MethodsReaching(module, TypingSeam, _ => true).Distinct(StringComparer.Ordinal).Count();
+        var throughCalls = MethodsReachingThroughCalls(module, TypingSeam, _ => true).Count;
+
+        Assert.True(oneHop > 0, "nothing at all reaches " + TypingSeam + ", so the scanner is broken.");
+        Assert.Equal(oneHop, throughCalls);
     }
 
     [Fact]
