@@ -385,6 +385,99 @@ from English; and the decline is stored but not yet earned by an agent.
 
 ---
 
+## Phase 2 - the thin vertical slice (done)
+
+Full account, with every red quoted before its green: `phase-2-report.md`. Branch
+`mission/session-rules-p2`. The live runs below were all made against a Gateway built from
+`73273a457` and reporting `2.0.4+73273a4570da4d54e3972de45bbb1a1ebca9236b` on `/healthz`.
+
+The five acceptance rows phase 2 owed:
+
+| Row | Where it is proved |
+| --- | --- |
+| 1. Demonstration A, captured as an artifact | Row 2 of this report - live, with the screen before, the rule, the decision, the keystroke and the screen after |
+| 2. N1 - a session DISCUSSING a limit is not convicted | Row 4 of this report - live, by a rule that was already LIVE and had typed ninety seconds earlier |
+| 3. N2 - a rule DECLINES a screen its instruction does not cover, as a RECORDED FIRING | Row 4 of this report - live, with the record quoted |
+| 4. Dry run types nothing, by an instrumented send seam counted at zero | Below, plus the live dry-run firing in row 2 |
+| 5. The screen is re-read immediately before acting, and a changed screen is abandoned | Below - live, and in the unit suite |
+
+### Row 5, live: a screen that moved on between the decision and the keystroke
+
+Staged deliberately and then observed for real. The provider notice was put on the screen; the
+session went idle; the evaluator woke and asked the agent; and WHILE the model was thinking, a
+different keystroke was sent into the session from outside, changing the screen underneath the
+decision.
+
+The agent decided to act - its understanding is on the record - and nothing was typed:
+
+```
+rule:           e34f821a-d59d-4940-b7d1-9c5c8938faf0   (state: live)
+occurred:       2026-09-02T20:23:18.3898418Z
+decision:       abandoned
+understanding:  The session has stopped on a provider notice stating the user has reached their
+                Fable 5 model limit, and it suggests running /usage-credits to see remaining credits
+                or /model to switch.
+reason:         the screen changed between the decision and the keystroke, so the decision was about
+                a screen that is no longer there and nothing was typed.
+typed:          ""
+outcome:        abandoned - nothing was typed.
+```
+
+```
+16:23:07.767 [RuleEvaluator] sid=0234084a-...: 1 rule(s) worth asking about
+16:23:18.389 [RuleEvaluator] firing: rule=e34f821a-... decision=abandoned typed=no
+16:23:18.393 [GatewayHost] turn-end rules: sid=0234084a-... outcome=abandoned
+```
+
+The screen afterwards carries the interfering keystroke and NOT `/usage-credits`:
+
+```
+[run 5] the provider notice again
+You've reached your Fable 5 limit. Run /usage-credits to continue or switch models with /model.C:\...\scratch>
+C:\...\scratch>echo THE SCREEN HAS MOVED ON WHILE THE RULE WAS THINKING
+THE SCREEN HAS MOVED ON WHILE THE RULE WAS THINKINGC:\...\scratch>
+```
+
+The abandonment is proved by the PRESENCE of that record with its reason. The absence of
+`/usage-credits` from the screen is corroboration, not the proof.
+
+### Row 4: dry run types nothing, counted at the send seam
+
+Two independent things, because the second one is the kind that fails open.
+
+**The seam is counted at zero.** `RuleEvaluatorTests` wires a fake environment in which there is
+exactly ONE method that can type, and counts every call to it. With the rule in dry run and the agent
+answering "act", the count is zero AND a firing is recorded saying `act`, `typed=""`, and
+`dry run: nothing was typed. It would have typed: /usage-credits`. The count alone would pass just as
+happily if the evaluator had crashed before reaching the send, which is why the record is asserted
+beside it.
+
+**The structure, read out of the BUILT assembly.** `RulesTypeNothingGuardTests` reads the compiled
+metadata with Mono.Cecil and requires that EXACTLY ONE type in the rules namespace reaches the prompt
+verb, that it is `GatewayRuleEnvironment` by name, and that `RuleEvaluator` - where the dry-run
+decision is made - cannot reach it at all. The scanner is proved on a known positive first (the
+session supervisor's wiring, which really does type), so an empty result fails rather than certifying
+a run that looked at nothing.
+
+The live dry-run firing in row 2 is the same property observed on a real session.
+
+### What phase 2 did NOT prove
+
+- **No authoring conversation.** The rule's derived parts were written by hand. Row 1 of this report
+  stays PENDING until phase 3.
+- **No user interface.** Rules are read and written over `/gateway/rules` only.
+- **The rule's own stored check did not run.** A rule stores the checks derived for it, but the
+  evaluator runs the checks the AGENT names in its reply (Architect ruling A5), and on all five live
+  screens the agent named none. So the check-running path was proved in the unit suite and NOT on a
+  live screen. The stored `matches_any(text=<screen_text>, terms=limit,allowance)` round-tripped
+  through the store and was never executed.
+- **The session was a plain shell.** See the end of row 2: this is the mechanism, not a recovery from
+  a real provider limit. Row 3 stays PENDING.
+- **One machine, one tenant, SQLite.** Nothing ran against Postgres and nothing ran hosted.
+- **`CcDirector.Gateway.Tests` did not run** - it is parked and host-bound.
+
+---
+
 ## Runs
 
 Every number carries its exit code and the commit it ran on. A run is only evidence for the tree it
