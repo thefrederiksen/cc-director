@@ -11,10 +11,11 @@ public enum ScreenSource
     /// a real answer and not an empty one.</summary>
     Unreadable = 0,
 
-    /// <summary>Served from the Gateway's own store. HISTORY ONLY - see
-    /// <see cref="GatewayScreenReader.ReadStored"/>. A live read is never answered this way; the reason is
-    /// in the reader's own comment.</summary>
-    Store = 1,
+    // 1 was Store, and it is deliberately NOT reused. A live read used to be answerable from the Gateway's
+    // own screen store; that mechanism was removed (see this class's comment), so a value meaning "served
+    // from the store" can no longer occur and is not left sitting in the enum for someone to branch on. The
+    // gap is kept so a member added later cannot silently take the old number and make an archived log line
+    // read as something it never said.
 
     /// <summary>Pulled live from the owning Director over the tunnel.</summary>
     Tunnel = 2,

@@ -1,6 +1,7 @@
 using CcDirector.ControlApi;
 using CcDirector.Core.Configuration;
 using CcDirector.Core.Utilities;
+using CcDirector.Gateway.Api;
 using CcDirector.Gateway.Contracts;
 using Xunit;
 
@@ -29,6 +30,14 @@ namespace CcDirector.Gateway.UnitTests.Screens;
 /// is what carries meaning. The delivered side is exercised for real against a live hub by
 /// <c>GatewayStreamClientTests</c> in the parked suite - this class deliberately covers only the loss
 /// path, which is the one that had no coverage at all.
+///
+/// THE COUNTERS ARE PROCESS-WIDE, so a before-and-after difference is only meaningful while nothing else
+/// in the process is pushing a screen. No collection attribute is needed for that here, and the reason is
+/// worth stating rather than leaving to be re-derived: xUnit runs the methods of ONE class sequentially,
+/// and this is the only class in this assembly that touches these two counters - unlike
+/// <see cref="SessionVerbClient.ScreenGridPulls"/>, which several classes read and which therefore has
+/// <see cref="ScreenPullCounterCollection"/>. A second class that touches these belongs in a collection
+/// with this one.
 /// </summary>
 public class ScreenPushLossBoundaryTests
 {

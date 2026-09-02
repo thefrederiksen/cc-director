@@ -69,11 +69,13 @@ public class CaptureMarkDescribesTheCapturedFrameTests
         // write - which is what lets it hold a write open in exactly the window under test.
         var reached = new ManualResetEventSlim(false);
         var release = new ManualResetEventSlim(false);
-        var arm = false;
+        // Armed through Interlocked rather than a plain bool: this flag is written on the test thread and
+        // read on the writer thread, and it must fire for exactly ONE write. A plain read-then-assign would
+        // be a data race in the instrument, which is the last place to leave one.
+        var arm = 0;
         Action<byte[]> rendezvous = _ =>
         {
-            if (!arm) return;
-            arm = false;
+            if (Interlocked.CompareExchange(ref arm, 0, 1) != 1) return;
             reached.Set();
             release.Wait(TimeSpan.FromSeconds(10));
         };
@@ -92,7 +94,7 @@ public class CaptureMarkDescribesTheCapturedFrameTests
             Assert.Equal(oldBytes.Length, afterOld);
 
             // The second write is held between "the counter moved" and "the parser saw it".
-            arm = true;
+            Interlocked.Exchange(ref arm, 1);
             var writer = Task.Run(() => buffer.Write(newBytes));
             Assert.True(reached.Wait(TimeSpan.FromSeconds(10)), "the rendezvous subscriber was never reached");
 
