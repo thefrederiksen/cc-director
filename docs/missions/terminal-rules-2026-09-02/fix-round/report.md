@@ -44,9 +44,28 @@ gate run on the tip is owed with the rest.
 The RED runs stand exactly as they were taken and are not repeated: a red run against unfixed code is
 evidence about the CODE, and does not depend on which migration was in the tree.
 
-**What is owed, in one list, so that clearance leaves only running and quoting:** the default local gate
-on the tip; the filtered runs for findings 1, 2 and 3; the row 4 rig on the tip; and the parked
-`Gateway.Tests` suite, which has never run at all.
+**What is owed, in one list, so that clearance leaves only running and quoting.** The order and the
+recording rules are the Architect's, and both exist because of mistakes already made on this mission.
+
+0. **Reset `ccpgtest` first** if it still holds a `session_screens` migration id older than
+   `20260902154819`. A stale history row for an id that no longer exists fails in a way that looks
+   exactly like a defect in this code, and that is what made the parked gate red for inspection 01.
+1. **The tip gate FIRST** - `.\scripts	est-local.ps1` on the tip commit. If it is red, everything after
+   it is moot and the lock was spent on runs that do not matter.
+2. **The three filtered runs** for findings 1, 2 and 3. Findings 4, 5 and 6 need no separate filtered
+   run: the tip gate subsumes them.
+3. **The row 4 rig on the tip** - `scripts	erminal-rules-screen-proof.ps1`.
+4. **The parked `Gateway.Tests` suite**, which has never run at all.
+
+**Two recording rules, for every number produced:**
+
+- **Quote the EXIT CODE beside every count.** The previous round reported exit 0 where the inspection
+  observed exit 1; a count without an exit code is how that happened.
+- **Quote the COMMIT beside every number.** A run is evidence only for the tree it ran on, and this
+  round was already bitten once by three commits landing after a gate.
+
+**Do NOT re-run the red runs.** A red against unfixed code is evidence about the CODE and does not
+depend on which migration was in the tree.
 
 ## The six findings
 
