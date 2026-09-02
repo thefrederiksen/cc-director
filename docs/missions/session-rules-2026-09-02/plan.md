@@ -233,7 +233,14 @@ Emailed to the owner ONCE, at the very end.
   holds three from August. Test whether each migration is PRESENT ON MAIN, not whether it differs
   from the merge base, and fetch with `--prune` - a squash-merged branch otherwise still votes.
   Whichever mission lands second regenerates the model snapshot; that is mechanical, not a dispute.
-- **The machine-wide test lock is shared.** A small filtered run takes it exactly like a full gate.
+- **The machine-wide test lock is shared, and it CANNOT be queued behind a long suite.** The lock
+  waits at most 45 minutes; a healthy full Gateway suite run measures 48.88 minutes. A run that
+  queues behind another therefore never acquires it - it times out after three quarters of an hour
+  having run ZERO tests, which reads exactly like a broken build and is not one. **A zero-test
+  timeout is a QUEUE. Do not go hunting a phantom failure in your own code.** So: only start a long
+  suite when the machine is genuinely free, keep local runs short and filtered while another mission
+  holds it, and push and let continuous integration run a full suite rather than putting a
+  48-minute suite into a 45-minute queue. Filed as fleet issue 2653.
   A production incident outranks this mission for that lock without argument: yield immediately and
   say so.
 - **The screen store is not landed**, this mission does not depend on it, and it must not wait for it.
