@@ -81,3 +81,48 @@ genuinely free. #2643 is in review now, so the wait should be short.
 
 **When you believe the slot has come free, re-run the sweep above and say what it returned** - do not
 report it as free because #2643 merged. Resolve #2379 at the same time.
+
+
+---
+
+## AMENDMENT - the sweep above is WRONG; use this one
+
+The Manager checked the instrument rather than only the answer, and found two defects in the command
+this ruling published. Both are corrected here rather than left in a durable file for the next reader
+to inherit.
+
+1. **It missed the Postgres half.** Migrations are written for BOTH providers. `AddKnownRepositories`
+   exists twice - `src/CcDirector.Gateway/Data/Migrations/` (SQLite) and
+   `src/CcDirector.Gateway.Migrations.Postgres/Migrations/` - and the original pattern saw only the
+   first.
+2. **It raised false holders.** `Data/Migrations` also matches `Stats/Data/Migrations`, which belongs
+   to `GatewayStatsDbContext` - a different context that does not contend for this snapshot at all. It
+   flagged five dead `nosqlite` and `fix-stats` branches as holders.
+
+The second defect is the worse one. A sweep that raises holders which are not holders teaches
+whoever runs it to wave hits away, and a check people have learned to dismiss is worse than no check.
+
+**The corrected sweep, pinned to the two `GatewayDbContext` directories:**
+
+```
+git fetch origin
+for b in $(git branch -r --format='%(refname:short)' | grep -v HEAD | grep -v 'origin/main$'); do
+  m=$(git diff --name-only origin/main..."$b" 2>/dev/null       | grep -E '^(src/CcDirector\.Gateway/Data/Migrations|src/CcDirector\.Gateway\.Migrations\.Postgres/Migrations)/.*\.cs$'       | grep -v ModelSnapshot | grep -v Designer)
+  [ -n "$m" ] && { echo "HOLDER $b"; echo "$m" | sed 's/^/    /'; }
+done
+```
+
+Run 2026-09-02 over all 44 remote branches, it returns exactly two holders and no others:
+`origin/feat/mobile-session-picker-repository-search` (PR #2643, open and active) and
+`origin/prompt-delete-erases` (PR #2379, open, untouched since 2026-08-08).
+
+## Ruling on PR #2379
+
+**It counts as a holder.** Not because it is certainly alive, but because "open, and nobody has
+touched it for 25 days" is not evidence of abandonment - it is an absence, and taking an exclusive
+shared resource on an absence is the defect this whole ruling exists to name.
+
+It is also **not the binding constraint today**: #2643 holds the slot regardless, so #2379 costs this
+mission nothing right now and must not consume the owner's attention yet. If #2643 merges and #2379
+is then the only thing standing between this mission and its last two proof rows, that is the moment
+it becomes one plain question for the owner - close it or land it - and not before.
