@@ -1,0 +1,384 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Terminal Rules - config screen mockups</title>
+<style>
+  :root{
+    --bg:#0b1020; --surface:#141a2e; --surface-2:#1b2238; --border:#28304a;
+    --text:#e6e9f2; --text-dim:#99a0b8; --accent:#3b82f6; --attention:#f14c4c;
+    --warn:#f59e0b; --ok:#34d399; --code-bg:#0a0f1e; --rail-left-width:220px;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:#05070f;color:var(--text);
+    font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
+  .note{max-width:1180px;margin:0 auto;padding:28px 24px 4px}
+  .note h1{font-size:22px;margin:0 0 6px}
+  .note p{color:var(--text-dim);margin:0 0 4px;max-width:78ch}
+  .caption{max-width:1180px;margin:34px auto 10px;padding:0 24px}
+  .caption h2{font-size:15px;margin:0 0 4px;color:var(--text)}
+  .caption p{color:var(--text-dim);margin:0;max-width:78ch;font-size:13px}
+  .frame{max-width:1180px;margin:0 auto 8px;padding:0 24px}
+  .win{background:var(--bg);border:1px solid var(--border);border-radius:8px;overflow:hidden;
+    display:grid;grid-template-columns:var(--rail-left-width) 1fr;min-height:520px}
+  .rail{background:var(--surface);border-right:1px solid var(--border);padding:12px 0}
+  .brand{font-weight:600;font-size:13px;padding:4px 16px 14px;color:var(--text)}
+  .nav a{display:block;padding:6px 16px;color:var(--text-dim);text-decoration:none;font-size:13px}
+  .nav a.on{background:var(--surface-2);color:var(--text);box-shadow:inset 3px 0 0 var(--accent)}
+  .nav .gap{height:10px}
+  .main{padding:20px 22px;min-width:0}
+  .head{border-bottom:1px solid var(--border);padding-bottom:14px;margin-bottom:16px}
+  .head h3{margin:0 0 4px;font-size:17px}
+  .head p{margin:0;color:var(--text-dim);font-size:13px;max-width:70ch}
+  .bar{display:flex;gap:8px;align-items:center;margin-bottom:14px;flex-wrap:wrap}
+  .btn{background:var(--surface-2);color:var(--text);border:1px solid var(--border);
+    border-radius:6px;padding:6px 12px;font-size:13px;cursor:default}
+  .btn.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+  .spacer{flex:1}
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th{text-align:left;color:var(--text-dim);font-weight:500;font-size:12px;
+    padding:8px 10px;border-bottom:1px solid var(--border)}
+  td{padding:11px 10px;border-bottom:1px solid var(--border);vertical-align:top}
+  tr:last-child td{border-bottom:0}
+  .rule-name{font-weight:600}
+  .rule-sub{color:var(--text-dim);font-size:12px;margin-top:3px;max-width:52ch}
+  .pill{display:inline-block;padding:2px 8px;border-radius:999px;font-size:11px;
+    border:1px solid var(--border);white-space:nowrap}
+  .pill.live{background:rgba(52,211,153,.12);border-color:rgba(52,211,153,.4);color:var(--ok)}
+  .pill.dry{background:rgba(245,158,11,.12);border-color:rgba(245,158,11,.4);color:var(--warn)}
+  .pill.off{color:var(--text-dim)}
+  .mono{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:12px}
+  .act{color:var(--text)}
+  .act .arrow{color:var(--text-dim)}
+  .dim{color:var(--text-dim)}
+  .card{background:var(--surface);border:1px solid var(--border);border-radius:8px;
+    padding:16px 18px;margin-bottom:14px}
+  .card h4{margin:0 0 3px;font-size:13px;letter-spacing:.02em}
+  .card .hint{color:var(--text-dim);font-size:12px;margin:0 0 12px;max-width:74ch}
+  label.f{display:block;color:var(--text-dim);font-size:12px;margin:0 0 5px}
+  .input,.ta,.sel{width:100%;background:var(--code-bg);border:1px solid var(--border);
+    border-radius:6px;color:var(--text);padding:9px 11px;font-size:13px;font-family:inherit}
+  .ta{min-height:74px;resize:none;line-height:1.55}
+  .row{display:flex;gap:12px;flex-wrap:wrap}
+  .row>div{flex:1;min-width:160px}
+  .mb{margin-bottom:12px}
+  .chips{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}
+  .chip{background:var(--code-bg);border:1px solid var(--border);border-radius:5px;
+    padding:3px 9px;font-size:12px}
+  .chip .x{color:var(--text-dim);margin-left:6px}
+  .screen{background:var(--code-bg);border:1px solid var(--border);border-radius:6px;
+    padding:13px 15px;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;
+    font-size:12.5px;line-height:1.7;white-space:pre-wrap;color:#cfd6e6;overflow-x:auto}
+  .screen .hit{background:rgba(241,76,76,.18);border-bottom:1px solid rgba(241,76,76,.5);
+    padding:1px 2px;border-radius:2px}
+  .split{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  @media(max-width:900px){.split{grid-template-columns:1fr}}
+  .banner{border:1px solid rgba(59,130,246,.4);background:rgba(59,130,246,.09);
+    border-radius:7px;padding:11px 14px;font-size:13px;margin-bottom:14px}
+  .banner b{color:var(--text)}
+  .safety{display:flex;gap:9px;align-items:flex-start;font-size:12.5px;color:var(--text-dim);
+    padding:8px 0;border-bottom:1px solid var(--border)}
+  .safety:last-child{border-bottom:0}
+  .safety .k{color:var(--text);min-width:132px}
+  .foot{max-width:1180px;margin:26px auto 60px;padding:0 24px;color:var(--text-dim);font-size:13px}
+  .foot h2{color:var(--text);font-size:15px;margin:0 0 8px}
+  .foot li{margin-bottom:6px;max-width:80ch}
+  .warnbox{border:1px solid rgba(245,158,11,.45);background:rgba(245,158,11,.08);
+    border-radius:7px;padding:12px 15px;margin:0 auto 6px;max-width:1180px;font-size:13px}
+</style>
+</head>
+<body>
+
+<div class="note">
+  <h1>Terminal Rules - config screen mockups</h1>
+  <p>Proposal only. Nothing here is built, and none of these screens exist in the Cockpit today.
+     Drawn with the Cockpit's real tokens, rail and page frame so it reads as the product rather
+     than as a sketch. Issue #2644, phases 1 and 4.</p>
+</div>
+
+<div class="warnbox">
+  <b>Read this as a question, not an answer.</b> The rule shape is settled in the mission brief;
+  how it should LOOK is not. The third screen is the one that matters most and it is the one I am
+  least sure of.
+</div>
+
+<!-- ============ SCREEN 1 ============ -->
+<div class="caption">
+  <h2>1. The rules list - what this account has told the fleet to do</h2>
+  <p>The default landing. Every rule states plainly what it watches for and what it does, because
+     a rule you cannot read is a rule you cannot trust to press keys for you.</p>
+</div>
+<div class="frame">
+<div class="win">
+  <div class="rail">
+    <div class="brand">DevThrottle</div>
+    <div class="nav">
+      <a href="#">Sessions</a>
+      <a href="#">Fleet Map</a>
+      <a href="#">Assistant</a>
+      <div class="gap"></div>
+      <a href="#">History</a>
+      <a href="#">Directors</a>
+      <a href="#">Schedule</a>
+      <a href="#">Workflows</a>
+      <a href="#" class="on">Rules</a>
+      <div class="gap"></div>
+      <a href="#">Skills</a>
+      <a href="#">Dictionary</a>
+      <a href="#">Transcription</a>
+      <div class="gap"></div>
+      <a href="#">Account</a>
+      <a href="#">Settings</a>
+    </div>
+  </div>
+  <div class="main">
+    <div class="head">
+      <h3>Rules</h3>
+      <p>When a session's terminal shows something you have described, DevThrottle takes the action
+         you chose. Rules apply to every session on this account.</p>
+    </div>
+    <div class="bar">
+      <button class="btn primary">New rule</button>
+      <button class="btn">From a screen</button>
+      <div class="spacer"></div>
+      <span class="dim" style="font-size:12.5px">3 rules &middot; 1 live &middot; 2 in dry run</span>
+    </div>
+
+    <table>
+      <thead>
+        <tr><th style="width:38%">Rule</th><th style="width:26%">Then</th>
+            <th style="width:14%">State</th><th style="width:22%">Last matched</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>
+            <div class="rule-name">Switch to the fallback model when the current one is capped</div>
+            <div class="rule-sub">When the agent says it has run out of usage, credits or allowance
+              for the model it is running, and offers switching models as a remedy.</div>
+          </td>
+          <td class="act">Type <span class="mono">/model opus</span><br>
+              <span class="arrow">then</span> email me</td>
+          <td><span class="pill live">Live</span></td>
+          <td>Today 09:44<br><span class="dim" style="font-size:12px">session 101 - recovered</span></td>
+        </tr>
+        <tr>
+          <td>
+            <div class="rule-name">Tell me when a session is waiting on a trust prompt</div>
+            <div class="rule-sub">When the screen is asking permission to run in this folder and
+              nothing can proceed until somebody answers.</div>
+          </td>
+          <td class="act">Notify me<br><span class="dim" style="font-size:12px">no keystroke</span></td>
+          <td><span class="pill dry">Dry run</span></td>
+          <td>Today 11:02<br><span class="dim" style="font-size:12px">would have notified</span></td>
+        </tr>
+        <tr>
+          <td>
+            <div class="rule-name">Wait out a provider outage instead of asking me</div>
+            <div class="rule-sub">When the screen reports the provider is overloaded or rate
+              limited and names a time to retry.</div>
+          </td>
+          <td class="act">Snooze until the stated time<br>
+              <span class="arrow">then</span> continue</td>
+          <td><span class="pill dry">Dry run</span></td>
+          <td><span class="dim">Never matched</span></td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+</div>
+
+<!-- ============ SCREEN 2 ============ -->
+<div class="caption">
+  <h2>2. Editing a rule - described in words, not written in a config language</h2>
+  <p>You say what to look for in plain English and a small model judges it. The optional
+     words-to-watch-for box is a cost control, not a filter you have to get right: if none of them
+     are on screen the model is never asked, so the rule costs nothing.</p>
+</div>
+<div class="frame">
+<div class="win">
+  <div class="rail">
+    <div class="brand">DevThrottle</div>
+    <div class="nav">
+      <a href="#">Sessions</a><a href="#">Fleet Map</a><a href="#">Assistant</a>
+      <div class="gap"></div>
+      <a href="#">History</a><a href="#">Directors</a><a href="#">Schedule</a>
+      <a href="#">Workflows</a><a href="#" class="on">Rules</a>
+      <div class="gap"></div>
+      <a href="#">Skills</a><a href="#">Dictionary</a><a href="#">Transcription</a>
+      <div class="gap"></div>
+      <a href="#">Account</a><a href="#">Settings</a>
+    </div>
+  </div>
+  <div class="main">
+    <div class="head">
+      <h3>Switch to the fallback model when the current one is capped</h3>
+      <p>Applies to every session on this account.</p>
+    </div>
+
+    <div class="card">
+      <h4>What to look for</h4>
+      <p class="hint">Describe the screen in your own words. A small model reads the terminal and
+        decides whether your description fits - so wording that varies between providers still
+        matches.</p>
+      <textarea class="ta">The agent says it has run out of usage, credits or allowance for the model it is currently running, and offers switching models as a remedy.</textarea>
+      <div style="margin-top:13px">
+        <label class="f">Only bother checking when the screen contains one of these (optional)</label>
+        <div class="chips">
+          <span class="chip">limit<span class="x">x</span></span>
+          <span class="chip">usage-credits<span class="x">x</span></span>
+          <span class="chip">out of credits<span class="x">x</span></span>
+          <span class="chip">/model<span class="x">x</span></span>
+          <span class="chip dim">+ add</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h4>What to do</h4>
+      <p class="hint">Only things a person could have typed into that session. Nothing else is
+        offered, and there is no way to run a command of your own.</p>
+      <div class="row mb">
+        <div>
+          <label class="f">Action</label>
+          <select class="sel"><option>Switch model</option><option>Type something</option>
+            <option>Notify me</option><option>Snooze, then continue</option>
+            <option>Stop the session</option><option>Flag it and wait for me</option></select>
+        </div>
+        <div>
+          <label class="f">Switch to</label>
+          <select class="sel"><option>opus</option><option>sonnet</option><option>haiku</option></select>
+        </div>
+      </div>
+      <div class="row">
+        <div>
+          <label class="f">Then also</label>
+          <select class="sel"><option>Email me</option><option>Nothing else</option>
+            <option>Notify my phone</option></select>
+        </div>
+        <div></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h4>Safety</h4>
+      <p class="hint">These are not optional extras. A rule presses keys into work that is running.</p>
+      <div class="safety"><span class="k">Dry run</span>
+        <span>Record what it would have done and do nothing. Every new rule starts here.</span></div>
+      <div class="safety"><span class="k">Wait between</span>
+        <span>15 minutes before this rule may act on the same session again.</span></div>
+      <div class="safety"><span class="k">Daily limit</span>
+        <span>6 times per session per day, then it stops and tells you.</span></div>
+      <div class="safety"><span class="k">Never mid-work</span>
+        <span>Only acts on a session that has stopped and is waiting.</span></div>
+      <div class="safety"><span class="k">Never twice</span>
+        <span>Will not act again on a screen that has not changed.</span></div>
+      <div class="safety"><span class="k">Looks again first</span>
+        <span>Re-reads the screen immediately before typing, and abandons if it changed.</span></div>
+    </div>
+
+    <div class="bar">
+      <button class="btn primary">Save in dry run</button>
+      <button class="btn">Save and go live</button>
+      <div class="spacer"></div>
+      <button class="btn">Delete</button>
+    </div>
+  </div>
+</div>
+</div>
+
+<!-- ============ SCREEN 3 ============ -->
+<div class="caption">
+  <h2>3. Make a rule from a screen you are looking at</h2>
+  <p>The one that makes the feature usable. You should never have to guess what the screen said -
+     it is stored, so you point at the real thing and the model drafts the description for you.
+     This is the screen that actually stopped session 101 this morning.</p>
+</div>
+<div class="frame">
+<div class="win">
+  <div class="rail">
+    <div class="brand">DevThrottle</div>
+    <div class="nav">
+      <a href="#" class="on">Sessions</a><a href="#">Fleet Map</a><a href="#">Assistant</a>
+      <div class="gap"></div>
+      <a href="#">History</a><a href="#">Directors</a><a href="#">Schedule</a>
+      <a href="#">Workflows</a><a href="#">Rules</a>
+      <div class="gap"></div>
+      <a href="#">Skills</a><a href="#">Dictionary</a><a href="#">Transcription</a>
+      <div class="gap"></div>
+      <a href="#">Account</a><a href="#">Settings</a>
+    </div>
+  </div>
+  <div class="main">
+    <div class="head">
+      <h3>Session 101 - devthrottle_internal</h3>
+      <p>Stopped and waiting since 09:44 today. Screen stored 2 September, 09:44:12.</p>
+    </div>
+
+    <div class="banner">
+      <b>This session stopped here.</b> Nothing was watching for it, so it waited for you.
+      <span class="dim">Screens are kept for 7 days and only this account can see them.</span>
+    </div>
+
+    <div class="split">
+      <div>
+        <div class="card">
+          <h4>The stored screen</h4>
+          <p class="hint">What the terminal was showing when it stopped.</p>
+          <div class="screen">  Meandering...
+
+  <span class="hit">You've reached your Fable 5 limit. Run /usage-credits to
+  continue or switch models with /model.</span>
+
+  Baked for 4s - done 5:44 AM
+
+  &gt; _
+</div>
+        </div>
+      </div>
+      <div>
+        <div class="card">
+          <h4>Make a rule from this</h4>
+          <p class="hint">Drafted from the screen above. Edit it - your words are what gets judged
+            against future screens.</p>
+          <label class="f">When a screen looks like this</label>
+          <textarea class="ta">The agent says it has run out of usage, credits or allowance for the model it is currently running, and offers switching models as a remedy.</textarea>
+          <div style="margin-top:12px">
+            <label class="f">Do this</label>
+            <select class="sel"><option>Switch model to opus</option>
+              <option>Type something</option><option>Notify me</option>
+              <option>Snooze, then continue</option></select>
+          </div>
+          <div class="bar" style="margin:14px 0 0">
+            <button class="btn primary">Create in dry run</button>
+            <button class="btn">Cancel</button>
+          </div>
+          <p class="hint" style="margin:11px 0 0">It will report what it would have done next time
+            this appears anywhere on your account. You turn it live when you have seen it be right.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+</div>
+
+<div class="foot">
+  <h2>What I am unsure about, so you know where to push back</h2>
+  <ul>
+    <li><b>Whether "Rules" belongs in the left rail at all.</b> It might sit under Settings as a tab.
+      I put it in the rail because it is a thing you visit and read, not a preference you set once -
+      but that is a judgement, not a finding.</li>
+    <li><b>Whether the words-to-watch-for box should be visible.</b> It is a cost control that most
+      people would leave empty. Hiding it behind "advanced" is cleaner, but then nobody discovers the
+      one lever that stops a rule being asked about every screen.</li>
+    <li><b>Whether "Save and go live" should exist on a new rule.</b> The safe answer is that every
+      new rule starts in dry run and can only be promoted after it has matched something. That is
+      slower and it is probably right.</li>
+    <li><b>The list has no history view yet.</b> Every match and every action is recorded; that
+      wants its own screen, and it is not drawn here.</li>
+  </ul>
+</div>
+
+</body>
+</html>
