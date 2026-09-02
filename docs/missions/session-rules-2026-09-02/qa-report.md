@@ -29,9 +29,188 @@ The sentence in, the built rule out, quoted.
 
 ## 2. The headline - words on a screen, and something happens because a rule said so
 
-The screen before, the rule that matched, what it decided, what it typed, the screen after.
+**PROVED, on a real session, on commit `73273a457`.** Words were put on a real terminal screen; the
+session went idle on its own; a rule stored in the real store fired on its own; `/usage-credits` was
+typed into the session by nobody; and the screen afterwards shows it there.
 
-**PENDING.**
+### The rig - what was real, and what was crude
+
+Everything in the chain is production code and real machinery:
+
+| Part | What it was |
+| --- | --- |
+| The Gateway | The real Gateway built from this branch, `/healthz` reporting `2.0.4+73273a4570da4d54e3972de45bbb1a1ebca9236b`, on an isolated data root and port so it never touched the owner's own Gateway. |
+| The Director | A real Director (slot 6, built from this branch), connected to that Gateway over the ordinary Director stream. |
+| The session | A real `RawCli` session running `cmd` - `0234084a-2e6a-42af-b794-ca982f867266` - deliberately a plain shell, so a command typed into it either ran or it did not, and the screen says which. |
+| The screen read | The real `screen-grid` verb over the tunnel. |
+| The rule | Written into the real phase 1 store through `POST /gateway/rules`, which is the store's own gate. |
+| The trigger | The real Working-to-idle transition. Nothing was nudged: the terminal went byte-silent for its 10-second quiet threshold, the Director flipped the session to `WaitingForInput`, and the turn-end watcher woke the evaluator. |
+| The decision | One real model call - `chat/completions model=devthrottle/wingman OK: 571 chars in 18.4s`. |
+| The keystroke | The real prompt verb, the same route everything else in the product types through. |
+| The record | Real rows in the real firing store, read back over `GET /gateway/rules/{id}/firings`. |
+
+What was crude, stated plainly: there is **no user interface**, and there is **no authoring
+conversation** - the rule's derived parts (the plain-English screen description, the trigger words,
+the stored check) were written by hand into the create route rather than derived from the sentence by
+a model. Deriving them is phase 3, and row 1 of this report stays PENDING until it is built.
+
+### The rule
+
+Stored in dry run - the store takes no state parameter, so no caller can create a live rule.
+
+```
+id:                  e34f821a-d59d-4940-b7d1-9c5c8938faf0
+the account said:    If a session's screen says it has run out of its model allowance, type the
+                     command that shows me what is left.
+watching for:        A session that has stopped on a notice from its model provider saying its
+                     allowance for the current model is used up.
+trigger words:       limit, usage-credits, allowance, out of credits
+stored check:        matches_any(text=<screen_text>, terms=limit,allowance)
+scope:               agent RawCli, repository C:\Users\soren\AppData\Local\Temp\ccrules\scratch
+cooldown:            20 seconds       daily cap: 5
+state:               dry_run
+```
+
+### The dry run first, and it typed nothing
+
+The words were put on the screen. The session went idle. The rule fired, decided to act, and typed
+**nothing**, because it was in dry run - and the record says what it WOULD have typed:
+
+```
+decision:       act
+occurred:       2026-09-02T20:16:13.4132778Z
+understanding:  The session has stopped on a notice from the model provider saying the Fable 5 model
+                limit has been reached, which is an allowance exhaustion message.
+reason:         The screen reports the model allowance for the current model is used up, and the
+                instruction says to type the command that shows what is left. The screen itself
+                suggests /usage-credits, which serves that purpose.
+checks run:     (none - the agent named no check on this screen)
+typed:          ""
+outcome:        dry run: nothing was typed. It would have typed: /usage-credits
+```
+
+The Gateway's own log for that pass:
+
+```
+16:16:01.910 [RuleEvaluator] sid=0234084a-...: 1 rule(s) worth asking about
+16:16:13.412 [RuleEvaluator] firing: rule=e34f821a-... sid=0234084a-... decision=act typed=no
+16:16:13.481 [GatewayHost] turn-end rules: sid=0234084a-... outcome=dry-run
+```
+
+### Then a person promoted it
+
+```
+POST /gateway/rules/e34f821a-d59d-4940-b7d1-9c5c8938faf0/promote
+-> state=live  updatedUtc=2026-09-02T20:16:35.2494581Z
+```
+
+A rule cannot promote itself; there is no route by which it could.
+
+### The free checks stopping the pass, on the way - unplanned, and worth keeping
+
+The next turn end produced the same screen byte for byte, and the pass stopped before it reached a
+model at all:
+
+```
+16:17:07.477 [RuleEvaluator] stopped-before-any-rule: the screen has not changed since this session
+             was last looked at
+16:17:07.477 [GatewayHost] turn-end rules: sid=0234084a-... outcome=stopped-before-any-rule
+```
+
+That was not staged. It is the free-check layer doing exactly its job on a real screen: a turn end
+that changes nothing costs one screen read and no model call.
+
+### The screen BEFORE
+
+```
+[16:17:23.65] provider notice follows
+You've reached your Fable 5 limit. Run /usage-credits to continue or switch models with /model.
+
+
+C:\Users\soren\AppData\Local\Temp\ccrules\scratch>
+C:\Users\soren\AppData\Local\Temp\ccrules\scratch>
+C:\Users\soren\AppData\Local\Temp\ccrules\scratch>
+C:\Users\soren\AppData\Local\Temp\ccrules\scratch>
+C:\Users\soren\AppData\Local\Temp\ccrules\scratch>
+C:\Users\soren\AppData\Local\Temp\ccrules\scratch>
+C:\Users\soren\AppData\Local\Temp\ccrules\scratch>
+C:\Users\soren\AppData\Local\Temp\ccrules\scratch>
+```
+
+That is the screen the decision was made on, quoted from the firing record rather than from a
+separate read - it is the text the agent actually saw.
+
+### What the agent understood and decided
+
+```
+occurred:       2026-09-02T20:18:11.521661Z
+decision:       act
+understanding:  The screen shows a provider notice stating the session has reached its Fable 5 model
+                limit, and the session is idle at the command prompt. The notice suggests running
+                /usage-credits to see credit status.
+reason:         The screen explicitly reports a provider notice that the model allowance for Fable 5
+                is used up, and the session has stopped at the prompt. This matches the instruction's
+                trigger condition exactly.
+checks run:     (none - the agent named no check on this screen)
+typed:          /usage-credits
+```
+
+### The screen was read AGAIN immediately before the keystroke
+
+From the Gateway log, in order, within four milliseconds:
+
+```
+16:18:01.738 [HostedInferenceBrain] chat/completions model=devthrottle/wingman OK: 571 chars in 18.4s
+16:18:01.738 [GatewayHost] SendCommandAsync: verb=screen-grid, sid=0234084a-...
+16:18:01.739 [DirectorCommandRouter] screen-grid sid=0234084a-... : stream status=Ok
+16:18:01.741 [GatewayHost] SendCommandAsync: verb=prompt, sid=0234084a-...
+```
+
+The model answers, the screen is re-read, the re-read matches, and only then is anything typed. A
+screen that had moved on in those milliseconds would have been abandoned instead - see row 4.
+
+### The screen AFTER
+
+```
+[16:17:23.65] provider notice follows
+You've reached your Fable 5 limit. Run /usage-credits to continue or switch models with /model.C:\Users\soren\AppData\Local\Temp\ccrules\scratch>
+C:\Users\soren\AppData\Local\Temp\ccrules\scratch>
+C:\Users\soren\AppData\Local\Temp\ccrules\scratch>
+C:\Users\soren\AppData\Local\Temp\ccrules\scratch>
+C:\Users\soren\AppData\Local\Temp\ccrules\scratch>
+C:\Users\soren\AppData\Local\Temp\ccrules\scratch>
+C:\Users\soren\AppData\Local\Temp\ccrules\scratch>
+C:\Users\soren\AppData\Local\Temp\ccrules\scratch>/usage-credits
+'/usage-credits' is not recognized as an internal or external command,
+operable program or batch file.C:\Users\soren\AppData\Local\Temp\ccrules\scratch>
+```
+
+**`/usage-credits` is on that screen and nobody typed it.** The shell does not know the command, and
+says so - which is the correct behaviour of a plain `cmd` and is exactly why a plain shell was chosen:
+the shell's answer is unambiguous evidence that the text arrived and was submitted.
+
+### A DEFECT this run found, recorded rather than tidied away
+
+The firing's `outcome` field says:
+
+```
+outcome:  the send did not land, so the session was never reached.
+```
+
+**That sentence is wrong, and the screen above is the proof.** The prompt verb returned HTTP 502 from
+the submit verifier - `never started a turn ... the agent produced under 2048 bytes, so the prompt is
+parked in the composer unsubmitted` - which is the trap the mission brief warns about in those words,
+and the evaluator read that 502 as a failed send. The keystroke had in fact landed. The evaluator
+must not treat that 502 as a failure; that belongs to phase 4, which already owns this trap, and it is
+carried there rather than patched here. Nothing else in the chain is affected: the decision, the
+re-read, the keystroke and the record all happened, and only the last sentence of the record is wrong.
+
+### What this row does NOT prove
+
+The session was a plain shell that had been made to PRINT an allowance notice. It was not a coding
+agent that had genuinely exhausted a model allowance. This row proves the MECHANISM end to end - a
+screen, a rule, a decision, a keystroke, a record - and it does not prove the recovery of a real
+provider limit. That is row 3, and it is not to be faked.
 
 ## 3. The real case - a session blocked on a provider limit recovers with nobody watching
 
