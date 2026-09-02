@@ -2052,6 +2052,26 @@ public sealed class GatewayHost : IAsyncDisposable
             ? PushedSessions.TryLocate(tenant, sessionId, staleAfter)
             : null;
 
+    /// <summary>
+    /// One session's stored conversation, as the widget list the wingman reads. Null means nothing has been
+    /// stored for it yet - which the narration path treats as "wait", not as a failure, and never as an
+    /// attempt against the turn's retry budget.
+    ///
+    /// The tenant scope is entered HERE, synchronously, and the finished list is handed over. Narration runs
+    /// fire-and-forget from a sweep, and an ambient scope does not survive into an asynchronous
+    /// continuation - which is how a read ends up answering for the wrong account.
+    /// </summary>
+    private History.StoredConversation? ReadStoredConversation(TenantId tenant, string sessionId)
+    {
+        if (!tenant.IsValid || string.IsNullOrEmpty(sessionId)) return null;
+        using var scope = _tenantBoundary?.EnterScope(tenant);
+        var stored = _sessionTurns.ReadCurrent(sessionId);
+        if (stored is null) return null;
+        return new History.StoredConversation(
+            stored.Value.Head.IsSupported,
+            History.StoredConversationWidgets.From(stored.Value.Messages));
+    }
+
     private string? ResolveSessionTitle(TenantId tenant, string sessionId)
     {
         if (!tenant.IsValid)
@@ -2395,7 +2415,13 @@ public sealed class GatewayHost : IAsyncDisposable
         // sessionTitleResolver: the wingman opens every narration with the session's title, so a
         // listener with the phone in a pocket knows WHICH session is talking before anything else
         // (WingmanTranslator.FidelityPrompt v5.2). Push-store read - no dial. See ResolveSessionTitle.
-        _voiceService ??= new Wingman.WingmanVoiceService(WingmanBrainAsync, _keyVault, _tenantSettingsResolver, instructionsProvider: () => _instructionsStore.ActiveContent, sessionTitleResolver: ResolveSessionTitle);
+        _voiceService ??= new Wingman.WingmanVoiceService(WingmanBrainAsync, _keyVault, _tenantSettingsResolver,
+            instructionsProvider: () => _instructionsStore.ActiveContent,
+            sessionTitleResolver: ResolveSessionTitle,
+            // The narration's words now come from the Gateway's own store (turn-push mission, phase 3), not
+            // from a tunnel command asking the Director to re-read the user's transcript. See
+            // ReadStoredConversation for why the tenant scope is entered there rather than inside the service.
+            conversationReader: ReadStoredConversation);
 
         // The session supervisor (issue #915). It hangs off the SAME turn-end boundary as the voice refresh
         // below, deliberately: that event is the only thing that can wake it, so a Working session is out of
@@ -3138,7 +3164,13 @@ public sealed class GatewayHost : IAsyncDisposable
         // sessionTitleResolver: the wingman opens every narration with the session's title, so a
         // listener with the phone in a pocket knows WHICH session is talking before anything else
         // (WingmanTranslator.FidelityPrompt v5.2). Push-store read - no dial. See ResolveSessionTitle.
-        _voiceService ??= new Wingman.WingmanVoiceService(WingmanBrainAsync, _keyVault, _tenantSettingsResolver, instructionsProvider: () => _instructionsStore.ActiveContent, sessionTitleResolver: ResolveSessionTitle);
+        _voiceService ??= new Wingman.WingmanVoiceService(WingmanBrainAsync, _keyVault, _tenantSettingsResolver,
+            instructionsProvider: () => _instructionsStore.ActiveContent,
+            sessionTitleResolver: ResolveSessionTitle,
+            // The narration's words now come from the Gateway's own store (turn-push mission, phase 3), not
+            // from a tunnel command asking the Director to re-read the user's transcript. See
+            // ReadStoredConversation for why the tenant scope is entered there rather than inside the service.
+            conversationReader: ReadStoredConversation);
         // The session's conversation, served from THIS Gateway's store (turn-push mission, phase 2). A
         // literal route, so it outranks the /sessions/{sid}/{**rest} catch-all - whose "history" verb entry
         // is removed in the same change, because the whole point is that reading a conversation no longer
@@ -3147,6 +3179,9 @@ public sealed class GatewayHost : IAsyncDisposable
             _streamStaleAfter, _tenantBoundary);
 
         GatewayWingmanVoiceEndpoint.Map(_app, Registry, WingmanBrainAsync, _keyVault, _voiceService, _tenantSettingsResolver,
+            // The manual "generate the narration now" route reads the stored conversation too, through the
+            // same reader the automatic path uses - one source for both, which is the point of the mission.
+            conversationReader: ReadStoredConversation,
             pushedSessions: PushedSessions,
             sendCommand: SendCommandAsync,
             owners: SessionOwners,
