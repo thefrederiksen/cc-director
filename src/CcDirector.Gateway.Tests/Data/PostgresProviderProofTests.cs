@@ -230,8 +230,9 @@ public sealed class PostgresProviderProofTests
     /// <summary>
     /// The other side of the same coin: columns carrying an explicit "C" collation while NOT being a string
     /// key column derived from the model. An entry here is a collation applied for a reason the model does
-    /// not express, which needs writing down. Every entry carries its argument; a new one without one is
-    /// not an exception, it is an unexplained collation.
+    /// not express, and it records a DECISION - so every entry carries its argument. A column nobody has
+    /// decided about does not belong here; it belongs in
+    /// <see cref="InheritedCollatedNonKeyColumns"/>, which says so.
     /// </summary>
     private static readonly HashSet<(string Table, string Column)> CollationExtras = new()
     {
@@ -252,17 +253,35 @@ public sealed class PostgresProviderProofTests
         // have to agree about equality or the ledger silently reports on a different account than the trial
         // row it is about.
         ("trial_extensions", "subject"),
+    };
 
-        // The known-repository lookup keys. Normalized machine and path values that a caller supplies and
-        // that are matched as EXACT indexed predicates, so the two providers have to agree on which of them
-        // are equal or a search returns a different candidate set on the hosted Gateway than on a local
-        // install. They sit in a NON-unique index rather than a key, so the model-derived enumeration
-        // cannot see them - which is exactly the case this list exists for.
-        //
-        // They surfaced here rather than being noticed: they arrived on main while this mission was
-        // replacing the hand-written allow-list with the derived check, so the two changes met for the
-        // first time in a merge. The check did its job - it is loud about a collation that the model does
-        // not account for - and the answer is this written exception, not a wider net.
+    /// <summary>
+    /// INHERITED, NOT REASONED - the same distinction <see cref="InheritedUncollatedKeyColumns"/> exists
+    /// for, applied to the other direction.
+    ///
+    /// These columns DO carry an explicit "C" collation while not being a string key column the model
+    /// declares, so the reverse comparison below surfaces them. They are NOT in
+    /// <see cref="CollationExtras"/>, and that placement is deliberate: an entry there means somebody
+    /// decided the collation is right for a reason the model cannot express, and nobody here decided
+    /// anything. They arrived on `main` from another mission on 2026-09-02, while this mission was
+    /// replacing this check's hand-written allow-list with a model-derived one, and the two changes met
+    /// for the first time in a merge. The check was met, not consulted.
+    ///
+    /// EVERY ENTRY IS AN OPEN QUESTION. The plausible reading is that they are normalized lookup values
+    /// matched as exact indexed predicates and are collated so the two providers agree on which of them
+    /// are equal - but that is a reading of somebody else's change, and reading it is not deciding it.
+    /// The resolution belongs to whoever owns those columns and is one of: make them part of a unique
+    /// index so the model declares them, move them up into <see cref="CollationExtras"/> with a written
+    /// argument, or drop the collation. Not indefinite residence here.
+    ///
+    /// WHY THIS SET EXISTS AT ALL, rather than an entry in the list above. Recording debt as a reasoned
+    /// exception is the allow-list failure returning in the new list's clothes: it turns "nobody has
+    /// looked at this" into "we looked at this and it is fine", which is precisely the direction that
+    /// made the previous check silent about the thing it existed to catch.
+    /// </summary>
+    private static readonly HashSet<(string Table, string Column)> InheritedCollatedNonKeyColumns = new()
+    {
+        // Arrived on main 2026-09-02 with the known-repository search (pull request 2643).
         ("known_repositories", "MachineKey"),
         ("known_repositories", "PathKey"),
     };
@@ -362,7 +381,9 @@ public sealed class PostgresProviderProofTests
         // dropped out of "required" surfaces HERE, at once. Remove this and a half-broken derivation reads
         // as a green run.
         var unexpected = actual
-            .Where(pair => !required.Contains(pair) && !CollationExtras.Contains(pair))
+            .Where(pair => !required.Contains(pair)
+                           && !CollationExtras.Contains(pair)
+                           && !InheritedCollatedNonKeyColumns.Contains(pair))
             .OrderBy(pair => pair.Item1, StringComparer.Ordinal)
             .ToList();
         Assert.True(unexpected.Count == 0,

@@ -191,6 +191,19 @@ Recorded rather than quietly fixed, because they are the same shape as the missi
   failure is evidence about what the tool OBSERVED, never about the cause - and this one was about to be
   written into a report as a crash, which would have sent the next reader looking for a phantom in the
   test host.
+- **The default gate's `Gateway.UnitTests` is OVER its 120-second ceiling, and it is not this round's
+  doing.** The runner stops the suite and says plainly that this is not a test failure - every suite that
+  produced a TRX was `Completed` with zero failures - and that the ceiling must not be raised, because
+  every second added to it is paid by everyone on every change forever. Measured rather than asserted:
+  this round's screen tests run in **6 seconds** (29 tests), while on UNMODIFIED `origin/main` the same
+  suite measured **1m25s, 1m49s, 1m58s and 2m04s** across four runs - already at and sometimes past the
+  ceiling with none of this round's tests in it. Recorded here and deliberately NOT fixed: the remedy the
+  runner names is to park the suite or make it fit, and both belong to the seat that owns the gate.
+- **Debt was nearly recorded as a reasoned decision.** The collation check flagged two collated non-key
+  columns that arrived on main mid-round, and the first fix put them in the list of exceptions that each
+  carry a written argument - which would have turned "nobody has looked at this" into "we looked at this
+  and it is fine". That is the allow-list failure returning in the new list's clothes. They now sit in a
+  list that says INHERITED, an open question, with the date and how they arrived.
 - **This report claimed six green runs it did not have.** The sentence saying every green was re-run
   after the regeneration was written from the shape of the plan rather than from the runs, and three of
   the six were not. Caught by the Architect asking for it to be checked against artifacts. It is the
