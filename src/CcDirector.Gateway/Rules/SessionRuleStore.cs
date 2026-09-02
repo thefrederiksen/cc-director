@@ -57,12 +57,6 @@ public sealed class SessionRuleStore
         int dailyCap,
         DateTime nowUtc)
     {
-        // RED PROBE (fix round A, ruling A13). The rule store is deliberately NOT WRITTEN at this commit,
-        // so its tests are watched failing against a feature that is not there. The next commit puts it
-        // back. This commit exists so the red is REPRODUCIBLE BY CHECKING IT OUT rather than taken on
-        // trust - the same reason phase 1 left its types-nothing probe in the history.
-        throw new NotImplementedException("the rule store is not written yet.");
-#pragma warning disable CS0162
         FileLog.Write($"[SessionRuleStore] Create: instruction length={instruction?.Length ?? 0}");
 
         var sentence = (instruction ?? "").Trim();
@@ -135,12 +129,6 @@ public sealed class SessionRuleStore
     /// <summary>The rule with this id, or null when there is none.</summary>
     public SessionRule? Get(Guid id)
     {
-        // RED PROBE (fix round A, ruling A13). The rule store is deliberately NOT WRITTEN at this commit,
-        // so its tests are watched failing against a feature that is not there. The next commit puts it
-        // back. This commit exists so the red is REPRODUCIBLE BY CHECKING IT OUT rather than taken on
-        // trust - the same reason phase 1 left its types-nothing probe in the history.
-        throw new NotImplementedException("the rule store is not written yet.");
-#pragma warning disable CS0162
         lock (_gate)
         {
             using var ctx = _db.CreateContext();
@@ -152,12 +140,6 @@ public sealed class SessionRuleStore
     /// <summary>Every rule the account has, newest first.</summary>
     public IReadOnlyList<SessionRule> All()
     {
-        // RED PROBE (fix round A, ruling A13). The rule store is deliberately NOT WRITTEN at this commit,
-        // so its tests are watched failing against a feature that is not there. The next commit puts it
-        // back. This commit exists so the red is REPRODUCIBLE BY CHECKING IT OUT rather than taken on
-        // trust - the same reason phase 1 left its types-nothing probe in the history.
-        throw new NotImplementedException("the rule store is not written yet.");
-#pragma warning disable CS0162
         lock (_gate)
         {
             using var ctx = _db.CreateContext();
@@ -174,12 +156,6 @@ public sealed class SessionRuleStore
     /// <exception cref="RuleRejectedException">There is no such rule.</exception>
     public SessionRule Promote(Guid id, DateTime nowUtc)
     {
-        // RED PROBE (fix round A, ruling A13). The rule store is deliberately NOT WRITTEN at this commit,
-        // so its tests are watched failing against a feature that is not there. The next commit puts it
-        // back. This commit exists so the red is REPRODUCIBLE BY CHECKING IT OUT rather than taken on
-        // trust - the same reason phase 1 left its types-nothing probe in the history.
-        throw new NotImplementedException("the rule store is not written yet.");
-#pragma warning disable CS0162
         lock (_gate)
         {
             using var ctx = _db.CreateContext();
@@ -200,12 +176,6 @@ public sealed class SessionRuleStore
     /// <summary>Delete a rule. Its firings are left alone - the record outlives the rule.</summary>
     public bool Delete(Guid id)
     {
-        // RED PROBE (fix round A, ruling A13). The rule store is deliberately NOT WRITTEN at this commit,
-        // so its tests are watched failing against a feature that is not there. The next commit puts it
-        // back. This commit exists so the red is REPRODUCIBLE BY CHECKING IT OUT rather than taken on
-        // trust - the same reason phase 1 left its types-nothing probe in the history.
-        throw new NotImplementedException("the rule store is not written yet.");
-#pragma warning disable CS0162
         lock (_gate)
         {
             using var ctx = _db.CreateContext();
@@ -237,12 +207,6 @@ public sealed class SessionRuleStore
         string outcome,
         DateTime nowUtc)
     {
-        // RED PROBE (fix round A, ruling A13). The rule store is deliberately NOT WRITTEN at this commit,
-        // so its tests are watched failing against a feature that is not there. The next commit puts it
-        // back. This commit exists so the red is REPRODUCIBLE BY CHECKING IT OUT rather than taken on
-        // trust - the same reason phase 1 left its types-nothing probe in the history.
-        throw new NotImplementedException("the rule store is not written yet.");
-#pragma warning disable CS0162
         var typed = typedText ?? "";
 
         lock (_gate)
@@ -288,12 +252,6 @@ public sealed class SessionRuleStore
     /// <summary>Every firing of one rule, newest first.</summary>
     public IReadOnlyList<SessionRuleFiring> FiringsFor(Guid ruleId)
     {
-        // RED PROBE (fix round A, ruling A13). The rule store is deliberately NOT WRITTEN at this commit,
-        // so its tests are watched failing against a feature that is not there. The next commit puts it
-        // back. This commit exists so the red is REPRODUCIBLE BY CHECKING IT OUT rather than taken on
-        // trust - the same reason phase 1 left its types-nothing probe in the history.
-        throw new NotImplementedException("the rule store is not written yet.");
-#pragma warning disable CS0162
         lock (_gate)
         {
             using var ctx = _db.CreateContext();
@@ -360,5 +318,4 @@ public sealed class SessionRuleStore
         throw new InvalidOperationException(
             $"stored rule state '{stored}' is not one this build knows. Known states: {DryRunValue}, {LiveValue}.");
     }
-#pragma warning restore CS0162
 }
