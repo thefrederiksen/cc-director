@@ -686,21 +686,130 @@ def test_the_case_probe_answers_from_the_filesystem_and_cleans_up(tmp_path):
     assert sorted(os.listdir(str(tmp_path))) == before, "the probe was left behind"
 
 
+def _explode_on(monkeypatch, name, matches, error):
+    """Make one os call fail for the paths `matches` selects, and no others.
+
+    Injection is the only way to reach these arms. A permission error, an I/O
+    error or a race cannot be arranged on demand on a working filesystem, and
+    they are exactly the inputs that decide whether a guard fails open.
+    """
+    original = getattr(os, name)
+
+    def exploding(path, *args, **kwargs):
+        try:
+            text = str(path)
+        except Exception:
+            text = ""
+        if matches(text):
+            raise error
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, name, exploding)
+
+
 def _explode_on_the_probe(monkeypatch, name, error):
-    """Make one os call fail for the case probe only, and nothing else.
+    """Fail one os call for the case probe only.
 
     The probe's own name is mixed case and the readback looks it up with the
     case swapped, so the match has to be case-insensitive to catch both
     spellings.
     """
-    original = getattr(os, name)
+    _explode_on(monkeypatch, name,
+                lambda text: "ccscrubcase" in text.lower(), error)
 
-    def exploding(path, *args, **kwargs):
-        if "ccscrubcase" in str(path).lower():
-            raise error
-        return original(path, *args, **kwargs)
 
-    monkeypatch.setattr(os, name, exploding)
+def _explode_on_path(monkeypatch, name, target, error):
+    _explode_on(monkeypatch, name, lambda text: text == str(target), error)
+
+
+DENIED = PermissionError(13, "permission denied")
+
+
+# ------------------------------ an error is never a boolean that permits
+
+def test_is_same_file_refuses_when_it_cannot_tell_whether_a_path_exists(
+        tmp_path, monkeypatch):
+    """The guard on the ONLY unredacted copy of the input.
+
+    os.path.exists returns False for every error, and False here falls
+    through to the canonical comparison - which on a case-insensitive POSIX
+    volume is the identity function and answers "different files". An
+    unreadable destination would therefore have switched off the one check
+    standing between a run and the original image.
+    """
+    first = tmp_path / "input.png"
+    first.write_bytes(b"x")
+    second = tmp_path / "output.png"
+    _explode_on_path(monkeypatch, "stat", second, DENIED)
+
+    with pytest.raises(ScrubError) as caught:
+        cli.is_same_file(str(second), str(first))
+    assert "Refusing to guess" in str(caught.value)
+
+
+def test_an_unreadable_output_path_stops_the_run_instead_of_publishing_over_it(
+        blank_image, terms_file, tmp_path, capsys, monkeypatch):
+    """The existing-output refusal, reached through an error.
+
+    An errored exists() answered False, the refusal never fired, and the run
+    published over an output that may already have passed verification -
+    which is precisely the harm that refusal exists to stop.
+    """
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    destination = out_dir / "input-scrubbed.png"
+    destination.write_bytes(b"an earlier, verified output")
+    before = destination.read_bytes()
+
+    _explode_on_path(monkeypatch, "stat", destination, DENIED)
+    backend = ScriptedBackend([HIT_WORDS, CLEAN_WORDS])
+    code, out = run_scripted(capsys, monkeypatch, backend,
+                             blank_image, "-o", out_dir,
+                             "--scales", "1", "--terms-file", terms_file)
+    assert code == 2
+    assert "Refusing to guess" in out
+    assert destination.read_bytes() == before, "the earlier output was replaced"
+
+
+def test_an_unreadable_terms_file_is_reported_as_unreadable_not_as_missing(
+        blank_image, tmp_path, capsys, monkeypatch):
+    """A fail-CLOSED site, but the reason it gives must still be true.
+
+    os.path.isfile answering False for a permission error made the tool say
+    "terms file not found" about a file that is right there. The run stopped
+    either way, so nothing was permitted - but a wrong reason sends someone
+    looking for the wrong problem.
+    """
+    terms = tmp_path / "terms.txt"
+    terms.write_text("alpha\n", encoding="utf-8")
+    _explode_on_path(monkeypatch, "stat", terms, DENIED)
+
+    code, out = run(capsys, blank_image, "--check-only", "--terms-file", terms)
+    assert code == 2
+    assert "Refusing to guess" in out
+    assert "terms file not found" not in out
+
+
+def test_a_candidate_that_cannot_be_removed_warns_and_never_masks_the_failure(
+        blank_image, terms_file, tmp_path, capsys, monkeypatch):
+    """Cleanup is the one place a failure must NOT become the outcome.
+
+    An exception is usually in flight here - the verify failure that stopped
+    the publish - and raising from the finally would replace the real reason
+    with a housekeeping complaint. So the candidate's removal is attempted,
+    a failure is reported loudly, and nothing is gated on it.
+    """
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    _explode_on(monkeypatch, "remove", lambda text: text.endswith(".tmp"), DENIED)
+
+    backend = ScriptedBackend([HIT_WORDS, HIT_WORDS])
+    code, out = run_scripted(capsys, monkeypatch, backend,
+                             blank_image, "-o", out_dir,
+                             "--scales", "1", "--terms-file", terms_file)
+    assert code == 1, "the verify failure must survive the cleanup failure"
+    assert "VERIFY FAILED" in out
+    assert "could not remove the unpublished candidate" in out
 
 
 def test_a_probe_readback_error_is_an_error_not_a_case_sensitive_answer(

@@ -18,6 +18,7 @@ All output is ASCII only.
 import argparse
 import math
 import os
+import stat as stat_module
 import sys
 import tempfile
 
@@ -60,6 +61,50 @@ EXAMPLE_TERMS_FILE = os.path.join(TOOL_ROOT, "terms.example.txt")
 
 
 # ----------------------------------------------------------------- text tools
+
+def stat_or_none(path, purpose):
+    """os.stat, where a genuine absence is None and an error stops the run.
+
+    This exists because os.path.exists, isfile and isdir all return False for
+    EVERY error - and in this tool False is routinely the answer that PERMITS
+    an action: publish over that file, treat those two paths as different
+    files, that directory is not a directory. A permission error, an I/O
+    error or a race would therefore have switched a guard off silently, which
+    is the one way this tool can destroy something.
+
+    Exactly two errors are answers rather than failures. FileNotFoundError is
+    a genuine absence. NotADirectoryError is what a path whose parent
+    component is a file looks like, which is also a genuine absence of the
+    thing named. Everything else is a broken instrument and raises.
+
+    `purpose` is what the caller needed the answer for, so the error says why
+    the run stopped and not merely that it did.
+    """
+    try:
+        return os.stat(path)
+    except (FileNotFoundError, NotADirectoryError):
+        return None
+    except OSError as exc:
+        raise ScrubError(
+            "cannot inspect %s, which is needed to %s: %s. Refusing to guess, "
+            "because an unreadable path is not an answer - and here the "
+            "convenient guess is the one that permits the write."
+            % (path, purpose, exc))
+
+
+def path_exists(path, purpose):
+    return stat_or_none(path, purpose) is not None
+
+
+def path_is_directory(path, purpose):
+    info = stat_or_none(path, purpose)
+    return info is not None and stat_module.S_ISDIR(info.st_mode)
+
+
+def path_is_regular_file(path, purpose):
+    info = stat_or_none(path, purpose)
+    return info is not None and stat_module.S_ISREG(info.st_mode)
+
 
 def ascii_safe(text):
     """Return text with every non-ASCII character replaced by '?'.
@@ -126,7 +171,7 @@ def normalise(text, fold=True):
 
 def load_terms(path):
     """Read the denylist. One term per line; '#' starts a comment."""
-    if not os.path.isfile(path):
+    if not path_is_regular_file(path, "read the denylist"):
         raise ScrubError(
             "terms file not found: %s. The denylist is your own config and is "
             "never committed; copy %s to %s and put your terms in it."
@@ -481,8 +526,18 @@ def is_same_file(first, second):
     that has not been created yet is compared canonically instead. That is a
     precondition, not a degraded mode: the two branches answer the same
     question about two different situations, and neither one guesses.
+
+    Existence is established with stat_or_none and not with os.path.exists.
+    An errored exists() answers False, which drops straight through to the
+    canonical comparison - and that comparison is lexical, so on a
+    case-insensitive POSIX volume it answers "different files" and this
+    guard, the one standing between a run and the only unredacted copy of
+    the input, is switched off by an unreadable path.
     """
-    if os.path.exists(second) and os.path.exists(first):
+    first_there = path_exists(first, "tell whether it is the input image")
+    second_there = path_exists(second, "tell whether it is the input image")
+
+    if first_there and second_there:
         try:
             return os.path.samefile(first, second)
         except OSError as exc:
@@ -490,6 +545,16 @@ def is_same_file(first, second):
                 "cannot tell whether %s and %s are the same file: %s. "
                 "Refusing to write, because writing would risk destroying "
                 "the input." % (first, second, exc))
+
+    if first_there != second_there:
+        # One is there and the other genuinely is not, so they cannot be one
+        # file. No lexical guesswork needed or wanted.
+        return False
+
+    # Neither exists. Nothing on disk can be asked, and a path that does not
+    # exist cannot be an alias of a file that does, so the canonical
+    # spellings are all there is. In this tool's own call the input always
+    # exists, so this branch is only ever reached by a direct caller.
     return (os.path.normcase(os.path.realpath(first))
             == os.path.normcase(os.path.realpath(second)))
 
@@ -561,7 +626,8 @@ def process_image(path, out_path, terms, args, backend):
 
     # An existing output may be one that has already been verified. Replacing
     # it is a decision the caller makes on purpose, never a side effect.
-    if os.path.exists(out_path) and not args.force:
+    if path_exists(out_path, "tell whether an output is already there") \
+            and not args.force:
         raise ScrubError(
             "output %s already exists. Refusing to replace it - it may be an "
             "output that has already passed verification. Delete it, point -o "
@@ -642,12 +708,25 @@ def process_image(path, out_path, terms, args, backend):
               % (len(hits), len(hits), verify_words))
         return True
     finally:
-        if not published and os.path.exists(temp_path):
+        # No existence check here, deliberately. mkstemp created the file and
+        # `published` already records whether os.replace consumed it, so an
+        # exists() call would add nothing except one more place for an error
+        # to become a boolean. The removal is simply attempted.
+        #
+        # This is also the one place in the tool where a failure must NOT
+        # become the outcome. An exception is usually in flight - the verify
+        # failure that stopped the publish - and raising from a finally would
+        # replace the real reason with a housekeeping complaint. So it is
+        # reported loudly and nothing is gated on it. That is why this differs
+        # from the case probe, where a failed cleanup IS fatal: there, no
+        # exception is in flight and the function's whole job is to return a
+        # verdict about a directory that has just refused to behave.
+        if not published:
             try:
                 os.remove(temp_path)
+            except FileNotFoundError:
+                pass
             except OSError as exc:
-                # Never mask the failure that brought us here; say what was
-                # left behind so it can be cleaned up by hand.
                 sys.stderr.write(
                     "WARNING: could not remove the unpublished candidate %s: "
                     "%s\n" % (temp_path, exc))
@@ -656,11 +735,16 @@ def process_image(path, out_path, terms, args, backend):
 # ----------------------------------------------------------------------- main
 
 def gather_inputs(target):
-    if os.path.isfile(target):
+    if path_is_regular_file(target, "read it as an image"):
         return [target]
-    if os.path.isdir(target):
+    if path_is_directory(target, "read it as a folder of images"):
         found = []
-        for name in sorted(os.listdir(target)):
+        try:
+            names = sorted(os.listdir(target))
+        except OSError as exc:
+            raise ScrubError("cannot list the directory %s: %s"
+                             % (target, exc))
+        for name in names:
             stem, suffix = os.path.splitext(name)
             if suffix.lower() in IMAGE_SUFFIXES and not stem.endswith(SCRUBBED_MARK):
                 found.append(os.path.join(target, name))
@@ -690,12 +774,15 @@ def output_path_for(source, out_option, many):
     default_name = stem + SCRUBBED_MARK + ".png"
     if not out_option:
         return os.path.join(os.path.dirname(os.path.abspath(source)), default_name)
-    if many or os.path.isdir(out_option):
-        if not os.path.isdir(out_option):
+    out_option_is_directory = path_is_directory(
+        out_option, "decide whether -o names a folder or a file")
+    if many or out_option_is_directory:
+        if not out_option_is_directory:
             _make_directory(out_option)
         return os.path.join(out_option, default_name)
     parent = os.path.dirname(os.path.abspath(out_option))
-    if parent and not os.path.isdir(parent):
+    if parent and not path_is_directory(parent,
+                                        "create the output folder"):
         _make_directory(parent)
     return out_option
 

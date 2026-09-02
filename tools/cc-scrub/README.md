@@ -339,13 +339,21 @@ portable fallback engine and none will be added.
 
 ```
 python gen_samples.py samples     # draw the synthetic test images
-python -m pytest tests/ -q        # 56 tests
+python -m pytest tests/ -q        # 60 tests
 ```
 
 The integration tests drive the **real recognizer** over the generated
 samples. On a platform with no backend yet they skip by platform name - never
 by probing whether OCR happens to work, so a broken install on a supported
 platform fails the suite instead of quietly passing it.
+
+**One invariant to hold when changing this tool.** `os.path.exists`, `isfile`
+and `isdir` return `False` for *every* error, and in this tool `False` is
+routinely the answer that PERMITS an action - publish over that file, treat
+those two paths as different files. So none of them are used: `stat_or_none`
+is, and it treats only `FileNotFoundError` and `NotADirectoryError` as
+genuine absences and raises on everything else. If you add a check, ask what
+`False` causes there before you reach for `os.path.exists`.
 
 A few arms need a volume on which two spellings name one file. That is
 measured on the directory the test writes to, using the same probe the tool
