@@ -489,8 +489,10 @@ internal static class ControlEndpoints
         if (string.IsNullOrEmpty(session.ClaudeSessionId)) return 0;
         try
         {
-            var jsonl = ClaudeSessionReader.GetJsonlPath(session.ClaudeSessionId, session.RepoPath);
-            if (!File.Exists(jsonl)) return 0;
+            // The one resolver - pointer first (turn-push mission, phase 4). See ChatService for what the
+            // repository-folder formula cost.
+            var jsonl = SessionHistoryReader.ResolveTranscriptPath(session);
+            if (jsonl is null || !File.Exists(jsonl)) return 0;
             var messages = StreamMessageParser.ParseFile(jsonl);
             return WidgetBuilder.BuildFromMessages(messages).Count;
         }

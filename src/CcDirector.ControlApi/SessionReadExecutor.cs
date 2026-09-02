@@ -174,7 +174,8 @@ internal sealed class SessionReadExecutor : ISessionCommandArea
 
         try
         {
-            var jsonl = ClaudeSessionReader.GetJsonlPath(session.ClaudeSessionId, session.RepoPath);
+            // The one resolver - pointer first (turn-push mission, phase 4).
+            var jsonl = SessionHistoryReader.ResolveTranscriptPath(session) ?? "";
             resp.JsonlPath = jsonl;
 
             if (!File.Exists(jsonl))
@@ -390,7 +391,8 @@ internal sealed class SessionReadExecutor : ISessionCommandArea
 
         try
         {
-            var jsonl = ClaudeSessionReader.GetJsonlPath(session.ClaudeSessionId, session.RepoPath);
+            // The one resolver - pointer first (turn-push mission, phase 4).
+            var jsonl = SessionHistoryReader.ResolveTranscriptPath(session) ?? "";
             if (!File.Exists(jsonl))
             {
                 dto.Status = "no_jsonl";
@@ -503,7 +505,8 @@ internal sealed class SessionReadExecutor : ISessionCommandArea
         if (string.IsNullOrEmpty(session.ClaudeSessionId))
             return DirectorCommandResult.Fail(DirectorCommandStatus.NotFound, "session has no claude session id yet");
 
-        var jsonl = ClaudeSessionReader.GetJsonlPath(session.ClaudeSessionId, session.RepoPath);
+        // The one resolver - pointer first (turn-push mission, phase 4).
+        var jsonl = SessionHistoryReader.ResolveTranscriptPath(session) ?? "";
         if (!File.Exists(jsonl))
             return DirectorCommandResult.Fail(DirectorCommandStatus.NotFound, $"transcript not found: {jsonl}");
 
@@ -776,7 +779,8 @@ internal sealed class SessionReadExecutor : ISessionCommandArea
         }
         else
         {
-            var jsonl = ClaudeSessionReader.GetJsonlPath(session.ClaudeSessionId, session.RepoPath);
+            // The one resolver - pointer first (turn-push mission, phase 4).
+            var jsonl = SessionHistoryReader.ResolveTranscriptPath(session) ?? "";
             summary = File.Exists(jsonl)
                 ? SummaryBuilder.Build(StreamMessageParser.ParseFile(jsonl))
                 : new SessionSummaryDto();

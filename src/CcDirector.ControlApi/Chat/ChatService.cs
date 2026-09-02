@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using CcDirector.Core.Claude;
 using CcDirector.Core.Configuration;
+using CcDirector.Core.History;
 using CcDirector.Core.Sessions;
 using CcDirector.Core.Utilities;
 using CcDirector.Core.Voice;
@@ -357,8 +358,12 @@ public sealed class ChatService
         try
         {
             if (string.IsNullOrEmpty(session.ClaudeSessionId)) return null;
-            var jsonl = ClaudeSessionReader.GetJsonlPath(session.ClaudeSessionId, session.RepoPath);
-            if (!File.Exists(jsonl)) return null;
+            // The ONE resolver (turn-push mission, phase 4): the hook-reported pointer first, and only then
+            // a lookup by the transcript's own id. Building the path from the repository folder is what left
+            // session 111 silent for hours - the agent entered a Claude Code worktree, the transcript moved
+            // with it, and this read went on opening the empty spot for the rest of the session's life.
+            var jsonl = SessionHistoryReader.ResolveTranscriptPath(session);
+            if (jsonl is null || !File.Exists(jsonl)) return null;
             var messages = StreamMessageParser.ParseFile(jsonl);
             var summary = SummaryBuilder.Build(messages);
             return summary.LastAssistantText;

@@ -13,8 +13,8 @@ namespace CcDirector.Gateway.Api;
 /// always tunnel-connected); a request whose (method, rest-path) is not a mapped verb returns false so the
 /// caller answers 404. There is NO HTTP fallback.
 ///
-/// The catch-all carries the session verbs that do NOT have their own literal Gateway route: the reads (turns,
-/// buffer-html, usage, context, github-urls, queue-read) and the writes (resize, clear-context,
+/// The catch-all carries the session verbs that do NOT have their own literal Gateway route: the reads
+/// (buffer-html, usage, context, github-urls, queue-read) and the writes (resize, clear-context,
 /// history-picker, mobile-mode, voice-mode, wingman-enabled, relink, execute-action, and the voice queue's
 /// add/update/remove/move/clear/send). The verb's request DTO and core are the SAME the Director REST route
 /// used (Phase 0), so the reply body is identical; the Gateway only marshals method + path + body into the verb
@@ -41,7 +41,6 @@ internal sealed class TunnelCatchAllDispatch
     // Flat GET reads (session id only, JSON DTO body).
     private static readonly Dictionary<string, string> GetReads = new(StringComparer.OrdinalIgnoreCase)
     {
-        ["turns"] = "turns",
         ["buffer/html"] = "buffer-html",
         ["usage"] = "usage",
         ["context"] = "context",

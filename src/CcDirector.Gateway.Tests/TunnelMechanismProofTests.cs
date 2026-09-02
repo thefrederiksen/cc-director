@@ -22,7 +22,7 @@ namespace CcDirector.Gateway.Tests;
 /// <summary>
 /// Gateway Cleanup mission, Phase 2: the up-stream MECHANISM proof. Boots a REAL <see cref="GatewayHost"/> with
 /// stream mode ON, dials the REAL DirectorHub with a REAL SignalR client, and drives the browser-facing legs
-/// (roster, turns, prompt, terminal, file) end to end over the tunnel. The Director side runs the REAL
+/// (roster, a session read, prompt, terminal, file) end to end over the tunnel. The Director side runs the REAL
 /// <see cref="DirectorUpStreamHandler"/> and the REAL producers, and the Gateway side runs the REAL
 /// <see cref="GatewayStreamRegistry"/> + the REAL sinks - nothing about the up-stream is stubbed.
 ///
@@ -129,7 +129,10 @@ public sealed class TunnelMechanismProofTests : IAsyncLifetime
 
         return cmd.Verb switch
         {
-            "turns" => cmd.SessionId == MissingSid
+            // The representative READ. This was the turns read until the turn-push mission removed it; the
+            // claims here were never about turns, they are about the tunnel carrying a read and its error
+            // status, so they now travel a read that still exists.
+            "usage" => cmd.SessionId == MissingSid
                 ? DirectorCommandResult.Fail(DirectorCommandStatus.NotFound, "session not found")
                 : DirectorCommandResult.Success(JsonSerializer.Serialize(new { sessionId = cmd.SessionId, status = "ok", widgets = Array.Empty<object>() })),
             "prompt" => DirectorCommandResult.Success(JsonSerializer.Serialize(new { accepted = true })),
@@ -148,9 +151,9 @@ public sealed class TunnelMechanismProofTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Turns_read_ridesTheTunnel()
+    public async Task A_read_ridesTheTunnel()
     {
-        var resp = await _http.GetAsync($"sessions/{_sid}/turns");
+        var resp = await _http.GetAsync($"sessions/{_sid}/usage");
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode); // an HTTP dial to the unreachable Director would have failed
         var node = await resp.Content.ReadFromJsonAsync<JsonNode>();
         Assert.Equal("ok", node?["status"]?.GetValue<string>());
@@ -166,9 +169,12 @@ public sealed class TunnelMechanismProofTests : IAsyncLifetime
     // ------------------------------------------------------------------------------- error parity ----
 
     [Fact]
-    public async Task Turns_missingSession_is404_overTheTunnel()
+    public async Task A_read_forAMissingSession_is404_overTheTunnel()
     {
-        var resp = await _http.GetAsync($"sessions/{MissingSid}/turns");
+        // Deliberately NOT the turns path. That path is unmapped now, so it would answer 404 because no verb
+        // claims it - the same status this test asserts, arrived at without the tunnel being involved at all.
+        // A check that passes for a reason it was not written to prove is worse than no check.
+        var resp = await _http.GetAsync($"sessions/{MissingSid}/usage");
         Assert.Equal(HttpStatusCode.NotFound, resp.StatusCode);
     }
 

@@ -4,6 +4,7 @@ using CcDirector.Core.Agents;
 using CcDirector.Core.Backends;
 using CcDirector.Core.Claude;
 using CcDirector.Core.Configuration;
+using CcDirector.Core.History;
 using CcDirector.Core.Sessions;
 using CcDirector.Core.Utilities;
 using CcDirector.Core.Wingman;
@@ -506,7 +507,8 @@ internal sealed class SessionWriteExecutor : ISessionCommandArea
         }
         else
         {
-            var jsonl = ClaudeSessionReader.GetJsonlPath(source.ClaudeSessionId, source.RepoPath);
+            // The one resolver - pointer first (turn-push mission, phase 4).
+            var jsonl = SessionHistoryReader.ResolveTranscriptPath(source) ?? "";
             summary = File.Exists(jsonl)
                 ? SummaryBuilder.Build(StreamMessageParser.ParseFile(jsonl))
                 : new SessionSummaryDto();
@@ -697,7 +699,8 @@ internal sealed class SessionWriteExecutor : ISessionCommandArea
                 Error = "Session has not been linked to a Claude session id yet.",
             }));
 
-        var jsonl = ClaudeSessionReader.GetJsonlPath(session.ClaudeSessionId, session.RepoPath);
+        // The one resolver - pointer first (turn-push mission, phase 4).
+        var jsonl = SessionHistoryReader.ResolveTranscriptPath(session) ?? "";
         if (!File.Exists(jsonl))
             return DirectorCommandResult.Success(SessionCommandExecutor.Serialize(new RecapResponse
             {

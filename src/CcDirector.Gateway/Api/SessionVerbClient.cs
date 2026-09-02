@@ -65,14 +65,14 @@ internal sealed class SessionVerbClient
         return new SessionVerbClient(director, sendCommand);
     }
 
-    /// <summary>Read the session's turn widgets. Tunnel-only ("turns" verb -> <see cref="TurnsResponse"/>);
-    /// a failed or absent tunnel result maps to null (owning Director not connected = unreachable).</summary>
-    public async Task<TurnsResponse?> GetTurnsAsync(string sid, CancellationToken ct = default)
-    {
-        var result = await DirectorCommandRouter.TrySendAsync(_sendCommand, _director.DirectorId, "turns", sid, null, ct,
-            machineName: _director.MachineName);
-        return result is not null && result.Ok ? DirectorCommandRouter.ReadBody<TurnsResponse>(result) : null;
-    }
+    // GetTurnsAsync IS GONE (turn-push mission, phase 4). The Gateway used to ask the owning Director to
+    // open and parse the user's transcript file - on every 2.5-second Chat poll, on every narration, and
+    // once per 750 milliseconds while waiting for a spoken answer. It reads its own stored conversation
+    // now, so nothing here needs a transcript, and a read that cannot be made cannot fail: no missing file,
+    // no parse error, no "success with an empty widget list" to mistake for a session having nothing to say.
+    //
+    // (This note is deliberately a plain comment and not a documentation comment: there is no longer a
+    // declaration for it to describe, and an orphaned summary attaches itself to whatever comes next.)
 
     /// <summary>Read the session terminal buffer. Tunnel-only ("buffer" verb, the query arguments in a
     /// <see cref="BufferRequest"/> payload -> <see cref="BufferResponse"/>).</summary>

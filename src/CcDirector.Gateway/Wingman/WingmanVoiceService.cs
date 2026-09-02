@@ -651,8 +651,9 @@ public sealed class WingmanVoiceService
     /// even when the Working transition that would have cleared the cache was never observed (a racy
     /// sampled edge, missed on multi-part turns), while a redundant re-hit of the SAME turn still stays
     /// quiet so a client already playing this turn's clip is never disturbed (no re-mint, no yellow flip).
-    /// Reply text is compared trimmed + ordinal - the two sources (cache vs the live /turns widget) are
-    /// the same JSONL text block, so an unchanged turn matches exactly.
+    /// Reply text is compared trimmed + ordinal - the two sources (the cached reply and the one just read
+    /// from the Gateway's stored conversation) are the same agent text block, so an unchanged turn matches
+    /// exactly.
     /// </summary>
     internal bool ShouldRegenerate(TenantId tenant, string sid, string? currentReply)
     {
@@ -977,8 +978,9 @@ public sealed class WingmanVoiceService
         // suppressed narration of the final answer forever (the phone replayed the stale interim clip).
         // Comparing the reply TEXT instead removes the dependency on catching that edge: a changed reply
         // always regenerates, the same reply still stays quiet so a client mid-play is never disturbed.
-        // The idle sweep still guards on HasVoice at its own call site, so it never reaches here for a
-        // cached session; only the turn-end path does, and it pays one cheap /turns read to compare.
+        // The idle sweep still guards at its own call site, so it never reaches here for a cached session;
+        // only the turn-end path does, and the read it compares against is the Gateway's own stored
+        // conversation - no request leaves the Gateway to make it.
 
         // NO fleet-wide gate. Every session calls the hosted relay on its own and discovers an outage
         // for itself (see the field comment above). There used to be two shared cooldown gates here that

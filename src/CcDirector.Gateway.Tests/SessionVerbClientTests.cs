@@ -45,22 +45,6 @@ public sealed class SessionVerbClientTests
         new(UnreachableDirector(), hub.Send);
 
     [Fact]
-    public async Task GetTurns_ridesTheTurnsVerb_andMapsTheBody()
-    {
-        var hub = new RecordingHub
-        {
-            Next = DirectorCommandResult.Success(JsonSerializer.Serialize(
-                new TurnsResponse { Widgets = new List<TurnWidgetDto> { new() { Kind = "Text", Content = "hi" } } }, Web)),
-        };
-
-        var turns = await Client(hub).GetTurnsAsync("sid-1");
-
-        Assert.Equal("turns", hub.Last!.Verb);
-        Assert.Equal("sid-1", hub.Last.SessionId);
-        Assert.Equal("hi", turns?.Widgets?.Single().Content);
-    }
-
-    [Fact]
     public async Task GetBuffer_ridesTheBufferVerb_andCarriesTheQueryArgs()
     {
         var hub = new RecordingHub
@@ -143,7 +127,9 @@ public sealed class SessionVerbClientTests
         // to null and a write maps to the (false, null, error) shape the HTTP path returned on a non-200.
         var hub = new RecordingHub { Next = DirectorCommandResult.Fail(DirectorCommandStatus.NotFound, "no such session") };
 
-        Assert.Null(await Client(hub).GetTurnsAsync("sid-1"));
+        // Any read will do to make this claim; the turns read is gone (turn-push mission, phase 4) and the
+        // claim is about how a failed tunnel result maps, not about which verb asked.
+        Assert.Null(await Client(hub).GetBufferAsync("sid-1", lines: null, raw: false, since: null));
         var (ok, body, error) = await Client(hub).PostPromptAsync("sid-1", new PromptRequest { Text = "x" });
         Assert.False(ok);
         Assert.Null(body);

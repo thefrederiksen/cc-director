@@ -39,24 +39,27 @@ public sealed class TunnelCatchAllDispatchTests
     // -------------------------------------------------------------------------------- reads ----
 
     [Fact]
-    public async Task Turns_read_writes_the_dto_as_200_json_matching_the_http_dial()
+    public async Task A_read_writes_the_dto_as_200_json_matching_the_http_dial()
     {
+        // This used to be driven through the turns read, which is gone (turn-push mission, phase 4). The
+        // claim was never about turns: it is that a read verb's reply body reaches the caller byte-for-byte
+        // with a 200 and a JSON content type, exactly as the Director's own route answered it. Any mapped
+        // read carries that claim; the usage read is one.
         const string dto = "{\"sessionId\":\"s\",\"status\":\"ok\",\"widgets\":[]}";
         var send = Capture(out var seen, DirectorCommandResult.Success(dto));
         var dispatch = new TunnelCatchAllDispatch(send);
         var (ctx, body) = NewCtx("GET");
 
-        var handled = await dispatch.TryDispatchAsync(ctx, Guid.NewGuid().ToString(), "dir1", "turns");
+        var handled = await dispatch.TryDispatchAsync(ctx, Guid.NewGuid().ToString(), "dir1", "usage");
 
         Assert.True(handled);
-        Assert.Equal("turns", seen()!.Verb);
+        Assert.Equal("usage", seen()!.Verb);
         Assert.Equal(StatusCodes.Status200OK, ctx.Response.StatusCode);
         Assert.Equal("application/json", ctx.Response.ContentType);
         Assert.Equal(dto, BodyText(body));
     }
 
     [Theory]
-    [InlineData("turns", "turns")]
     [InlineData("buffer/html", "buffer-html")]
     [InlineData("usage", "usage")]
     [InlineData("context", "context")]
@@ -75,18 +78,20 @@ public sealed class TunnelCatchAllDispatchTests
         Assert.Equal("", seen()!.PayloadJson); // reads carry no payload
     }
 
-    [Fact]
-    public async Task History_is_NOT_dispatched_down_the_tunnel_any_more()
+    [Theory]
+    [InlineData("history")]
+    [InlineData("turns")]
+    public async Task ReadingAConversation_isNOTdispatchedDownTheTunnel_anyMore(string rest)
     {
-        // The turn-push mission's whole point: a conversation is read from the Gateway's own store, not
-        // fetched from the owning Director on every 2.5-second Chat poll. The literal route
-        // (SessionConversationEndpoint) serves it; this dispatcher must not claim the path, or a request
-        // would go back down the tunnel and re-parse a transcript on the user's disk.
+        // The turn-push mission's whole point: a conversation is read from the Gateway's own store, never
+        // fetched from the owning Director. "history" is served by SessionConversationEndpoint; "turns" has no
+        // caller left at all. Either one back in this table would reopen the round trip that made the Chat
+        // screen slow and left session 111's narration silent for hours.
         var send = Capture(out var seen, DirectorCommandResult.Success("{}"));
         var dispatch = new TunnelCatchAllDispatch(send);
         var (ctx, _) = NewCtx("GET");
 
-        var handled = await dispatch.TryDispatchAsync(ctx, Guid.NewGuid().ToString(), "dir1", "history");
+        var handled = await dispatch.TryDispatchAsync(ctx, Guid.NewGuid().ToString(), "dir1", rest);
 
         Assert.False(handled);
         Assert.Null(seen());
@@ -98,13 +103,16 @@ public sealed class TunnelCatchAllDispatchTests
         var dispatch404 = new TunnelCatchAllDispatch((d, c, ct) =>
             Task.FromResult<DirectorCommandResult?>(DirectorCommandResult.Fail(DirectorCommandStatus.NotFound, "session not found")));
         var (ctx404, _) = NewCtx("GET");
-        Assert.True(await dispatch404.TryDispatchAsync(ctx404, Guid.NewGuid().ToString(), "dir1", "turns"));
+        // A LIVE verb, deliberately. This claim is about how a Director's failure status becomes an HTTP
+        // status, so it has to travel a path that actually reaches the Director; driving it through a verb
+        // that is no longer mapped would take the not-a-verb exit and assert nothing.
+        Assert.True(await dispatch404.TryDispatchAsync(ctx404, Guid.NewGuid().ToString(), "dir1", "usage"));
         Assert.Equal(StatusCodes.Status404NotFound, ctx404.Response.StatusCode);
 
         var dispatch400 = new TunnelCatchAllDispatch((d, c, ct) =>
             Task.FromResult<DirectorCommandResult?>(DirectorCommandResult.Fail(DirectorCommandStatus.BadRequest, "invalid session id format")));
         var (ctx400, _) = NewCtx("GET");
-        Assert.True(await dispatch400.TryDispatchAsync(ctx400, "not-a-guid", "dir1", "turns"));
+        Assert.True(await dispatch400.TryDispatchAsync(ctx400, "not-a-guid", "dir1", "usage"));
         Assert.Equal(StatusCodes.Status400BadRequest, ctx400.Response.StatusCode);
     }
 
