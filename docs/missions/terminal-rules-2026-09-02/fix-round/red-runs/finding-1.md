@@ -32,11 +32,20 @@ tunnel connected, its snapshot one second old, and the pushed byte count exactly
 taken at capture, the shipped reader answered the LIVE question from the STORE - and in the second
 case it did so with a row captured by a different Director entirely.
 
-## The green run - PENDING
+## The green run
 
-**The green side of this finding is NOT in hand and is not quoted here.**
+```
+dotnet test src/CcDirector.Gateway.UnitTests/CcDirector.Gateway.UnitTests.csproj \
+  --filter "FullyQualifiedName~GatewayScreenReaderLiveReadTests" --nologo -v q
+Passed!  - Failed: 0, Passed: 5, Skipped: 0, Total: 5        exit 0
+```
 
-A green run WAS taken when the fix landed, and it passed: `--filter "FullyQualifiedName~Screens"` gave
+On commit `43694cffa`, and inside the green tip gate on the same commit
+(`Gateway.UnitTests` outcome=Completed, total 3,262, 0 failed, runner exit 0). See `../runs.md`.
+
+### The earlier green, and why it is not the one quoted
+
+A green run was also taken when the fix first landed: `--filter "FullyQualifiedName~Screens"` gave
 24 passed and 1 skipped, and the full Gateway unit project gave 3,185 passed and 3 skipped. Those runs
 were made at 11:0x-11:3x, BEFORE the provisional migration was deleted and regenerated on the new main
 snapshot at 11:48. A green taken against a migration that no longer exists is not evidence about the
@@ -46,6 +55,5 @@ Later runs did exercise this class after the regeneration - the full Gateway uni
 passed, and the default local gate - but as suite totals, not as this finding's own quoted run, and the
 newest of them predates the last three commits on the branch.
 
-**What is owed:** re-run the filter above and quote it. The mission was stood down from the machine-wide
-test lock mid-round while a production outage was fixed, so this waits on the Architect's clearance. It
-is PENDING, not failed and not assumed.
+It is kept here as history rather than deleted, because a reader should be able to see that the fix
+passed when it was written as well as on the tree that ships.

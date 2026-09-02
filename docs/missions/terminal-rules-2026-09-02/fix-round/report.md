@@ -3,69 +3,65 @@
 Manager's report on the round ruled by `rulings/r12-the-fix-round.md` and `r13`, answering the six
 findings in `inspection-01.md`.
 
-**Six findings, six ANSWERED IN CODE. Three of six have their green run in hand; the rest are PENDING.**
-Every finding has a test that FAILED against the unfixed code, and every red run is quoted in
-`red-runs/`. Nothing has landed on `main` and nothing may. A second independent inspection runs after
-this; phase 0 is not complete and this report does not say it is.
+**Six findings, six answered, and every green run is now in hand except one suite that has not run.**
+Every finding has a test that FAILED against the unfixed code and passes on the tip; every run is
+quoted in `runs.md` with its exit code and the commit it ran on. Nothing has landed on `main` and
+nothing may. A second independent inspection runs after this; phase 0 is not complete and this report
+does not say it is.
 
-## Read this first: which greens are actually taken, and which are PENDING
+**The one thing outstanding is `Gateway.Tests`**, which is blocked on a machine-wide lock it must never
+queue for. See the end of `runs.md`.
+
+## Read this first: what was run, on which commit, with which exit code
 
 An earlier version of this page said "every finding's green side was re-run afterwards, and the numbers
-quoted below are from AFTER the regeneration". **That sentence was not true, and it is withdrawn.** The
-Architect asked for it to be checked against artifacts rather than reasoned about, and checking found
-three of the six quoting greens taken BEFORE the migration was regenerated.
+quoted below are from AFTER the regeneration". **That sentence was not true when it was written, and it
+is withdrawn.** The Architect asked for it to be checked against artifacts rather than reasoned about,
+and checking found three of the six quoting greens taken BEFORE the migration was regenerated. It is
+recorded in the instruments section below as a defect of this round's own, because a report claiming a
+run it did not have is exactly the shape of the defects this round exists to answer.
 
-Two things happened mid-round that bear on every green in this report.
+The runs that stand are all in `runs.md`, each with its exit code and its commit. In summary, on commit
+`43694cffa`:
 
-**The migration was regenerated at 11:48** (commit `1cb504fb2`), because finding 3 changes the model.
-A green taken before that was taken against a migration that no longer exists, so it is not evidence
-about the tree that ships - exactly as a green taken before a fix is not evidence about the fix.
-
-**The mission was stood down from the machine-wide test lock at 12:55**, mid parked-gate run, because
-that run was queued ahead of the session fixing a live production outage. Nothing may be run until the
-Architect clears it. That is a good reason and it is why several greens below say PENDING rather than
-carrying a number.
-
-| finding | red run | green run |
+| what | result | exit |
 |---|---|---|
-| 1 - live read never answered from the store | in hand, quoted | **PENDING** - the one taken predates the regeneration |
-| 2 - the capture's byte mark | in hand, quoted | **PENDING** - the filtered green predates the regeneration; one post-regeneration run of its own test exists on `5a93de2aa` |
-| 3 - the Director in the key | in hand, quoted | **PENDING** - an earlier draft pointed at a file that was never written |
-| 4 - the push mapping and the rig | in hand, quoted (mutation) | in hand, quoted |
-| 5 - the loss boundary | in hand, quoted | in hand, quoted |
-| 6 - the per-session cap | in hand, quoted | in hand, quoted |
-| row 4's rig | in hand, quoted | in hand, quoted, on `f2fbcae9c` |
+| the tip gate | nine projects, every TRX outcome Completed, 4,556 tests, 0 failed | 0 |
+| finding 1 filtered | 5 passed | 0 |
+| finding 2 filtered | 4 passed | 0 |
+| finding 3 filtered | 1 passed | 0 |
+| findings 4, 5, 6 | subsumed by the tip gate; own filtered greens in their pages | 0 |
+| the row 4 rig | ROW 4 PROVEN, both sides of the comparison quoted | 0 |
+| **`Gateway.Tests`** | **has not run** | **PENDING** |
 
-**And no run of any kind has been taken on the tip commit.** The newest full default gate is on
-`c30c9ff75` (12:25); since then the branch has taken an enum removal, a test hardening and three comment
-changes. Every project still builds - that is checked and is a compiler fact, not a judgement - but a
-gate run on the tip is owed with the rest.
+**The tip gate went red twice before it went green, and the two reds were not the same kind.** The
+first was this round's own defect and is fixed - a helper opened a fresh `GatewayDatabase` on every
+call, and `GatewayDatabase.Dispose` clears the SQLite connection pool PROCESS-GLOBALLY, so a burst of
+disposals broke an unrelated database test. The second was NOT this round's, and that was settled with
+an artifact rather than an argument: a worktree cut from `origin/main` failed the same way twice in five
+runs, in two different tests, with the identical `ObjectDisposedException: SQLitePCL.sqlite3`. A single
+red run of that suite is not evidence of a defect until it has been judged against the parent.
 
 The RED runs stand exactly as they were taken and are not repeated: a red run against unfixed code is
 evidence about the CODE, and does not depend on which migration was in the tree.
 
-**What is owed, in one list, so that clearance leaves only running and quoting.** The order and the
-recording rules are the Architect's, and both exist because of mistakes already made on this mission.
+### The Architect's owed-runs order, and what came of each step
 
-0. **Reset `ccpgtest` first** if it still holds a `session_screens` migration id older than
-   `20260902154819`. A stale history row for an id that no longer exists fails in a way that looks
-   exactly like a defect in this code, and that is what made the parked gate red for inspection 01.
-1. **The tip gate FIRST** - `.\scripts	est-local.ps1` on the tip commit. If it is red, everything after
-   it is moot and the lock was spent on runs that do not matter.
-2. **The three filtered runs** for findings 1, 2 and 3. Findings 4, 5 and 6 need no separate filtered
-   run: the tip gate subsumes them.
-3. **The row 4 rig on the tip** - `scripts	erminal-rules-screen-proof.ps1`.
-4. **The parked `Gateway.Tests` suite**, which has never run at all.
-
-**Two recording rules, for every number produced:**
-
-- **Quote the EXIT CODE beside every count.** The previous round reported exit 0 where the inspection
-  observed exit 1; a count without an exit code is how that happened.
-- **Quote the COMMIT beside every number.** A run is evidence only for the tree it ran on, and this
-  round was already bitten once by three commits landing after a gate.
-
-**Do NOT re-run the red runs.** A red against unfixed code is evidence about the CODE and does not
-depend on which migration was in the tree.
+0. Reset `ccpgtest` - DONE, and no reset was needed: it held no `session_screens` migration id at all,
+   so there was nothing stale. Checked rather than assumed.
+1. The tip gate FIRST - DONE. Green on `43694cffa`, exit 0, after two reds whose causes are both
+   established in `runs.md`. Running it first was right: the first red was a real defect of this round's
+   own, and everything after it would have been spent on a tree that did not gate.
+2. The three filtered runs for findings 1, 2 and 3 - DONE, all exit 0 on `43694cffa`.
+3. The row 4 rig on the tip - DONE, ROW 4 PROVEN on `43694cffa`, exit 0.
+4. **The parked `Gateway.Tests` suite - STILL OUTSTANDING.** The lock was held by
+   `devthrottle-turn-push` throughout, verified before every run by opening the lock file exclusively
+   and seeing whether it throws. It must never be QUEUED: a 48.88-minute suite against a 45-minute
+   MaxWait can never acquire from a queue and times out with ZERO tests, which reads as a failure when
+   it is a queue. **The CI fallback needs the Architect:** `ci.yml` triggers on push to `main` and on
+   pull requests targeting `main`, not on a push to a mission branch, and `gh run list --branch
+   mission/terminal-rules` returns empty - so putting it on CI means opening a pull request, which is
+   the Architect's act and not the Manager's.
 
 ## The six findings
 
@@ -82,10 +78,9 @@ the tunnel could have answered the question itself. The live half never bought a
 by construction. It bought latency on a connection that was already up.
 
 **Red:** `Expected: Tunnel / Actual: Store`, twice, with a stored screen, a connected Director, a
-one-second-old snapshot and equal byte marks. **Green: PENDING** - the run taken when the fix landed
-predates the migration regeneration and is withdrawn rather than quoted. The negative control was
-REWRITTEN to forbid the stale serve; the version that shipped asserted it. Detail in
-`red-runs/finding-1.md`.
+one-second-old snapshot and equal byte marks. **Green:** 5 passed, exit 0, on `43694cffa`. The
+negative control was REWRITTEN to forbid the stale serve; the version that shipped asserted it. Detail
+in `red-runs/finding-1.md`.
 
 ### 2. The capture paired an old parser frame with the new byte total
 
@@ -96,9 +91,7 @@ and the frame are one consistent observation.
 **Red:** `Expected: 18 / Actual: 36` - the capture returned a frame reflecting eighteen bytes with a
 mark of thirty-six, the OVERSTATEMENT the shipped comment said was impossible. The bad state was
 established positively before the assertion, and releasing the held writer is the control.
-**Green: PENDING** - one post-regeneration run of `CaptureMarkDescribesTheCapturedFrameTests` passed on
-commit `5a93de2aa`, but the filtered green this page quoted predates the regeneration. Detail in
-`red-runs/finding-2.md`.
+**Green:** 4 passed, exit 0, on `43694cffa`. Detail in `red-runs/finding-2.md`.
 
 ### 3. The stored row was not bound to the routed Director
 
@@ -112,9 +105,9 @@ directly, the duplicate check compares the Director, both reads break a same-mil
 it carries the explicit `C` collation every caller-supplied natural-key string column here carries.
 
 **Red:** the second Director's append returned false - "already stored" - and its row was lost:
-`Expected: True / Actual: False`. **Green: PENDING** - the store class was exercised after the
-regeneration only inside suite totals, and an earlier draft of that page pointed at a proof file that
-was never written. Detail in `red-runs/finding-3.md`.
+`Expected: True / Actual: False`. **Green:** 1 passed, exit 0, on `43694cffa` - against SQLite. The
+only POSTGRES exercise of the new key component lives in `Gateway.Tests`, which has not run. Detail in
+`red-runs/finding-3.md`.
 
 ### 4. The end-to-end proof accepted a mangled transport
 

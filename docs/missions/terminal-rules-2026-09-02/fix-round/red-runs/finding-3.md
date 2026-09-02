@@ -44,15 +44,22 @@ column in this schema carries.
 The model change made the migrated-database tests fail with EF's own pending-model-changes warning -
 which is that check working, and is why the migration was regenerated immediately afterwards.
 
-## The green run - PENDING
+## The green run
 
-**The green side of this finding is NOT in hand and is not quoted here.** An earlier draft of this page
-pointed at a file called `regenerated-gate.md` that was never written; that pointer is removed rather
-than left dangling, because a reference to a proof that does not exist reads exactly like a proof.
+```
+dotnet test src/CcDirector.Gateway.UnitTests/CcDirector.Gateway.UnitTests.csproj \
+  --filter "FullyQualifiedName~Append_TwoDirectorsCapturingOneSession" --nologo -v q
+Passed!  - Failed: 0, Passed: 1, Skipped: 0, Total: 1        exit 0
+```
 
-The store class WAS exercised after the regeneration, inside the full Gateway unit project (3,259
-passed) and inside the default local gate - but as suite totals on a commit that is no longer the tip,
-not as this finding's own quoted run.
+On commit `43694cffa`, and inside the green tip gate on the same commit (`Gateway.UnitTests`
+outcome=Completed, total 3,262, 0 failed, runner exit 0). See `../runs.md`.
 
-**What is owed:** re-run `--filter "FullyQualifiedName~Append_TwoDirectorsCapturingOneSession"` and the
-whole `Screens` namespace, and quote them. PENDING on the Architect's clearance of the test lock.
+An earlier draft of this page pointed at a file called `regenerated-gate.md` that was never written.
+That pointer was removed rather than left dangling: a reference to a proof that does not exist reads
+exactly like a proof.
+
+**One thing this green does NOT cover.** The new key component is exercised against SQLite here. The
+only place it is exercised on POSTGRES - the provider the hosted Gateway runs - is
+`SessionScreens_IdempotentOnTheNaturalKey_AndByteOrdinalAboutIt_OnRealPostgres`, which lives in
+`Gateway.Tests`, and that suite has not run. See `../runs.md`.

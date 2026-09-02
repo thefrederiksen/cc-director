@@ -125,11 +125,13 @@ run.
 The row-by-row plan, with each row's pass condition, is `phase-0-proofs.md`. Row 7 is WITHDRAWN because
 the fix to finding 1 removed the behaviour it asserted, and it is not re-scoped.
 
-**Rows 0 to 6 pass, and three of the fix round's six green runs are still PENDING.** The mission was
-stood down from the machine-wide test lock mid-round while a live production outage was fixed, so some
-runs it owes have not been taken. `fix-round/report.md` carries the table of which greens are in hand
-and which are pending, and `fix-round/red-runs/` carries every red run. Nothing here quotes a run that
-was not made.
+**Rows 0 to 6 pass on commit `43694cffa`, with the tip gate green at exit 0 and the row 4 rig proven on
+the same commit.** Every run is listed in `fix-round/runs.md` with its exit code and the commit it ran
+on; every red run is in `fix-round/red-runs/`. Nothing here quotes a run that was not made.
+
+**One suite has still not run: the parked `Gateway.Tests`.** It is blocked on a machine-wide lock it
+must never queue for, and it holds the only exercise of the screen store's key on Postgres. That is the
+single outstanding item on this phase.
 
 ### Row 4 - the one the store exists for, proven on a REAL Director
 
@@ -239,14 +241,14 @@ reported exit 0; inspection 01 observed exit 1 because
 alone on retry. Run here, that suite is fully green (456 passed) and the runner exits 0. Both
 observations were honest; the case is intermittent.
 
-**The parked gate is RED, because one of its two suites DID NOT RUN.** `Core.Tests` passed - 4,374
-passed, 8 skipped, 0 failed. `Gateway.Tests` executed zero tests: it waited thirty minutes in the
-machine-wide lock queue and was then killed by the Architect, because it was queued ahead of the session
-fixing a live production outage. A suite that did not run is not a suite that passed, and the runner
-says so itself by requiring a total at or above the baseline. `Gateway.Tests` is therefore the one
-outstanding item on this work: it holds the only live-Postgres exercise of the screen store's key and
-the endpoint harness that changed with finding 1. Both projects build; their behaviour is unproven.
-Full detail in `fix-round/parked-gate.md`.
+**The parked gate is HALF taken.** `Core.Tests` passed - 4,374 passed, 8 skipped, 0 failed.
+`Gateway.Tests` has executed ZERO tests across two attempts: the first waited thirty minutes in the
+machine-wide lock queue and was killed because it was queued ahead of a live production outage's fix,
+and the second was never started because the lock was still held. A suite that did not run is not a
+suite that passed, and the runner says so itself by requiring a total at or above the baseline. It is
+the one outstanding item on this work: it holds the only live-Postgres exercise of the screen store's
+key and the endpoint harness that changed with finding 1. Both projects build; their behaviour is
+unproven. Full detail in `fix-round/parked-gate.md` and `fix-round/runs.md`.
 
 The shared throwaway Postgres database `ccpgtest` was DROPPED AND RECREATED before that run. This is a
 standing rule for the rest of the mission: every time the provisional migration id changes, every

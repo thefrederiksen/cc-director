@@ -29,22 +29,21 @@ frame with the new total: the OVERSTATEMENT the shipped comment said was impossi
 The two assertions before it had already passed, so the bad state was positively established rather
 than assumed: the rendezvous subscriber was reached, and the buffer's total really had moved to 36.
 
-## The green run - PENDING
+## The green run
 
-**The green side of this finding is NOT in hand and is not quoted here.**
+```
+dotnet test src/CcDirector.Core.UnitTests/CcDirector.Core.UnitTests.csproj \
+  --filter "FullyQualifiedName~CaptureMarkDescribesTheCapturedFrame|FullyQualifiedName~TurnEndScreenCapture" --nologo -v q
+Passed!  - Failed: 0, Passed: 4, Skipped: 0, Total: 4        exit 0
+```
 
-A green run WAS taken when the fix landed and it passed - 4 passed on the two capture classes, 164
-passed on the whole Core unit project - but at 11:3x, BEFORE the provisional migration was deleted and
-regenerated at 11:48. Those numbers are withdrawn as this finding's green rather than left standing.
+On commit `43694cffa`, and inside the green tip gate on the same commit (`Core.UnitTests`
+outcome=Completed, total 164, 0 failed, runner exit 0). See `../runs.md`.
 
-This class was re-run once after the regeneration and after the test was hardened (the rendezvous flag
-moved to Interlocked): 1 passed, at 12:42, on commit `5a93de2aa`. That is a real post-regeneration green
-for the finding's own test - but it is a single filtered case on a commit that is no longer the tip, and
-it is recorded as such rather than presented as the finding's proof.
+Row 0's own bound assertion - the mark never exceeds the buffer's total - is in those four and still
+holds, and is now true for a stronger reason: the parser can only have consumed what the buffer already
+accepted.
 
-Row 0's own bound assertion - the mark never exceeds the buffer's total - still holds, and is now true
-for a stronger reason: the parser can only have consumed what the buffer already accepted. That
-assertion's run is owed with the rest.
-
-**What is owed:** re-run both capture classes and the Core unit project, and quote them. PENDING on the
-Architect's clearance of the test lock.
+An earlier green was taken when the fix landed, before the provisional migration was regenerated at
+11:48; it is not the one quoted, because a green taken against a migration that no longer exists is not
+evidence about the tree that ships.
