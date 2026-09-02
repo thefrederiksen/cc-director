@@ -113,13 +113,14 @@ function Invoke-Teardown {
 # root. The fleet helper looks under %LOCALAPPDATA%\cc-director; this rig's Director writes under its
 # own CC_DIRECTOR_ROOT, so the lookup is scoped there and can never name one of the owner's Directors.
 function Get-RigDirectorId([int]$DirectorPid) {
-    $homes = @($dirRoot)
+    # NOT $home - that is a read-only PowerShell automatic variable and assigning it in the loop throws.
+    $instanceHomes = @($dirRoot)
     $instancesRoot = Join-Path $dirRoot 'instances'
     if (Test-Path $instancesRoot) {
-        $homes += @(Get-ChildItem $instancesRoot -Directory -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName })
+        $instanceHomes += @(Get-ChildItem $instancesRoot -Directory -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName })
     }
-    foreach ($home in $homes) {
-        $regDir = Join-Path $home 'config\director\instances'
+    foreach ($instanceHome in $instanceHomes) {
+        $regDir = Join-Path $instanceHome 'config\director\instances'
         if (-not (Test-Path $regDir)) { continue }
         foreach ($f in @(Get-ChildItem $regDir -Filter *.json -ErrorAction SilentlyContinue)) {
             try {
@@ -212,10 +213,20 @@ try {
     # ---- the throwaway Gateway ---------------------------------------------
     Say "starting the throwaway Gateway on port $GatewayPort with its own storage root"
     $gwLog = Join-Path $results 'gateway.out'
-    $script:GatewayProcess = Start-Process -FilePath $gwExe.FullName -ArgumentList @('--port', "$GatewayPort") `
-        -WorkingDirectory $gwStage -PassThru -NoNewWindow `
-        -RedirectStandardOutput $gwLog -RedirectStandardError "$gwLog.err" `
-        -Environment @{ CC_DIRECTOR_ROOT = $gwRoot }
+    # The storage root is handed over by INHERITANCE, set on this process just long enough to start the
+    # child and then put back. Start-Process has no -Environment parameter on Windows PowerShell 5.1 - that
+    # is PowerShell 7 - and this machine has only 5.1, so the parameter version fails outright rather than
+    # quietly ignoring the root, which would point the throwaway Gateway at the REAL storage root and stamp
+    # the owner's database with this mission's provisional migration id. Restoring it in a finally is not
+    # tidiness: this script runs inside a session whose own root must not be changed.
+    $prevRoot = $env:CC_DIRECTOR_ROOT
+    try {
+        $env:CC_DIRECTOR_ROOT = $gwRoot
+        $script:GatewayProcess = Start-Process -FilePath $gwExe.FullName -ArgumentList @('--port', "$GatewayPort") `
+            -WorkingDirectory $gwStage -PassThru -NoNewWindow `
+            -RedirectStandardOutput $gwLog -RedirectStandardError "$gwLog.err"
+    }
+    finally { $env:CC_DIRECTOR_ROOT = $prevRoot }
 
     $healthy = $false
     foreach ($i in 1..90) {

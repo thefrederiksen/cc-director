@@ -28,8 +28,11 @@ That splits the proofs in two, and the split is not a matter of convenience:
   `EnsureCreated` from the same mapped model the store's own statements are generated from. That
   instrument is not invented here - `StatsConcurrencyTestDb.cs` established it for exactly this
   situation, and its class comment says why.
-- Rows 4 and 7 need a real Gateway with a real Director attached, and a real Gateway migrates. They
-  wait for the slot.
+- Row 4 needs a real Gateway with a real Director attached. It was blocked while no Gateway on this
+  branch could open a database at all; ruling 6 removed that, and it is now driven by
+  `scripts	erminal-rules-screen-proof.ps1` against a throwaway Gateway and Director.
+- Row 7 was planned as a live-rig run and is proven IN PROCESS instead, with the model and speech legs
+  stubbed. The difference is stated in the row itself rather than glossed.
 
 ### The limit on the five, stated in the same breath as the instrument (ruling 4)
 
@@ -168,7 +171,10 @@ the reader directly, so every other row can pass with the Director half never ha
 3. With that established, the Gateway's question-A read answers screen A with the rows that were on
    that terminal, quoted against the row printed out of the database.
 
-Status: **BLOCKED on the migration slot** - needs a real Gateway, and a real Gateway migrates.
+Status: **UNBLOCKED and driven by `scripts	erminal-rules-screen-proof.ps1`.** Ruling 6 removed the
+blocker by allowing the migration to be held locally, so a Gateway built from this branch now migrates
+cleanly. The script stands up a throwaway Gateway and a throwaway Director under ruling 8's constraints,
+with teardown inside the run.
 
 ## Row 5 - the same request as a question-B read is refused, and says why
 
@@ -230,16 +236,36 @@ Status: **provable now.**
 never triggered, or produced nothing. Ruling 3. The pass condition is therefore a conjunction of two
 positive artifacts.
 
-**Pass condition, all three:**
-1. **The turn COMPLETED**, evidenced by what it PRODUCED - the narration for that turn exists, with
-   its text and its audio, read back after the turn. Never "no error appeared".
-2. **AND** `SessionVerbClient.ScreenGridPulls` read immediately before and immediately after THAT
-   turn differ by zero, with both numbers quoted.
-3. **AND** the known-bad control: the same turn run with the store empty moves the same counter by a
-   stated positive number. Without this the counter is not shown to be capable of moving, and a
-   counter that cannot move proves nothing.
+**Pass condition, all four - and it is met:**
+1. **The turn COMPLETED**, evidenced by what it PRODUCED: narration audio exists for that session
+   afterwards, and the model leg was actually reached. Never "no error appeared".
+2. **AND** the tunnel pull counter, read immediately before and immediately after THAT turn, differs
+   by zero.
+3. **AND the known-bad control**: the same turn with the store EMPTY moves the same counter by one,
+   so the zero is a number shown to be capable of rising.
+4. **AND a second control about the RULE rather than the instrument**: the same turn with a stored
+   screen whose terminal has moved by ONE BYTE also pulls once. A stored screen saves the round trip
+   only while the Gateway can still prove it describes that terminal.
 
-Status: **BLOCKED on the migration slot** - needs a real Gateway and a real narration.
+**The conjunction was measured, not assumed.** With the model leg throwing so that no turn can
+complete, ALL THREE tests fail - the first on its narration assertion, which is exactly the hole a
+counter-only proof would have sailed through.
+
+**HOW IT IS PROVEN, AND HOW THAT DIFFERS FROM THE PLAN.** This row was planned as a live-rig run and is
+instead proven IN PROCESS, through the real `WingmanVoiceService`, with the model leg and the speech
+leg stubbed. That is a real difference and it is stated rather than glossed:
+
+- What IS exercised: the real voice service, the real `GatewayScreenReader`, the real store, the real
+  freshness rule, and the real `SessionVerbClient` whose tunnel sends are what the counter counts.
+- What is NOT: a real provider, real speech, and a real Director. This is not a claim about any
+  provider, and the narration text is a fixture rather than a model's answer.
+
+The alternative was to put the owner's provider key into a throwaway Gateway and spend on real calls
+to prove a claim that is about the SCREEN READ rather than about the model. That trade was not worth
+it, and the limit is written down instead of being bought.
+
+Status: **proven, in process, with the model and speech legs stubbed** - and against the mapped model
+rather than the migrated schema, like the rest.
 
 ---
 
