@@ -71,12 +71,131 @@ public static class RuleCandidateFilter
     public const string ScreenIsEmpty =
         "there is nothing on the screen to read, and an empty screen is not evidence";
 
-    /// <summary>Choose the rules worth a model call for this screen.</summary>
+    /// <summary>
+    /// Choose the rules worth a model call for this screen. The session-level checks come first, because a
+    /// working session or an unchanged screen makes every per-rule question moot; then each rule is asked
+    /// about in the order that gets rid of it soonest.
+    /// </summary>
+    /// <exception cref="ArgumentNullException">The facts or the firing reader are missing.</exception>
     public static RuleCandidates Choose(
         IReadOnlyList<SessionRule> rules,
         RuleSessionFacts facts,
         string screenText,
         string? previousScreenText,
         Func<Guid, IReadOnlyList<SessionRuleFiring>> firingsFor,
-        DateTime nowUtc) => throw new NotImplementedException();
+        DateTime nowUtc)
+    {
+        if (facts is null) throw new ArgumentNullException(nameof(facts));
+        if (firingsFor is null) throw new ArgumentNullException(nameof(firingsFor));
+
+        var none = Array.Empty<SessionRule>();
+        var noSkips = Array.Empty<RuleSkipped>();
+
+        if (string.Equals(facts.ActivityState, WorkingState, StringComparison.OrdinalIgnoreCase))
+            return new RuleCandidates(none, noSkips, SessionIsWorking);
+
+        if (string.IsNullOrWhiteSpace(screenText))
+            return new RuleCandidates(none, noSkips, ScreenIsEmpty);
+
+        // An unseen screen is CHANGED, not unchanged: a Gateway that has just started has never looked at
+        // this session, and a session parked on a notice since before it started is exactly the case the
+        // feature exists for.
+        if (previousScreenText is not null && string.Equals(previousScreenText, screenText, StringComparison.Ordinal))
+            return new RuleCandidates(none, noSkips, ScreenUnchanged);
+
+        var chosen = new List<SessionRule>();
+        var skipped = new List<RuleSkipped>();
+        var today = DateOnly.FromDateTime(nowUtc.ToUniversalTime());
+
+        foreach (var rule in rules ?? none)
+        {
+            var scopeProblem = OutOfScope(rule.Scope, facts);
+            if (scopeProblem is not null)
+            {
+                skipped.Add(new RuleSkipped(rule.Id, scopeProblem));
+                continue;
+            }
+
+            if (!RulePrimitives.MatchesAny(screenText, rule.TriggerWords))
+            {
+                skipped.Add(new RuleSkipped(rule.Id,
+                    "none of the words this rule watches for are on the screen: " +
+                    string.Join(", ", rule.TriggerWords) + "."));
+                continue;
+            }
+
+            // The ceiling counts ACTS on THIS session. A decline, an abandonment and a refusal all did
+            // nothing, so none of them starts a cooldown or eats a day's allowance - a rule that declined a
+            // second ago must still be free to look at the next screen.
+            var acts = firingsFor(rule.Id)
+                .Where(f => string.Equals(f.SessionId, facts.SessionId, StringComparison.Ordinal))
+                .Where(f => string.Equals(f.Decision, RuleDecisions.Act, StringComparison.Ordinal))
+                .ToList();
+
+            var lastAct = acts.Count == 0 ? (DateTime?)null : acts.Max(f => f.OccurredUtc);
+            if (lastAct is not null)
+            {
+                var since = (int)(nowUtc.ToUniversalTime() - lastAct.Value.ToUniversalTime()).TotalSeconds;
+                if (since < rule.CooldownSeconds)
+                {
+                    skipped.Add(new RuleSkipped(rule.Id,
+                        $"this rule acted on this session {since} seconds ago and waits " +
+                        $"{rule.CooldownSeconds} seconds between acts on one session."));
+                    continue;
+                }
+            }
+
+            var actsToday = acts.Count(f => DateOnly.FromDateTime(f.OccurredUtc.ToUniversalTime()) == today);
+            if (actsToday >= rule.DailyCap)
+            {
+                skipped.Add(new RuleSkipped(rule.Id,
+                    $"this rule has already acted on this session {actsToday} times today and its daily " +
+                    $"cap is {rule.DailyCap}."));
+                continue;
+            }
+
+            chosen.Add(rule);
+        }
+
+        return new RuleCandidates(chosen, skipped, null);
+    }
+
+    /// <summary>Why this rule's scope does not cover this session, or null when it does. Each part is a
+    /// filter: nothing stored means "any".</summary>
+    private static string? OutOfScope(RuleScope scope, RuleSessionFacts facts)
+    {
+        var problem = PartOutOfScope("agent", scope.Agent, facts.Agent)
+            ?? PartOutOfScope("machine", scope.Machine, facts.Machine)
+            ?? PartOutOfScope("mission", scope.Mission, facts.Mission);
+        if (problem is not null) return problem;
+
+        if (string.IsNullOrWhiteSpace(scope.Repository)) return null;
+        return PathsAreTheSamePlace(scope.Repository, facts.RepositoryPath)
+            ? null
+            : $"this rule only watches sessions in '{scope.Repository}', and this session is in " +
+              $"'{Show(facts.RepositoryPath)}'.";
+    }
+
+    private static string? PartOutOfScope(string what, string? wanted, string actual)
+    {
+        if (string.IsNullOrWhiteSpace(wanted)) return null;
+        if (string.Equals(wanted, actual, StringComparison.OrdinalIgnoreCase)) return null;
+        return $"this rule only watches sessions whose {what} is '{wanted}', and this session's {what} is " +
+               $"'{Show(actual)}'.";
+    }
+
+    /// <summary>Two written paths naming the same place, compared the way the operating system does.</summary>
+    private static bool PathsAreTheSamePlace(string left, string right)
+    {
+        if (string.IsNullOrWhiteSpace(right)) return false;
+        var comparison = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+        return string.Equals(Normalize(left), Normalize(right), comparison);
+    }
+
+    private static string Normalize(string path) =>
+        path.Trim().Replace('/', Path.DirectorySeparatorChar)
+            .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+
+    /// <summary>An empty fact reads as nothing at all rather than as an empty pair of quotes.</summary>
+    private static string Show(string value) => string.IsNullOrWhiteSpace(value) ? "not set" : value;
 }
