@@ -552,6 +552,9 @@ public sealed class WingmanVoiceServiceTests : IDisposable
             Assert.Null(svc.ReadFailedFor(TenantId.Local, "sid-1"));           // ...and a wait is not a failed read
             Assert.Null(svc.VoiceUnavailableFor(TenantId.Local, "sid-1"));     // ...so the row carries no reason at all
             Assert.False(svc.NothingToNarrateFor(TenantId.Local, "sid-1"));    // ...and it is NOT "nothing to say" either
+            // NEGATIVE CONTROL for the too-old arm below: a Director that CAN send simply has not sent
+            // yet, and nothing here may accuse its machine of being out of date.
+            Assert.False(svc.DirectorCannotSendConversationFor(TenantId.Local, "sid-1"));
             Assert.False(svc.HasVoice(TenantId.Local, "sid-1"));               // nothing to play yet
             Assert.Equal(0, brain.AskCount);                                   // and nothing to translate, so no spend
         }
@@ -827,7 +830,8 @@ public sealed class WingmanVoiceServiceTests : IDisposable
     /// what the narration reads its words from; leaving it null is the honest "this Gateway has stored
     /// nothing" case, which is what the tests about waiting want.</summary>
     private WingmanVoiceService ServiceWithBrainAndTts(IAgentBrain brain, byte[] audio, string persistPath,
-        Func<TenantId, string, CcDirector.Gateway.History.StoredConversation?>? conversationReader = null)
+        Func<TenantId, string, CcDirector.Gateway.History.StoredConversation?>? conversationReader = null,
+        Func<TenantId, string, bool>? directorCannotSendConversation = null)
     {
         var vaultPath = Path.Combine(Path.GetTempPath(), "wmvs-" + Guid.NewGuid().ToString("N") + ".vault");
         var vault = new KeyVault(vaultPath);
@@ -835,7 +839,8 @@ public sealed class WingmanVoiceServiceTests : IDisposable
         vault.Set("DEVTHROTTLE_API_KEY", "dt_live_test");
         var http = new HttpClient(new TtsStubHandler(HttpStatusCode.OK, "", audio));
         return new WingmanVoiceService((_, _, _) => Task.FromResult(brain), vault, Settings, persistPath,
-            ttsHttpClient: http, conversationReader: conversationReader);
+            ttsHttpClient: http, conversationReader: conversationReader,
+            directorCannotSendConversation: directorCannotSendConversation);
     }
 
     /// <summary>Like <see cref="ServiceWithBrainAndTts"/> but with a caller-supplied speech transport, so a
@@ -1455,4 +1460,82 @@ public sealed class WingmanVoiceServiceTests : IDisposable
             "the ready-audio warm load did not finish within 30 seconds");
         return svc;
     }
+
+    /// <summary>
+    /// THE 2026-09-02 WEDGE. Turn-push phases 3a/3b went live on the hosted Gateway while the newest
+    /// RELEASED Director predated the pusher by a fortnight, so the store never filled for anybody. The arm
+    /// above reads an empty store as "the Director has not pushed YET" and comes back on the next sweep -
+    /// correct for a Director that HAS the pusher, and a promise that never ends for one that does not.
+    /// Eleven of the owner's twenty-one sessions sat yellow reading "Voice did not arrive after 3m..22m"
+    /// while those sessions had actually earned a red "Needs you" he could no longer see.
+    ///
+    /// So the service must record the fact the fold turns into "Update DevThrottle", and it must do so
+    /// WITHOUT spending anything and WITHOUT standing the sweep down - re-checking is free, and it is what
+    /// makes the recovery automatic the moment that machine is updated.
+    /// </summary>
+    [Fact]
+    public async Task GenerateAsync_WhenTheOwningDirectorCannotSendConversations_SaysSoInsteadOfWaitingForever()
+    {
+        var director = new TunnelStub();
+        var conversation = StoredConversationStub.NothingStored();
+        var dir = Path.Combine(Path.GetTempPath(), "wmvs-tooold-" + Guid.NewGuid().ToString("N"));
+        var persistPath = Path.Combine(dir, "voice-sessions.json");
+        try
+        {
+            var brain = new RecordingBrain();
+            var svc = ServiceWithBrainAndTts(brain, new byte[] { 1 }, persistPath, conversation.Reader,
+                directorCannotSendConversation: (_, _) => true);
+
+            await svc.GenerateAsync(TenantId.Local, "sid-1", RouteFor(director), CancellationToken.None, showReadingWindow: true);
+
+            Assert.True(svc.DirectorCannotSendConversationFor(TenantId.Local, "sid-1"));   // the fact the screen renders
+            Assert.Equal(0, brain.AskCount);                                               // nothing translated, nothing spent
+            Assert.False(svc.HasVoice(TenantId.Local, "sid-1"));
+            // NOT a read failure. NoteReadFailed(Unavailable) would render through the hosted-AI arm and say
+            // "Voice unavailable" in the shared account-condition voice, for something that is neither the
+            // account's fault nor anything to do with hosted AI.
+            Assert.Null(svc.ReadFailedFor(TenantId.Local, "sid-1"));
+            Assert.Null(svc.VoiceUnavailableFor(TenantId.Local, "sid-1"));
+            // NOT "waiting on a prompt" either - nobody here has read a conversation to know that.
+            Assert.False(svc.NothingToNarrateFor(TenantId.Local, "sid-1"));
+            // And the sweep keeps coming back, so updating that machine restores narration with nobody
+            // touching the Gateway. A skip here would make the recovery need a restart.
+            Assert.False(svc.ShouldSkipSweep(TenantId.Local, "sid-1"));
+        }
+        finally { try { Directory.Delete(dir, recursive: true); } catch { /* best-effort */ } }
+    }
+
+    /// <summary>
+    /// The marker describes a MACHINE, and machines get updated. Once a conversation actually arrives that
+    /// computer has demonstrated it can send one - whatever it last said about itself on Hello, and whoever
+    /// owns the session by then - so the sentence must come off the screen by itself.
+    /// </summary>
+    [Fact]
+    public async Task DirectorCannotSendMarker_ClearsAsSoonAsAConversationArrives()
+    {
+        var director = new TunnelStub();
+        var empty = StoredConversationStub.NothingStored();
+        var full = StoredConversationStub.Of(("Text", "the reply to narrate"));
+        var updated = false;
+        Func<TenantId, string, CcDirector.Gateway.History.StoredConversation?> reader =
+            (t, sid) => updated ? full.Reader(t, sid) : empty.Reader(t, sid);
+        var dir = Path.Combine(Path.GetTempPath(), "wmvs-tooold-clear-" + Guid.NewGuid().ToString("N"));
+        var persistPath = Path.Combine(dir, "voice-sessions.json");
+        try
+        {
+            var svc = ServiceWithBrainAndTts(new RecordingBrain(), new byte[] { 1 }, persistPath, reader,
+                directorCannotSendConversation: (_, _) => true);
+
+            await svc.GenerateAsync(TenantId.Local, "sid-1", RouteFor(director), CancellationToken.None, showReadingWindow: true);
+            Assert.True(svc.DirectorCannotSendConversationFor(TenantId.Local, "sid-1"));   // control: it was set
+
+            updated = true;   // that computer was updated and pushed its conversation
+            await svc.GenerateAsync(TenantId.Local, "sid-1", RouteFor(director), CancellationToken.None, showReadingWindow: true);
+
+            Assert.True(full.Reads >= 1);
+            Assert.False(svc.DirectorCannotSendConversationFor(TenantId.Local, "sid-1"));
+        }
+        finally { try { Directory.Delete(dir, recursive: true); } catch { /* best-effort */ } }
+    }
+
 }
