@@ -221,13 +221,122 @@ alone, which is turn-end truth and lags a slash-command switch.
 
 ## 4. The negative control - where the boundary is
 
-Two things, and neither is optional. A report showing only successes has not shown the feature has a
-boundary.
+**BOTH PROVED, live, on commit `73273a457`, on the same session and the same rig as row 2.**
 
-- A session merely DISCUSSING a usage limit is not convicted.
-- A rule DECLINES a screen its instruction does not cover, and the reason is recorded.
+Neither is proved by an absence. A rule that did nothing because the evaluator threw looks exactly
+like a rule that read the screen and declined, so each decline below is proved by the PRESENCE of its
+recorded firing, with the screen it saw, what it understood, and why it refused - and only then by the
+fact that nothing was typed.
 
-**PENDING.**
+### N1 - a session merely DISCUSSING a usage limit is NOT convicted
+
+This is the sharpest test in the mission, because the trigger words are identical: `limit` and
+`usage-credits` are both on this screen, so the free checks let it through and the rule reached the
+agent as a candidate. Only reading the screen against the instruction can tell the two apart.
+
+**The rule was LIVE when this ran**, not in dry run - it had already typed into this session ninety
+seconds earlier (row 2). Nothing but its judgement stood between this screen and a keystroke.
+
+The screen:
+
+```
+I am writing documentation for our runbook.
+The example notice I need to quote reads - You've reached your Fable 5 limit. Run /usage-credits to continue.
+That line is an EXAMPLE in a document. This session is not blocked and has plenty of allowance left.
+
+
+C:\Users\soren\AppData\Local\Temp\ccrules\scratch>
+C:\Users\soren\AppData\Local\Temp\ccrules\scratch>
+...
+```
+
+The recorded firing:
+
+```
+rule:           e34f821a-d59d-4940-b7d1-9c5c8938faf0   (state: live)
+occurred:       2026-09-02T20:20:34.8199316Z
+decision:       decline
+understanding:  The session is writing documentation and quoting an example notice about a model
+                limit. The screen explicitly states this is an example and that the session is not
+                blocked and has plenty of allowance left.
+reason:         The model-allowance language on the screen is content being written into a document,
+                not the session's own report of its state. The instruction targets a session that has
+                actually stopped due to an exhausted model allowance, which this is not.
+typed:          ""
+outcome:        declined - nothing was typed.
+```
+
+```
+16:20:15.642 [RuleEvaluator] sid=0234084a-...: 1 rule(s) worth asking about
+16:20:34.819 [HostedInferenceBrain] chat/completions model=devthrottle/wingman OK: 595 chars in 19.2s
+16:20:34.819 [RuleEvaluator] firing: rule=e34f821a-... decision=decline typed=no
+16:20:34.823 [SessionRuleStore] RecordFiring: rule=e34f821a-... decision=decline typed=no
+16:20:34.823 [GatewayHost] turn-end rules: sid=0234084a-... outcome=declined
+```
+
+A fixed list of trigger words would have convicted this screen. The judgement is what did not.
+
+### N2 - a rule DECLINES a screen its instruction does not cover
+
+A second stored rule, whose trigger words are on the screen and whose instruction plainly is not
+about it:
+
+```
+id:                  ade51b9f-4cde-4292-94aa-4d678a9dfb49
+the account said:    If a build failed because of a compiler error, type the command that shows me
+                     the first error.
+trigger words:       failed, error
+```
+
+The screen carries `failed`, so the free checks let it through:
+
+```
+Deleting temporary files failed - the file is in use by another process.
+Nothing was built and no compiler ran.
+
+C:\Users\soren\AppData\Local\Temp\ccrules\scratch>
+...
+```
+
+The recorded firing:
+
+```
+occurred:       2026-09-02T20:21:20.2197026Z
+decision:       decline
+understanding:  The screen shows a failed build attempt, but it explicitly states 'Nothing was built
+                and no compiler ran.' The failure was in deleting temporary files (file in use by
+                another process), not a compiler error.
+reason:         The instruction applies only when a build stopped on a compiler error. This screen
+                reports that no compiler ran at all, so there is no compiler error to show.
+typed:          ""
+outcome:        declined - nothing was typed.
+```
+
+### The free checks turning rules away, live, with reasons
+
+Not staged; taken from the same run. Every rule that did not reach the agent said why it did not:
+
+```
+16:18:21.545 [RuleEvaluator] no-candidates: none of the words this rule watches for are on the
+             screen: failed, error. this rule acted on this session 10 seconds ago and waits 20
+             seconds between acts on one session.
+16:17:07.477 [RuleEvaluator] stopped-before-any-rule: the screen has not changed since this session
+             was last looked at
+```
+
+The first line accounts for BOTH stored rules by name in one pass - one turned away on its words, the
+other on its cooldown - and neither reached a model. The second is an unchanged screen costing one
+screen read and nothing else.
+
+### Rule e34f821a's whole record, as the store returns it
+
+```
+2026-09-02T20:20:34.8199316Z  decline  typed=""
+2026-09-02T20:18:11.5216610Z  act      typed="/usage-credits"
+2026-09-02T20:16:13.4132778Z  act      typed=""            (dry run)
+```
+
+Three firings: what it would have done, what it did, and what it refused to do.
 
 ## 5. How to write a rule
 
