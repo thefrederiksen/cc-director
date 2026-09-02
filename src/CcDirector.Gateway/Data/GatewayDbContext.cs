@@ -944,6 +944,13 @@ public sealed class GatewayDbContext : DbContext
             modelBuilder.Entity<SessionTurnHeadEntity>().Property(e => e.SessionId).UseCollation("C");
             modelBuilder.Entity<SessionTurnHeadEntity>().Property(e => e.Generation).UseCollation("C");
             modelBuilder.Entity<SessionHistoryRollupEntity>().Property(e => e.RepoKey).UseCollation("C");
+            // session_screens.SessionId is a caller-supplied natural-key string in a composite primary key
+            // (the Terminal Rules mission, issue #2644) - the same shape as session_spend, session_history
+            // and session_turns above, and the same requirement. The store's idempotency rests on that key:
+            // the same session and capture time must be ONE row. Without this the two providers would not
+            // agree on what "the same" means, so a re-sent capture could store twice on the hosted Gateway
+            // and once on a local install.
+            modelBuilder.Entity<SessionScreenEntity>().Property(e => e.SessionId).UseCollation("C");
             // The tenants mapping table's natural-key string columns (the tenant id primary key and the
             // account_subject unique index) rely on byte-ordinal equality/uniqueness, same as the keys above,
             // so pin them to "C" too - the account subject in particular must match EXACTLY on both providers.

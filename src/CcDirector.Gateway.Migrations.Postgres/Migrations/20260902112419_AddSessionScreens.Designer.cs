@@ -13,7 +13,7 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace CcDirector.Gateway.Migrations.Postgres.Migrations
 {
     [DbContext(typeof(GatewayDbContext))]
-    [Migration("20260902105640_AddSessionScreens")]
+    [Migration("20260902112419_AddSessionScreens")]
     partial class AddSessionScreens
     {
         /// <inheritdoc />
@@ -970,7 +970,8 @@ namespace CcDirector.Gateway.Migrations.Postgres.Migrations
 
                     b.Property<string>("SessionId")
                         .HasMaxLength(64)
-                        .HasColumnType("character varying(64)");
+                        .HasColumnType("character varying(64)")
+                        .UseCollation("C");
 
                     b.Property<DateTime>("CapturedAtUtc")
                         .HasColumnType("timestamp with time zone");

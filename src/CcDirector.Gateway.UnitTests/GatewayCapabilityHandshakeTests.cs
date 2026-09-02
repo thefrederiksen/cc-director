@@ -124,17 +124,16 @@ public class GatewayCapabilityHandshakeTests
         {
             Version = "1.9.10",
             Commit = "860f76e",
-            HubMethods = new List<string>
-            {
-                "Hello", "RegisterSessionKey", "RevokeSessionKey",
-                "PushSnapshot", "PushDelta", "PushRepoSnapshot",
-                // Terminal Rules (issue #2644). A Gateway too old for PushScreen stores no screens, so
-                // every reader falls back to a tunnel pull and nothing anywhere says why - which is
-                // exactly the class of silence this handshake exists to break. This list is written out
-                // by hand ON PURPOSE: deriving it from MethodsThisDirectorNeeds would make the test
-                // incapable of failing, and its failing is what caught this addition.
-                "PushScreen",
-            },
+            // DERIVED from the hub itself, never a parallel list kept by hand. The hand-written version
+            // called a COMPLETE Gateway incomplete the day PushScreen was added, while the
+            // reflection-derived tests above kept passing - and a false alarm is not the harmless
+            // direction: it teaches whoever runs the check to wave the next hit away.
+            //
+            // The HUB is the right source to derive from and MethodsThisDirectorNeeds is the wrong one.
+            // The Director's needs list is the thing under test here, so building the fixture from it
+            // would make this test incapable of failing - both sides of the comparison would filter on
+            // the very property a defect would break.
+            HubMethods = InvokeHelloCapabilities().HubMethods,
         });
 
         Assert.DoesNotContain("MISSING", report, StringComparison.Ordinal);

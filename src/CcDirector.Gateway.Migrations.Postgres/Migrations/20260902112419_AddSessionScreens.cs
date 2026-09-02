@@ -17,7 +17,7 @@ namespace CcDirector.Gateway.Migrations.Postgres.Migrations
                 columns: table => new
                 {
                     tenant_id = table.Column<string>(type: "text", nullable: false),
-                    SessionId = table.Column<string>(type: "character varying(64)", maxLength: 64, nullable: false),
+                    SessionId = table.Column<string>(type: "character varying(64)", maxLength: 64, nullable: false, collation: "C"),
                     CapturedAtUtc = table.Column<DateTime>(type: "timestamp with time zone", nullable: false),
                     DirectorId = table.Column<string>(type: "character varying(64)", maxLength: 64, nullable: false),
                     RowsJson = table.Column<string>(type: "text", nullable: false),
