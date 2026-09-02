@@ -82,6 +82,14 @@ Note the lock queue while doing this: any Gateway.Tests run takes a machine-wide
 `[ModuleInitializer]`, so even a single-test filtered run queues behind another worktree's full run,
 and gives up after 45 minutes. That is issue #2653.
 
+**AND DO NOT PUT `--blame-hang` ON A RUN THAT HAS TO QUEUE.** Its inactivity timer counts time spent
+WAITING FOR THE LOCK, so a queued run is killed by its own watchdog having never executed a single
+test. Measured on 2026-09-02: a `--blame-hang-timeout 12m` run died at exactly 12 minutes while the
+lock log was still printing `Still waiting after 632s. THIS IS NOT A HANG.` - two instruments, one
+saying not-a-hang and the other calling it a hang and shooting it. `--blame-hang` is the right
+instrument for a run that HOLDS the lock; queued, its timeout must exceed the lock's 45-minute
+MaxWait or it manufactures the exact false wedge diagnosis it exists to prevent.
+
 ## What is NOT proven
 
 - No live run against a real Director and a real phone. Every proof so far is unit-level plus the parked
