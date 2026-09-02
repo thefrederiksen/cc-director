@@ -743,6 +743,14 @@ public sealed class WingmanVoiceService
     public VoiceAttempts? AutomaticAttemptsFor(TenantId tenant, string sid)
         => StateFor(tenant).Attempts.TryGetValue(sid, out var a) ? a : (VoiceAttempts?)null;
 
+    /// <summary>
+    /// A narration was asked for while one was already running for this session, and has not been served
+    /// yet. The idle sweep consults this ALONGSIDE its has-audio guard: a session holding cached audio for
+    /// an older turn, with a newer turn waiting, must not be skipped - that combination is precisely how a
+    /// new answer goes unspoken for ever.
+    /// </summary>
+    public bool HasPendingNarration(TenantId tenant, string sid) => StateFor(tenant).Rerun.ContainsKey(sid);
+
     /// <summary>The bare count of failed automatic attempts - what the display fold is handed.</summary>
     public int AutomaticAttemptCountFor(TenantId tenant, string sid) => AutomaticAttemptsFor(tenant, sid)?.Count ?? 0;
 
@@ -1001,45 +1009,53 @@ public sealed class WingmanVoiceService
         //
         // Coalesce: never run two generations for the SAME session at once (a slow turn overlapping the
         // idle sweep would otherwise double the spend). First caller wins.
-        var state = StateFor(tenant);
-        if (!state.InFlight.TryAdd(sid, 1))
-        {
-            // NOT DROPPED - REMEMBERED (found in review). Coalescing exists so two generations for one
-            // session never run at once, and returning here is right. Returning and forgetting was not: the
-            // caller that loses this race is usually the TURN-END path for a brand new reply, and the turn
-            // it was told about is then narrated by nobody. The in-flight attempt finishes, stores the
-            // PREVIOUS turn's audio, and the idle sweep skips the session from then on because audio exists
-            // (GatewayHost's HasVoice guard) - so the new answer is never spoken and nothing in the system
-            // is left looking for it. Marking it makes the winner run again once it is done, where the
-            // identity-aware skip decides properly whether there is anything new to say.
-            state.Rerun[sid] = 1;
-            return;
-        }
-        // AT MOST TWO PASSES. A caller that lost the coalescing race left a marker instead of vanishing (see
-        // the TryAdd above), so the winner serves that turn too rather than leaving it to nobody. Bounded on
-        // purpose: the marker can be set again while this runs, and an unbounded loop would be a spin. Two is
-        // what the race needs - the turn this call was made for, and the one that arrived while it ran. A
-        // third arrival is a third turn, which the turn-end path and the sweep both find on their own.
         //
-        // EACH PASS IS ITS OWN ATTEMPT, recorded before the next one starts. Sharing one outcome across both
-        // passes would lose the first pass's failure the moment the second pass recorded a different turn,
-        // and the retry schedule would then under-count exactly the turns it exists to bound.
-        const int MaxCoalescedReruns = 1;
-        var reruns = 0;
-        try
+        // AT MOST TWO PASSES per acquisition. Bounded on purpose: markers can keep arriving while this runs,
+        // and an unbounded loop would be a spin that never returned. Two is what the race needs - the turn
+        // this call was made for, and the one that arrived while it ran. Hitting the bound LEAVES THE MARKER
+        // SET rather than clearing it, which is what makes the bound safe rather than another way to lose a
+        // turn: the next caller to take the guard consumes it, and the idle sweep no longer skips a session
+        // that has one waiting (see HasPendingNarration). A third arrival is therefore picked up within a
+        // sweep cycle, not forgotten.
+        const int MaxPasses = 2;
+        var state = StateFor(tenant);
+        var passes = 0;
+        while (true)
         {
-            do
+            if (!state.InFlight.TryAdd(sid, 1))
             {
-                state.Rerun.TryRemove(sid, out _);   // taken BEFORE the pass, so an arrival during it is not lost
-                await RunOnePassAsync();
+                // NOT DROPPED - REMEMBERED (found in review). Coalescing exists so two generations for one
+                // session never run at once, and returning here is right. Returning and forgetting was not:
+                // the caller that loses this race is typically the TURN-END path for a brand new reply, and
+                // the turn it was told about is then narrated by nobody. The in-flight attempt finishes,
+                // stores the PREVIOUS turn's audio, and the idle sweep skips the session from then on
+                // because audio exists - so the new answer is never spoken and nothing is left looking for
+                // it. Marking it makes the holder serve that turn too.
+                state.Rerun[sid] = 1;
+                return;
             }
-            while (state.Rerun.ContainsKey(sid) && reruns++ < MaxCoalescedReruns);
+            try
+            {
+                do
+                {
+                    state.Rerun.TryRemove(sid, out _);   // taken BEFORE the pass, so an arrival during it is not lost
+                    await RunOnePassAsync();
+                }
+                while (state.Rerun.ContainsKey(sid) && ++passes < MaxPasses);
+            }
+            finally
+            {
+                state.InFlight.TryRemove(sid, out _);
+            }
+
+            // THE LOST WAKEUP, CLOSED (found in the second review round). The marker and the guard are two
+            // separate maps, so there is a window between the loop deciding it is finished and the guard
+            // being released in which a losing caller can set the marker and go - it would then be owned by
+            // nobody at all. Re-reading the marker AFTER the release, and taking the guard back to serve it,
+            // means it is either consumed here or consumed by whoever holds the guard now, who clears it
+            // before their own pass. There is no third possibility, so this window strands nothing.
+            if (!state.Rerun.ContainsKey(sid) || passes >= MaxPasses) return;
         }
-        finally
-        {
-            state.InFlight.TryRemove(sid, out _);
-        }
-        return;
 
         async Task RunOnePassAsync()
         {
@@ -1054,6 +1070,17 @@ public sealed class WingmanVoiceService
             try
             {
                 await GenerateOnceAsync(tenant, sid, route, ct, showReadingWindow, attempted);
+            }
+            catch (OperationCanceledException)
+            {
+                // A CANCELLATION IS NOT A FAILED ATTEMPT (found in the second review round). Nobody tried and
+                // failed to make this narration - the Gateway is shutting down, or the caller withdrew.
+                // Counting it would spend the turn's budget on something that says nothing about whether the
+                // voice can be made, and a handful of shutdowns would put the "the Gateway has stopped
+                // trying" wall on a screen for a turn nothing had ever attempted.
+                attempted.Value = ("", "");
+                FileLog.Write($"[WingmanVoiceService] GenerateAsync sid={sid} cancelled; not counted as an attempt");
+                throw;
             }
             catch (WingmanModelRateLimitedException rl)
             {
@@ -1088,9 +1115,21 @@ public sealed class WingmanVoiceService
                 // this one's outcome was still unrecorded: both would read the same attempt timestamp, both
                 // would be due, and two attempts would run back to back with none of the minutes between
                 // them that the screen promises.
-                var (turnKey, reply) = attempted.Value;
-                if (turnKey.Length > 0 && ShouldRegenerate(tenant, sid, reply))
-                    NoteAutomaticAttemptProducedNoAudio(tenant, sid, turnKey);
+                //
+                // AND IT CANNOT THROW OUT OF HERE (found in the second review round). This is a finally
+                // block: an exception raised inside it replaces whatever was propagating, escapes the pass
+                // loop, and leaves a pending marker unserved. Bookkeeping failing is never a reason to
+                // abandon a turn.
+                try
+                {
+                    var (turnKey, reply) = attempted.Value;
+                    if (turnKey.Length > 0 && ShouldRegenerate(tenant, sid, reply))
+                        NoteAutomaticAttemptProducedNoAudio(tenant, sid, turnKey);
+                }
+                catch (Exception ex)
+                {
+                    FileLog.Write($"[WingmanVoiceService] recording the narration attempt for sid={sid} FAILED: {ex.Message}");
+                }
             }
         }
     }

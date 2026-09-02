@@ -123,10 +123,14 @@ public sealed class TunnelMechanismProofTests : IAsyncLifetime
     /// 404 test asserts a status that a Gateway-side check could produce on its own.</summary>
     private int _missingReadCount;
 
+    /// <summary>A message no Gateway-side check would ever produce, so finding it in the response body is
+    /// proof the DIRECTOR's refusal is what the caller received - not merely that a 404 came back.</summary>
+    private const string MissingReadReason = "director-stub says: no such session here";
+
     private DirectorCommandResult RecordMissingRead()
     {
         Interlocked.Increment(ref _missingReadCount);
-        return DirectorCommandResult.Fail(DirectorCommandStatus.NotFound, "session not found");
+        return DirectorCommandResult.Fail(DirectorCommandStatus.NotFound, MissingReadReason);
     }
 
     // The Director-side Command handler: stream verbs run the REAL handler; the rest return typed results.
@@ -188,14 +192,19 @@ public sealed class TunnelMechanismProofTests : IAsyncLifetime
         //
         // And deliberately not the status alone even on a live path: a Gateway-side session check that
         // answered 404 before sending anything upstream would satisfy it while proving nothing about error
-        // parity over the tunnel. The Director stub records that the request REACHED it, so the assertion is
-        // that the Director's own NotFound became this 404 (found in review).
+        // parity over the tunnel (found in review).
+        //
+        // So two things are asserted, and the second is the one that matters. The stub records that the
+        // request REACHED it - contact. And the response body carries the stub's own distinctive reason -
+        // causation, because a Gateway that called the Director and then answered 404 on its own account
+        // could not produce that string. Contact alone would still allow "asked, ignored the answer".
         var before = Volatile.Read(ref _missingReadCount);
 
         var resp = await _http.GetAsync($"sessions/{MissingSid}/usage");
 
         Assert.Equal(HttpStatusCode.NotFound, resp.StatusCode);
         Assert.Equal(before + 1, Volatile.Read(ref _missingReadCount));
+        Assert.Contains(MissingReadReason, await resp.Content.ReadAsStringAsync());
     }
 
     [Fact]

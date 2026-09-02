@@ -78,10 +78,24 @@ public static class VoiceRetryPolicy
     public static readonly TimeSpan RevalidateSpentAfter = TimeSpan.FromMinutes(10);
 
     /// <summary>
-    /// Whether the sweep should try this session NOW. Due when nothing has been tried yet for this turn,
-    /// and otherwise only when the last attempt is at least <see cref="RetryEvery"/> old AND the turn still
-    /// has automatic attempts left. Pure and total, with the clock injected, so the boundary is tested
-    /// rather than waited for.
+    /// Whether a narration may be attempted for this session NOW. Pure and total, with the clock injected,
+    /// so every boundary is tested rather than waited for.
+    ///
+    /// The complete answer, because a summary that only describes the ordinary case is how the caller came
+    /// to believe something the code did not do:
+    ///
+    /// <list type="bullet">
+    /// <item>Nothing tried yet - due.</item>
+    /// <item>Named, and a DIFFERENT turn from the one on record - due immediately, whatever that turn's
+    /// history was. Elapsed time does not come into it: a new reply has never been tried.</item>
+    /// <item>Named, the same turn, attempts left - due once the last one is <see cref="RetryEvery"/> old.</item>
+    /// <item>Named, the same turn, attempts SPENT - never due again. This is the case the screen describes
+    /// when it says the Gateway has stopped.</item>
+    /// <item>Unnamed (the sweep, which has read nothing yet and so cannot tell which turn it is looking at)
+    /// - due on <see cref="RetryEvery"/> while attempts remain, and on the much longer
+    /// <see cref="RevalidateSpentAfter"/> once they are spent, so it can go and LOOK for a turn that changed
+    /// unobserved. That look becomes a try only if the named ask above also says yes.</item>
+    /// </list>
     /// </summary>
     /// <param name="turnKey">The turn being considered now, or null when the caller does not know it yet.
     ///

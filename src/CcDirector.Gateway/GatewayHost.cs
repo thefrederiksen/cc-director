@@ -2158,7 +2158,12 @@ public sealed class GatewayHost : IAsyncDisposable
                 foreach (var sid in vs.VoiceSessionIds(tenant))
                 {
                     if (generated >= 3) break;                       // gentle on the serialized brain (global cap)
-                    if (vs.HasVoice(tenant, sid)) continue;          // already cached, nothing to do
+                    // Already cached, nothing to do - UNLESS a narration is waiting to be served. That
+                    // pairing is exactly how a new answer goes unspoken: a turn arrives while a generation
+                    // for the previous turn is running, the running one finishes and stores ITS audio, and a
+                    // bare has-audio skip then closes the only door left (found in review). The waiting
+                    // marker is cheap and in memory; consulting it costs a dictionary lookup.
+                    if (vs.HasVoice(tenant, sid) && !vs.HasPendingNarration(tenant, sid)) continue;
                     // A session whose agent exposes NO conversation history will not become readable by being
                     // asked again immediately, and asking is not free: this pass generates at most three per
                     // cycle across ALL tenants, so a handful of such sessions can hold those slots and starve

@@ -58,18 +58,38 @@ public sealed class OneTranscriptResolverArchitectureTests
             "  " + string.Join(Environment.NewLine + "  ", callers));
     }
 
-    [Fact]
-    public void TheDirectorsCommandSurface_stillGoesThroughTheOneResolver()
+    /// <summary>
+    /// The four types that read a transcript on the Director's command surface. Named individually, not
+    /// counted: a bare "something calls the resolver" would stay green while seven of the eight call sites
+    /// were rewritten to build the path some third way, which is precisely the regression being guarded
+    /// against (found in review).
+    /// </summary>
+    private static readonly string[] TypesThatMustResolveThroughIt =
     {
-        // The other half of claim 1, and the reason the absence check above is not enough on its own: it
-        // would pass just as happily if every one of these call sites were deleted, or quietly rewritten to
-        // build the path some third way. Requiring the resolver to still be CALLED pins what replaced them.
-        var callers = CallersOf(TheOneResolver, "CcDirector.ControlApi.dll");
+        "CcDirector.ControlApi.Chat.ChatService",
+        "CcDirector.ControlApi.ControlEndpoints",
+        "CcDirector.ControlApi.SessionReadExecutor",
+        "CcDirector.ControlApi.SessionWriteExecutor",
+    };
 
-        Assert.True(callers.Count > 0,
-            "Nothing in the Director's command surface calls SessionHistoryReader.ResolveTranscriptPath any " +
-            "more. Either the transcript reads have gone (in which case delete this test and say so), or " +
-            "they are resolving the path some other way - which is the defect this mission removed.");
+    [Fact]
+    public void EveryTypeOnTheCommandSurfaceThatReadsATranscript_goesThroughTheOneResolver()
+    {
+        // The other half of claim 1. The absence check above would pass just as happily if every one of
+        // these call sites were deleted, or quietly rewritten - so this pins WHICH types must still be
+        // reaching the transcript through the resolver, by name.
+        var resolvingTypes = CallersOf(TheOneResolver, "CcDirector.ControlApi.dll")
+            .Select(m => m[..m.IndexOf("::", StringComparison.Ordinal)])
+            .ToHashSet(StringComparer.Ordinal);
+
+        var missing = TypesThatMustResolveThroughIt.Where(t => !resolvingTypes.Contains(t)).ToList();
+
+        Assert.True(missing.Count == 0,
+            "These types read a transcript on the Director's command surface and no longer call " +
+            "SessionHistoryReader.ResolveTranscriptPath. Either the read has gone (delete the name from " +
+            "TypesThatMustResolveThroughIt and say why in the commit), or it is resolving the path some " +
+            "other way - which is the defect this mission removed:" + Environment.NewLine +
+            "  " + string.Join(Environment.NewLine + "  ", missing));
     }
 
     [Fact]

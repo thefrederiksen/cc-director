@@ -859,55 +859,150 @@ public sealed class WingmanVoiceServiceTests : IDisposable
         new(new CcDirector.Gateway.Contracts.DirectorDto { DirectorId = "d1", ControlEndpoint = "http://tunnel-only" },
             stub.SendCommand);
 
+    /// <summary>
+    /// A brain whose FIRST ask parks until the test lets it go, and answers normally from then on.
+    ///
+    /// It parks on an await rather than by blocking, which is not a style preference: these tests need a
+    /// generation to be genuinely mid-flight while a second caller arrives, and the obvious way to arrange
+    /// that - a synchronous wait inside the stub - holds a thread-pool thread for the duration. xUnit runs
+    /// this assembly's collections in parallel on that same pool, so two such tests cost the whole suite
+    /// close to a minute of wall clock and pushed it past the local gate's ceiling. Awaiting holds no
+    /// thread at all.
+    /// </summary>
+    private sealed class GatedBrain : IAgentBrain
+    {
+        private readonly TaskCompletionSource _release = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource _entered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private int _asks;
+
+        /// <summary>Completes once a generation has reached the model - i.e. it is holding the guard.</summary>
+        public Task Entered => _entered.Task;
+
+        /// <summary>Let the parked ask finish. Safe to call more than once.</summary>
+        public void Release() => _release.TrySetResult();
+
+        public string? SessionId => "gated-brain";
+
+        public async Task<AskResult> AskAsync(string prompt, CancellationToken ct = default)
+        {
+            if (Interlocked.Increment(ref _asks) == 1)
+            {
+                _entered.TrySetResult();
+                await _release.Task.WaitAsync(TimeSpan.FromSeconds(30), ct);
+            }
+            var wrapped = $"{SessionAskRunner.AnswerBeginMarker}\nnarrated spoken text\n{SessionAskRunner.AnswerEndMarker}";
+            return new AskResult { Text = wrapped, ReplySeconds = 0.1 };
+        }
+
+        public Task CancelAsync(CancellationToken ct = default) => Task.CompletedTask;
+        public Task<ClearResult> ClearAsync(CancellationToken ct = default) => Task.FromResult(new ClearResult());
+        public Task RestartAsync(CancellationToken ct = default) => Task.CompletedTask;
+        public Task KillAsync(CancellationToken ct = default) => Task.CompletedTask;
+        public Task<BrainHealth> GetHealthAsync(CancellationToken ct = default) => Task.FromResult(new BrainHealth { IsAlive = true });
+        public void Dispose() { }
+    }
+
     [Fact]
-    public async Task GenerateAsync_ACallerThatLosesTheCoalescingRace_IsServed_NotDropped()
+    public async Task GenerateAsync_ACallerThatLosesTheCoalescingRace_HasItsTurnNarrated_NotDropped()
     {
         // FOUND IN REVIEW, and it is the same silent-session shape the whole mission is about.
         //
-        // Two generations for one session must never run at once, so the second caller returns immediately.
+        // Two narrations for one session must never run at once, so the second caller returns immediately.
         // Returning and FORGETTING was the defect: the caller that loses this race is typically the turn-end
         // path carrying a brand new reply. The in-flight attempt finishes, stores the PREVIOUS turn's audio,
-        // and the idle sweep then skips the session for good because audio exists (the bare has-audio guard
-        // in GatewayHost's sweep). The new answer is never spoken, and nothing left in the system is looking
-        // for it - exactly how session 111 went quiet, by a different route.
+        // and the idle sweep skips the session from then on because audio exists. The new answer is never
+        // spoken and nothing is left looking for it - session 111's silence reached by a different road.
         //
-        // The proof is the number of times the service went and READ the stored conversation. One read is
-        // the losing caller having been dropped. Two is the winner having come back for the turn it was told
-        // about. The first read blocks until this test lets it go, so the race is arranged rather than raced.
-        var releaseFirstRead = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var reads = 0;
-        Func<TenantId, string, CcDirector.Gateway.History.StoredConversation?> reader = (_, _) =>
-        {
-            if (Interlocked.Increment(ref reads) == 1)
-                releaseFirstRead.Task.GetAwaiter().GetResult();
-            return null;   // nothing stored: each pass ends cheaply, with no brain call and no attempt recorded
-        };
+        // WHAT THIS ASSERTS, and it is deliberately not "a second read happened" (a second review pointed
+        // out that an unconditional extra read would satisfy that while the turn was still lost): the audio
+        // the session ends up holding is the SECOND turn's. The conversation changes while the first
+        // narration is parked at the model, exactly as it does in production when a new turn lands
+        // mid-generation.
+        const string FirstTurn = "the first answer";
+        const string SecondTurn = "the second answer, which arrived while the first was being narrated";
 
+        var latest = FirstTurn;
+        var brain = new GatedBrain();
         var dir = Path.Combine(Path.GetTempPath(), "wmvs-coalesce-" + Guid.NewGuid().ToString("N"));
-        var svc = ServiceWithBrainAndTts(new RecordingBrain(), new byte[] { 1, 2, 3 },
-            Path.Combine(dir, "voice-sessions.json"), reader);
+        var svc = ServiceWithBrainAndTts(brain, new byte[] { 1, 2, 3 },
+            Path.Combine(dir, "voice-sessions.json"), (_, _) => Stored(Volatile.Read(ref latest)));
         var route = RouteFor(new TunnelStub());
 
-        // The winner, started off this thread because its first read blocks synchronously.
-        var winner = Task.Run(() => svc.GenerateAsync(TenantId.Local, "sid-1", route));
+        var winner = svc.GenerateAsync(TenantId.Local, "sid-1", route);
+        try
+        {
+            await brain.Entered.WaitAsync(TimeSpan.FromSeconds(30));   // the winner is narrating turn one
 
-        var waited = System.Diagnostics.Stopwatch.StartNew();
-        while (Volatile.Read(ref reads) == 0 && waited.Elapsed < TimeSpan.FromSeconds(10))
-            await Task.Delay(10);
-        Assert.Equal(1, Volatile.Read(ref reads));   // the winner is inside, holding the guard
+            // The loser arrives with turn two. It must return at once and run no narration of its own.
+            Volatile.Write(ref latest, SecondTurn);
+            await svc.GenerateAsync(TenantId.Local, "sid-1", route);
+            Assert.False(svc.HasVoice(TenantId.Local, "sid-1"));       // the winner has not finished yet
+        }
+        finally
+        {
+            // ALWAYS, even if an assertion above failed, or the winner is left parked at the model for the
+            // rest of the run.
+            brain.Release();
+        }
 
-        // The loser. It must not block and must not run a generation of its own.
-        await svc.GenerateAsync(TenantId.Local, "sid-1", route);
-        Assert.Equal(1, Volatile.Read(ref reads));
+        await winner.WaitAsync(TimeSpan.FromSeconds(60));
 
-        releaseFirstRead.SetResult();
-        await winner;
-
-        Assert.Equal(2, Volatile.Read(ref reads));
-
-        // ...and it stops there. The rerun is bounded, so a marker set during the second pass does not spin.
-        Assert.Equal(2, Volatile.Read(ref reads));
+        // The proof. ShouldRegenerate answers "is this reply still un-narrated?", so the second turn being
+        // settled and the first being stale is the same statement as "the losing caller's turn was served".
+        Assert.False(svc.ShouldRegenerate(TenantId.Local, "sid-1", SecondTurn));
+        Assert.True(svc.ShouldRegenerate(TenantId.Local, "sid-1", FirstTurn));
     }
+
+    [Fact]
+    public async Task AWaitingNarration_IsVisibleToTheSweep_SoTheBoundIsNeverAWayToLoseATurn()
+    {
+        // THE BACKSTOP behind the rerun marker, and the reason the two-pass bound is safe.
+        //
+        // The holder serves at most two passes per acquisition. Hitting that bound leaves the marker SET
+        // rather than clearing it, and there is a small window - between the loop deciding it is finished
+        // and the guard being released - in which a losing caller can leave a marker the holder has already
+        // stopped looking for. Either way the marker can outlive the call.
+        //
+        // What makes that harmless is that the idle sweep can SEE it: its has-audio skip, otherwise
+        // permanent for a session holding a clip for an older turn, defers to a waiting narration. So a turn
+        // left by the bound or by the window is picked up on the next sweep pass rather than forgotten. This
+        // pins the fact the sweep reads; GatewayHost's use of it is the line beside that skip.
+        var brain = new GatedBrain();
+        var dir = Path.Combine(Path.GetTempPath(), "wmvs-pending-" + Guid.NewGuid().ToString("N"));
+        var svc = ServiceWithBrainAndTts(brain, new byte[] { 1, 2, 3 },
+            Path.Combine(dir, "voice-sessions.json"), (_, _) => Stored("an answer"));
+        var route = RouteFor(new TunnelStub());
+
+        Assert.False(svc.HasPendingNarration(TenantId.Local, "sid-1"));
+
+        var winner = svc.GenerateAsync(TenantId.Local, "sid-1", route);
+        try
+        {
+            await brain.Entered.WaitAsync(TimeSpan.FromSeconds(30));
+
+            await svc.GenerateAsync(TenantId.Local, "sid-1", route);   // loses the race, leaves the marker
+
+            Assert.True(svc.HasPendingNarration(TenantId.Local, "sid-1"),
+                "a narration asked for while one was running must be visible to the sweep, or the sweep's " +
+                "has-audio skip makes it permanent");
+        }
+        finally
+        {
+            brain.Release();
+        }
+
+        await winner.WaitAsync(TimeSpan.FromSeconds(60));
+
+        // Served, so nothing is left waiting - the sweep goes back to skipping this session as it should.
+        Assert.False(svc.HasPendingNarration(TenantId.Local, "sid-1"));
+    }
+
+    /// <summary>One stored conversation whose latest agent text is <paramref name="agentText"/>.</summary>
+    private static CcDirector.Gateway.History.StoredConversation Stored(string agentText) =>
+        new(true, new List<CcDirector.Gateway.Contracts.TurnWidgetDto>
+        {
+            new() { Kind = "Text", Content = agentText },
+        });
 
     [Fact]
     public async Task GenerateAsync_WhenCurrentReplyDiffersFromCache_Regenerates()
