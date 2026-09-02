@@ -400,8 +400,8 @@ IMAGE D:/cc-scrub-proof/samples/sample-normal.png
   ocr scale 3: 20 words in 5 lines
   HITS: 1
     term='example@example.com' rect=(x=182 y=122 w=213 h=20) scales=1,2,3 ocr_line='Contact address: example@example.com'
-  CANDIDATE D:\cc-scrub-proof\out\sample-normal-scrubbed.png.ubs6jcgv.tmp (mode=blur pad=4)
-  VERIFY: re-reading D:\cc-scrub-proof\out\sample-normal-scrubbed.png.ubs6jcgv.tmp
+  CANDIDATE D:\cc-scrub-proof\out\sample-normal-scrubbed.png.ptvh3t2o.tmp (mode=blur pad=4)
+  VERIFY: re-reading D:\cc-scrub-proof\out\sample-normal-scrubbed.png.ptvh3t2o.tmp
     verify scale 1: 19 words in 5 lines
     verify scale 2: 19 words in 5 lines
     verify scale 3: 19 words in 5 lines
@@ -428,8 +428,8 @@ IMAGE D:/cc-scrub-proof/samples/sample-small-ui.png
   ocr scale 3: 18 words in 6 lines
   HITS: 1
     term='myorg/secret-repo' rect=(x=41 y=78 w=84 h=10) scales=2,3 ocr_line='repo myorg/secret-repo'
-  CANDIDATE D:\cc-scrub-proof\out\sample-small-ui-scrubbed.png.l50csjte.tmp (mode=blur pad=4)
-  VERIFY: re-reading D:\cc-scrub-proof\out\sample-small-ui-scrubbed.png.l50csjte.tmp
+  CANDIDATE D:\cc-scrub-proof\out\sample-small-ui-scrubbed.png.vayob1ky.tmp (mode=blur pad=4)
+  VERIFY: re-reading D:\cc-scrub-proof\out\sample-small-ui-scrubbed.png.vayob1ky.tmp
     verify scale 1: 16 words in 5 lines
     verify scale 2: 17 words in 6 lines
     verify scale 3: 17 words in 6 lines
@@ -456,8 +456,8 @@ IMAGE D:/cc-scrub-proof/samples/sample-glyph.png
   ocr scale 3: 17 words in 4 lines
   HITS: 1
     term='internal-hostname.local' rect=(x=18 y=72 w=233 h=10) scales=2,3 ocr_line='https:/ftnternal-hostname.local/status/session'
-  CANDIDATE D:\cc-scrub-proof\out\sample-glyph-scrubbed.png.jd18wq6c.tmp (mode=blur pad=4)
-  VERIFY: re-reading D:\cc-scrub-proof\out\sample-glyph-scrubbed.png.jd18wq6c.tmp
+  CANDIDATE D:\cc-scrub-proof\out\sample-glyph-scrubbed.png.fnbtaq_h.tmp (mode=blur pad=4)
+  VERIFY: re-reading D:\cc-scrub-proof\out\sample-glyph-scrubbed.png.fnbtaq_h.tmp
     verify scale 1: 16 words in 3 lines
     verify scale 2: 17 words in 3 lines
     verify scale 3: 16 words in 3 lines
@@ -517,8 +517,8 @@ IMAGE D:/cc-scrub-proof/samples/sample-normal.png
   ocr scale 3: 20 words in 5 lines
   HITS: 1
     term='example@example.com' rect=(x=182 y=122 w=213 h=20) scales=1,2,3 ocr_line='Contact address: example@example.com'
-  CANDIDATE D:\cc-scrub-proof\out\sample-normal-scrubbed.png.r6ok7tkm.tmp (mode=blur pad=4)
-  VERIFY: re-reading D:\cc-scrub-proof\out\sample-normal-scrubbed.png.r6ok7tkm.tmp
+  CANDIDATE D:\cc-scrub-proof\out\sample-normal-scrubbed.png.xeu4xj2q.tmp (mode=blur pad=4)
+  VERIFY: re-reading D:\cc-scrub-proof\out\sample-normal-scrubbed.png.xeu4xj2q.tmp
     verify scale 1: 19 words in 5 lines
     verify scale 2: 19 words in 5 lines
     verify scale 3: 19 words in 5 lines
@@ -559,8 +559,11 @@ FATAL: D:/cc-scrub-proof/collide\Shot.png and D:/cc-scrub-proof/collide\shot.jpg
 [exit 2]
 
 === 15. a read over the megapixel budget is refused before it is tried ===
-(900x260 at scale 8 is 7200x2080 - inside the engine's side limit, and
- 14,976,000 pixels, which is 15.0 megapixels and over a 1 megapixel budget)
+(the scaled read is inside the engine's side limit and over the
+ budget, so it is the AREA check firing and not the side check.
+ The exact count is the tool's to print, below - this commentary
+ deliberately restates no figure, because a narrative number that
+ has to be kept in step with the tool is a number that drifts)
 
 $ D:/cc-scrub-proof/venv/Scripts/python.exe main.py D:/cc-scrub-proof/samples/sample-normal.png --check-only --scales 8 --max-megapixels 1 --terms-file D:/cc-scrub-proof/terms.txt
 FATAL: D:/cc-scrub-proof/samples/sample-normal.png is 900x260; at scale 8 that is 7200x2080, 14,976,000 pixels (14.976 megapixels), over the 1 megapixel budget for one read. Use a smaller --scales value, a smaller image, or raise --max-megapixels if this machine has the memory for it.
@@ -597,8 +600,8 @@ IMAGE D:/cc-scrub-proof/samples/sample-normal.png
   ocr scale 3: 20 words in 5 lines
   HITS: 1
     term='example@example.com' rect=(x=182 y=122 w=213 h=20) scales=1,2,3 ocr_line='Contact address: example@example.com'
-  CANDIDATE D:\cc-scrub-proof\patched\sample-normal-scrubbed.png.qsi5weds.tmp (mode=patch pad=4)
-  VERIFY: re-reading D:\cc-scrub-proof\patched\sample-normal-scrubbed.png.qsi5weds.tmp
+  CANDIDATE D:\cc-scrub-proof\patched\sample-normal-scrubbed.png.xlznce1x.tmp (mode=patch pad=4)
+  VERIFY: re-reading D:\cc-scrub-proof\patched\sample-normal-scrubbed.png.xlznce1x.tmp
     verify scale 1: 19 words in 5 lines
     verify scale 2: 19 words in 5 lines
     verify scale 3: 19 words in 5 lines
@@ -783,6 +786,6 @@ tests/test_cc_scrub.py::test_is_same_file_compares_canonically_when_the_target_i
 tests/test_cc_scrub.py::test_is_same_file_says_no_to_two_genuinely_different_files PASSED [ 98%]
 tests/test_cc_scrub.py::test_output_path_defaults_to_the_scrubbed_name_beside_the_input PASSED [100%]
 
-============================= 68 passed in 3.36s ==============================
+============================= 68 passed in 2.85s ==============================
 [exit 0]
 ```
