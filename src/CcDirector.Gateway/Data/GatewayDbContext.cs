@@ -145,6 +145,9 @@ public sealed class GatewayDbContext : DbContext
     /// the Gateway-ruled ending and the summary sealed at close or generated from the prompt log.</summary>
     public DbSet<SessionHistoryEntity> SessionHistory => Set<SessionHistoryEntity>();
 
+    /// <summary>The durable repository catalog used by machine-scoped session creation search.</summary>
+    public DbSet<KnownRepositoryEntity> KnownRepositories => Set<KnownRepositoryEntity>();
+
     /// <summary>Cached per-repository per-day roll-up paragraphs (<c>session_history_rollups</c>, issue
     /// #2194) - computed once in the background sweep, never on page load.</summary>
     public DbSet<SessionHistoryRollupEntity> SessionHistoryRollups => Set<SessionHistoryRollupEntity>();
@@ -520,6 +523,22 @@ public sealed class GatewayDbContext : DbContext
             b.HasIndex(e => new { e.TenantId, e.DirectorId });
         });
 
+        modelBuilder.Entity<KnownRepositoryEntity>(b =>
+        {
+            b.ToTable("known_repositories");
+            // The identity is minted by the Gateway rather than supplied by a tenant, so it is safe as a
+            // global key. Machine and path stay out of the primary key to avoid provider-specific index-size
+            // ceilings; the store's single-writer lock enforces normalized deduplication.
+            b.HasKey(e => e.Id);
+            b.Property(e => e.Id);
+            b.Property(e => e.MachineKey).HasMaxLength(1024);
+            b.Property(e => e.PathKey).HasMaxLength(1024);
+            b.Property(e => e.MachineName).HasMaxLength(1024);
+            b.Property(e => e.Path).HasMaxLength(1024);
+            b.Property(e => e.Name).HasMaxLength(1024);
+            b.HasIndex(e => new { e.TenantId, e.MachineKey, e.LastUsedUtc });
+        });
+
         modelBuilder.Entity<SessionHistoryRollupEntity>(b =>
         {
             b.ToTable("session_history_rollups");
@@ -860,6 +879,7 @@ public sealed class GatewayDbContext : DbContext
         ApplyTenantScope<RepoStateEntity>(modelBuilder);
         ApplyTenantScope<SkillPlacementStateEntity>(modelBuilder);
         ApplyTenantScope<SessionHistoryEntity>(modelBuilder);
+        ApplyTenantScope<KnownRepositoryEntity>(modelBuilder);
         ApplyTenantScope<SessionHistoryRollupEntity>(modelBuilder);
         ApplyTenantScope<SessionTurnEntity>(modelBuilder);
         ApplyTenantScope<SessionTurnHeadEntity>(modelBuilder);
@@ -920,6 +940,10 @@ public sealed class GatewayDbContext : DbContext
             modelBuilder.Entity<SessionTurnHeadEntity>().Property(e => e.SessionId).UseCollation("C");
             modelBuilder.Entity<SessionTurnHeadEntity>().Property(e => e.Generation).UseCollation("C");
             modelBuilder.Entity<SessionHistoryRollupEntity>().Property(e => e.RepoKey).UseCollation("C");
+            // Known-repository lookups use these normalized values as exact indexed predicates. Pin both
+            // to byte-ordinal equality so SQLite and Postgres select the same bounded candidate set.
+            modelBuilder.Entity<KnownRepositoryEntity>().Property(e => e.MachineKey).UseCollation("C");
+            modelBuilder.Entity<KnownRepositoryEntity>().Property(e => e.PathKey).UseCollation("C");
             // The tenants mapping table's natural-key string columns (the tenant id primary key and the
             // account_subject unique index) rely on byte-ordinal equality/uniqueness, same as the keys above,
             // so pin them to "C" too - the account subject in particular must match EXACTLY on both providers.

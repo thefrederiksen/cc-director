@@ -187,7 +187,8 @@ public sealed class PostgresProviderProofTests
             "ORDER BY c.relname, a.attname");
 
         // One entry per UseCollation("C") declaration in GatewayDbContext, read back from the live catalog.
-        // 25 declarations, 25 columns - verified one-to-one against the model on 2026-09-02, when the four
+        // 27 declarations, 27 columns - verified one-to-one against the model on 2026-09-02, including the
+        // two known-repository lookup columns added after the four
         // turn-push columns were added (they were added to the model on 1 September and this list was not
         // updated with them, so the suite was red on main in between - the third time this enumeration has
         // gone stale, and the third time it did its job).
@@ -205,6 +206,8 @@ public sealed class PostgresProviderProofTests
             ("device_import_markers", "SourcePath"),
             ("dictation_suggestion_dismissals", "Term"),
             ("dictation_suggestion_verdicts", "Term"),
+            ("known_repositories", "MachineKey"),
+            ("known_repositories", "PathKey"),
             ("mission_notes", "Key"),
             ("push_subscriptions", "Endpoint"),
             ("session_history", "SessionId"),
