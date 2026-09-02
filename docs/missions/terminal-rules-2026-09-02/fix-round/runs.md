@@ -135,7 +135,104 @@ that would have gone into this file as a cause that was never observed. It did n
 Architect said what it had done. **If a run here dies and this seat did not end it, the cause is asked
 for, not inferred.**
 
-## `Gateway.Tests` - the result
+## `Gateway.Tests` - the result of attempt 3, and what it found
+
+**It ran to completion on `02d66df15`: 2,325 tests, 2,315 passed, 6 FAILED, 4 skipped, 56.5 minutes,
+exit 1.** It acquired the lock rather than queueing, which is the condition that makes a result possible
+at all:
+
+```
+17:23:29 pid 14124: [gateway-test-lock] Acquired the per-user Gateway test lock. Starting the run.
+```
+
+This is the payoff of the parked suite and the reason the coverage gap was worth naming: the default
+gate cannot see any of the six.
+
+### The one that was MINE
+
+`PostgresProviderProofTests.Collation_ExplicitC_OnEveryStringKeyColumnTheModelDeclares_OnRealPostgres`:
+
+```
+these columns carry an explicit C collation but are neither a string key column nor a listed
+exception: known_repositories.MachineKey, known_repositories.PathKey
+```
+
+That is the check working, and it is a consequence of the MERGE rather than of either change alone.
+Those columns arrived on main while this mission was replacing the hand-written allow-list with the
+model-derived check (rulings 9 and 10), and the two met for the first time when main was merged. They
+sit in a non-unique index rather than a key, so the derived enumeration cannot see them - which is
+exactly the case the inverted exception list exists for. Fixed by adding them WITH their argument: they
+are normalized lookup values matched as exact indexed predicates, so the providers must agree on which
+of them are equal or a search returns a different candidate set on the hosted Gateway than on a local
+install.
+
+Note also what this same run says about finding 3:
+`SessionScreens_IdempotentOnTheNaturalKey_AndByteOrdinalAboutIt_OnRealPostgres` **PASSED (216 ms)** -
+the only exercise of the screen store's key on the provider the hosted Gateway actually runs, with
+`DirectorId` in that key. The Postgres gap named earlier in this file is closed.
+
+### The five that were NOT mine, settled by artifact rather than by argument
+
+`VoiceServingLoopIsolationTests` (two), `TurnEndWatcherTenantIsolationTests` (one) and
+`WingmanVoiceTurnLiveScreenProofTests` (two). The first three fail on a ten-second wait returning null;
+the last two on a hundred-second HTTP timeout.
+
+The instinct was that they must be this round's, because they are voice, turn-end and live-screen tests
+and this round changed how a live screen is read. **That instinct was wrong, and it was checked rather
+than acted on.** A worktree cut from current `origin/main` ran the same five:
+
+```
+origin/main 13e43603b, filtered to those three classes:  16 passed, 0 failed, exit 0
+mission branch ca26e8c09, same filter:                   11 passed, 5 FAILED, exit 1
+```
+
+They are main's own defects from its turn-push work, and main had already fixed them in two commits that
+landed AFTER this branch's earlier merge:
+
+- `ad4820fd6` - "the parked voice tests watch the store, not a tunnel read that no longer exists"
+- `13e43603b` - "the wingman says which computer to update instead of waiting for a conversation that is
+  never coming"
+
+The second one is almost a description of the observed symptom. Merging current main (`3ca41dbee`)
+brought both in.
+
+### After the merge and the collation exception
+
+```
+dotnet test ...Gateway.Tests.csproj --filter <the four affected classes>   on 2912b3e62
+Passed!  - Failed: 0, Passed: 22, Skipped: 0, Total: 22        exit 0
+```
+
+All six resolved. A COMPLETE run at the merged tip is still owed - see below.
+
+### A complete run at the tip cannot be taken in the foreground
+
+The harness kills any command at ten minutes (observed twice, exit 143), and this suite is 49 minutes.
+The earlier complete run survived only because the harness chose to move it to the background rather
+than kill it, which it no longer does. Running it in the background is forbidden without the Architect's
+say-so, so it was ASKED rather than decided. What is in hand meanwhile: a complete run at `02d66df15`
+with its six failures each accounted for, and all six passing at `2912b3e62`.
+
+## The tip gate is OVER BUDGET, and it is not this round's doing
+
+After merging current main, `test-local.ps1` twice reported:
+
+```
+RESULT: OVER BUDGET - 1 suite(s) exceeded the 120-second ceiling and were STOPPED:
+  CcDirector.Gateway.UnitTests
+```
+
+Every suite that produced a TRX was `Completed` with zero failures both times; the runner's own message
+says this is NOT a test failure. **The ceiling was not touched and must not be** - the runner says so
+itself, and every second added to it is paid by everyone on every change forever.
+
+It is not this round's doing, and that is measured rather than asserted. This round's screen tests run
+in **6 seconds** (29 tests, filtered). On UNMODIFIED `origin/main`, the same suite measured **1m25s,
+1m49s, 1m58s and 2m04s** across the four runs taken while attributing the earlier flake - already at and
+sometimes past the 120-second ceiling with none of this round's tests in it. The remedy the runner names
+is to park the suite or make it fit, and both are decisions for the seat that owns the gate rather than
+for a mission passing through.
+
 
 **It has not run, and it is the only thing outstanding.**
 
