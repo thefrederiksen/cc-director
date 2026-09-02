@@ -1,5 +1,6 @@
 using CcDirector.Core.Tenancy;
 using CcDirector.Gateway.Contracts;
+using CcDirector.Gateway.Data;
 using CcDirector.Gateway.Pairing;
 using CcDirector.Gateway.Screens;
 using CcDirector.Gateway.Tenancy;
@@ -15,13 +16,14 @@ namespace CcDirector.Gateway.UnitTests.Screens;
 /// per-session cap that trims at write time, refusal of a push that disagrees with itself, seven-day
 /// retention that leaves live rows alone, and a capture time that survives the round trip.
 ///
-/// WHAT THESE RESULTS DO AND DO NOT SAY, and it travels with every one of them. The store's own rows run
-/// on <see cref="ScreenStoreTestDb"/>, whose tables are built from the mapped MODEL rather than by the
-/// migration. That was once a real gap; it is now a narrow one, because the <c>session_screens</c>
-/// migration exists on this branch and the model and the migration are known to AGREE - a disagreement is
-/// exactly what EF's pending-model-changes check reports, and every database-backed test in this suite
-/// opens a migrated <see cref="CcDirector.Gateway.Data.GatewayDatabase"/> through that check and passes.
-/// The sweep row below opens one directly.
+/// THE DATABASE IS THE MIGRATED ONE. These used to run on a schema built from the mapped model with
+/// <c>EnsureCreated</c>, because the fleet-wide migration slot was held and no real Gateway could open a
+/// database containing <c>session_screens</c> at all. The slot freed with pull request 2643, the migration
+/// was regenerated on the new snapshot, and that throwaway instrument was DELETED rather than left as a
+/// second, easier path that outlives its reason - the same ending <c>StatsConcurrencyTestDb</c> had. Every
+/// row here now opens a real <see cref="CcDirector.Gateway.Data.GatewayDatabase"/> over the real migration
+/// set, so the "proven against the mapped model, not the migrated schema" label these results used to carry
+/// is gone.
 ///
 /// The limit that does remain: these seed the store BY HAND. Not one of them drives the Director capture
 /// through the sink and the hub, so they say the store behaves correctly WHEN HANDED a screen, and nothing
@@ -29,12 +31,17 @@ namespace CcDirector.Gateway.UnitTests.Screens;
 /// </summary>
 public sealed class SessionScreenStoreTests : IDisposable
 {
-    private readonly ScreenStoreTestDb _db = new();
+    private readonly GatewayDbTestHarness _db = new();
     private static readonly DateTime Now = new(2026, 9, 2, 20, 0, 0, DateTimeKind.Utc);
 
     public void Dispose() => _db.Dispose();
 
-    private SessionScreenStore Store(string tenant = "local") => _db.StoreFor(tenant);
+    /// <summary>A store scoped to ONE tenant over the harness's single migrated database. Two of these on
+    /// different tenants is how the partition row is driven: one account writes and reads through its own,
+    /// the other through its own, against one set of tables.</summary>
+    private SessionScreenStore Store(string tenant = "local") => new(Db(tenant));
+
+    private GatewayDatabase Db(string tenant) => _db.Open(new FixedTenantContext(new TenantId(tenant)));
 
     /// <summary>A well-formed push. Every malformed case below starts from one of these and breaks exactly
     /// one thing, so the fault under test is the only difference from a push that is known to be accepted.</summary>
@@ -351,7 +358,7 @@ public sealed class SessionScreenStoreTests : IDisposable
     /// write-time trim - the state an overlapping writer leaves behind.</summary>
     private void SeedPastTheTrim(string sessionId, IEnumerable<DateTime> capturedAt, string tenant = "local")
     {
-        using var ctx = _db.ContextFor(tenant)();
+        using var ctx = Db(tenant).CreateContext();
         foreach (var at in capturedAt)
         {
             ctx.SessionScreens.Add(new CcDirector.Gateway.Data.Entities.SessionScreenEntity
@@ -376,7 +383,7 @@ public sealed class SessionScreenStoreTests : IDisposable
     /// as held whether or not it was.</summary>
     private int RawCount(string sessionId, string tenant = "local")
     {
-        using var ctx = _db.ContextFor(tenant)();
+        using var ctx = Db(tenant).CreateContext();
         return ctx.SessionScreens.Count(s => s.SessionId == sessionId);
     }
 

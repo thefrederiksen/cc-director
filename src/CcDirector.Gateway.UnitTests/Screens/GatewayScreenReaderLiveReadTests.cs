@@ -4,6 +4,7 @@ using CcDirector.Gateway.Contracts;
 using CcDirector.Gateway.Discovery;
 using CcDirector.Gateway.Screens;
 using CcDirector.Gateway.Streaming;
+using CcDirector.Gateway.Tests.Data;
 using Xunit;
 
 namespace CcDirector.Gateway.UnitTests.Screens;
@@ -37,8 +38,16 @@ namespace CcDirector.Gateway.UnitTests.Screens;
 /// stale screen" is satisfied by a reader that returns nothing at all, and by a fixture that was never
 /// driven; so each case names the source it got, the rows it got BY CONTENT, and the tunnel call count.
 ///
-/// <b>Proven against the mapped model, not the migrated schema, and proven from the store inwards with
-/// the push path unexercised.</b> See <see cref="ScreenStoreTestDb"/>.
+/// THE DATABASE IS THE MIGRATED ONE. These used to run on a schema built from the mapped model with
+/// <c>EnsureCreated</c>, because the fleet-wide migration slot was held and no real Gateway could open a
+/// database containing the table. The slot freed, the migration exists, and that throwaway instrument was
+/// deleted rather than left as a second, easier path - so these open a real <c>GatewayDatabase</c> over the
+/// real migration set, and the "proven against the mapped model, not the migrated schema" label that used
+/// to travel with every screen result no longer applies to any of them.
+///
+/// The OTHER limit still applies and still travels: these seed the store BY HAND. They say the store and
+/// the reader behave correctly WHEN HANDED a screen, and nothing about who hands them one - that is row 4's
+/// job, and only row 4 exercises the capture, the sink, the hub and the store write together.
 /// </summary>
 [Collection(ScreenPullCounterCollection.Name)]
 public class GatewayScreenReaderLiveReadTests
@@ -129,8 +138,8 @@ public class GatewayScreenReaderLiveReadTests
     [Fact]
     public async Task The_store_never_answers_the_live_question_even_when_every_freshness_fact_holds()
     {
-        using var db = new ScreenStoreTestDb();
-        var store = db.StoreFor(Tenant);
+        using var db = new GatewayDbTestHarness();
+        var store = new SessionScreenStore(db.Open());
         var clock = new TestClock();
         var pushed = new PushedSessionStore(clock.Read);
         var reader = new GatewayScreenReader(store);
@@ -164,8 +173,8 @@ public class GatewayScreenReaderLiveReadTests
     [Fact]
     public async Task A_row_captured_by_another_Director_is_never_returned_to_a_live_read_routed_elsewhere()
     {
-        using var db = new ScreenStoreTestDb();
-        var store = db.StoreFor(Tenant);
+        using var db = new GatewayDbTestHarness();
+        var store = new SessionScreenStore(db.Open());
         var clock = new TestClock();
         var pushed = new PushedSessionStore(clock.Read);
         var reader = new GatewayScreenReader(store);
@@ -197,8 +206,8 @@ public class GatewayScreenReaderLiveReadTests
     [Fact]
     public async Task A_dropped_tunnel_makes_the_live_question_unreadable_but_not_the_history_one()
     {
-        using var db = new ScreenStoreTestDb();
-        var store = db.StoreFor(Tenant);
+        using var db = new GatewayDbTestHarness();
+        var store = new SessionScreenStore(db.Open());
         var clock = new TestClock();
         var reader = new GatewayScreenReader(store);
 
@@ -232,8 +241,8 @@ public class GatewayScreenReaderLiveReadTests
     [Fact]
     public async Task A_live_read_moves_the_process_wide_tunnel_pull_counter()
     {
-        using var db = new ScreenStoreTestDb();
-        var reader = new GatewayScreenReader(db.StoreFor(Tenant));
+        using var db = new GatewayDbTestHarness();
+        var reader = new GatewayScreenReader(new SessionScreenStore(db.Open()));
         var tunnel = new FakeTunnel();
 
         var before = SessionVerbClient.ScreenGridPulls;
@@ -252,8 +261,8 @@ public class GatewayScreenReaderLiveReadTests
     [Fact]
     public async Task Nothing_stored_and_no_tunnel_answer_is_unreadable()
     {
-        using var db = new ScreenStoreTestDb();
-        var reader = new GatewayScreenReader(db.StoreFor(Tenant));
+        using var db = new GatewayDbTestHarness();
+        var reader = new GatewayScreenReader(new SessionScreenStore(db.Open()));
 
         var read = await reader.ReadLiveAsync(Route(new FakeTunnel { Answers = false }), SessionId);
 
