@@ -1,0 +1,62 @@
+using CcDirector.Gateway.Rules;
+
+namespace CcDirector.Gateway.Data.Entities;
+
+/// <summary>
+/// One standing instruction the account gave, as stored (<c>session_rules</c>). A rule is an INSTRUCTION,
+/// not a form (owner ruling 14): <see cref="Instruction"/> is the sentence the account actually said and
+/// it is the authority. Everything else on this row was DERIVED from that sentence by a model and is
+/// there to make the rule cheap and reviewable - never to replace it.
+///
+/// There is no code column here and there cannot be one (owner ruling 15). <see cref="Calls"/> holds
+/// typed calls to the verified checks the Gateway ships - a name plus argument values - and every one of
+/// them is validated against the real signature by <see cref="RuleCallValidator"/> before this row can be
+/// written. A migration able to store a code string would be a mistake even if nothing wrote one.
+///
+/// <c>tenant_id</c>, the global query filter and the Gateway-minted primary key are inherited from
+/// <see cref="GatewayMintedKeyEntity"/>, so one account never reads another's rules and no caller can
+/// present a rule id - there is nothing to squat and nothing to disclose.
+/// </summary>
+public sealed class SessionRuleEntity : GatewayMintedKeyEntity
+{
+    /// <summary>THE AUTHORITY: the sentence the account said, in their own words, unaltered.</summary>
+    public string Instruction { get; set; } = "";
+
+    /// <summary>What the rule watches for, in plain English, as the model understood the instruction.
+    /// A description the account reads - never a matching expression, and never editable as one.</summary>
+    public string ScreenDescription { get; set; } = "";
+
+    /// <summary>The cheap words that keep the rule from costing anything: unless one of these is on the
+    /// screen, nothing further happens. Derived by the model, never chosen by the account.</summary>
+    public List<string> TriggerWords { get; set; } = new();
+
+    /// <summary>The verified checks this rule runs, as validated calls. Never code.</summary>
+    public List<RulePrimitiveCall> Calls { get; set; } = new();
+
+    /// <summary>Scope: only sessions running this agent, when set. Null means any agent.</summary>
+    public string? ScopeAgent { get; set; }
+
+    /// <summary>Scope: only sessions in this repository, when set. Null means any repository.</summary>
+    public string? ScopeRepository { get; set; }
+
+    /// <summary>Scope: only sessions on this machine, when set. Null means any machine.</summary>
+    public string? ScopeMachine { get; set; }
+
+    /// <summary>Scope: only sessions on this mission, when set. Null means any mission.</summary>
+    public string? ScopeMission { get; set; }
+
+    /// <summary>The ceiling, part one: how long this rule must wait before acting on the same session
+    /// again. Required and positive - an agent in a loop is the failure mode with the worst tail.</summary>
+    public int CooldownSeconds { get; set; }
+
+    /// <summary>The ceiling, part two: how many times a day this rule may act on one session. Required
+    /// and positive, for the same reason.</summary>
+    public int DailyCap { get; set; }
+
+    /// <summary>"dry_run" or "live". A plain value, not an enum column, so a third state later costs one
+    /// migration and no branching (Architect ruling A1). A rule is ALWAYS created in dry run.</summary>
+    public string State { get; set; } = "";
+
+    public DateTime CreatedUtc { get; set; }
+    public DateTime UpdatedUtc { get; set; }
+}
