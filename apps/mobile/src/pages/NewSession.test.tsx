@@ -227,4 +227,94 @@ describe("mobile new session", () => {
     creation.resolve({ sessionId: "created-session" });
     expect(await screen.findByText("Opened session")).toBeTruthy();
   });
+
+  it("reports a blank manual path and accepts a populated manual path", async () => {
+    renderPage();
+    await openRepositoryStep();
+
+    fireEvent.click(screen.getByRole("button", { name: "Enter a path manually" }));
+    fireEvent.click(screen.getByRole("button", { name: "Use this path" }));
+
+    expect((await screen.findByRole("alert")).textContent).toContain(
+      "Enter a repository path before continuing.",
+    );
+
+    fireEvent.change(screen.getByLabelText("Repository path"), {
+      target: { value: "/repos/manual-project" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Use this path" }));
+    expect(await screen.findByRole("heading", { name: "Review the new session" })).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Create session" }));
+    await waitFor(() => expect(api.createSession).toHaveBeenCalledWith(
+      "north",
+      "/repos/manual-project",
+      { agent: "RawCli" },
+    ));
+  });
+
+  it("preserves choices and typed input while retrying repository sources", async () => {
+    api.getKnownRepositories
+      .mockRejectedValueOnce(new Error("history unavailable"))
+      .mockResolvedValueOnce([repository(8)]);
+
+    renderPage();
+    await openRepositoryStep();
+    await screen.findByText(/Repository history could not be loaded/);
+
+    fireEvent.change(screen.getByLabelText("Search known repositories"), {
+      target: { value: "repository 1" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Select repository Repository 1" }));
+    fireEvent.click(screen.getByRole("button", { name: /Repository Repository 1/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Enter a path manually" }));
+    fireEvent.change(screen.getByLabelText("Repository path"), {
+      target: { value: "/repos/still-typing" },
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Retry repository sources" }));
+
+    await waitFor(() => expect(api.getKnownRepositories).toHaveBeenCalledTimes(2));
+    expect((screen.getByLabelText("Search known repositories") as HTMLInputElement).value).toBe("repository 1");
+    expect((screen.getByLabelText("Repository path") as HTMLInputElement).value).toBe("/repos/still-typing");
+    expect(screen.getByText("Terminal agent")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Review selections" })).toHaveProperty("disabled", false);
+    expect(api.getAgents).toHaveBeenCalledTimes(1);
+  });
+
+  it("caps broad search rendering, reports the full match count, and keeps every result reachable", async () => {
+    api.getRepos.mockResolvedValue([]);
+    api.getKnownRepositories.mockResolvedValue(
+      Array.from({ length: 60 }, (_, index) => ({
+        name: "Match " + String(index + 1).padStart(2, "0"),
+        path: "/repos/match-" + String(index + 1).padStart(2, "0"),
+        lastUsed: "2026-08-20T12:00:00Z",
+      })),
+    );
+
+    renderPage();
+    await openRepositoryStep();
+    fireEvent.change(screen.getByLabelText("Search known repositories"), { target: { value: "match" } });
+
+    expect(await screen.findByText("Showing 50 of 60 matches. Type more to narrow the results.")).toBeTruthy();
+    expect(screen.getAllByRole("button", { name: /Select repository Match/ })).toHaveLength(50);
+    expect(screen.queryByRole("button", { name: "Select repository Match 60" })).toBeNull();
+
+    fireEvent.change(screen.getByLabelText("Search known repositories"), { target: { value: "match 60" } });
+    expect(await screen.findByRole("button", { name: "Select repository Match 60" })).toBeTruthy();
+  });
+
+  it("keeps case-distinct Unix repository paths as separate choices", async () => {
+    api.getRepos.mockResolvedValue([]);
+    api.getKnownRepositories.mockResolvedValue([
+      { name: "Uppercase project", path: "/repos/Project", lastUsed: "2026-08-20T12:00:00Z" },
+      { name: "Lowercase project", path: "/repos/project", lastUsed: "2026-08-19T12:00:00Z" },
+    ]);
+
+    renderPage();
+    await openRepositoryStep();
+
+    expect(await screen.findByRole("button", { name: "Select repository Uppercase project" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Select repository Lowercase project" })).toBeTruthy();
+  });
 });

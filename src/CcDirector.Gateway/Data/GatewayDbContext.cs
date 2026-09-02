@@ -940,6 +940,10 @@ public sealed class GatewayDbContext : DbContext
             modelBuilder.Entity<SessionTurnHeadEntity>().Property(e => e.SessionId).UseCollation("C");
             modelBuilder.Entity<SessionTurnHeadEntity>().Property(e => e.Generation).UseCollation("C");
             modelBuilder.Entity<SessionHistoryRollupEntity>().Property(e => e.RepoKey).UseCollation("C");
+            // Known-repository lookups use these normalized values as exact indexed predicates. Pin both
+            // to byte-ordinal equality so SQLite and Postgres select the same bounded candidate set.
+            modelBuilder.Entity<KnownRepositoryEntity>().Property(e => e.MachineKey).UseCollation("C");
+            modelBuilder.Entity<KnownRepositoryEntity>().Property(e => e.PathKey).UseCollation("C");
             // The tenants mapping table's natural-key string columns (the tenant id primary key and the
             // account_subject unique index) rely on byte-ordinal equality/uniqueness, same as the keys above,
             // so pin them to "C" too - the account subject in particular must match EXACTLY on both providers.

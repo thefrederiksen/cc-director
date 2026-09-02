@@ -36,6 +36,8 @@ public sealed class KnownRepositoryStore
         var repositoryPath = Required(path, nameof(path));
         var machineKey = NormalizeMachineKey(machine);
         var pathKey = NormalizePathKey(repositoryPath);
+        var candidateMachineKeys = CandidateMachineKeys(machine);
+        var candidatePathKeys = CandidatePathKeys(repositoryPath);
         var used = DateTime.SpecifyKind(lastUsedUtc.ToUniversalTime(), DateTimeKind.Utc);
         var displayName = string.IsNullOrWhiteSpace(name) ? "" : name.Trim();
         if (displayName.Length > MaxIdentityChars)
@@ -46,15 +48,28 @@ public sealed class KnownRepositoryStore
         {
             using var context = _db.CreateContext(tenant);
 
-            // The migration normalizes the machine key but preserves the display path available in history.
-            // Narrow in the database by tenant and machine, then compare paths in managed code so imported
-            // and newly normalized rows obey the same cross-provider path rules.
-            var existing = context.KnownRepositories
-                .Where(row => row.MachineKey == machineKey)
+            // Current rows use the machine index and filter PathKey in the database, so an ordinary observe
+            // does not materialize the machine catalog. The compatibility fallback is machine-scoped and only
+            // runs when the original migration left an exact, unnormalized PathKey. Both queries share the
+            // machine candidates used by ReadForMachine.
+            var candidates = context.KnownRepositories
+                .Where(row => candidateMachineKeys.Contains(row.MachineKey)
+                              && candidatePathKeys.Contains(row.PathKey))
                 .ToList()
-                .FirstOrDefault(row =>
-                    string.Equals(NormalizeMachineKey(row.MachineName), machineKey, StringComparison.Ordinal)
-                    && string.Equals(NormalizePathKey(row.Path), pathKey, StringComparison.Ordinal));
+                .Where(row => string.Equals(
+                    NormalizeMachineKey(row.MachineName), machineKey, StringComparison.Ordinal))
+                .ToList();
+            var existing = candidates.FirstOrDefault(row => string.Equals(
+                NormalizePathKey(row.Path), pathKey, StringComparison.Ordinal));
+            if (existing is null)
+            {
+                existing = context.KnownRepositories
+                    .Where(row => candidateMachineKeys.Contains(row.MachineKey))
+                    .ToList()
+                    .FirstOrDefault(row =>
+                        string.Equals(NormalizeMachineKey(row.MachineName), machineKey, StringComparison.Ordinal)
+                        && string.Equals(NormalizePathKey(row.Path), pathKey, StringComparison.Ordinal));
+            }
 
             if (existing is null)
             {
@@ -70,19 +85,35 @@ public sealed class KnownRepositoryStore
                 });
                 changed = true;
             }
-            else if (used > existing.LastUsedUtc)
+            else
             {
-                existing.MachineName = machine;
-                existing.Path = repositoryPath;
-                if (displayName.Length > 0)
+                // Repair compatibility keys opportunistically, but reads never depend on this repair: a
+                // retired machine with an original migration row remains readable without another observe.
+                if (!string.Equals(existing.MachineKey, machineKey, StringComparison.Ordinal))
+                {
+                    existing.MachineKey = machineKey;
+                    changed = true;
+                }
+                if (!string.Equals(existing.PathKey, pathKey, StringComparison.Ordinal))
+                {
+                    existing.PathKey = pathKey;
+                    changed = true;
+                }
+
+                if (used > existing.LastUsedUtc)
+                {
+                    existing.MachineName = machine;
+                    existing.Path = repositoryPath;
+                    if (displayName.Length > 0)
+                        existing.Name = displayName;
+                    existing.LastUsedUtc = used;
+                    changed = true;
+                }
+                else if (used == existing.LastUsedUtc && existing.Name.Length == 0 && displayName.Length > 0)
+                {
                     existing.Name = displayName;
-                existing.LastUsedUtc = used;
-                changed = true;
-            }
-            else if (used == existing.LastUsedUtc && existing.Name.Length == 0 && displayName.Length > 0)
-            {
-                existing.Name = displayName;
-                changed = true;
+                    changed = true;
+                }
             }
 
             if (changed)
@@ -101,18 +132,22 @@ public sealed class KnownRepositoryStore
     {
         if (!tenant.IsValid)
             throw new ArgumentException("A valid tenant is required.", nameof(tenant));
-        var machineKey = NormalizeMachineKey(Required(machineName, nameof(machineName)));
+        var machine = Required(machineName, nameof(machineName));
+        var machineKey = NormalizeMachineKey(machine);
+        var candidateMachineKeys = CandidateMachineKeys(machine);
 
         List<KnownRepositoryEntity> rows;
         lock (_gate)
         {
             using var context = _db.CreateContext(tenant);
             rows = context.KnownRepositories.AsNoTracking()
-                .Where(row => row.MachineKey == machineKey)
+                .Where(row => candidateMachineKeys.Contains(row.MachineKey))
                 .ToList();
         }
 
         var result = rows
+            .Where(row => string.Equals(
+                NormalizeMachineKey(row.MachineName), machineKey, StringComparison.Ordinal))
             .GroupBy(row => NormalizePathKey(row.Path), StringComparer.Ordinal)
             .Select(group => group.OrderByDescending(row => row.LastUsedUtc).First())
             .OrderByDescending(row => row.LastUsedUtc)
@@ -125,12 +160,23 @@ public sealed class KnownRepositoryStore
             })
             .ToList();
 
-        FileLog.Write($"[KnownRepositoryStore] ReadForMachine: tenant={tenant.ToLogString()} machine={machineName.Trim()} count={result.Count}");
+        FileLog.Write($"[KnownRepositoryStore] ReadForMachine: tenant={tenant.ToLogString()} machine={machine} count={result.Count}");
         return result;
     }
 
     internal static string NormalizeMachineKey(string machineName) =>
         machineName.Trim().ToUpperInvariant();
+
+    internal static string LegacyAsciiMachineKey(string machineName)
+    {
+        var chars = machineName.Trim().ToCharArray();
+        for (var index = 0; index < chars.Length; index++)
+        {
+            if (chars[index] is >= 'a' and <= 'z')
+                chars[index] = (char)(chars[index] - ('a' - 'A'));
+        }
+        return new string(chars);
+    }
 
     internal static string NormalizePathKey(string path)
     {
@@ -147,6 +193,26 @@ public sealed class KnownRepositoryStore
         var isWindowsPath = (normalized.Length >= 2 && char.IsLetter(normalized[0]) && normalized[1] == ':')
                             || normalized.StartsWith("//", StringComparison.Ordinal);
         return isWindowsPath ? normalized.ToUpperInvariant() : normalized;
+    }
+
+    private static List<string> CandidateMachineKeys(string machineName) =>
+        new[]
+        {
+            NormalizeMachineKey(machineName),
+            LegacyAsciiMachineKey(machineName),
+            machineName.Trim(),
+        }.Distinct(StringComparer.Ordinal).ToList();
+
+    private static List<string> CandidatePathKeys(string path)
+    {
+        var trimmed = path.Trim();
+        return new[]
+        {
+            NormalizePathKey(trimmed),
+            trimmed,
+            trimmed.Replace('\\', '/'),
+            trimmed.Replace('/', '\\'),
+        }.Distinct(StringComparer.Ordinal).ToList();
     }
 
     private static string Required(string? value, string parameterName)

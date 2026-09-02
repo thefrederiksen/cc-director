@@ -10,7 +10,7 @@ public sealed class KnownRepositoryEntity : GatewayMintedKeyEntity
     /// <summary>Normalized machine identity used by reads and in-process deduplication.</summary>
     public string MachineKey { get; set; } = "";
 
-    /// <summary>Normalized repository path used by reads and in-process deduplication.</summary>
+    /// <summary>Normalized repository path used by the database observation lookup and deduplication.</summary>
     public string PathKey { get; set; } = "";
 
     /// <summary>The machine name shown to the user.</summary>

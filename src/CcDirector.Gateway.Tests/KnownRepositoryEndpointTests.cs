@@ -94,4 +94,19 @@ public sealed class KnownRepositoryEndpointTests : IAsyncLifetime
 
         Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
     }
+
+    [Fact]
+    public async Task GetKnownRepositories_DirectorHasNoMachineName_ReturnsExplicitConflict()
+    {
+        const string directorId = "known-repository-blank-machine";
+        await using var director = await FakeTunnelDirector.StartAsync(
+            _gateway, Token, directorId, "");
+
+        using var response = await _http.GetAsync(
+            "directors/" + directorId + "/known-repositories");
+
+        Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
+        var body = await response.Content.ReadAsStringAsync();
+        Assert.Contains("has not reported a machine name", body, StringComparison.OrdinalIgnoreCase);
+    }
 }

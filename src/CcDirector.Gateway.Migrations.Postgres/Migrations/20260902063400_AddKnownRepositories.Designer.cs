@@ -642,7 +642,8 @@ namespace CcDirector.Gateway.Migrations.Postgres.Migrations
                     b.Property<string>("MachineKey")
                         .IsRequired()
                         .HasMaxLength(1024)
-                        .HasColumnType("character varying(1024)");
+                        .HasColumnType("character varying(1024)")
+                        .UseCollation("C");
 
                     b.Property<string>("MachineName")
                         .IsRequired()
@@ -662,7 +663,8 @@ namespace CcDirector.Gateway.Migrations.Postgres.Migrations
                     b.Property<string>("PathKey")
                         .IsRequired()
                         .HasMaxLength(1024)
-                        .HasColumnType("character varying(1024)");
+                        .HasColumnType("character varying(1024)")
+                        .UseCollation("C");
 
                     b.Property<string>("TenantId")
                         .IsRequired()

@@ -1,6 +1,7 @@
 using CcDirector.Core.Tenancy;
 using CcDirector.Gateway.History;
 using CcDirector.Gateway.Tests.Data;
+using CcDirector.Gateway.Data.Entities;
 using Xunit;
 
 namespace CcDirector.Gateway.Tests.History;
@@ -75,5 +76,41 @@ public sealed class KnownRepositoryStoreTests : IDisposable
 
         Assert.Equal("/repos/persistent", row.Path);
         Assert.Equal(now, row.LastUsed);
+    }
+
+    [Fact]
+    public void ReadAndObserve_LegacyAsciiFoldedNonAsciiMachine_FindsAndRepairsOneRow()
+    {
+        var database = _harness.Open();
+        var originalUsed = new DateTime(2026, 8, 1, 12, 0, 0, DateTimeKind.Utc);
+        using (var context = database.CreateContext(TenantId.Local))
+        {
+            context.KnownRepositories.Add(new KnownRepositoryEntity
+            {
+                TenantId = TenantId.Local.Value,
+                MachineKey = "SøREN_NORTH",
+                PathKey = @"D:\Repositories\Legacy",
+                MachineName = "Søren_North",
+                Path = @"D:\Repositories\Legacy",
+                Name = "Legacy",
+                LastUsedUtc = originalUsed,
+            });
+            context.SaveChanges();
+        }
+
+        var store = new KnownRepositoryStore(database);
+        Assert.Equal(@"D:\Repositories\Legacy", Assert.Single(
+            store.ReadForMachine(TenantId.Local, "Søren_North")).Path);
+
+        var newest = originalUsed.AddDays(1);
+        Assert.True(store.Observe(
+            TenantId.Local, "Søren_North", "d:/repositories/legacy", "Current", newest));
+
+        using var verification = database.CreateContext(TenantId.Local);
+        var repaired = Assert.Single(verification.KnownRepositories);
+        Assert.Equal(KnownRepositoryStore.NormalizeMachineKey("Søren_North"), repaired.MachineKey);
+        Assert.Equal(KnownRepositoryStore.NormalizePathKey("d:/repositories/legacy"), repaired.PathKey);
+        Assert.Equal("Current", repaired.Name);
+        Assert.Equal(newest, repaired.LastUsedUtc);
     }
 }

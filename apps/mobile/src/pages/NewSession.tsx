@@ -16,6 +16,7 @@ import { durationLabel, useNow } from "@devthrottle/client-core/sessions/waiting
 type ActiveStep = "director" | "agent" | "repository" | "review";
 
 const RECENT_REPOSITORY_COUNT = 5;
+const SEARCH_REPOSITORY_COUNT = 50;
 const AGENT_STORAGE_PREFIX = "mobile.newSession.agent.";
 
 function timeOfDay(iso: string): string {
@@ -52,7 +53,9 @@ function repositoryLabel(repository: RepoInfo): string {
 }
 
 function repositoryKey(path: string): string {
-  return path.trim().replace(/\\/g, "/").replace(/\/+$/, "").toLocaleLowerCase();
+  const normalized = path.trim().replace(/\\/g, "/").replace(/\/+$/, "");
+  const isWindowsPath = /^[a-z]:\//i.test(normalized) || normalized.startsWith("//");
+  return isWindowsPath ? normalized.toLocaleLowerCase() : normalized;
 }
 
 function mergeRepositories(...sources: Array<RepoInfo[] | null>): RepoInfo[] {
@@ -115,6 +118,7 @@ export function NewSession() {
 
   const [agents, setAgents] = useState<AgentChoice[] | null>(null);
   const [agentsError, setAgentsError] = useState<string | null>(null);
+  const [agentReload, setAgentReload] = useState(0);
   const [selectedAgentType, setSelectedAgentType] = useState<string | null>(null);
 
   const [recentRepositories, setRecentRepositories] = useState<RepoInfo[] | null>(null);
@@ -131,8 +135,6 @@ export function NewSession() {
   const [createError, setCreateError] = useState<string | null>(null);
 
   const selectedIdRef = useRef<string | null>(null);
-  const loadGenerationRef = useRef(0);
-  const loadControllersRef = useRef<AbortController[]>([]);
   const createInFlightRef = useRef(false);
 
   const selectedDirector = directors?.find((director) => director.directorId === selectedId) ?? null;
@@ -159,8 +161,6 @@ export function NewSession() {
       return;
     }
 
-    loadControllersRef.current.forEach((controller) => controller.abort());
-    loadGenerationRef.current += 1;
     selectedIdRef.current = directorId;
     clearDirectorChoices();
     setSelectedId(directorId);
@@ -177,9 +177,11 @@ export function NewSession() {
         setDirectors(list);
         if (list.length > 0) {
           const firstId = list[0].directorId;
+          if (firstId !== selectedIdRef.current) clearDirectorChoices();
           selectedIdRef.current = firstId;
           setSelectedId(firstId);
         } else {
+          clearDirectorChoices();
           selectedIdRef.current = null;
           setSelectedId(null);
         }
@@ -189,39 +191,53 @@ export function NewSession() {
         setDirectorsError(gatewayErrorMessage(error));
       });
     return () => controller.abort();
-  }, [directorReload]);
+  }, [directorReload, clearDirectorChoices]);
 
   useEffect(() => {
-    loadControllersRef.current.forEach((controller) => controller.abort());
-    const generation = ++loadGenerationRef.current;
-    clearDirectorChoices();
-    if (!selectedId) {
-      loadControllersRef.current = [];
-      return;
-    }
+    if (!selectedId) return;
 
     const directorId = selectedId;
     const agentController = new AbortController();
-    const recentController = new AbortController();
-    const knownController = new AbortController();
-    loadControllersRef.current = [agentController, recentController, knownController];
-    const isCurrent = () =>
-      loadGenerationRef.current === generation && selectedIdRef.current === directorId;
+    const isCurrent = () => !agentController.signal.aborted && selectedIdRef.current === directorId;
+
+    setAgents(null);
+    setAgentsError(null);
 
     getAgents(directorId, agentController.signal)
       .then((list) => {
         if (!isCurrent()) return;
         setAgents(list);
-        if (list.length === 0) return;
-        const stored = rememberedAgent(directorId);
-        const pick = list.find((agent) => agent.type === stored) ?? list[0];
-        setSelectedAgentType(pick.type);
+        setSelectedAgentType((selected) => {
+          if (selected !== null && list.some((agent) => agent.type === selected)) return selected;
+          if (list.length === 0) return null;
+          const stored = rememberedAgent(directorId);
+          return (list.find((agent) => agent.type === stored) ?? list[0]).type;
+        });
       })
       .catch((error) => {
-        if (agentController.signal.aborted || !isCurrent()) return;
+        if (!isCurrent()) return;
         setAgents([]);
         setAgentsError(gatewayErrorMessage(error));
       });
+
+    return () => agentController.abort();
+  }, [selectedId, agentReload]);
+
+  useEffect(() => {
+    if (!selectedId) return;
+
+    const directorId = selectedId;
+    const recentController = new AbortController();
+    const knownController = new AbortController();
+    const isCurrent = () =>
+      !recentController.signal.aborted
+      && !knownController.signal.aborted
+      && selectedIdRef.current === directorId;
+
+    setRecentRepositories(null);
+    setKnownRepositories(null);
+    setRecentRepositoriesError(null);
+    setKnownRepositoriesError(null);
 
     getRepos(directorId, recentController.signal)
       .then((list) => {
@@ -246,17 +262,16 @@ export function NewSession() {
       });
 
     return () => {
-      agentController.abort();
       recentController.abort();
       knownController.abort();
     };
-  }, [selectedId, repositoryReload, clearDirectorChoices]);
+  }, [selectedId, repositoryReload]);
 
   const allRepositories = useMemo(
     () => mergeRepositories(recentRepositories, knownRepositories),
     [recentRepositories, knownRepositories],
   );
-  const visibleRepositories = useMemo(() => {
+  const matchedRepositories = useMemo(() => {
     const query = repositoryQuery.trim().toLocaleLowerCase();
     if (!query) {
       const recent = mergeRepositories(recentRepositories);
@@ -267,6 +282,9 @@ export function NewSession() {
       || repository.path.toLocaleLowerCase().includes(query),
     );
   }, [allRepositories, recentRepositories, repositoryQuery]);
+  const visibleRepositories = repositoryQuery.trim()
+    ? matchedRepositories.slice(0, SEARCH_REPOSITORY_COUNT)
+    : matchedRepositories;
 
   const chooseAgent = (agent: AgentChoice) => {
     if (!selectedId) return;
@@ -419,7 +437,7 @@ export function NewSession() {
               {agentsError !== null && (
                 <div className="banner banner-error newsession-inline-error" role="alert">
                   <span>Could not load agents: {agentsError}</span>
-                  <button type="button" className="newsession-retry" onClick={() => setRepositoryReload((value) => value + 1)}>
+                  <button type="button" className="newsession-retry" onClick={() => setAgentReload((value) => value + 1)}>
                     Retry
                   </button>
                 </div>
@@ -491,6 +509,11 @@ export function NewSession() {
               {!repositoryQuery.trim() && (
                 <p className="newsession-recent-note">Showing up to five most recently used repositories.</p>
               )}
+              {repositoryQuery.trim() && matchedRepositories.length > visibleRepositories.length && (
+                <p className="newsession-recent-note" role="status">
+                  Showing {visibleRepositories.length} of {matchedRepositories.length} matches. Type more to narrow the results.
+                </p>
+              )}
 
               {!repositorySourcesSettled && visibleRepositories.length === 0 && (
                 <p className="status-line">Loading repositories…</p>
@@ -560,7 +583,10 @@ export function NewSession() {
                     spellCheck={false}
                     placeholder="D:\Repositories\my-project"
                     value={manualPath}
-                    onChange={(event) => setManualPath(event.target.value)}
+                    onChange={(event) => {
+                      setManualPath(event.target.value);
+                      setCreateError(null);
+                    }}
                     onKeyDown={(event) => {
                       if (event.key === "Enter") {
                         event.preventDefault();
@@ -576,6 +602,10 @@ export function NewSession() {
             </div>
           )}
         </section>
+
+        {activeStep !== "review" && createError !== null && (
+          <div className="banner banner-error newsession-inline-error" role="alert">{createError}</div>
+        )}
 
         {activeStep === "review" && canReview && (
           <section className="newsession-review" aria-labelledby="newsession-review-title">

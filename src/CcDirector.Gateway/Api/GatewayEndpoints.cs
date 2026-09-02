@@ -2945,6 +2945,9 @@ internal static class GatewayEndpoints
             if (requestTenant is null)
                 return Results.Json(new { error = "no tenant is bound to this request" },
                     statusCode: StatusCodes.Status403Forbidden);
+            if (string.IsNullOrWhiteSpace(director.MachineName))
+                return Results.Json(new { error = "The Director has not reported a machine name." },
+                    statusCode: StatusCodes.Status409Conflict);
 
             return Results.Json(knownRepositories.ReadForMachine(requestTenant.Value, director.MachineName));
         });

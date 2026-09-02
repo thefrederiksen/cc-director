@@ -17,8 +17,8 @@ namespace CcDirector.Gateway.Migrations.Postgres.Migrations
                 columns: table => new
                 {
                     Id = table.Column<Guid>(type: "uuid", nullable: false),
-                    MachineKey = table.Column<string>(type: "character varying(1024)", maxLength: 1024, nullable: false),
-                    PathKey = table.Column<string>(type: "character varying(1024)", maxLength: 1024, nullable: false),
+                    MachineKey = table.Column<string>(type: "character varying(1024)", maxLength: 1024, nullable: false, collation: "C"),
+                    PathKey = table.Column<string>(type: "character varying(1024)", maxLength: 1024, nullable: false, collation: "C"),
                     MachineName = table.Column<string>(type: "character varying(1024)", maxLength: 1024, nullable: false),
                     Path = table.Column<string>(type: "character varying(1024)", maxLength: 1024, nullable: false),
                     Name = table.Column<string>(type: "character varying(1024)", maxLength: 1024, nullable: false),
@@ -40,7 +40,9 @@ namespace CcDirector.Gateway.Migrations.Postgres.Migrations
                     ("Id", "MachineKey", "PathKey", "MachineName", "Path", "Name", "LastUsedUtc", "tenant_id")
                 SELECT
                     gen_random_uuid(),
-                    UPPER(TRIM("MachineName")),
+                    translate(TRIM("MachineName"),
+                        'abcdefghijklmnopqrstuvwxyz',
+                        'ABCDEFGHIJKLMNOPQRSTUVWXYZ'),
                     TRIM("RepoPath"),
                     TRIM("MachineName"),
                     TRIM("RepoPath"),
@@ -66,6 +68,7 @@ namespace CcDirector.Gateway.Migrations.Postgres.Migrations
                 schema: "gateway",
                 table: "known_repositories",
                 columns: new[] { "tenant_id", "MachineKey", "LastUsedUtc" });
+
         }
 
         /// <inheritdoc />

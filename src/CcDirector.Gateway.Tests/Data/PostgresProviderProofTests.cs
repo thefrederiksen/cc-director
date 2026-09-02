@@ -187,7 +187,7 @@ public sealed class PostgresProviderProofTests
             "ORDER BY c.relname, a.attname");
 
         // One entry per UseCollation("C") declaration in GatewayDbContext, read back from the live catalog.
-        // 25 declarations, 25 columns - verified one-to-one against the model on 2026-09-02.
+        // 27 declarations, 27 columns - verified one-to-one against the model on 2026-09-02.
         // It went stale a second time between 2026-07-31 and now: the two session_keys columns arrived with
         // the remove-the-network-port change (#2450) and this list was not updated, so the suite was red on
         // main from 2026-08-05 and stayed red through the v2.0.0 and v2.0.1 tags. Being environment-gated is
@@ -202,6 +202,8 @@ public sealed class PostgresProviderProofTests
             ("device_import_markers", "SourcePath"),
             ("dictation_suggestion_dismissals", "Term"),
             ("dictation_suggestion_verdicts", "Term"),
+            ("known_repositories", "MachineKey"),
+            ("known_repositories", "PathKey"),
             ("mission_notes", "Key"),
             ("push_subscriptions", "Endpoint"),
             ("session_history", "SessionId"),

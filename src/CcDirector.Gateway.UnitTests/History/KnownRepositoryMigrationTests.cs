@@ -1,6 +1,7 @@
 using CcDirector.Core.Tenancy;
 using CcDirector.Gateway.Data;
 using CcDirector.Gateway.Data.Entities;
+using CcDirector.Gateway.History;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Migrations;
@@ -33,12 +34,13 @@ public sealed class KnownRepositoryMigrationTests
             // history row into it. The final migrate call must create and backfill the catalog.
             migrator.Migrate("20260902003414_AddSessionTurns");
             var lastSeen = new DateTime(2026, 8, 31, 14, 30, 0, DateTimeKind.Utc);
+            const string machineName = "Søren_North";
             context.SessionHistory.Add(new SessionHistoryEntity
             {
                 TenantId = TenantId.Local.Value,
                 SessionId = "backfill-session",
                 DirectorId = "backfill-director",
-                MachineName = "SOREN_NORTH",
+                MachineName = machineName,
                 RepoPath = @"D:\Repositories\historical",
                 RepoName = "Historical repository",
                 StartedAtUtc = lastSeen.AddHours(-1),
@@ -50,7 +52,7 @@ public sealed class KnownRepositoryMigrationTests
             context.ChangeTracker.Clear();
 
             var catalogRow = Assert.Single(context.KnownRepositories.AsNoTracking());
-            Assert.Equal("SOREN_NORTH", catalogRow.MachineName);
+            Assert.Equal(machineName, catalogRow.MachineName);
             Assert.Equal(@"D:\Repositories\historical", catalogRow.Path);
             Assert.Equal("Historical repository", catalogRow.Name);
             Assert.Equal(lastSeen, catalogRow.LastUsedUtc);
@@ -60,6 +62,11 @@ public sealed class KnownRepositoryMigrationTests
             context.ChangeTracker.Clear();
 
             Assert.Single(context.KnownRepositories.AsNoTracking());
+
+            using var database = new GatewayDatabase(new SingleTenantContext(), path);
+            var store = new KnownRepositoryStore(database);
+            var retained = Assert.Single(store.ReadForMachine(TenantId.Local, machineName));
+            Assert.Equal(@"D:\Repositories\historical", retained.Path);
         }
         finally
         {

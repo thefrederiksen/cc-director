@@ -2676,24 +2676,6 @@ a.banner-btn {
   letter-spacing: 0.6px;
 }
 
-.newsession-manual-label {
-  display: block;
-  margin: 12px 0 6px;
-  font-size: 13px;
-  font-weight: 700;
-  color: var(--text-dim);
-}
-
-.newsession-manual {
-  display: flex;
-  gap: 8px;
-}
-
-.newsession-manual > .term-input {
-  flex: 1 1 auto;
-  min-width: 0;
-}
-
 /* Guided mobile session creation: three compact summary rows stay visible while only the active
    chooser scrolls. The shell uses the shared visual-viewport measurement, so opening the software
    keyboard shortens this screen instead of pushing the confirmation action below the phone. */
