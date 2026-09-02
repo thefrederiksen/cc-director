@@ -21,15 +21,17 @@ namespace CcDirector.Gateway.Screens;
 ///
 /// The properties the readers lean on:
 ///
-///  - IDEMPOTENT. A screen is keyed by (tenant, session, captured-at); a capture the Director re-sends
-///    after a reconnect is stored once. Capture times are pinned to whole milliseconds on both sides so
-///    a row cannot be written at one precision and looked up at another.
+///  - IDEMPOTENT, PER DIRECTOR. A screen is keyed by (tenant, session, captured-at, director); a capture
+///    the SAME Director re-sends after a reconnect is stored once, and two Directors that captured the
+///    same session id in the same millisecond keep both rows rather than one swallowing the other.
+///    Capture times are pinned to whole milliseconds on both sides so a row cannot be written at one
+///    precision and looked up at another.
 ///  - BOUNDED PER SESSION. A session keeps at most <see cref="MaxScreensPerSession"/> screens; the
 ///    oldest are trimmed at write time. Retention alone is not a bound - a session that ends a hundred
 ///    turns an hour would otherwise hold seven days of them - and an unbounded table is a slow read for
 ///    every reader that follows.
 ///  - THE LATEST IS ONE INDEXED READ. Readers overwhelmingly want "the newest screen for this session",
-///    which the (tenant, session, captured-at) key answers directly.
+///    which the key's (tenant, session, captured-at) prefix answers directly.
 ///  - IT IS HISTORY, AND ONLY HISTORY. This store never claims a screen is live and is never consulted
 ///    for a live read. An earlier design let a stored screen answer "what is on screen right now?" while
 ///    its byte mark still matched the session's pushed total; that mark is not refreshed when the terminal
@@ -104,7 +106,11 @@ public sealed class SessionScreenStore
         using var ctx = _context();
         using var tx = ctx.Database.BeginTransaction();
 
-        var already = ctx.SessionScreens.Any(s => s.SessionId == push.SessionId && s.CapturedAtUtc == capturedAt);
+        // The DIRECTOR is part of this test because it is part of the key. Without it a second Director's
+        // distinct capture of the same session at the same millisecond read as the first one's duplicate and
+        // was dropped (inspection 01, finding 3).
+        var already = ctx.SessionScreens.Any(s =>
+            s.SessionId == push.SessionId && s.CapturedAtUtc == capturedAt && s.DirectorId == directorId);
         if (already)
         {
             tx.Commit();
@@ -170,9 +176,12 @@ public sealed class SessionScreenStore
         lock (_gate)
         {
             using var ctx = _context();
+            // The Director breaks a tie on capture time, so "the newest" is a deterministic row rather than
+            // whichever of two same-millisecond captures the provider happened to return first.
             var row = ctx.SessionScreens.AsNoTracking()
                 .Where(s => s.SessionId == sessionId)
                 .OrderByDescending(s => s.CapturedAtUtc)
+                .ThenByDescending(s => s.DirectorId)
                 .FirstOrDefault();
             return row is null ? null : ToStoredScreen(row);
         }
@@ -190,6 +199,7 @@ public sealed class SessionScreenStore
             return ctx.SessionScreens.AsNoTracking()
                 .Where(s => s.SessionId == sessionId)
                 .OrderByDescending(s => s.CapturedAtUtc)
+                .ThenByDescending(s => s.DirectorId)
                 .Take(Math.Min(limit, MaxScreensPerSession))
                 .ToList()
                 .Select(ToStoredScreen)

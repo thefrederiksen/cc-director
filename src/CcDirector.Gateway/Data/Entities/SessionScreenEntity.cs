@@ -6,11 +6,12 @@ namespace CcDirector.Gateway.Data.Entities;
 /// owning Director at the moment its detector flips the session from Working to WaitingForInput, stored
 /// per tenant, and read by the wingman's screen readers, the supervisor, and later the rules engine.
 ///
-/// Keyed by (tenant, session, captured-at). The capture time is part of the key so a Director that
-/// re-sends a capture after a reconnect stores it once rather than twice, and so the history of a
+/// Keyed by (tenant, session, captured-at, director). The capture time is part of the key so a Director
+/// that re-sends a capture after a reconnect stores it once rather than twice, and so the history of a
 /// session's turn-end screens is kept in order rather than one row being overwritten - the rules engine
 /// has to be able to say WHICH screen a decision was made on, and the Cockpit has to be able to show
-/// yesterday's.
+/// yesterday's. The DIRECTOR is in the key because without it two Directors capturing the same session id
+/// in the same millisecond collided and one row silently swallowed the other (inspection 01, finding 3).
 ///
 /// This is a SEPARATE store from the conversation the turn-push mission (#2638) holds, deliberately: a
 /// screen is bulky, loses its value in days rather than months, and is captured from a different source.

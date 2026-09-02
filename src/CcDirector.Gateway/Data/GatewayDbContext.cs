@@ -516,9 +516,16 @@ public sealed class GatewayDbContext : DbContext
             // COMPOSITE primary key led by tenant_id, the session_turns reasoning exactly: the session id and
             // the capture time both arrive on the push stream from the Director, so a key that did not lead
             // with the tenant would let one tenant squat another's rows. This key is also what makes a
-            // re-sent push idempotent - the same (session, captured-at) cannot be stored twice - and what
+            // re-sent push idempotent - the same Director's same capture cannot be stored twice - and what
             // answers "the newest screen for this session" without a second index.
-            b.HasKey(e => new { e.TenantId, e.SessionId, e.CapturedAtUtc });
+            //
+            // THE DIRECTOR IS PART OF THE KEY (inspection 01, finding 3). It is the last component so the
+            // (tenant, session, captured-at) prefix still answers "this session's captures, newest first"
+            // directly. Without it, two Directors that captured the same session id in the same millisecond
+            // collided and the second row was silently answered "already stored" - a same-tenant ownership
+            // defect. A row also has to be able to NAME its owner for a reader to compare it with anything,
+            // and a key that does not carry the Director cannot make that comparison meaningful.
+            b.HasKey(e => new { e.TenantId, e.SessionId, e.CapturedAtUtc, e.DirectorId });
             b.Property(e => e.SessionId).HasMaxLength(64);
             b.Property(e => e.DirectorId).HasMaxLength(64);
             b.Property(e => e.ActivityState).HasMaxLength(32);
@@ -951,6 +958,9 @@ public sealed class GatewayDbContext : DbContext
             // agree on what "the same" means, so a re-sent capture could store twice on the hosted Gateway
             // and once on a local install.
             modelBuilder.Entity<SessionScreenEntity>().Property(e => e.SessionId).UseCollation("C");
+            // DirectorId joined that primary key with inspection 01's finding 3, so it is a caller-supplied
+            // natural-key string under exactly the same rule and gets the same explicit collation.
+            modelBuilder.Entity<SessionScreenEntity>().Property(e => e.DirectorId).UseCollation("C");
             // The tenants mapping table's natural-key string columns (the tenant id primary key and the
             // account_subject unique index) rely on byte-ordinal equality/uniqueness, same as the keys above,
             // so pin them to "C" too - the account subject in particular must match EXACTLY on both providers.

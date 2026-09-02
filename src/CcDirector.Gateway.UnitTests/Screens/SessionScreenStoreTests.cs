@@ -103,6 +103,36 @@ public sealed class SessionScreenStoreTests : IDisposable
     }
 
     [Fact]
+    public void Append_TwoDirectorsCapturingOneSessionAtTheSameInstant_KeepsBothRows()
+    {
+        // Inspection 01, finding 3. The key used to be (tenant, session, captured-at), which carries no
+        // Director - so two Directors that captured the same session id in the same millisecond collided,
+        // and the second row was answered "already stored" and silently lost. That is a same-tenant
+        // ownership defect, not a cross-account one: the tenant filter was never in question.
+        //
+        // Both halves are asserted POSITIVELY. Two rows exist, each naming its own Director and carrying
+        // its own rows - a store that simply stopped de-duplicating would pass that half alone, so the
+        // idempotency control below is part of the same test.
+        var store = Store();
+        var capturedAt = Now.AddMinutes(-1);
+
+        Assert.True(store.Append("director-1", Push(capturedAt, "DIRECTOR ONE SCREEN"), Now));
+        Assert.True(store.Append("director-2", Push(capturedAt, "DIRECTOR TWO SCREEN"), Now));
+
+        var held = store.ReadRecent("s1", 10);
+        Assert.Equal(2, held.Count);
+        var one = Assert.Single(held, s => s.DirectorId == "director-1");
+        var two = Assert.Single(held, s => s.DirectorId == "director-2");
+        Assert.Equal(new[] { "DIRECTOR ONE SCREEN" }, one.Grid.Rows);
+        Assert.Equal(new[] { "DIRECTOR TWO SCREEN" }, two.Grid.Rows);
+
+        // THE CONTROL. Idempotency is what the capture time is in the key for, and it must still hold: the
+        // SAME Director re-sending the SAME capture after a reconnect is still one row, not a third.
+        Assert.False(store.Append("director-1", Push(capturedAt, "DIRECTOR ONE SCREEN"), Now.AddSeconds(30)));
+        Assert.Equal(2, Count(store, "s1"));
+    }
+
+    [Fact]
     public void ReadLatest_ReturnsTheNewestCapture_AndReadRecent_ReturnsThemNewestFirst()
     {
         var store = Store();
