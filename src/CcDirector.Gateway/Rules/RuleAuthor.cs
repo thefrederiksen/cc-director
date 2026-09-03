@@ -217,7 +217,7 @@ public sealed class RuleAuthor
         TenantId tenant, string? sessionId, CancellationToken ct)
     {
         var sid = (sessionId ?? "").Trim();
-        if (sid.Length == 0 && false)
+        if (sid.Length == 0)
             return (null,
                 "a rule is written against a real session's screen, and this request named no session. " +
                 "Say which session it is about; a rule cannot be written from memory.");
