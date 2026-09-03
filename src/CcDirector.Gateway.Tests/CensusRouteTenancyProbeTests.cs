@@ -171,6 +171,96 @@ public sealed class CensusRouteTenancyProbeTests : IAsyncLifetime
         Assert.Equal(whyB, Str(survivingBAgain, "why"));
     }
 
+    // =============================================== session rules (session_rules, session_rule_firings)
+
+    /// <summary>
+    /// GET and DELETE /gateway/rules/{id:guid} - both context-less (SessionRuleEndpoints.cs, handlers
+    /// <c>(Guid id)</c>), scoped ONLY by the ambient request scope and the entity global query filter,
+    /// exactly like the workflow and skill families this file's companion proved.
+    ///
+    /// WHY THE FAMILY NEEDED THIS. The rules routes shipped in the Session Rules mission and were never
+    /// entered in the context-less census, so this suite was RED on main and nobody saw it: the suite is
+    /// parked and, on the mission's own record, had not run all day. A route family reachable on the
+    /// multi-tenant deployment with no written verdict and no executed probe is exactly what the census
+    /// exists to prevent.
+    ///
+    /// A rule id is Gateway-minted (both tables derive from <c>GatewayMintedKeyEntity</c>), so a caller
+    /// cannot present one - which makes the sharpest available probe the one below: tenant A is HANDED
+    /// tenant B's real id and still cannot read it, and cannot delete it either.
+    ///
+    /// WHAT THIS DOES NOT COVER, stated rather than inferred: <c>GET /gateway/rules/{id}/firings</c> is
+    /// the third context-less route in the family and is NOT cross-probed here, because no route can
+    /// write a firing - only the evaluator does - so both tenants would read an empty list and two empty
+    /// lists prove nothing about a partition. Its verdict is the same store and the same filter as the
+    /// two proved below, and that is a code-read verdict, not an executed one.
+    /// </summary>
+    [Fact]
+    public async Task SessionRules_AreNotReachableAcrossTenantsEvenHoldingTheOtherTenantsRuleId()
+    {
+        var createdA = await Json(await Send("POST", "gateway/rules", _keyA, RuleBody("tenant-A-rule-probe")),
+            HttpStatusCode.OK, "SEED    POST /gateway/rules (tenant A)");
+        var createdB = await Json(await Send("POST", "gateway/rules", _keyB, RuleBody("tenant-B-rule-probe")),
+            HttpStatusCode.OK, "SEED    POST /gateway/rules (tenant B)");
+        var idA = Str(Obj(createdA, "rule"), "id");
+        var idB = Str(Obj(createdB, "rule"), "id");
+        Assert.NotEqual(idA, idB);
+
+        // OWNER CONTROLS, asserting the EXACT SEEDED FINGERPRINT rather than a bare 200: a wrong route,
+        // a catch-all or a failed seed answering empty would all pass a status-only check.
+        var ownA = await Json(await Send("GET", $"gateway/rules/{idA}", _keyA, null),
+            HttpStatusCode.OK, "READ    GET /gateway/rules/{A} (tenant A)");
+        Assert.Equal("tenant-A-rule-probe", Str(Obj(ownA, "rule"), "instruction"));
+
+        var ownB = await Json(await Send("GET", $"gateway/rules/{idB}", _keyB, null),
+            HttpStatusCode.OK, "READ    GET /gateway/rules/{B} (tenant B)");
+        Assert.Equal("tenant-B-rule-probe", Str(Obj(ownB, "rule"), "instruction"));
+
+        // Each tenant's LIST holds exactly its own rule - so a leak would show as a second row even if
+        // the by-id read were somehow refused.
+        Assert.Equal(1, Arr(await Json(await Send("GET", "gateway/rules", _keyA, null),
+            HttpStatusCode.OK, "READ    GET /gateway/rules (tenant A)"), "rules").GetArrayLength());
+
+        // CROSS-TENANT: A holds B's real id and gets the same answer as for an id that does not exist,
+        // so the id cannot be probed for existence either.
+        var crossRead = await Send("GET", $"gateway/rules/{idB}", _keyA, null);
+        Assert.Equal(HttpStatusCode.NotFound, crossRead.StatusCode);
+
+        var crossDelete = await Send("DELETE", $"gateway/rules/{idB}", _keyA, null);
+        Assert.Equal(HttpStatusCode.OK, crossDelete.StatusCode);
+        Assert.False(Bool(await Json(crossDelete, HttpStatusCode.OK, "CROSS   DELETE /gateway/rules/{B} (tenant A)"),
+            "deleted"));
+
+        // ...and the refused delete changed nothing: B's rule is still there, byte-for-byte.
+        var survivingB = await Json(await Send("GET", $"gateway/rules/{idB}", _keyB, null),
+            HttpStatusCode.OK, "AFTER   GET /gateway/rules/{B} (after A tried to delete it)");
+        Assert.Equal("tenant-B-rule-probe", Str(Obj(survivingB, "rule"), "instruction"));
+
+        // DESTRUCTIBILITY CONTROL: B can perform the SAME delete on its own rule. Without this, the
+        // refusal above could be an inert route rather than a partitioned one.
+        Assert.True(Bool(await Json(await Send("DELETE", $"gateway/rules/{idB}", _keyB, null),
+            HttpStatusCode.OK, "CONTROL DELETE /gateway/rules/{B} (tenant B, its OWN rule)"), "deleted"));
+        Assert.Equal(HttpStatusCode.NotFound,
+            (await Send("GET", $"gateway/rules/{idB}", _keyB, null)).StatusCode);
+
+        // ...and A's rule is untouched by any of it.
+        var stillA = await Json(await Send("GET", $"gateway/rules/{idA}", _keyA, null),
+            HttpStatusCode.OK, "AFTER   GET /gateway/rules/{A}");
+        Assert.Equal("tenant-A-rule-probe", Str(Obj(stillA, "rule"), "instruction"));
+    }
+
+    /// <summary>A rule the write gate accepts: every part a rule has to have, said out loud.</summary>
+    private static string RuleBody(string instruction) =>
+        System.Text.Json.JsonSerializer.Serialize(new
+        {
+            instruction,
+            screenDescription = "The session has stopped on a provider error.",
+            triggerWords = new[] { "API Error" },
+            checks = Array.Empty<object>(),
+            scope = "all-sessions",
+            cooldownSeconds = 900,
+            dailyCap = 6,
+        });
+
     private static string MissionBody(string missionName) =>
         System.Text.Json.JsonSerializer.Serialize(new { missionName });
 
