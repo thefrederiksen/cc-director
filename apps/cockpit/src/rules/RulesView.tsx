@@ -320,6 +320,8 @@ function RuleComposer({ onStored }: { onStored: () => void }) {
         <div className="rules-proposal">
           <p className="rules-readback">{proposal.readBack}</p>
 
+          <TypesLine text={proposal.rule.textToType} prominent />
+
           <dl className="rules-detail">
             <dt>Your words</dt>
             <dd className="rules-instruction">{proposal.rule.instruction}</dd>
@@ -480,6 +482,35 @@ function SessionChooser({
   );
 }
 
+// ---- the text a rule types --------------------------------------------------------------------------
+
+/**
+ * THE ONE LABEL THIS PAGE HOLDS FOR A RULE WITH NOTHING TO TYPE, in the Gateway's own words for it: such
+ * a rule was stored before rules carried their text, and the Gateway refuses to fire it and refuses to
+ * promote it until it is re-authored. The card says so rather than looking like every other rule.
+ */
+const NEEDS_REAUTHORING =
+  "needs re-authoring - it was stored before a rule carried the exact text it types, so it has nothing to type";
+
+/**
+ * THE KEYSTROKE, VERBATIM. The text a rule types is the most consequential thing it does, and the
+ * read-back is what a person confirms - so it is shown as its own labelled line, in a monospace element,
+ * exactly as the Gateway serves it. `prominent` is the proposal's version, ahead of everything else
+ * about the rule, because it is what the person is agreeing to.
+ */
+function TypesLine({ text, prominent = false }: { text: string; prominent?: boolean }) {
+  return (
+    <span className={prominent ? "rules-types rules-types-prominent" : "rules-fact rules-types"}>
+      <span className="rules-fact-label">{prominent ? "when it acts, it types exactly" : "types"}</span>
+      {text.length === 0 ? (
+        <span className="rules-types-none">{NEEDS_REAUTHORING}</span>
+      ) : (
+        <code className="rules-types-text">{text}</code>
+      )}
+    </span>
+  );
+}
+
 // ---- one rule, and what it has done -------------------------------------------------------------
 
 const LIVE = "live";
@@ -589,6 +620,7 @@ function RuleCard({ rule, onChanged }: { rule: SessionRule; onChanged: () => voi
         <p className="rules-watching">{rule.screenDescription}</p>
 
         <div className="rules-facts">
+          <TypesLine text={rule.textToType} />
           <span className="rules-fact">
             <span className="rules-fact-label">wakes on</span>
             {rule.triggerWords.map((word) => (

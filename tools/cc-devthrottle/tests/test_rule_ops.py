@@ -48,11 +48,15 @@ A_REAL_LIMIT_SCREEN = (
     "Claude usage limit reached. Your limit will reset at 11:50pm.\n\n> "
 )
 
+# THE EXACT TEXT THE RULE TYPES - decided when it was written, and the thing a person is agreeing to.
+THE_TEXT = "carry on from where you stopped"
+
 A_DRAFTED_RULE = {
     "instruction": "when the limit hits, wait until it resets and carry on",
     "sessionId": "sess-37498c19",
     "allAgents": False,
     "screenDescription": "The session has stopped on a usage limit notice with a reset time.",
+    "textToType": THE_TEXT,
     "triggerWords": ["Claude usage limit reached", "Your limit will reset at"],
     "checks": [],
     "scope": {"agent": "ClaudeCode"},
@@ -216,6 +220,47 @@ def test_draft_stores_nothing_and_prints_the_gateways_labels(monkeypatch):
     # THE GATEWAY'S WORDS, verbatim - this client composes no scope or wait of its own.
     assert "agent ClaudeCode" in plain
     assert "10 minutes apart" in plain
+
+
+# ---- phase 1: the exact text it types is shown, verbatim --------------------------------------------
+
+def test_draft_prints_the_exact_text_it_types_under_the_read_back(monkeypatch):
+    """The keystroke is the most consequential thing a rule does and the read-back is what a person
+    confirms. A read-back that describes the situation but hides the keystroke asks somebody to approve
+    an action they were not shown - so the text is printed verbatim, right under the read-back, before
+    anything else about the rule."""
+    client = FakeClient()
+    _use(monkeypatch, client)
+
+    result = runner.invoke(app, ["rule", "draft", "wait and carry on", "--session", "37498c19"])
+
+    assert result.exit_code == 0, result.output
+    plain = flat(result.output)
+    assert f"types {THE_TEXT}" in plain
+    assert plain.index(A_DRAFT_ANSWER["readBack"]) < plain.index(f"types {THE_TEXT}") < plain.index("acts on")
+
+
+def test_list_prints_the_exact_text_a_rule_types_verbatim(monkeypatch):
+    served = dict(A_STORED_RULE, textToType="the exact text the Gateway served")
+    client = FakeClient(rules=[served])
+    _use(monkeypatch, client)
+
+    result = runner.invoke(app, ["rule", "list"])
+
+    assert result.exit_code == 0, result.output
+    assert "types the exact text the Gateway served" in flat(result.output)
+
+
+def test_a_rule_served_with_no_text_to_type_is_said_to_need_re_authoring(monkeypatch):
+    """A rule stored before rules carried their text has nothing to type; the Gateway refuses to fire
+    it and refuses to promote it. Printed like every other rule it would hide exactly that."""
+    client = FakeClient(rules=[dict(A_STORED_RULE, textToType="")])
+    _use(monkeypatch, client)
+
+    result = runner.invoke(app, ["rule", "list"])
+
+    assert result.exit_code == 0, result.output
+    assert "needs re-authoring" in flat(result.output)
 
 
 # ---- fix round D, ruling D4: `rule add` stores the document that was read -------------------------

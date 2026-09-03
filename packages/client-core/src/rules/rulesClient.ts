@@ -46,6 +46,12 @@ export interface SessionRule {
   instruction: string;
   /** What it is watching for, in plain words, as the model understood you. */
   screenDescription: string;
+  /**
+   * THE EXACT TEXT IT TYPES when it acts (phase 1) - decided when the rule was written, confirmed by
+   * the person, and served with the rule so every client shows it verbatim. Empty on a rule stored
+   * before rules carried it; the Gateway refuses to fire or promote such a rule until it is re-authored.
+   */
+  textToType: string;
   /** The cheap first filter: unless one of these is on the screen, nothing further happens. */
   triggerWords: string[];
   /** The verified checks this rule runs, each already rendered for reading by the Gateway. */
@@ -113,6 +119,8 @@ export interface RuleWriteBody {
   sessionId: string;
   allAgents: boolean;
   screenDescription: string;
+  /** The text the rule will type, decided at authoring and shown for the person to confirm. */
+  textToType: string;
   triggerWords: string[];
   checks: unknown[];
   scope: unknown;

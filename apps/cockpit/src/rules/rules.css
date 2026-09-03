@@ -217,6 +217,46 @@
   margin: 0;
 }
 
+/* The exact text a rule types, verbatim. Monospaced because it is a literal string that will be typed
+   into a terminal, not prose about one - a space, a slash or a capital letter in it is the difference
+   between the command the person agreed to and a different one. */
+.rules-types-text {
+  padding: 1px 7px;
+  background: var(--code-bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-family: var(--mono, monospace);
+  font-size: 12px;
+  color: var(--text);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* The proposal's version: its own line, ahead of everything else about the rule, because the keystroke
+   is what the person is agreeing to. */
+.rules-types-prominent {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+  margin: 0 0 12px;
+  padding: 8px 12px;
+  border-left: 3px solid var(--accent);
+  background: var(--code-bg);
+  border-radius: 0 6px 6px 0;
+}
+
+.rules-types-prominent .rules-types-text {
+  font-size: 14px;
+  padding: 2px 8px;
+}
+
+/* A rule with nothing to type. The Gateway refuses to fire or promote it, and the card says so. */
+.rules-types-none {
+  color: var(--text-dim);
+  font-style: italic;
+}
+
 /* One trigger word. They read as chips because they are literal strings matched against a screen -
    showing them as prose would hide where one word ends and the next begins. */
 .rules-word {

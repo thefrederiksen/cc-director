@@ -238,10 +238,27 @@ def _label(rule: Dict[str, Any], field: str) -> str:
     return str(rule[field])
 
 
+# THE ONE LABEL THIS CLIENT HOLDS FOR A RULE WITH NOTHING TO TYPE, in the Gateway's own words for it:
+# such a rule was stored before rules carried their text, and the Gateway refuses to fire it and refuses
+# to promote it until it is re-authored. Printed like every other rule it would hide exactly that.
+NEEDS_REAUTHORING = (
+    "needs re-authoring - it was stored before a rule carried the exact text it types, so it has "
+    "nothing to type"
+)
+
+
+def _types_line(rule: Dict[str, Any]) -> str:
+    """THE KEYSTROKE, VERBATIM. The text a rule types is the most consequential thing it does, so it is
+    printed exactly as the Gateway serves it - never trimmed, never rephrased."""
+    text = rule.get("textToType") or ""
+    return f"  types         {text if text else NEEDS_REAUTHORING}"
+
+
 def _describe(rule: Dict[str, Any]) -> None:
     console.print(f"[bold]{rule.get('instruction', '')}[/bold]")
     console.print(f"  id            {rule.get('id', '')}")
     console.print(f"  state         {rule.get('state', '')}")
+    console.print(_types_line(rule), markup=False, highlight=False)
     console.print(f"  watches for   {rule.get('screenDescription', '')}")
     console.print(f"  trigger words {', '.join(rule.get('triggerWords') or []) or '(none)'}")
     checks = rule.get("checks") or []
@@ -339,6 +356,10 @@ def draft_rule(said: str, target: str, json_output: bool, all_agents: bool = Fal
 
     console.print(answer.get("readBack", ""))
     console.print("")
+    # THE TEXT IT TYPES, RIGHT UNDER THE READ-BACK. The read-back is what a person confirms, and one
+    # that described the situation but hid the keystroke asked them to approve an action they were not
+    # shown. So the exact text comes before anything else about the rule.
+    console.print(_types_line(answer.get("rule") or {}), markup=False, highlight=False)
     try:
         console.print(f"  acts on       {_label(answer, 'scopeLabel')}")
         console.print(
