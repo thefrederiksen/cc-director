@@ -1,0 +1,155 @@
+using System.Text.Json;
+using CcDirector.Gateway.Api;
+using CcDirector.Gateway.Rules;
+using Xunit;
+
+namespace CcDirector.Gateway.Tests.Rules;
+
+/// <summary>
+/// WHAT THE ACCOUNT ACTUALLY RECEIVES.
+///
+/// The rule surface's projections lived inside the route lambdas, where only a host-bound test could reach
+/// them - and the host-bound suite is parked, so in practice nothing tested them at all. Two fields added
+/// specifically to make an action accountable were simply absent from the only read surface there is:
+/// WHO promoted a rule out of dry run, and WHAT checking the stated reason against the screen found. The
+/// record existed in storage and was not delivered, which for the reader is the same as not existing.
+///
+/// And the write side read its checks leniently: a missing property, an object, a number all became "no
+/// checks", and a non-object entry inside the list was silently dropped. The endpoint's own comment said
+/// both paths used the same reader and preserved one meaning. They did not.
+/// </summary>
+public sealed class SessionRuleWireTests
+{
+    private static readonly DateTime Now = new(2026, 9, 2, 12, 0, 0, DateTimeKind.Utc);
+
+    private static SessionRule ALiveRule(string promotedBy) => new(
+        Guid.NewGuid(),
+        "When I run out of allowance, switch me to Opus.",
+        "A session stopped on a provider allowance notice.",
+        new[] { "limit" },
+        Array.Empty<RulePrimitiveCall>(),
+        RuleScope.AllSessions,
+        300,
+        5,
+        RuleState.Live,
+        promotedBy,
+        Now,
+        Now);
+
+    private static SessionRuleFiring AFiring(string grounding) => new(
+        Guid.NewGuid(),
+        Guid.NewGuid(),
+        "sid-1",
+        Now,
+        "You've reached your Fable 5 limit.",
+        "The session is blocked on its allowance.",
+        RuleDecisions.Act,
+        "The screen says 'reached your Fable 5 limit'.",
+        Array.Empty<RulePrimitiveRun>(),
+        "/usage-credits",
+        "typed into the session: /usage-credits",
+        grounding);
+
+    /// <summary>The projection as JSON, which is what the account really gets - not the anonymous object.</summary>
+    private static JsonElement AsWire(object projected) =>
+        JsonDocument.Parse(JsonSerializer.Serialize(projected)).RootElement;
+
+    [Fact]
+    public void A_live_rule_says_who_promoted_it()
+    {
+        var wire = AsWire(SessionRuleWire.Project(ALiveRule("device-9f2c")));
+
+        Assert.True(wire.TryGetProperty("promotedBy", out var who),
+            "the rule the account reads does not say who moved it out of dry run, so the field that was " +
+            "added to make a live rule accountable is not delivered to anybody.");
+        Assert.Equal("device-9f2c", who.GetString());
+    }
+
+    [Fact]
+    public void A_firing_says_what_checking_the_reason_against_the_screen_found()
+    {
+        var wire = AsWire(SessionRuleWire.Project(AFiring("grounding: 1 passage(s) cited, all found on it.")));
+
+        Assert.True(wire.TryGetProperty("grounding", out var grounding),
+            "the firing the account reads does not say what the grounding check found, so a run where " +
+            "that check never happened cannot be told from one where it passed.");
+        Assert.Contains("cited", grounding.GetString());
+    }
+
+    [Fact]
+    public void A_rule_still_carries_everything_it_carried_before()
+    {
+        // THE PRESENCE. A projection that answered only the two new fields would satisfy the tests above
+        // and break every reader there is.
+        var rule = ALiveRule("device-9f2c");
+        var wire = AsWire(SessionRuleWire.Project(rule));
+
+        foreach (var expected in new[]
+                 {
+                     "id", "instruction", "screenDescription", "triggerWords", "checks", "scope",
+                     "cooldownSeconds", "dailyCap", "state", "createdUtc", "updatedUtc",
+                 })
+            Assert.True(wire.TryGetProperty(expected, out _), "the rule projection lost '" + expected + "'.");
+
+        Assert.Equal("live", wire.GetProperty("state").GetString());
+    }
+
+    [Fact]
+    public void A_firing_still_carries_everything_it_carried_before()
+    {
+        var wire = AsWire(SessionRuleWire.Project(AFiring("grounding: nothing was cited.")));
+
+        foreach (var expected in new[]
+                 {
+                     "id", "ruleId", "sessionId", "occurredUtc", "screenText", "understanding",
+                     "decision", "reason", "checksRun", "typedText", "outcome",
+                 })
+            Assert.True(wire.TryGetProperty(expected, out _), "the firing projection lost '" + expected + "'.");
+    }
+
+    // ---- the write side reads its checks the same way the reply does --------------------------------
+
+    private static JsonElement Body(string json) => JsonDocument.Parse(json).RootElement;
+
+    [Theory]
+    [InlineData("""{ "checks": { } }""")]
+    [InlineData("""{ "checks": 7 }""")]
+    [InlineData("""{ "checks": "matches_any" }""")]
+    [InlineData("""{ "checks": null }""")]
+    [InlineData("""{ }""")]
+    public void A_write_whose_checks_are_not_a_list_of_checks_is_refused(string json)
+    {
+        var ex = Assert.Throws<RuleRejectedException>(() => SessionRuleWire.Calls(Body(json)));
+        Assert.Contains("checks", ex.Reason, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void A_write_with_an_entry_that_is_not_a_check_is_refused_rather_than_having_it_dropped()
+    {
+        // The lenient reader dropped a non-object entry silently, so a caller could ask for two checks,
+        // have one quietly removed, and get a rule that runs the other one alone.
+        var json = """{ "checks": [ { "name": "matches_any" }, "not a check" ] }""";
+
+        var ex = Assert.Throws<RuleRejectedException>(() => SessionRuleWire.Calls(Body(json)));
+        Assert.NotEqual("", ex.Reason);
+    }
+
+    [Fact]
+    public void A_write_with_an_empty_list_of_checks_is_accepted_and_means_no_checks()
+    {
+        // THE PRESENCE. A reader that refused every shape would make a rule with no checks impossible to
+        // write, which is a legitimate rule.
+        Assert.Empty(SessionRuleWire.Calls(Body("""{ "checks": [] }""")));
+    }
+
+    [Fact]
+    public void A_write_with_real_checks_reads_them()
+    {
+        var json = """
+        { "checks": [ { "name": "matches_any", "arguments": { "text": "<screen_text>", "terms": ["limit"] } } ] }
+        """;
+
+        var call = Assert.Single(SessionRuleWire.Calls(Body(json)));
+        Assert.Equal("matches_any", call.Name);
+    }
+}

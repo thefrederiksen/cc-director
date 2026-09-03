@@ -33,7 +33,7 @@ internal static class SessionRuleEndpoints
     public static void Map(IEndpointRouteBuilder app, SessionRuleStore store)
     {
         // Every rule this account has, newest first - the account's own sentences.
-        app.MapGet("/gateway/rules", () => Results.Json(new { rules = store.All().Select(Project).ToList() }));
+        app.MapGet("/gateway/rules", () => Results.Json(new { rules = store.All().Select(SessionRuleWire.Project).ToList() }));
 
         // One rule.
         app.MapGet("/gateway/rules/{id:guid}", (Guid id) =>
@@ -41,7 +41,7 @@ internal static class SessionRuleEndpoints
             var rule = store.Get(id);
             return rule is null
                 ? Results.Json(new { error = $"there is no rule with the id {id}." }, statusCode: StatusCodes.Status404NotFound)
-                : Results.Json(new { rule = Project(rule) });
+                : Results.Json(new { rule = SessionRuleWire.Project(rule) });
         });
 
         // Write a rule. It is ALWAYS created in dry run - the store takes no state parameter at all.
@@ -52,14 +52,14 @@ internal static class SessionRuleEndpoints
                 var rule = store.Create(
                     RuleCallJson.Text(body, "instruction") ?? "",
                     RuleCallJson.Text(body, "screenDescription") ?? "",
-                    Strings(body, "triggerWords"),
-                    Calls(body),
-                    ReadScope(body),
-                    Number(body, "cooldownSeconds"),
-                    Number(body, "dailyCap"),
+                    SessionRuleWire.Strings(body, "triggerWords"),
+                    SessionRuleWire.Calls(body),
+                    SessionRuleWire.ReadScope(body),
+                    SessionRuleWire.Number(body, "cooldownSeconds"),
+                    SessionRuleWire.Number(body, "dailyCap"),
                     DateTime.UtcNow);
                 FileLog.Write($"[SessionRuleEndpoints] POST /gateway/rules: stored {rule.Id} in dry run");
-                return Results.Json(new { rule = Project(rule) });
+                return Results.Json(new { rule = SessionRuleWire.Project(rule) });
             }
             catch (RuleRejectedException ex)
             {
@@ -80,7 +80,7 @@ internal static class SessionRuleEndpoints
             {
                 var grant = RulePromotionGrant.FromAuthenticatedRequest(
                     id, http, RuleCallJson.Text(body, "acknowledgement"), DateTime.UtcNow);
-                return Results.Json(new { rule = Project(store.Promote(id, grant, DateTime.UtcNow)) });
+                return Results.Json(new { rule = SessionRuleWire.Project(store.Promote(id, grant, DateTime.UtcNow)) });
             }
             catch (RuleRejectedException ex)
             {
@@ -95,90 +95,7 @@ internal static class SessionRuleEndpoints
 
         // THE RECORD, which is the product: every firing of one rule, newest first.
         app.MapGet("/gateway/rules/{id:guid}/firings", (Guid id) =>
-            Results.Json(new { firings = store.FiringsFor(id).Select(Project).ToList() }));
+            Results.Json(new { firings = store.FiringsFor(id).Select(SessionRuleWire.Project).ToList() }));
     }
 
-    private static object Project(SessionRule r) => new
-    {
-        id = r.Id,
-        instruction = r.Instruction,
-        screenDescription = r.ScreenDescription,
-        triggerWords = r.TriggerWords,
-        checks = r.Calls.Select(c => c.Describe()).ToList(),
-        scope = new { agent = r.Scope.Agent, repository = r.Scope.Repository, machine = r.Scope.Machine, mission = r.Scope.Mission },
-        cooldownSeconds = r.CooldownSeconds,
-        dailyCap = r.DailyCap,
-        state = RuleWireNames.ToWireName(r.State.ToString()),
-        createdUtc = r.CreatedUtc,
-        updatedUtc = r.UpdatedUtc,
-    };
-
-    private static object Project(SessionRuleFiring f) => new
-    {
-        id = f.Id,
-        ruleId = f.RuleId,
-        sessionId = f.SessionId,
-        occurredUtc = f.OccurredUtc,
-        screenText = f.ScreenText,
-        understanding = f.Understanding,
-        decision = f.Decision,
-        reason = f.Reason,
-        checksRun = f.PrimitiveRuns.Select(p => new { name = p.Name, arguments = p.Arguments, answer = p.Answer }).ToList(),
-        typedText = f.TypedText,
-        outcome = f.Outcome,
-    };
-
-    /// <summary>
-    /// The scope, which has to be SAID. An absent scope used to become "every session" - the widest value
-    /// there is - so the wire could not tell a deliberate choice from an omission, and malformed authoring
-    /// output would have been read as permission to act on everything. Now: the string "all-sessions" is
-    /// the explicit way to say every session, an object naming at least one part is a narrower scope, and
-    /// anything else is null, which the store refuses with a reason.
-    /// </summary>
-    private static RuleScope? ReadScope(JsonElement body)
-    {
-        if (!body.TryGetProperty("scope", out var scope)) return null;
-
-        if (scope.ValueKind == JsonValueKind.String)
-            return string.Equals(scope.GetString()?.Trim(), AllSessionsWireValue, StringComparison.OrdinalIgnoreCase)
-                ? RuleScope.AllSessions
-                : null;
-
-        if (scope.ValueKind != JsonValueKind.Object) return null;
-
-        var built = new RuleScope(
-            RuleCallJson.Text(scope, "agent"),
-            RuleCallJson.Text(scope, "repository"),
-            RuleCallJson.Text(scope, "machine"),
-            RuleCallJson.Text(scope, "mission"));
-
-        // An object with nothing in it is not a choice of "all sessions"; it is the same omission wearing
-        // a pair of braces.
-        return built == RuleScope.AllSessions ? null : built;
-    }
-
-    /// <summary>How a caller says "every session" out loud.</summary>
-    private const string AllSessionsWireValue = "all-sessions";
-
-    private static IReadOnlyList<string> Strings(JsonElement body, string name)
-    {
-        if (!body.TryGetProperty(name, out var array) || array.ValueKind != JsonValueKind.Array)
-            return Array.Empty<string>();
-        return array.EnumerateArray().Select(RuleCallJson.Scalar).ToList();
-    }
-
-    /// <summary>The checks, read by the SAME reader the agent's reply goes through - one meaning of a check
-    /// written as JSON in this feature, not two.</summary>
-    private static IReadOnlyList<RulePrimitiveCall> Calls(JsonElement body)
-    {
-        if (!body.TryGetProperty("checks", out var array) || array.ValueKind != JsonValueKind.Array)
-            return Array.Empty<RulePrimitiveCall>();
-        return array.EnumerateArray()
-            .Where(e => e.ValueKind == JsonValueKind.Object)
-            .Select(RuleCallJson.ReadCall)
-            .ToList();
-    }
-
-    private static int Number(JsonElement body, string name) =>
-        body.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.Number ? value.GetInt32() : 0;
 }
