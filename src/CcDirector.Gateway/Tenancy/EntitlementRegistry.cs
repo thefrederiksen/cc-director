@@ -188,8 +188,36 @@ public sealed class EntitlementRegistry
             return new EntitlementDecision(EntitlementOutcome.Unknown, null);
         }
 
-        // The trial read succeeded and no trial covers this account. The paid answer stands, whatever it was -
-        // a NotEntitled refusal, or an Unknown that must still be retried rather than refused.
+        // BOTH READS SUCCEEDED, AND NEITHER GRANTS. This is the FREE plan, and it is the one branch here that
+        // is a grant rather than a refusal.
+        //
+        // WHY A REFUSAL BECAME A GRANT. Until now this returned the paid NotEntitled, and that answer travelled:
+        // enrolment refused with a 402 and minted nothing, and - worse - an account that already held a tenant
+        // was REVOKED, its device credentials tombstoned and its connections dropped. So the end of a trial did
+        // not quieten the product, it broke the machine. A member who had connected four computers watched all
+        // four fall off on day fifteen. The owner's decision (2026-09-02) is that a lapsed trial lands on a free
+        // plan instead: the sessions keep running, and only the artificial-intelligence features go quiet.
+        //
+        // THIS DOES NOT GIVE ANYTHING AWAY THAT COSTS US A MODEL. Free is a TIER like any other, so what it
+        // grants is decided in the one table that owns that question - see EntitlementScopes, where free carries
+        // the hosted-gateway scope and NONE of the three artificial-intelligence scopes. Returning Entitled here
+        // is therefore not "entitled to everything"; it is "entitled to whatever free grants", which is
+        // orchestration and nothing else.
+        //
+        // THE TRIAL IS NOT SHORT-CIRCUITED BY THIS. A brand-new account reaches this line too, and if it were
+        // simply enrolled on free it would never be handed the fourteen days it is owed. The grant lives at the
+        // enrolment door rather than here, and that door reads the free tier as "no paid entitlement" exactly as
+        // it used to read NotEntitled - see HostedEnrollmentEndpoint. Anything that learns to act on this
+        // outcome must make the same distinction: Entitled-on-free is NOT a paying account.
+        if (paid.Outcome == EntitlementOutcome.NotEntitled)
+        {
+            FileLog.Write("[EntitlementRegistry] Evaluate: ENTITLED on the FREE plan (no paid entitlement and no running trial; orchestration only - no artificial-intelligence scopes)");
+            return new EntitlementDecision(EntitlementOutcome.Entitled, TierFree);
+        }
+
+        // The PAID read FAILED. Ignorance is still never a verdict, and it is not downgraded to free either: we
+        // cannot tell a lapsed account from a paying one whose row we could not read, and quietly serving the
+        // paying one a plan without its artificial intelligence is a silent wrong answer. Retry.
         return paid;
     }
 
@@ -306,6 +334,30 @@ public sealed class EntitlementRegistry
 
     /// <summary>The pro plan tier.</summary>
     public const string TierPro = "pro";
+
+    /// <summary>
+    /// The FREE plan tier: hosted gateway capacity and nothing else. It is what an account holds when it has no
+    /// paid row and no running trial, and it is the reason the end of a trial is a downgrade rather than a
+    /// cutoff (owner decision, 2026-09-02).
+    ///
+    /// It is a real tier and not a null, absence, or sentinel, deliberately. Every capability question in this
+    /// Gateway is answered by asking <see cref="EntitlementScopes"/> what a TIER grants; a free plan expressed
+    /// as "no tier" would have to be special-cased at each of those call sites, and a call site that forgot
+    /// would fail in the granting direction. As a tier string it flows through the same allowlist as every
+    /// other plan and is refused everything it is not explicitly given.
+    ///
+    /// The payment side never writes this value - there is no free row in Stripe - so it originates here and
+    /// only here. It nonetheless carries no period end, because a free plan has no paid period to expire.
+    /// </summary>
+    public const string TierFree = "free";
+
+    /// <summary>
+    /// Is this the free plan? Asked wherever code needs "this account is entitled, but it is not PAYING" - the
+    /// distinction the enrolment door makes before handing out a trial. Stated once so no call site re-derives
+    /// it by comparing strings.
+    /// </summary>
+    public static bool IsFree(string? tier) =>
+        string.Equals((tier ?? "").Trim(), TierFree, StringComparison.Ordinal);
 
     /// <summary>
     /// Where a member goes to subscribe. Stated ONCE so every refusal the Gateway writes points at the same
