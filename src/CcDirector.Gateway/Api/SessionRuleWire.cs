@@ -37,8 +37,15 @@ internal static class SessionRuleWire
         // first real use, and this is the only place the account can find out who that person was. It was
         // stored and not delivered, which for a reader is the same as not existing.
         promotedBy = r.PromotedBy,
+        // AND WHAT THEY SAID THEY WERE AGREEING TO (fix round D, ruling D5). The record shows the agreement,
+        // not only the actor.
+        acknowledgement = r.Acknowledgement,
         createdUtc = r.CreatedUtc,
         updatedUtc = r.UpdatedUtc,
+        // THE FINISHED LABELS, stamped here so no client composes product meaning for itself (fix round
+        // D, ruling D8; repository rule 7). A client renders these strings verbatim.
+        scopeLabel = RuleLabels.Scope(r.Scope),
+        waitLabel = RuleLabels.Wait(r.CooldownSeconds),
     };
 
     /// <summary>One firing, as the account reads it. The record is the product, so this is the shape in
@@ -129,8 +136,35 @@ internal static class SessionRuleWire
         return calls;
     }
 
-    internal static int Number(JsonElement body, string name) =>
-        body.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.Number ? value.GetInt32() : 0;
+    /// <summary>
+    /// A ceiling as written. Absent is zero, which the store refuses with its own sentence about the
+    /// ceiling having to be said. Present and not a whole number in range is REFUSED WITH A SENTENCE (fix
+    /// round D, ruling D7): this used to call the 32-bit accessor on any JSON number, so a decimal or an
+    /// out-of-range integer threw past the route's catch and became a server error with the reason lost.
+    /// </summary>
+    /// <exception cref="RuleRejectedException">The field is present and cannot be read as a whole number
+    /// in range; the reason names the field and the value.</exception>
+    internal static int Number(JsonElement body, string name)
+    {
+        if (!TryNumber(body, name, out var value, out var problem)) throw new RuleRejectedException(problem!);
+        return value;
+    }
+
+    /// <summary>
+    /// Read a ceiling without throwing: true with the value (zero when absent), or false with a sentence
+    /// naming the field and what was written. The draft reader uses this so a malformed model answer is a
+    /// stated refusal and never an exception.
+    /// </summary>
+    internal static bool TryNumber(JsonElement body, string name, out int value, out string? problem)
+    {
+        value = 0;
+        problem = null;
+        if (body.ValueKind != JsonValueKind.Object || !body.TryGetProperty(name, out var written)) return true;
+        if (written.ValueKind == JsonValueKind.Number && written.TryGetInt32(out value)) return true;
+        problem = "\"" + name + "\" has to be a whole number between " + int.MinValue + " and " + int.MaxValue +
+                  ", and it was written as " + written.GetRawText() + ".";
+        return false;
+    }
 
     // ---- authoring by conversation ------------------------------------------------------------------
 
@@ -148,15 +182,24 @@ internal static class SessionRuleWire
     {
         readBack = proposal.ReadBack,
         rule = WriteBody(proposal),
-        // The screen it was made from, returned so the page can show what the rule was checked against.
-        // Every trigger word above was verified to appear in THIS text before the rule was offered.
+        // The EXACT excerpt it was made from, returned so the page can show what the rule was checked
+        // against. Every trigger word above was verified to appear in THIS text before the rule was
+        // offered, and the write route will check them again against a fresh read of the same session.
         exampleScreen = proposal.ExampleScreen,
+        // The finished labels for the unstored rule, so the page renders the same words for a proposal as
+        // the list renders for a stored rule (ruling D8).
+        scopeLabel = RuleLabels.Scope(proposal.Scope),
+        waitLabel = RuleLabels.Wait(proposal.CooldownSeconds),
     };
 
-    /// <summary>The drafted rule written the way a caller writes one.</summary>
+    /// <summary>The drafted rule written the way a caller writes one. It carries the session it was
+    /// grounded in and whether the account said every agent, because the write route needs both to run
+    /// the same grounding again (ruling D2) - so posting it back unchanged is enough.</summary>
     internal static object WriteBody(RuleProposal proposal) => new
     {
         instruction = proposal.Instruction,
+        sessionId = proposal.SessionId,
+        allAgents = proposal.AllAgents,
         screenDescription = proposal.ScreenDescription,
         triggerWords = proposal.TriggerWords,
         checks = proposal.Calls.Select(AsWritten).ToList(),
@@ -203,6 +246,12 @@ internal static class SessionRuleWire
         if (!string.IsNullOrWhiteSpace(scope.Mission)) parts["mission"] = scope.Mission;
         return parts;
     }
+
+    /// <summary>A flag in the body, true only when it is written as JSON true.</summary>
+    internal static bool Flag(JsonElement body, string name) =>
+        body.ValueKind == JsonValueKind.Object
+        && body.TryGetProperty(name, out var value)
+        && value.ValueKind == JsonValueKind.True;
 
     /// <summary>
     /// The conversation so far. A turn that does not say who said it is read as the PERSON, because the

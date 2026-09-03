@@ -30,7 +30,9 @@ public sealed record RuleScope(string? Agent, string? Repository, string? Machin
 /// One standing instruction, as read back out of the store. <see cref="Instruction"/> is the authority -
 /// the sentence the account said - and everything else was derived from it. <see cref="PromotedBy"/> is
 /// who moved it out of dry run, and it is empty for exactly as long as the rule is in dry run - a live rule
-/// can always say which person made it live.
+/// can always say which person made it live. <see cref="Acknowledgement"/> is what that person said they
+/// were agreeing to when they did, kept verbatim (fix round D, ruling D5): a record that cannot show what
+/// was agreed to is not a record of an agreement.
 /// </summary>
 public sealed record SessionRule(
     Guid Id,
@@ -44,7 +46,8 @@ public sealed record SessionRule(
     RuleState State,
     string PromotedBy,
     DateTime CreatedUtc,
-    DateTime UpdatedUtc);
+    DateTime UpdatedUtc,
+    string Acknowledgement = "");
 
 /// <summary>One verified check that ran during a firing: which one, with what arguments, what it said.</summary>
 public sealed record RulePrimitiveRun(string Name, string Arguments, string Answer);

@@ -2418,6 +2418,64 @@ public sealed class GatewayHost : IAsyncDisposable
             brainProvider: WingmanBrainAsync,
             enterTenantScope: tenant => _tenantBoundary.EnterScope(tenant));
 
+    /// <summary>
+    /// The authoring model, asked DIRECTLY rather than through the evaluator's AskAgentAsync. That looks
+    /// like duplication and is not: the evaluator's seam swallows every failure into "no answer", which is
+    /// right for an unattended pass nobody is waiting on, and wrong here - a person IS waiting, and being
+    /// told "the model gave no answer" after sixty seconds of silence hides the one fact they need, which
+    /// is that it ran out of time and trying again usually works. RuleAuthor classifies the failure, so it
+    /// has to be able to see it.
+    /// </summary>
+    private async Task<string?> AskTheAuthoringModelAsync(TenantId tenant, string prompt, CancellationToken ct)
+    {
+        using var brain = await WingmanBrainAsync(tenant, Core.Configuration.WingmanModelRole.Thinking, ct)
+            .ConfigureAwait(false);
+        var answer = await brain.AskAsync(prompt, ct).ConfigureAwait(false);
+        return answer?.Text;
+    }
+
+    /// <summary>
+    /// The screen a rule is written against, READ BY THE GATEWAY (fix round D, ruling D2): the session is
+    /// located on the pushed roster IN THE CALLER'S TENANT, its owning Director is resolved in that same
+    /// tenant, the screen is read through the evaluator's own read, and the agent and machine are the
+    /// roster's facts about the session. Nothing here is taken from the request. A session that is not on
+    /// the roster, or whose machine is not connected, is a stated refusal - unreadable is not evidence.
+    /// </summary>
+    private async Task<Rules.RuleScreenResult> ReadRuleScreenAsync(TenantId tenant, string sessionId, CancellationToken ct)
+    {
+        var located = PushedSessions.TryLocate(tenant, sessionId, _streamStaleAfter + Api.GatewayEndpoints.LocateGrace);
+        if (located is null)
+        {
+            FileLog.Write($"[GatewayHost] rule screen: session {sessionId} is not on this tenant's roster");
+            return Rules.RuleScreenResult.Refused(
+                $"session {sessionId} is not on this account's roster, so its screen cannot be read and no " +
+                "rule can be written against it.");
+        }
+
+        var (directorId, session) = located.Value;
+        var rows = await BuildRuleEnvironment().ReadScreenRowsAsync(tenant, directorId, sessionId, ct).ConfigureAwait(false);
+        if (rows is null)
+        {
+            FileLog.Write($"[GatewayHost] rule screen: session {sessionId} on director {directorId} could not be read");
+            return Rules.RuleScreenResult.Refused(
+                $"the screen of session {sessionId} could not be read - the machine running it may not be " +
+                "connected - and unreadable is not evidence.");
+        }
+
+        return Rules.RuleScreenResult.Read(new Rules.RuleScreenReading(
+            sessionId,
+            new Rules.RuleSessionOrigin(session.Agent ?? "", session.MachineName ?? ""),
+            string.Join("\n", rows.Select(r => (r ?? "").TrimEnd()))));
+    }
+
+    /// <summary>TEST SEAM: stands in for the authoring model. Null in production.</summary>
+    internal Func<TenantId, string, CancellationToken, Task<string?>>? RuleAuthoringAskForTests { get; set; }
+
+    /// <summary>TEST SEAM: stands in for the roster and the tunnel read of a session's screen. Null in
+    /// production. A hosted test keys its fake by tenant, which is what lets the cross-tenant probe run
+    /// the draft route over HTTP.</summary>
+    internal Rules.RuleScreenReader? RuleScreenReaderForTests { get; set; }
+
     private Supervision.GatewaySupervisorEnvironment BuildSupervisorEnvironment()
     {
         var notify = new Core.Account.AccountNotifyClient(new HttpClient { Timeout = TimeSpan.FromSeconds(30) });
@@ -3435,14 +3493,13 @@ public sealed class GatewayHost : IAsyncDisposable
         // being told "the model gave no answer" after sixty seconds of silence hides the one fact they
         // need, which is that it ran out of time and trying again usually works. RuleAuthor classifies
         // the failure, so it has to be able to see it.
+        // THE SCREEN A RULE IS WRITTEN AGAINST IS READ HERE, in the caller's tenant, through the same
+        // tunnel read the evaluator uses - never accepted from the request (fix round D, ruling D2). The
+        // two seams below are resolved at CALL time so a hosted test can stand in a fake model and a fake
+        // roster and drive the draft route over real HTTP with two real tenants.
         var ruleAuthor = new Rules.RuleAuthor(
-            async (tenant, prompt, ct) =>
-            {
-                using var brain = await WingmanBrainAsync(tenant, Core.Configuration.WingmanModelRole.Thinking, ct)
-                    .ConfigureAwait(false);
-                var answer = await brain.AskAsync(prompt, ct).ConfigureAwait(false);
-                return answer?.Text;
-            });
+            (tenant, prompt, ct) => (RuleAuthoringAskForTests ?? AskTheAuthoringModelAsync)(tenant, prompt, ct),
+            (tenant, sessionId, ct) => (RuleScreenReaderForTests ?? ReadRuleScreenAsync)(tenant, sessionId, ct));
         Api.SessionRuleEndpoints.Map(_app, _sessionRules, ruleAuthor, () => _tenantContext.Current);
 
         // Workflow runs (phase 4, issue #1771): the outcome spine's REST surface. One row per

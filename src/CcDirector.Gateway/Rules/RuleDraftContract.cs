@@ -34,11 +34,13 @@ public sealed record RuleDraftTurn(string Who, string Text);
 /// The session a captured screen came from - the two facts the engine already holds about every session
 /// that change what a screen MEANS. A usage-limit notice on Claude Code reads "Claude usage limit
 /// reached"; on Codex or Gemini it reads something else, so a rule's trigger words are agent-specific
-/// whether anyone says so or not. Empty means the rule was written from memory, with no session.
+/// whether anyone says so or not. Since fix round D these come from the roster row the Gateway holds for
+/// the session, never from the caller; an origin that names no agent is REFUSED, because there is then no
+/// fact to pin the agent scope to and the model must never choose it.
 /// </summary>
 public sealed record RuleSessionOrigin(string Agent, string Machine)
 {
-    /// <summary>No session: the rule is being described from memory.</summary>
+    /// <summary>No agent known. Authoring refuses rather than letting the model choose the scope.</summary>
     public static RuleSessionOrigin None { get; } = new("", "");
 
     /// <summary>Whether a real session is known.</summary>
@@ -53,8 +55,16 @@ public sealed record RuleSessionOrigin(string Agent, string Machine)
 /// rewrite of it would make the authority a paraphrase. Everything else here is derived from those words
 /// and is checked against the same gate that guards the store before this record is ever handed back.
 /// </summary>
+/// <param name="SessionId">The session whose screen the rule was grounded in. Carried in the write body,
+/// so the write route can read that session's screen again and run the same check (ruling D2).</param>
+/// <param name="AllAgents">The account said this rule is for every agent - the star. Carried in the write
+/// body so the write route can hold the agent scope to the same choice.</param>
+/// <param name="ExampleScreen">The EXACT excerpt the model was shown and every trigger word was checked
+/// against - <see cref="RuleScreenReading.Excerpt"/>, not a second reading of the screen.</param>
 public sealed record RuleProposal(
     string Instruction,
+    string SessionId,
+    bool AllAgents,
     string ExampleScreen,
     string ScreenDescription,
     IReadOnlyList<string> TriggerWords,
@@ -119,15 +129,15 @@ public static class RuleDraftContract
     /// Build the question that turns what the account said into a rule: what a rule is made of, the
     /// conversation so far, the checks that exist, and the exact shape of the answer.
     /// </summary>
-    /// <exception cref="ArgumentNullException">The registry is null.</exception>
+    /// <exception cref="ArgumentNullException">The registry or the screen is null.</exception>
     /// <param name="turns">The conversation so far.</param>
     /// <param name="registry">The checks this build ships.</param>
-    /// <param name="exampleScreen">The REAL screen the account captured, or empty when they wrote the rule
-    /// without one. When it is present the trigger words are read off it rather than imagined - see the
-    /// note on this type.</param>
-    /// <param name="origin">The session the screen came from, when there is one. The model is told which
-    /// agent it is looking at so its words fit THAT agent's screens, and told that the agent scope is
-    /// already decided - see <paramref name="allAgents"/>.</param>
+    /// <param name="screen">The REAL screen, read by the Gateway from the session the rule is about. There
+    /// is no overload without one: authoring from memory is not a mode (fix round D, ruling D2). The
+    /// trigger words are read off <see cref="RuleScreenReading.Excerpt"/>, which is also the exact text the
+    /// grounding check runs against. The model is told which agent it is looking at so its words fit THAT
+    /// agent's screens, and told that the agent scope is already decided - see
+    /// <paramref name="allAgents"/>.</param>
     /// <param name="allAgents">The account said this rule is for every agent (the star). Otherwise a rule
     /// written against a session is for that session's agent alone, which is the default the owner set:
     /// trigger words are agent-specific, so a rule that claims every agent with one agent's words silently
@@ -135,12 +145,12 @@ public static class RuleDraftContract
     public static string BuildDraftPrompt(
         IReadOnlyList<RuleDraftTurn> turns,
         RulePrimitiveRegistry registry,
-        string exampleScreen = "",
-        RuleSessionOrigin? origin = null,
+        RuleScreenReading screen,
         bool allAgents = false)
     {
         if (registry is null) throw new ArgumentNullException(nameof(registry));
-        origin ??= RuleSessionOrigin.None;
+        if (screen is null) throw new ArgumentNullException(nameof(screen));
+        var origin = screen.Origin;
 
         var sb = new StringBuilder();
         sb.AppendLine("Somebody is telling you what they want their coding sessions to do without them. Turn");
@@ -172,38 +182,35 @@ public static class RuleDraftContract
         sb.AppendLine("--- end of what has been said ---");
         sb.AppendLine();
 
-        // THE REAL SCREEN, WHEN THERE IS ONE. Without it the model is guessing what the screen will say,
-        // and it guesses plausibly and wrongly: asked about a provider outage with no screen, a live model
+        // THE REAL SCREEN, ALWAYS. Without it the model is guessing what the screen will say, and it
+        // guesses plausibly and wrongly: asked about a provider outage with no screen, a live model
         // proposed ECONNREFUSED, ETIMEDOUT and 429 as the words to watch for - reasonable-sounding strings
         // that a coding agent's screen may never print. A rule whose trigger words are not on the screen
-        // never fires, and looks perfectly good sitting in the list.
-        var screen = (exampleScreen ?? "").Trim();
-        if (screen.Length > 0)
+        // never fires, and looks perfectly good sitting in the list. The excerpt below is the EXACT text
+        // the grounding check in Read runs against - the same string, produced once.
+        sb.AppendLine("This is the screen of a real session, read just now. It is an EXAMPLE of the situation");
+        sb.AppendLine("they mean.");
+        if (origin.IsKnown)
         {
-            sb.AppendLine("They captured this screen from a real session. It is an EXAMPLE of the situation");
-            sb.AppendLine("they mean.");
-            if (origin.IsKnown)
-            {
-                // WHICH AGENT, said plainly. The same trouble prints different words on different agents,
-                // so a model that does not know which one it is looking at cannot know which words are
-                // this agent's and which are universal.
-                sb.AppendLine($"The session is running the agent {origin.Agent}" +
-                              (string.IsNullOrWhiteSpace(origin.Machine) ? "." : $" on the machine {origin.Machine}."));
-                sb.AppendLine(allAgents
-                    ? "They said this rule is for EVERY agent, so choose words that any agent's screen would show."
-                    : $"This rule is for {origin.Agent} sessions only - that is already decided, do not put an agent in " +
-                      "the scope yourself. Choose words as they appear on THIS agent's screens.");
-            }
-            sb.AppendLine();
-            sb.AppendLine("--- the screen they captured ---");
-            foreach (var line in Tail(screen)) sb.AppendLine(line);
-            sb.AppendLine("--- end of the captured screen ---");
-            sb.AppendLine();
-            sb.AppendLine("TAKE THE TRIGGER WORDS FROM THIS SCREEN, word for word. Every one has to appear on");
-            sb.AppendLine("it exactly as written above - do not invent likely-looking error strings, and do not");
-            sb.AppendLine("tidy the spelling or the case. Choose words that would NOT be on an ordinary screen.");
-            sb.AppendLine();
+            // WHICH AGENT, said plainly. The same trouble prints different words on different agents,
+            // so a model that does not know which one it is looking at cannot know which words are
+            // this agent's and which are universal.
+            sb.AppendLine($"The session is running the agent {origin.Agent}" +
+                          (string.IsNullOrWhiteSpace(origin.Machine) ? "." : $" on the machine {origin.Machine}."));
+            sb.AppendLine(allAgents
+                ? "They said this rule is for EVERY agent, so choose words that any agent's screen would show."
+                : $"This rule is for {origin.Agent} sessions only - that is already decided, do not put an agent in " +
+                  "the scope yourself. Choose words as they appear on THIS agent's screens.");
         }
+        sb.AppendLine();
+        sb.AppendLine("--- the screen they captured ---");
+        sb.AppendLine(screen.Excerpt);
+        sb.AppendLine("--- end of the captured screen ---");
+        sb.AppendLine();
+        sb.AppendLine("TAKE THE TRIGGER WORDS FROM THIS SCREEN, word for word. Every one has to appear on");
+        sb.AppendLine("it exactly as written above - do not invent likely-looking error strings, and do not");
+        sb.AppendLine("tidy the spelling or the case. Choose words that would NOT be on an ordinary screen.");
+        sb.AppendLine();
 
         sb.AppendLine("You may ask for any of these checks to be run when the rule fires. They are the ONLY checks");
         sb.AppendLine("that exist; you cannot write code and you cannot invent one. Ask for a check only when its");
@@ -219,9 +226,10 @@ public static class RuleDraftContract
         sb.AppendLine();
 
         sb.AppendLine("The two ceilings are what stop a rule that is wrong from being wrong forever, so each has to");
-        sb.AppendLine("be a real number greater than zero, chosen for THIS instruction. The cooldown is also the");
-        sb.AppendLine("waiting: an instruction that should leave something alone for a while and then try again is");
-        sb.AppendLine("an instruction with a long cooldown.");
+        sb.AppendLine("be a whole number chosen for THIS instruction, within these bounds: the cooldown is");
+        sb.AppendLine(RuleCeilings.CooldownStated + ", and the daily cap is " + RuleCeilings.DailyCapStated + ".");
+        sb.AppendLine("The cooldown is also the waiting: an instruction that should leave something alone for a");
+        sb.AppendLine("while and then try again is an instruction with a long cooldown.");
         sb.AppendLine();
 
         sb.AppendLine("Answer with JSON and nothing else, in exactly this shape:");
@@ -246,17 +254,20 @@ public static class RuleDraftContract
     /// <param name="raw">What the model said.</param>
     /// <param name="instruction">The account's own words, which become the rule's instruction unchanged.</param>
     /// <param name="registry">The checks this build ships.</param>
-    /// <exception cref="ArgumentNullException">The registry is null.</exception>
+    /// <param name="screen">The screen the model was shown. Every trigger word is checked against ITS
+    /// excerpt - the same string the prompt carried - and the agent scope is pinned to ITS origin.</param>
+    /// <param name="allAgents">The account said every agent (the star).</param>
+    /// <exception cref="ArgumentNullException">The registry or the screen is null.</exception>
     public static RuleDraftReading Read(
         string? raw,
         string instruction,
         RulePrimitiveRegistry registry,
-        string exampleScreen = "",
-        RuleSessionOrigin? origin = null,
+        RuleScreenReading screen,
         bool allAgents = false)
     {
         if (registry is null) throw new ArgumentNullException(nameof(registry));
-        origin ??= RuleSessionOrigin.None;
+        if (screen is null) throw new ArgumentNullException(nameof(screen));
+        var origin = screen.Origin;
 
         if (string.IsNullOrWhiteSpace(raw))
             return RuleDraftReading.Refused(
@@ -323,12 +334,17 @@ public static class RuleDraftContract
                     "the drafted rule does not say which sessions it may act on. Every session is a choice " +
                     "that can be made, but it has to be said, so nothing was drafted.");
 
-            // THE AGENT PART OF THE SCOPE IS OURS TO DECIDE, NOT THE MODEL'S. When the screen came from a
-            // known session, the rule is for that session's agent unless the account said "every agent" -
-            // whatever the model wrote. It is a fact we hold, so asking a model to guess it and then
-            // checking the guess would be the long way round to the same answer with a failure mode added.
-            if (origin.IsKnown)
-                scope = scope with { Agent = allAgents ? null : origin.Agent };
+            // THE AGENT PART OF THE SCOPE IS OURS TO DECIDE, NEVER THE MODEL'S (fix round D, ruling D3).
+            // The rule is for the session's agent unless the account said "every agent" - whatever the
+            // model wrote. It is a fact we hold, so asking a model to guess it and then checking the guess
+            // would be the long way round to the same answer with a failure mode added. And when the fact
+            // is NOT held there is nothing to pin it to, so the answer is refused: an originless answer
+            // used to let the model's own scope stand, which was every agent chosen by the answer.
+            if (!origin.IsKnown)
+                return RuleDraftReading.Refused(
+                    "the session this rule is about does not say which agent it runs, so there is no fact " +
+                    "to scope the rule to and the model is never allowed to choose that. Nothing was drafted.");
+            scope = scope with { Agent = allAgents ? null : origin.Agent };
 
             // A PROPOSAL NOBODY CAN READ IS NOT A PROPOSAL. The read-back is the whole point of this step:
             // it is what the person confirms. A rule offered without one would be asking somebody to agree
@@ -339,36 +355,39 @@ public static class RuleDraftContract
                     "the drafted rule does not say what it would actually do, and a rule you cannot read " +
                     "back is a rule you cannot agree to. Nothing was drafted.");
 
-            var triggerWords = SessionRuleWire.Strings(root, "trigger_words");
+            // THE WORDS, IN THE FORM THE STORE WILL KEEP THEM. One normaliser, shared with the store, so the
+            // word that is checked below is the word that is stored later - not a padded one checked
+            // narrow and stored wide.
+            var triggerWords = RuleTriggerWords.NormaliseAll(SessionRuleWire.Strings(root, "trigger_words"));
 
-            // THE WORDS HAVE TO BE ON THE SCREEN THEY WERE TAKEN FROM. This is the whole value of
-            // capturing one: a word that is not on the example is a word the model invented, and a rule
-            // whose trigger words never appear is a rule that sits in the list looking correct and never
-            // fires once. Refusing here is cheap; discovering it at 3am is not.
-            var screenToCheck = (exampleScreen ?? "").Trim();
-            if (screenToCheck.Length > 0)
-            {
-                var invented = triggerWords
-                    .Where(w => !string.IsNullOrWhiteSpace(w))
-                    .Where(w => !screenToCheck.Contains(w, StringComparison.OrdinalIgnoreCase))
-                    .ToList();
-                if (invented.Count > 0)
-                    return RuleDraftReading.Refused(
-                        "the drafted rule watches for words that are not on the screen you captured: " +
-                        string.Join(", ", invented.Select(w => "\"" + w + "\"")) + ". A rule only ever " +
-                        "looks at a screen, so a word that is not there is a rule that never fires. " +
-                        "Nothing was drafted.");
-            }
+            // THE WORDS HAVE TO BE ON THE SCREEN THEY WERE TAKEN FROM - and "the screen" is the excerpt the
+            // prompt carried, not a longer reading of the same text. A word that is not on it is a word
+            // the model invented, and a rule whose trigger words never appear is a rule that sits in the
+            // list looking correct and never fires once. Refusing here is cheap; discovering it at 3am is
+            // not. The same function runs again at the write gate.
+            var notGrounded = RuleTriggerWords.WhyNotGrounded(triggerWords, screen, "the screen you captured");
+            if (notGrounded is not null)
+                return RuleDraftReading.Refused("the drafted " + notGrounded + " Nothing was drafted.");
+
+            // A NUMBER THAT CANNOT BE READ IS A REFUSAL, NEVER AN EXCEPTION (fix round D, ruling D7). A
+            // decimal or an out-of-range integer used to throw past every catch and come out as a server
+            // error with the reason lost.
+            if (!SessionRuleWire.TryNumber(root, "cooldown_seconds", out var cooldown, out var cooldownProblem))
+                return RuleDraftReading.Refused("the drafted rule's ceiling cannot be read: " + cooldownProblem);
+            if (!SessionRuleWire.TryNumber(root, "daily_cap", out var dailyCap, out var capProblem))
+                return RuleDraftReading.Refused("the drafted rule's ceiling cannot be read: " + capProblem);
 
             return RuleDraftReading.Proposed(new RuleProposal(
                 Instruction: instruction ?? "",
-                ExampleScreen: screenToCheck,
+                SessionId: screen.SessionId,
+                AllAgents: allAgents,
+                ExampleScreen: screen.Excerpt,
                 ScreenDescription: (RuleCallJson.Text(root, "screen_description") ?? "").Trim(),
                 TriggerWords: triggerWords,
                 Calls: checks,
                 Scope: scope,
-                CooldownSeconds: SessionRuleWire.Number(root, "cooldown_seconds"),
-                DailyCap: SessionRuleWire.Number(root, "daily_cap"),
+                CooldownSeconds: cooldown,
+                DailyCap: dailyCap,
                 ReadBack: readBack));
         }
     }
@@ -384,17 +403,6 @@ public static class RuleDraftContract
         var end = raw.LastIndexOf('}');
         if (start < 0 || end <= start) return null;
         return raw[start..(end + 1)];
-    }
-
-    /// <summary>The last lines of a captured screen. A whole scrollback would bury the instruction in
-    /// text that has nothing to do with it; the tail is where a session's own state is printed.</summary>
-    private static IReadOnlyList<string> Tail(string screen, int lines = 40)
-    {
-        var rows = screen.ReplaceLineEndings("\n").Split('\n')
-            .Select(r => r.TrimEnd())
-            .Where(r => r.Length > 0)
-            .ToList();
-        return rows.Count <= lines ? rows : rows.GetRange(rows.Count - lines, lines);
     }
 
     private static string Shorten(string? value)

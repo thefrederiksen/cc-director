@@ -1013,6 +1013,10 @@ namespace CcDirector.Gateway.Migrations.Postgres.Migrations
                     b.Property<Guid>("Id")
                         .HasColumnType("uuid");
 
+                    b.Property<string>("Acknowledgement")
+                        .IsRequired()
+                        .HasColumnType("text");
+
                     b.Property<int>("CooldownSeconds")
                         .HasColumnType("integer");
 

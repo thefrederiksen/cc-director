@@ -73,10 +73,9 @@ public sealed class SessionRuleStore : IRuleReading
 
         var sentence = (instruction ?? "").Trim();
         var description = (screenDescription ?? "").Trim();
-        var words = (triggerWords ?? Array.Empty<string>())
-            .Select(w => (w ?? "").Trim())
-            .Where(w => w.Length > 0)
-            .ToList();
+        // THE ONE NORMALISER. The draft reader checks a word in exactly this form and the store keeps it in
+        // exactly this form, because both call the same function (fix round D, ruling D2).
+        var words = RuleTriggerWords.NormaliseAll(triggerWords).ToList();
         var theCalls = (calls ?? Array.Empty<RulePrimitiveCall>()).ToList();
 
         // A MISSING SCOPE IS NOT "EVERY SESSION". Scope is a real safety bound, and turning an omission
@@ -193,6 +192,9 @@ public sealed class SessionRuleStore : IRuleReading
 
             entity.State = LiveValue;
             entity.PromotedBy = grant.Actor;
+            // AND WHAT THEY SAID THEY WERE AGREEING TO, verbatim (fix round D, ruling D5). The grant always
+            // carried it; the record used to drop it, while claiming to show it.
+            entity.Acknowledgement = grant.Acknowledgement;
             entity.UpdatedUtc = nowUtc.ToUniversalTime();
             // Tell the write gate that THIS context carries a promotion a person asked for. Without it the
             // gate refuses a rule moving to live, which is what closes the route straight through the
@@ -391,7 +393,8 @@ public sealed class SessionRuleStore : IRuleReading
         StateOf(e.State),
         e.PromotedBy,
         e.CreatedUtc,
-        e.UpdatedUtc);
+        e.UpdatedUtc,
+        e.Acknowledgement);
 
     private static SessionRuleFiring ToRecord(SessionRuleFiringEntity e) => new(
         e.Id,
