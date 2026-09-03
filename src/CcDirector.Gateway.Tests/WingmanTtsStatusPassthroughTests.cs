@@ -85,6 +85,10 @@ public sealed class WingmanTtsStatusPassthroughTests
             // self-host boundary: built over the SingleTenantContext, it always resolves Local.
             new CcDirector.Gateway.Tenancy.HostedTenantBoundary(
                 new CcDirector.Core.Tenancy.SingleTenantContext(), new CcDirector.Gateway.Pairing.DeviceRegistry()),
+            // The screen reader is required and non-nullable for the same reason (Terminal Rules, issue
+            // #2644). Nothing here reads a screen; it is over the settings database this harness already
+            // opens and already disposes.
+            Screens.TestScreenReader.Over(settingsData.Open()),
             ttsHttpClient: new HttpClient(upstream) { Timeout = Timeout.InfiniteTimeSpan },
             // The stall test proves a never-answering upstream becomes 504 rather than 502. What is under
             // test is WHICH status comes back, not how long the Gateway is willing to wait - so the deadline

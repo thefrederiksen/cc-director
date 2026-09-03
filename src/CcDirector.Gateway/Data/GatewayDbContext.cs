@@ -160,6 +160,12 @@ public sealed class GatewayDbContext : DbContext
     /// watermark, and the per-session facts a history read needs.</summary>
     public DbSet<SessionTurnHeadEntity> SessionTurnHeads => Set<SessionTurnHeadEntity>();
 
+    /// <summary>The stored terminal screens (<c>session_screens</c>): one row per turn-end screen a Director
+    /// pushed, the Terminal Rules mission's source for every Gateway screen read. A SEPARATE store from
+    /// <see cref="SessionTurns"/> - a different source, a bulkier row, and a seven-day retention rather than
+    /// ninety.</summary>
+    public DbSet<SessionScreenEntity> SessionScreens => Set<SessionScreenEntity>();
+
     /// <summary>Per-tenant setting overrides (<c>tenant_settings</c>, issue #2017) - the per-tenant home the
     /// AI / voice / car-mode / notification settings needed before they could be served on the hosted Gateway.
     /// Tenant-scoped: an absent row means "no override" and the typed resolver returns the operator global
@@ -505,6 +511,30 @@ public sealed class GatewayDbContext : DbContext
             // Hello asks "every session this Director has pushed"; retention cuts on updated-at.
             b.HasIndex(e => new { e.TenantId, e.DirectorId });
             b.HasIndex(e => new { e.TenantId, e.UpdatedAtUtc });
+        });
+
+        modelBuilder.Entity<SessionScreenEntity>(b =>
+        {
+            b.ToTable("session_screens");
+            // COMPOSITE primary key led by tenant_id, the session_turns reasoning exactly: the session id and
+            // the capture time both arrive on the push stream from the Director, so a key that did not lead
+            // with the tenant would let one tenant squat another's rows. This key is also what makes a
+            // re-sent push idempotent - the same Director's same capture cannot be stored twice - and what
+            // answers "the newest screen for this session" without a second index.
+            //
+            // THE DIRECTOR IS PART OF THE KEY (inspection 01, finding 3). It is the last component so the
+            // (tenant, session, captured-at) prefix still answers "this session's captures, newest first"
+            // directly. Without it, two Directors that captured the same session id in the same millisecond
+            // collided and the second row was silently answered "already stored" - a same-tenant ownership
+            // defect. A row also has to be able to NAME its owner for a reader to compare it with anything,
+            // and a key that does not carry the Director cannot make that comparison meaningful.
+            b.HasKey(e => new { e.TenantId, e.SessionId, e.CapturedAtUtc, e.DirectorId });
+            b.Property(e => e.SessionId).HasMaxLength(64);
+            b.Property(e => e.DirectorId).HasMaxLength(64);
+            b.Property(e => e.ActivityState).HasMaxLength(32);
+            b.Property(e => e.Agent).HasMaxLength(32);
+            // Retention cuts on received-at, tenant-leading for the global filter.
+            b.HasIndex(e => new { e.TenantId, e.ReceivedAtUtc });
         });
 
         modelBuilder.Entity<SessionHistoryEntity>(b =>
@@ -883,6 +913,7 @@ public sealed class GatewayDbContext : DbContext
         ApplyTenantScope<SessionHistoryRollupEntity>(modelBuilder);
         ApplyTenantScope<SessionTurnEntity>(modelBuilder);
         ApplyTenantScope<SessionTurnHeadEntity>(modelBuilder);
+        ApplyTenantScope<SessionScreenEntity>(modelBuilder);
 
         ApplyCommonSubsetConventions(modelBuilder);
 
@@ -940,6 +971,16 @@ public sealed class GatewayDbContext : DbContext
             modelBuilder.Entity<SessionTurnHeadEntity>().Property(e => e.SessionId).UseCollation("C");
             modelBuilder.Entity<SessionTurnHeadEntity>().Property(e => e.Generation).UseCollation("C");
             modelBuilder.Entity<SessionHistoryRollupEntity>().Property(e => e.RepoKey).UseCollation("C");
+            // session_screens.SessionId is a caller-supplied natural-key string in a composite primary key
+            // (the Terminal Rules mission, issue #2644) - the same shape as session_spend, session_history
+            // and session_turns above, and the same requirement. The store's idempotency rests on that key:
+            // the same session and capture time must be ONE row. Without this the two providers would not
+            // agree on what "the same" means, so a re-sent capture could store twice on the hosted Gateway
+            // and once on a local install.
+            modelBuilder.Entity<SessionScreenEntity>().Property(e => e.SessionId).UseCollation("C");
+            // DirectorId joined that primary key with inspection 01's finding 3, so it is a caller-supplied
+            // natural-key string under exactly the same rule and gets the same explicit collation.
+            modelBuilder.Entity<SessionScreenEntity>().Property(e => e.DirectorId).UseCollation("C");
             // Known-repository lookups use these normalized values as exact indexed predicates. Pin both
             // to byte-ordinal equality so SQLite and Postgres select the same bounded candidate set.
             modelBuilder.Entity<KnownRepositoryEntity>().Property(e => e.MachineKey).UseCollation("C");

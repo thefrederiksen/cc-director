@@ -107,6 +107,8 @@ public sealed class RepositoriesEndpointServeFoldTests
         var instancesDirectory = Path.Combine(Path.GetTempPath(), "cc-repofold-" + Guid.NewGuid().ToString("N"));
         WebApplication? app = null;
         DirectorRegistry? registry = null;
+        // The screen reader Map now requires; disposed with the host below.
+        Screens.TestScreenReader? screens = null;
         var started = false;
         try
         {
@@ -125,6 +127,7 @@ public sealed class RepositoriesEndpointServeFoldTests
                 // resolves Local - behaviour identical to the null it used to state.
                 tenantBoundary: new CcDirector.Gateway.Tenancy.HostedTenantBoundary(
                     new CcDirector.Core.Tenancy.SingleTenantContext(), new CcDirector.Gateway.Pairing.DeviceRegistry()),
+                screens: (screens = new Screens.TestScreenReader()).Reader,
                 pushedRepositories: store);
             await app.StartAsync();
             var port = BoundPort.Of(app);
@@ -141,6 +144,7 @@ public sealed class RepositoriesEndpointServeFoldTests
                 await app.DisposeAsync();
             }
             registry?.Dispose();
+            screens?.Dispose();
         }
     }
 }

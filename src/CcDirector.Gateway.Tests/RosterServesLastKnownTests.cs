@@ -381,6 +381,9 @@ public sealed class RosterServesLastKnownTests
         var instancesDirectory = Path.Combine(Path.GetTempPath(), "cc-roster-lastknown-" + Guid.NewGuid().ToString("N"));
         WebApplication? app = null;
         DirectorRegistry? registry = null;
+        // The screen reader Map now requires, over the SAME pushed store the roster is served from, so the
+        // reader would read the very snapshots this harness drives. Disposed with the host below.
+        Screens.TestScreenReader? screens = null;
         var started = false;
         try
         {
@@ -403,6 +406,7 @@ public sealed class RosterServesLastKnownTests
                 // resolves Local - behaviour identical to the null it used to state.
                 tenantBoundary: new CcDirector.Gateway.Tenancy.HostedTenantBoundary(
                     new CcDirector.Core.Tenancy.SingleTenantContext(), new CcDirector.Gateway.Pairing.DeviceRegistry()),
+                screens: (screens = new Screens.TestScreenReader(store)).Reader,
                 owners: owners,
                 pushedSessions: store,
                 streamStaleAfter: StaleAfter,
@@ -424,6 +428,7 @@ public sealed class RosterServesLastKnownTests
                 await app.DisposeAsync();
             }
             registry?.Dispose();
+            screens?.Dispose();
             try { if (Directory.Exists(instancesDirectory)) Directory.Delete(instancesDirectory, true); }
             catch { /* best effort */ }
         }

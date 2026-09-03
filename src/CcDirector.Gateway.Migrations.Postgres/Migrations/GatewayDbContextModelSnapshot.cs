@@ -1008,6 +1008,69 @@ namespace CcDirector.Gateway.Migrations.Postgres.Migrations
                     b.ToTable("session_keys", "gateway");
                 });
 
+            modelBuilder.Entity("CcDirector.Gateway.Data.Entities.SessionScreenEntity", b =>
+                {
+                    b.Property<string>("TenantId")
+                        .HasColumnType("text")
+                        .HasColumnName("tenant_id");
+
+                    b.Property<string>("SessionId")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .UseCollation("C");
+
+                    b.Property<DateTime>("CapturedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("DirectorId")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .UseCollation("C");
+
+                    b.Property<string>("ActivityState")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
+                    b.Property<string>("Agent")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
+                    b.Property<long>("BufferBytes")
+                        .HasColumnType("bigint");
+
+                    b.Property<int>("CursorCol")
+                        .HasColumnType("integer");
+
+                    b.Property<int>("CursorRow")
+                        .HasColumnType("integer");
+
+                    b.Property<bool>("CursorVisible")
+                        .HasColumnType("boolean");
+
+                    b.Property<bool>("HasGrid")
+                        .HasColumnType("boolean");
+
+                    b.Property<bool>("IsAlternateScreen")
+                        .HasColumnType("boolean");
+
+                    b.Property<DateTime>("ReceivedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("RowsJson")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.HasKey("TenantId", "SessionId", "CapturedAtUtc", "DirectorId");
+
+                    b.HasIndex("TenantId");
+
+                    b.HasIndex("TenantId", "ReceivedAtUtc");
+
+                    b.ToTable("session_screens", "gateway");
+                });
+
             modelBuilder.Entity("CcDirector.Gateway.Data.Entities.SessionSpendEntity", b =>
                 {
                     b.Property<string>("TenantId")

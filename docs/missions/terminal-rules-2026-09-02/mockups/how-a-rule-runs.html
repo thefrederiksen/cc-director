@@ -1,0 +1,219 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>How a rule is made and how it runs, v2</title>
+<style>
+  :root{
+    --bg:#0b1020; --surface:#141a2e; --surface-2:#1b2238; --border:#28304a;
+    --text:#e6e9f2; --dim:#99a0b8; --accent:#3b82f6; --ok:#34d399; --warn:#f59e0b;
+    --attn:#f14c4c; --code:#0a0f1e;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:#05070f;color:var(--text);
+    font:14.5px/1.62 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
+  .wrap{max-width:1000px;margin:0 auto;padding:30px 24px 70px}
+  h1{font-size:23px;margin:0 0 6px}
+  .lede{color:var(--dim);margin:0 0 22px;max-width:76ch}
+  h2{font-size:17px;margin:36px 0 6px;padding-top:20px;border-top:1px solid var(--border)}
+  h2:first-of-type{border-top:0;padding-top:0}
+  .sub{color:var(--dim);margin:0 0 16px;max-width:78ch}
+  p{max-width:80ch}
+  .card{background:var(--surface);border:1px solid var(--border);border-radius:9px;
+    padding:16px 19px;margin:0 0 13px}
+  .card h3{margin:0 0 5px;font-size:14.5px}
+  .card p{margin:0;color:var(--dim);font-size:13.5px}
+  code{background:var(--code);border:1px solid var(--border);border-radius:4px;padding:1px 6px;
+    font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:12.5px}
+  .step{display:grid;grid-template-columns:118px 1fr;gap:16px;align-items:start}
+  .who{padding:13px 0 0}
+  .tag{display:inline-block;padding:3px 9px;border-radius:5px;font-size:11px;font-weight:600;
+    letter-spacing:.03em;white-space:nowrap}
+  .tag.code{background:rgba(59,130,246,.15);color:#93c0fb;border:1px solid rgba(59,130,246,.45)}
+  .tag.agent{background:rgba(245,158,11,.14);color:#f6c86a;border:1px solid rgba(245,158,11,.45)}
+  .body{background:var(--surface);border:1px solid var(--border);border-radius:9px;
+    padding:13px 17px;margin-bottom:9px}
+  .body b{display:block;margin-bottom:3px}
+  .body span{color:var(--dim);font-size:13.5px}
+  .arrow{grid-column:2;color:var(--dim);font-size:18px;margin:-4px 0 5px 18px}
+  .stop{border-color:rgba(52,211,153,.4);background:rgba(52,211,153,.07)}
+  .stop b{color:var(--ok)}
+  .act{border-color:rgba(241,76,76,.4);background:rgba(241,76,76,.07)}
+  .box{border-radius:9px;padding:15px 19px;margin:14px 0}
+  .box h3{margin:0 0 6px;font-size:14.5px}
+  .box p{margin:0 0 8px;font-size:13.5px} .box p:last-child{margin:0}
+  .box.warn{border:1px solid rgba(245,158,11,.45);background:rgba(245,158,11,.07)}
+  .box.warn h3{color:#f6c86a}
+  .box.ok{border:1px solid rgba(52,211,153,.45);background:rgba(52,211,153,.07)}
+  .box.ok h3{color:#7fe3bd}
+  .box.bad{border:1px solid rgba(241,76,76,.45);background:rgba(241,76,76,.08)}
+  .box.bad h3{color:#f79a9a}
+  ul{padding-left:20px;max-width:80ch} ul li{margin-bottom:7px;color:var(--dim)}
+  ul li b{color:var(--text)}
+  .was{color:var(--dim);font-size:13px;border-left:2px solid var(--border);padding-left:13px;
+    margin:10px 0 14px;max-width:76ch}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>How a rule is made, and how it actually runs</h1>
+<p class="lede">Version 2, after the owner's redesign. A rule is a standing instruction you give in
+English, that an agent works out and then carries out. Proposal - none of it is built.</p>
+
+<h2>What changed, and why version 1 was wrong</h2>
+<p class="was"><b>Version 1:</b> you wrote a matching description, you chose the trigger words, and
+you picked an action from a dropdown of six. A model was used for one narrow thing - deciding which
+of your rules a screen matched - and was explicitly forbidden from composing what to type.</p>
+
+<div class="box bad">
+  <h3>The part that was not just rigid but dishonest</h3>
+  <p>Version 1 said: "only things a person could have typed into that session - there is no way to
+     run a command of your own", as if the six-item list were a safety boundary.</p>
+  <p><b>It never was.</b> Typing into a coding agent is already unbounded - the session does whatever
+     the typed text asks it to. The dropdown bought the appearance of a limit and none of the
+     substance. A design whose safety story is false is worse than one that states the real bound,
+     because people trust it.</p>
+</div>
+
+<h2>Making a rule</h2>
+<p class="sub">You say it. It works out the rest and shows you, in your words, before saving.</p>
+
+<div class="step">
+  <div class="who"><span class="tag agent">AGENT</span></div>
+  <div class="body"><b>1. You say what you want, in English</b>
+    <span>"If it asks permission to touch something inside the repo it is working in, say yes.
+    Anything outside that, leave it and wake me."</span></div>
+</div>
+<div class="arrow">&darr;</div>
+<div class="step">
+  <div class="who"><span class="tag agent">AGENT</span></div>
+  <div class="body"><b>2. It works out what you meant, and asks when it matters</b>
+    <span>Not a parser. It reads the instruction the way a colleague would, and comes back on the
+    genuinely ambiguous parts - "if it wants to run a command rather than touch a file, same rule?"
+    Guessing here is how a rule ends up doing something you did not ask for.</span></div>
+</div>
+<div class="arrow">&darr;</div>
+<div class="step">
+  <div class="who"><span class="tag agent">AGENT</span></div>
+  <div class="body"><b>3. It builds the cheap trigger for you</b>
+    <span>The words that must be on screen before the rule is even considered -
+    <code>permission</code>, <code>Do you want to</code>, <code>allow</code>. You never think about
+    this; it is engineering, and it is what keeps the rule free on the thousands of screens that are
+    nothing to do with it.</span></div>
+</div>
+<div class="arrow">&darr;</div>
+<div class="step">
+  <div class="who"><span class="tag code">CODE</span></div>
+  <div class="body"><b>4. Saved in dry run, in your own words</b>
+    <span>The rule is stored as the sentence you said, plus what the agent derived from it. Your
+    sentence stays the authority - the derived parts are working notes and can be rebuilt.</span></div>
+</div>
+
+<h2>Running a rule</h2>
+<p class="sub">This happens when a session STOPS - the moment it goes from working to waiting. Not
+continuously, not mid-turn.</p>
+
+<div class="step">
+  <div class="who"><span class="tag code">CODE</span></div>
+  <div class="body"><b>1. A session stops. Its screen is stored.</b>
+    <span>The thing phase 0 built. No rule involved yet.</span></div>
+</div>
+<div class="arrow">&darr;</div>
+<div class="step">
+  <div class="who"><span class="tag code">CODE</span></div>
+  <div class="body"><b>2. Cheap checks first, all free</b>
+    <span>Has the screen changed? Is the session idle? Is this rule in scope for it? Has it already
+    fired here, or hit its ceiling? Do any of its trigger words appear? Any "no" stops here.</span></div>
+</div>
+<div class="arrow">&darr;</div>
+<div class="step">
+  <div class="who"><span class="tag code">CODE</span></div>
+  <div class="body stop"><b>Nothing survived. Stop. This is the normal outcome.</b>
+    <span>Free, and it is what happens on almost every turn end.</span></div>
+</div>
+<div class="arrow">&darr;</div>
+<div class="step">
+  <div class="who"><span class="tag agent">AGENT</span></div>
+  <div class="body"><b>3. The agent reads the screen and your instruction together</b>
+    <span>Does this screen actually call for what you asked? It can decline - "this is a permission
+    prompt but for a path outside the repo, so your rule says leave it". Declining is a real outcome
+    and gets recorded like any other.</span></div>
+</div>
+<div class="arrow">&darr;</div>
+<div class="step">
+  <div class="who"><span class="tag agent">AGENT</span></div>
+  <div class="body"><b>4. It works out what to do - it is not choosing from a list</b>
+    <span>The action is derived from your instruction and this particular screen. Where something
+    deterministic is the right tool - parsing a path, comparing it to the repo root, reading a reset
+    time - it writes and runs that as a small piece of code rather than eyeballing it.</span></div>
+</div>
+<div class="arrow">&darr;</div>
+<div class="step">
+  <div class="who"><span class="tag code">CODE</span></div>
+  <div class="body"><b>5. Look again, right now, before anything is pressed</b>
+    <span>The screen is re-read between the decision and the keystroke. Changed? Abandon. This is the
+    one guard that survives from version 1 unaltered, and it is the one that stops a key landing in
+    something that moved.</span></div>
+</div>
+<div class="arrow">&darr;</div>
+<div class="step">
+  <div class="who"><span class="tag code">CODE</span></div>
+  <div class="body act"><b>6. It types, and records everything</b>
+    <span>The screen it saw, what it understood, what it decided and why, what it typed, and what
+    happened next. In dry run it stops one step earlier and records what it would have done.</span></div>
+</div>
+
+<h2>So what actually bounds it?</h2>
+<p class="sub">The honest answer, since the action list is not a bound and never was.</p>
+
+<div class="box ok">
+  <h3>Six real limits</h3>
+  <p><b>1. Scope.</b> A rule only ever touches sessions you chose - this agent, this repo, this
+     machine, this mission. Enforced in code, not judgement.</p>
+  <p><b>2. Dry run first, always.</b> A new rule reports and types nothing until you promote it. This
+     is the big one: it puts you between the instruction and its first real use.</p>
+  <p><b>3. A ceiling.</b> A cooldown and a daily cap, per rule per session, both required. An agent
+     in a loop is the worst tail risk there is, and the cap is what makes it finite.</p>
+  <p><b>4. Idle only, and re-read before acting.</b></p>
+  <p><b>5. A full record of every firing</b> - kept, readable, and the reason it is safe to leave
+     running overnight.</p>
+  <p><b>6. Your instruction is the authority.</b> The agent carries out what you wrote. It does not
+     invent goals, widen its own scope, edit its own rule, or write new rules.</p>
+</div>
+
+<div class="box warn">
+  <h3>Limit 6 is the one that would decay quietly</h3>
+  <p>The others fail loudly - a scope bug sends a keystroke somewhere visible, a ceiling bug shows up
+     as a burst. An agent gradually doing a bit more than it was told looks like an agent being
+     helpful, right up until it does not.</p>
+  <p>So that is the one the tests are written against: given an instruction and a screen it does not
+     cover, the agent declines and records why. A rule that never declines has not been shown to have
+     a boundary.</p>
+</div>
+
+<h2>What this does not change</h2>
+<ul>
+  <li><b>The screen is still the only input.</b> Your ruling. Waiting time, spend and machine state
+      stay deferred.</li>
+  <li><b>Dictation is untouched.</b> The rule that your spoken words reach the agent unaltered is
+      absolute and has nothing to do with this. That rule exists so YOUR words are not rewritten; a
+      rule here is an instruction you gave on purpose, and carrying it out is the whole job.</li>
+  <li><b>Nothing runs on your machine.</b> This is the Gateway, in C#, with the agent called from
+      there.</li>
+</ul>
+
+<h2>Still open</h2>
+<ul>
+  <li><b>A middle state between dry run and live</b> - it acts, but only after you tap a
+      notification. Probably worth having.</li>
+  <li><b>"Carry on with what you were doing"</b> may be two instructions, not one: recovering a
+      session and resuming its work are different acts.</li>
+  <li><b>Undo.</b> Some actions cannot be taken back. The record says what happened; it does not
+      reverse it, and that gap deserves a real answer.</li>
+</ul>
+
+</div>
+</body>
+</html>

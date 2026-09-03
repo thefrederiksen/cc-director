@@ -987,6 +987,67 @@ namespace CcDirector.Gateway.Data.Migrations
                     b.ToTable("session_keys", (string)null);
                 });
 
+            modelBuilder.Entity("CcDirector.Gateway.Data.Entities.SessionScreenEntity", b =>
+                {
+                    b.Property<string>("TenantId")
+                        .HasColumnType("TEXT")
+                        .HasColumnName("tenant_id");
+
+                    b.Property<string>("SessionId")
+                        .HasMaxLength(64)
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTime>("CapturedAtUtc")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("DirectorId")
+                        .HasMaxLength(64)
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("ActivityState")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Agent")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("TEXT");
+
+                    b.Property<long>("BufferBytes")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int>("CursorCol")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int>("CursorRow")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<bool>("CursorVisible")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<bool>("HasGrid")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<bool>("IsAlternateScreen")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<DateTime>("ReceivedAtUtc")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("RowsJson")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.HasKey("TenantId", "SessionId", "CapturedAtUtc", "DirectorId");
+
+                    b.HasIndex("TenantId");
+
+                    b.HasIndex("TenantId", "ReceivedAtUtc");
+
+                    b.ToTable("session_screens", (string)null);
+                });
+
             modelBuilder.Entity("CcDirector.Gateway.Data.Entities.SessionSpendEntity", b =>
                 {
                     b.Property<string>("TenantId")

@@ -36,6 +36,11 @@ internal sealed class GatewaySupervisorEnvironment : ISupervisorEnvironment
     private readonly Func<string, string, CancellationToken, Task<bool>>? _sendOwnerEmail;
     private readonly Func<DateTime> _nowUtc;
 
+    /// <summary>The Gateway's one screen reader (Terminal Rules, issue #2644). REQUIRED, not optional: the
+    /// supervisor reads a screen before it acts, and a null here would have to mean either "read the tunnel
+    /// anyway" - two answers to one question - or a silent no-op on the one read the funnel turns on.</summary>
+    private readonly Screens.GatewayScreenReader _screens;
+
     private readonly object _emailGate = new();
     private DateOnly _emailDay;
     private int _emailsToday;
@@ -67,6 +72,7 @@ internal sealed class GatewaySupervisorEnvironment : ISupervisorEnvironment
         Func<TenantId, string, SessionVerbClient?> route,
         Func<TenantId, string, string?> activityState,
         Func<TenantId, WingmanModelRole, CancellationToken, Task<IAgentBrain>> brainProvider,
+        Screens.GatewayScreenReader screens,
         ActivityEventStore? ledger = null,
         Func<TenantId, IDisposable>? enterTenantScope = null,
         Func<string, string, CancellationToken, Task<bool>>? sendOwnerEmail = null,
@@ -76,6 +82,7 @@ internal sealed class GatewaySupervisorEnvironment : ISupervisorEnvironment
         _route = route ?? throw new ArgumentNullException(nameof(route));
         _activityState = activityState ?? throw new ArgumentNullException(nameof(activityState));
         _brainProvider = brainProvider ?? throw new ArgumentNullException(nameof(brainProvider));
+        _screens = screens ?? throw new ArgumentNullException(nameof(screens));
         _ledger = ledger;
         _enterTenantScope = enterTenantScope;
         _sendOwnerEmail = sendOwnerEmail;
@@ -93,7 +100,12 @@ internal sealed class GatewaySupervisorEnvironment : ISupervisorEnvironment
         if (route is null) return null;
         try
         {
-            var grid = await route.GetScreenGridAsync(sessionId, ct).ConfigureAwait(false);
+            // Terminal Rules (issue #2644): this is a LIVE read and it always asks the owning Director -
+            // the supervisor may ACT on this answer, and the Gateway's screen store holds turn-end history
+            // rather than live truth. An earlier design served a stored screen here when it believed it was
+            // still current; it could not establish that. See GatewayScreenReader.
+            var read = await _screens.ReadLiveAsync(route, sessionId, ct).ConfigureAwait(false);
+            var grid = read.Grid;
             if (grid is null || !grid.HasGrid) return null;
             return grid.Rows;
         }
@@ -112,7 +124,7 @@ internal sealed class GatewaySupervisorEnvironment : ISupervisorEnvironment
     {
         var route = _route(tenant, directorId);
         if (route is null) return false;    // unreachable is not a menu; the send below will fail honestly
-        return await WaitingScreenReader.IsMenuAsync(route, sessionId, ct).ConfigureAwait(false);
+        return await WaitingScreenReader.IsMenuAsync(_screens, tenant, route, sessionId, ct).ConfigureAwait(false);
     }
 
     /// <inheritdoc />

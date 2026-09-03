@@ -108,6 +108,10 @@ public sealed class OmittedTenantBoundaryFailClosedTests : IAsyncLifetime
     private readonly string _storageRoot =
         Path.Combine(Path.GetTempPath(), "cc-omitted-boundary-" + Guid.NewGuid().ToString("N"));
 
+    /// <summary>The screen reader GatewayEndpoints.Map now requires. It is not what these tests are about -
+    /// the boundary argument is - so one is shared by every host here and disposed with the class.</summary>
+    private readonly Screens.TestScreenReader _screens = new();
+
     private string? _priorHosted;
     private string? _priorRoot;
     private TenantId _tenant;
@@ -130,6 +134,7 @@ public sealed class OmittedTenantBoundaryFailClosedTests : IAsyncLifetime
     {
         Environment.SetEnvironmentVariable("CC_GATEWAY_HOSTED", _priorHosted);
         Environment.SetEnvironmentVariable("CC_DIRECTOR_ROOT", _priorRoot);
+        _screens.Dispose();
         try { if (Directory.Exists(_storageRoot)) Directory.Delete(_storageRoot, true); } catch { /* cleanup */ }
         return Task.CompletedTask;
     }
@@ -149,7 +154,8 @@ public sealed class OmittedTenantBoundaryFailClosedTests : IAsyncLifetime
             DateTime.UtcNow, TenantId.Local);
 
         await using (var unwired = await Host.StartAsync(_tenant,
-            app => GatewayEndpoints.Map(app, unwiredRegistry, "test", "test-token", tenantBoundary: null!)))
+            app => GatewayEndpoints.Map(app, unwiredRegistry, "test", "test-token", tenantBoundary: null!,
+                screens: _screens.Reader)))
         {
             var (status, body) = await Get(unwired.Http, "/directors");
             AssertRefusal(status, body);
@@ -166,7 +172,8 @@ public sealed class OmittedTenantBoundaryFailClosedTests : IAsyncLifetime
             DateTime.UtcNow, _tenant);
 
         await using var wired = await Host.StartAsync(_tenant,
-            app => GatewayEndpoints.Map(app, wiredRegistry, "test", "test-token", tenantBoundary: WiredBoundary()));
+            app => GatewayEndpoints.Map(app, wiredRegistry, "test", "test-token", tenantBoundary: WiredBoundary(),
+                screens: _screens.Reader));
         var (wiredStatus, wiredBody) = await Get(wired.Http, "/directors");
         Assert.Equal(HttpStatusCode.OK, wiredStatus);
         Assert.Contains("own-director", wiredBody, StringComparison.Ordinal);

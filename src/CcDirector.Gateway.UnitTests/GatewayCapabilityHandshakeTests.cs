@@ -124,11 +124,16 @@ public class GatewayCapabilityHandshakeTests
         {
             Version = "1.9.10",
             Commit = "860f76e",
-            HubMethods = new List<string>
-            {
-                "Hello", "RegisterSessionKey", "RevokeSessionKey",
-                "PushSnapshot", "PushDelta", "PushRepoSnapshot", "PushTurns",
-            },
+            // DERIVED from the hub itself, never a parallel list kept by hand. The hand-written version
+            // called a COMPLETE Gateway incomplete the day PushScreen was added, while the
+            // reflection-derived tests above kept passing - and a false alarm is not the harmless
+            // direction: it teaches whoever runs the check to wave the next hit away.
+            //
+            // The HUB is the right source to derive from and MethodsThisDirectorNeeds is the wrong one.
+            // The Director's needs list is the thing under test here, so building the fixture from it
+            // would make this test incapable of failing - both sides of the comparison would filter on
+            // the very property a defect would break.
+            HubMethods = InvokeHelloCapabilities().HubMethods,
         });
 
         Assert.DoesNotContain("MISSING", report, StringComparison.Ordinal);
@@ -157,7 +162,7 @@ public class GatewayCapabilityHandshakeTests
             HubMethods = new List<string>
             {
                 "Hello", "RegisterSessionKey", "RevokeSessionKey",
-                "PushSnapshot", "PushDelta", "PushRepoSnapshot", "PushTurns",
+                "PushSnapshot", "PushDelta", "PushRepoSnapshot", "PushTurns", "PushScreen",
             },
         });
 

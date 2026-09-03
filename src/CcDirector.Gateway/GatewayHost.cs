@@ -640,6 +640,16 @@ public sealed class GatewayHost : IAsyncDisposable
     private readonly History.KnownRepositoryStore _knownRepositories;
     /// <summary>The stored conversation (turn-push mission): what Directors push and every reader reads.</summary>
     private readonly History.SessionTurnStore _sessionTurns;
+
+    /// <summary>The terminal-screen store (the Terminal Rules mission, issue #2644): the turn-end screens
+    /// Directors push, read by every Gateway screen reader through <see cref="ScreenReader"/>.</summary>
+    private readonly Screens.SessionScreenStore _sessionScreens;
+
+    /// <summary>The ONE place the Gateway asks what is on a session's screen - the store for a history
+    /// question; a live one always goes to the owning Director.</summary>
+    internal Screens.GatewayScreenReader ScreenReader { get; }
+
+    private Screens.SessionScreenSweep? _sessionScreenSweep;
     /// <summary>Which Directors told this Gateway they send conversations (turn-push mission, phase 2).</summary>
     private readonly Streaming.TurnPushCapabilityRegistry _turnPushCapabilities = new();
     private readonly History.SessionHistoryRecorder _sessionHistoryRecorder;
@@ -647,6 +657,14 @@ public sealed class GatewayHost : IAsyncDisposable
     private System.Threading.Timer? _sessionHistoryTimer;
     private int _sessionHistorySweepInFlight;
     private static readonly TimeSpan SessionHistorySweepInterval = TimeSpan.FromMinutes(2);
+
+    /// <summary>How often the screen-retention pass runs. Hourly: the cutoff is seven DAYS, so an hour of
+    /// slack on either side of it is invisible, and a screen sweep is a single indexed delete rather than
+    /// the model work the history sweep does.</summary>
+    private static readonly TimeSpan SessionScreenSweepInterval = TimeSpan.FromHours(1);
+    private static readonly TimeSpan SessionScreenSweepStartupDelay = TimeSpan.FromMinutes(3);
+    private System.Threading.Timer? _sessionScreenTimer;
+    private int _sessionScreenSweepInFlight;
     private static readonly TimeSpan SessionHistorySweepStartupDelay = TimeSpan.FromMinutes(1);
 
     // Scheduled-run auto-dismiss (issue #1200): wakes ~every 15s and closes automated runs that declared
@@ -1690,6 +1708,8 @@ public sealed class GatewayHost : IAsyncDisposable
         _sessionHistory = new History.SessionHistoryStore(_gatewayDb);
         _knownRepositories = new History.KnownRepositoryStore(_gatewayDb);
         _sessionTurns = new History.SessionTurnStore(_gatewayDb);
+        _sessionScreens = new Screens.SessionScreenStore(_gatewayDb);
+        ScreenReader = new Screens.GatewayScreenReader(_sessionScreens);
         // The machine name and the Director version are stamped from the CONNECTION record, not
         // from the pushed session: the pushed machine name is hard-coded empty on every client in
         // the field, and the version has never been on the session payload at all. Reading them
@@ -1717,6 +1737,11 @@ public sealed class GatewayHost : IAsyncDisposable
             });
         _sessionHistorySweep = new History.SessionHistorySweep(
             _tenantBoundary, TenantRegistry, _tenantContext, _sessionHistory, _sessionTurns, historySummarizer);
+
+        // Terminal Rules (issue #2644): the screen store's own retention. SEVEN days, not the ninety of
+        // session history, and therefore its own sweep - one sweep running two cutoffs would be a sweep
+        // whose name told a reader the wrong number.
+        _sessionScreenSweep = new Screens.SessionScreenSweep(_tenantBoundary, TenantRegistry, _sessionScreens);
 
         // Web Push (mobile app-icon "needs you" dot): load (or generate on first run) the VAPID key
         // pair and the set of subscribed devices. The notifier that fans out to these is built and
@@ -2374,6 +2399,7 @@ public sealed class GatewayHost : IAsyncDisposable
             activityState: (tenant, sessionId) =>
                 PushedSessions.TryLocate(tenant, sessionId, _streamStaleAfter)?.Session.ActivityState,
             brainProvider: WingmanBrainAsync,
+            screens: ScreenReader,
             ledger: _activityEvents,
             enterTenantScope: tenant => _tenantBoundary.EnterScope(tenant),
             sendOwnerEmail: async (subject, body, ct) =>
@@ -2472,6 +2498,7 @@ public sealed class GatewayHost : IAsyncDisposable
         _voiceService ??= new Wingman.WingmanVoiceService(WingmanBrainAsync, _keyVault, _tenantSettingsResolver,
             instructionsProvider: () => _instructionsStore.ActiveContent,
             sessionTitleResolver: ResolveSessionTitle,
+            screens: ScreenReader,
             // The narration's words now come from the Gateway's own store (turn-push mission, phase 3), not
             // from a tunnel command asking the Director to re-read the user's transcript. See
             // ReadStoredConversation for why the tenant scope is entered there rather than inside the service.
@@ -2648,6 +2675,7 @@ public sealed class GatewayHost : IAsyncDisposable
         // Issue #2194: the work-history recorder, so the SignalR-constructed DirectorHub folds every
         // accepted push into the durable session record (throttled inside the recorder).
         builder.Services.AddSingleton(_sessionHistoryRecorder);
+        builder.Services.AddSingleton(_sessionScreens);
         // The stored conversation (turn-push mission): DirectorHub.PushTurns writes it, Hello reads its watermarks.
         builder.Services.AddSingleton(_sessionTurns);
         // Which Directors say they send conversations - recorded at Hello, read when Chat finds nothing stored.
@@ -2918,6 +2946,8 @@ public sealed class GatewayHost : IAsyncDisposable
             // The auth-boundary tenant binder - REQUIRED (finding CR-7): request-scoped reads resolve the
             // caller's tenant through it, and on hosted a request with no bound tenant is denied, never Local.
             _tenantBoundary,
+            // Terminal Rules (issue #2644): the one screen reader the menu guard on the prompt route turns on.
+            ScreenReader,
             AuthEnabled,
             netDiagRollup: _netDiagRollup,
             // Issue #2017: the snooze-default consumer at POST /sessions/{sid}/hold reads the caller tenant's
@@ -3236,6 +3266,7 @@ public sealed class GatewayHost : IAsyncDisposable
         _voiceService ??= new Wingman.WingmanVoiceService(WingmanBrainAsync, _keyVault, _tenantSettingsResolver,
             instructionsProvider: () => _instructionsStore.ActiveContent,
             sessionTitleResolver: ResolveSessionTitle,
+            screens: ScreenReader,
             // The narration's words now come from the Gateway's own store (turn-push mission, phase 3), not
             // from a tunnel command asking the Director to re-read the user's transcript. See
             // ReadStoredConversation for why the tenant scope is entered there rather than inside the service.
@@ -3262,6 +3293,7 @@ public sealed class GatewayHost : IAsyncDisposable
             history: _transcriptionHistory,
             audioArchive: _transcriptionAudioArchive,
             tenantBoundary: _tenantBoundary,
+            screens: ScreenReader,
             transcripts: _transcripts);
 
         // The fleet brain: the tool-calling loop behind POST /assistant/turn. The chat transport resolves the
@@ -3801,6 +3833,11 @@ public sealed class GatewayHost : IAsyncDisposable
             SessionHistorySweepStartupDelay, SessionHistorySweepInterval);
         FileLog.Write($"[GatewayHost] session history sweep started: every {SessionHistorySweepInterval.TotalMinutes:0}m, interrupted after {History.SessionHistorySweep.InterruptedThreshold.TotalMinutes:0}m of silence, retention {History.SessionHistorySweep.Retention.TotalDays:0} days");
 
+        // Terminal Rules (issue #2644): the screen store's own retention pass, seven days.
+        _sessionScreenTimer = new System.Threading.Timer(_ => SweepSessionScreens(), null,
+            SessionScreenSweepStartupDelay, SessionScreenSweepInterval);
+        FileLog.Write($"[GatewayHost] session screen sweep started: every {SessionScreenSweepInterval.TotalHours:0}h, retention {Screens.SessionScreenSweep.Retention.TotalDays:0} days");
+
         // MTR-15 cancellation cutoff: the hosted active-tenant entitlement sweep. Forces a fresh entitlement
         // read for every tenant with a live lease every ~60s and revokes any that has become NotEntitled, so a
         // cancelled tenant loses access within roughly one sweep cycle (never past the paid period end).
@@ -4336,6 +4373,34 @@ public sealed class GatewayHost : IAsyncDisposable
         }
     }
 
+    /// <summary>
+    /// The screen-retention timer callback (Terminal Rules, issue #2644) - a boundary: it owns the overlap
+    /// guard and the try/catch so a sweep failure never crashes the timer thread.
+    /// </summary>
+    private void SweepSessionScreens()
+    {
+        if (Interlocked.CompareExchange(ref _sessionScreenSweepInFlight, 1, 0) != 0)
+            return;
+        _ = RunSessionScreenSweepAsync();
+    }
+
+    private async Task RunSessionScreenSweepAsync()
+    {
+        try
+        {
+            if (_sessionScreenSweep is not null)
+                await _sessionScreenSweep.SweepAsync(CancellationToken.None).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[GatewayHost] session screen sweep FAILED: {ex.Message}");
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _sessionScreenSweepInFlight, 0);
+        }
+    }
+
     private void SweepEntitlementLeases()
     {
         // Skip this tick if the previous entitlement sweep is still running (many active tenants). One at a
@@ -4542,6 +4607,8 @@ public sealed class GatewayHost : IAsyncDisposable
         try { _suggestionSweepTimer?.Dispose(); } catch (Exception ex) { FileLog.Write($"[GatewayHost] dictionary-suggestion timer dispose error: {ex.Message}"); }
         try { _sessionHistoryTimer?.Dispose(); } catch (Exception ex) { FileLog.Write($"[GatewayHost] session history timer dispose error: {ex.Message}"); }
         _sessionHistoryTimer = null;
+        try { _sessionScreenTimer?.Dispose(); } catch (Exception ex) { FileLog.Write($"[GatewayHost] session screen timer dispose error: {ex.Message}"); }
+        _sessionScreenTimer = null;
         _activityRetentionTimer = null;
         try { _leaseSweepTimer?.Dispose(); } catch (Exception ex) { FileLog.Write($"[GatewayHost] lease sweep timer dispose error: {ex.Message}"); }
         _leaseSweepTimer = null;

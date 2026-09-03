@@ -4,6 +4,7 @@ using CcDirector.Gateway.Data.Entities;
 using CcDirector.Gateway.Contracts;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Metadata;
 using Npgsql;
 using Xunit;
 
@@ -156,20 +157,159 @@ public sealed class PostgresProviderProofTests
     }
 
     /// <summary>
-    /// Proves the migrations applied an EXPLICIT byte-ordinal collation "C" to exactly the natural-key
-    /// columns the model declares with UseCollation("C") - and to no others. This reads
-    /// pg_attribute.attcollation (the column's DEFINED collation), which is the type-default
-    /// pseudo-collation ("default") for a plain text column and the "C" collation only where the migration
-    /// set COLLATE "C" explicitly - so it distinguishes our explicit collation from the database's default
-    /// collation even if that default happens to be C. Without this, the behavioral ordering test alone
-    /// could pass on a container whose default collation is already C.
+    /// Column names exempt from the byte-ordinal collation requirement WHEREVER they appear, with the
+    /// reason. This and <see cref="CollationExceptions"/> are the only hand-maintained parts of the check,
+    /// and they are the parts that have to be ARGUED FOR - not the part that decides what gets looked at.
+    /// </summary>
+    private static readonly HashSet<string> ExemptColumnNames = new(StringComparer.Ordinal)
+    {
+        // tenant_id leads almost every composite primary key in this schema, and the exemption rests on it
+        // NOT being caller-supplied: every write stamps it from the RESOLVED tenant context, never from a
+        // request body or a push payload, so no two spellings of one tenant id can reach the database and
+        // there is nothing for the two providers to disagree about.
+        //
+        // THE PROOF THAT PREMISE RESTS ON, named here so the exemption is tied to it rather than merely
+        // asserted: OmittedTenantBoundaryFailClosedTests. It replays thirteen surfaces - including
+        // DirectorHub.Hello, which binds the very push stream the screen and turn stores are written
+        // through - against an identical harness differing ONLY in the boundary argument, and proves each
+        // resolver REFUSES rather than defaulting to the shared Local partition when no tenant resolves.
+        //
+        // WHAT THAT DOES NOT ESTABLISH, said rather than glossed: it proves the tenant is RESOLVED and
+        // never defaulted. It does not enumerate every payload field in the product to prove none is ever
+        // read as a tenant id. If an endpoint ever does take one off a payload, this exemption becomes
+        // silently wrong about the tenant-scoping column on a schema where tenant_id leads nearly every
+        // key - so that change is the one that has to come back and delete this entry.
+        "tenant_id",
+    };
+
+    /// <summary>
+    /// Per-table exemptions, for a single column that is a string key somewhere but genuinely does not need
+    /// byte-ordinal agreement. Empty today. An entry here needs a written reason about the VALUE.
+    /// </summary>
+    private static readonly HashSet<(string Table, string Column)> CollationExceptions = new();
+
+    /// <summary>
+    /// INHERITED DEBT, NOT REASONED EXEMPTIONS - and the distinction is the point of keeping them apart.
     ///
-    /// The list below is kept as an EXPLICIT enumeration on purpose: adding a C collation to the model must
-    /// be acknowledged here, so an accidental one is loud. It went stale once (issue #1191) because this
-    /// suite is environment-gated and ran nowhere; it is now part of the routine local gate.
+    /// These string key columns carry no explicit "C" collation and were already in the schema when this
+    /// check was inverted on 2026-09-02. The previous version was an allow-list, so it could not see a
+    /// MISSING collation at all and none of these was ever raised. They are listed here so the check is red
+    /// for anything NEW - which is the direction that matters - without this one change becoming a
+    /// schema-wide edit to five other missions' tables.
+    ///
+    /// EVERY ENTRY IS AN OPEN QUESTION, not a decision. Several look like they should simply be collated:
+    /// workflows.Id and skill_versions.SkillId are slugs of exactly the shape as skills.Id, which IS
+    /// collated. The correct resolution for each is either a UseCollation("C") in the model with its
+    /// migration, or a written reason moved up into <see cref="CollationExceptions"/> - not indefinite
+    /// residence here.
+    ///
+    /// A NEW column may NOT be added to this set. If a change makes this list shorter, delete the entries
+    /// it fixed; if a change would make it longer, that is the check working and the answer is a collation
+    /// or an argued exemption.
+    /// </summary>
+    private static readonly HashSet<(string Table, string Column)> InheritedUncollatedKeyColumns = new()
+    {
+        ("cron_jobs", "CronJobEntityId"),
+        ("cron_jobs", "CronJobEntityTenantId"),
+        ("cron_jobs", "Id"),
+        ("dictation_transcripts", "Id"),
+        // entitlements is the payment side's table, excluded from our migrations - we do not create it, so
+        // we cannot collate it either. This one is arguably a genuine exemption rather than debt, but it is
+        // left here rather than promoted, because promoting it is a claim about somebody else's schema.
+        ("entitlements", "subject"),
+        ("repo_state", "DirectorId"),
+        ("repo_state", "RepoPath"),
+        ("session_keys", "TenantId"),
+        ("skill_placement_state", "AgentKind"),
+        ("skill_placement_state", "DirectorId"),
+        ("skill_versions", "SkillId"),
+        ("workflow_versions", "WorkflowId"),
+        ("workflows", "Id"),
+    };
+
+    /// <summary>
+    /// The other side of the same coin: columns carrying an explicit "C" collation while NOT being a string
+    /// key column derived from the model. An entry here is a collation applied for a reason the model does
+    /// not express, and it records a DECISION - so every entry carries its argument. A column nobody has
+    /// decided about does not belong here; it belongs in
+    /// <see cref="InheritedCollatedNonKeyColumns"/>, which says so.
+    /// </summary>
+    private static readonly HashSet<(string Table, string Column)> CollationExtras = new()
+    {
+        // A LOOKUP column, not a key: a credential is FOUND by its hash, and that lookup is an exact
+        // byte-ordinal match on a value the caller supplies. Getting equality wrong here does not reorder a
+        // list, it authenticates the wrong device or fails to authenticate the right one - so it is
+        // deliberately collated even though the model does not make it a key.
+        ("device_credentials", "DeviceKeyHash"),
+
+        // The turn store's generation digest. It is part of a NON-unique index rather than a key, so the
+        // model-derived enumeration cannot see it, but the store compares it for exact equality on every
+        // push to decide whether a batch belongs to the session's current conversation - the same
+        // byte-ordinal requirement as the key columns beside it.
+        ("session_turn_heads", "Generation"),
+
+        // The trial-extension ledger's subject. Not a key here, but it must group by EXACTLY the value
+        // account_trials.subject is keyed on - and that one IS collated. Two columns holding one identity
+        // have to agree about equality or the ledger silently reports on a different account than the trial
+        // row it is about.
+        ("trial_extensions", "subject"),
+    };
+
+    /// <summary>
+    /// INHERITED, NOT REASONED - the same distinction <see cref="InheritedUncollatedKeyColumns"/> exists
+    /// for, applied to the other direction.
+    ///
+    /// These columns DO carry an explicit "C" collation while not being a string key column the model
+    /// declares, so the reverse comparison below surfaces them. They are NOT in
+    /// <see cref="CollationExtras"/>, and that placement is deliberate: an entry there means somebody
+    /// decided the collation is right for a reason the model cannot express, and nobody here decided
+    /// anything. They arrived on `main` from another mission on 2026-09-02, while this mission was
+    /// replacing this check's hand-written allow-list with a model-derived one, and the two changes met
+    /// for the first time in a merge. The check was met, not consulted.
+    ///
+    /// EVERY ENTRY IS AN OPEN QUESTION. The plausible reading is that they are normalized lookup values
+    /// matched as exact indexed predicates and are collated so the two providers agree on which of them
+    /// are equal - but that is a reading of somebody else's change, and reading it is not deciding it.
+    /// The resolution belongs to whoever owns those columns and is one of: make them part of a unique
+    /// index so the model declares them, move them up into <see cref="CollationExtras"/> with a written
+    /// argument, or drop the collation. Not indefinite residence here.
+    ///
+    /// WHY THIS SET EXISTS AT ALL, rather than an entry in the list above. Recording debt as a reasoned
+    /// exception is the allow-list failure returning in the new list's clothes: it turns "nobody has
+    /// looked at this" into "we looked at this and it is fine", which is precisely the direction that
+    /// made the previous check silent about the thing it existed to catch.
+    ///
+    /// IT IS HAND-KEPT, SO IT IS GUARDED. Every hand-kept list in this file has rotted - the allow-list
+    /// this check replaced went stale twice and sat red on main through two release tags - and a list
+    /// with no guard is silently wrong from the moment one of its entries is fixed properly. Two
+    /// assertions in the proof below fail BY NAME when an entry stops describing reality: when the model
+    /// has since made the column a key column, and when it no longer carries an explicit C collation in
+    /// the live catalog at all. Both were proven by pointing them at an entry that does not hold and
+    /// watching them go red.
+    /// </summary>
+    private static readonly HashSet<(string Table, string Column)> InheritedCollatedNonKeyColumns = new()
+    {
+        // Arrived on main 2026-09-02 with the known-repository search (pull request 2643).
+        ("known_repositories", "MachineKey"),
+        ("known_repositories", "PathKey"),
+    };
+
+    /// <summary>
+    /// Proves that EVERY string key column the model declares carries an explicit byte-ordinal collation
+    /// "C" in the live catalog, and that nothing else does. This reads pg_attribute.attcollation (the
+    /// column's DEFINED collation), which is the type-default pseudo-collation ("default") for a plain text
+    /// column and "C" only where the migration set COLLATE "C" explicitly - so it distinguishes our explicit
+    /// collation from the database's own default even on a container whose default already happens to be C.
+    ///
+    /// The population is DERIVED FROM THE MODEL. It was an allow-list until 2026-09-02, and the direction
+    /// mattered: an allow-list is loud when a collation is ADDED and silent when one is MISSING, which is
+    /// backwards. The list went stale twice, this suite was red on main from 2026-08-05 through the v2.0.0
+    /// and v2.0.1 tags, and a check that cries wolf in the harmless direction stops being read in the
+    /// harmless direction - after which it is simply silent. It then missed a real one:
+    /// session_screens.SessionId shipped with no collation at all and this test could not have said so.
     /// </summary>
     [RequiresPostgresFact]
-    public void Collation_ExplicitC_OnExactlyTheDeclaredNaturalKeys_OnRealPostgres()
+    public void Collation_ExplicitC_OnEveryStringKeyColumnTheModelDeclares_OnRealPostgres()
     {
         EnsureMigrated();
         using var ctx = NewContext();
@@ -186,55 +326,117 @@ public sealed class PostgresProviderProofTests
             "AND col.collname = 'C' " +
             "ORDER BY c.relname, a.attname");
 
-        // One entry per UseCollation("C") declaration in GatewayDbContext, read back from the live catalog.
-        // 27 declarations, 27 columns - verified one-to-one against the model on 2026-09-02, including the
-        // two known-repository lookup columns added after the four
-        // turn-push columns were added (they were added to the model on 1 September and this list was not
-        // updated with them, so the suite was red on main in between - the third time this enumeration has
-        // gone stale, and the third time it did its job).
-        // It went stale a second time between 2026-07-31 and now: the two session_keys columns arrived with
-        // the remove-the-network-port change (#2450) and this list was not updated, so the suite was red on
-        // main from 2026-08-05 and stayed red through the v2.0.0 and v2.0.1 tags. Being environment-gated is
-        // no longer the explanation - this suite runs in the parked gate, which a release is required to run.
-        // The model is the correct side of that disagreement in both cases; this enumeration is the side that
-        // has to be acknowledged, which is exactly what it is for.
-        var expected = new[]
-        {
-            ("account_trials", "subject"),
-            ("device_credentials", "DeviceId"),
-            ("device_credentials", "DeviceKeyHash"),
-            ("device_import_markers", "SourcePath"),
-            ("dictation_suggestion_dismissals", "Term"),
-            ("dictation_suggestion_verdicts", "Term"),
-            ("known_repositories", "MachineKey"),
-            ("known_repositories", "PathKey"),
-            ("mission_notes", "Key"),
-            ("push_subscriptions", "Endpoint"),
-            ("session_history", "SessionId"),
-            ("session_history_rollups", "RepoKey"),
-            ("session_keys", "KeyHash"),
-            ("session_keys", "SessionId"),
-            ("session_spend", "SessionId"),
-            // The stored conversation's natural keys (the turn-push mission): the session id, and the
-            // generation digest that identifies which transcript source a row belongs to. Both are compared
-            // and keyed byte-ordinally, the same reason session_history.SessionId above is pinned.
-            ("session_turn_heads", "Generation"),
-            ("session_turn_heads", "SessionId"),
-            ("session_turns", "Generation"),
-            ("session_turns", "SessionId"),
-            ("skill_tenant_overrides", "SkillId"),
-            ("skills", "Id"),
-            ("snoozes", "SessionId"),
-            ("tenant_settings", "Key"),
-            ("tenants", "AccountSubject"),
-            ("tenants", "Id"),
-            // The administrator trial-extension ledger's subject, pinned to "C" for the same reason
-            // account_trials.subject at the top of this list is: they are the SAME identity, and the ledger
-            // has to group by exactly the value the trial row is keyed on.
-            ("trial_extensions", "subject"),
-            ("workflow_tenant_overrides", "WorkflowId"),
-        };
-        Assert.Equal(expected, withExplicitC.ToArray());
+        // THE POPULATION IS DERIVED FROM THE MODEL, NOT WRITTEN OUT BY HAND, and what stays hand-written
+        // is INVERTED into a short exception list. That inversion is the whole point of this rewrite.
+        //
+        // The old shape was an allow-list: "these columns are checked", so anything absent was simply
+        // unchecked. It was therefore LOUD in the harmless direction (a collation ADDED without updating
+        // the list) and SILENT in the dangerous one (a key column with NO collation at all). This file's
+        // own history records the cost of that: the list went stale twice, and the suite was red on main
+        // from 2026-08-05 through the v2.0.0 and v2.0.1 tags. A check that cries wolf in the harmless
+        // direction gets ignored in the harmless direction - and after that it is just silent. The Terminal
+        // Rules mission's session_screens.SessionId shipped with no collation and this test could not have
+        // said so.
+        //
+        // NATURAL KEY is a property of the MODEL, so it is read off the model: every string property that
+        // participates in a primary key or a unique index. A new key column with no collation and no
+        // written exception is now RED, which is the direction that matters.
+        var required = ctx.Model.GetEntityTypes()
+            .Where(et => et.GetTableName() is not null)
+            .SelectMany(et =>
+            {
+                var table = et.GetTableName()!;
+                var storeObject = StoreObjectIdentifier.Table(table, et.GetSchema());
+                var keyed = new HashSet<IProperty>();
+                foreach (var key in et.GetKeys())
+                    foreach (var prop in key.Properties) keyed.Add(prop);
+                foreach (var index in et.GetIndexes().Where(ix => ix.IsUnique))
+                    foreach (var prop in index.Properties) keyed.Add(prop);
+                return keyed
+                    .Where(prop => prop.ClrType == typeof(string))
+                    .Select(prop => (Table: table, Column: prop.GetColumnName(storeObject) ?? prop.Name));
+            })
+            .Where(pair => !ExemptColumnNames.Contains(pair.Column)
+                           && !CollationExceptions.Contains(pair)
+                           && !InheritedUncollatedKeyColumns.Contains(pair))
+            .Distinct()
+            .OrderBy(pair => pair.Table, StringComparer.Ordinal)
+            .ThenBy(pair => pair.Column, StringComparer.Ordinal)
+            .ToList();
+
+        // An empty derived set would make every assertion below vacuous - a broken instrument reading as a
+        // clean run. This catches ZERO and only zero, though: a derivation that returned three columns
+        // instead of twenty-one would sail straight through it. What catches a PARTIALLY broken derivation
+        // is the reverse comparison further down, so read that one as load-bearing rather than as tidiness.
+        Assert.NotEmpty(required);
+
+        var actual = withExplicitC.ToHashSet();
+        var missing = required.Where(pair => !actual.Contains((pair.Table, pair.Column))).ToList();
+        Assert.True(missing.Count == 0,
+            "these string key columns carry NO explicit C collation, so Postgres would collate them by "
+            + "locale while SQLite compares raw bytes and the two providers would disagree on uniqueness: "
+            + string.Join(", ", missing.Select(m => m.Table + "." + m.Column))
+            + ". Add UseCollation(\"C\") in GatewayDbContext, or add a written exception here saying why not.");
+
+        // THE REVERSE COMPARISON, AND IT IS LOAD-BEARING - do not delete it as redundant. It catches two
+        // different things. The obvious one: a column carrying C that is not a derived key column is an
+        // accident, and an accidental collation should be as loud as a missing one.
+        //
+        // The one that matters more: this is the ONLY thing here that catches a derivation which silently
+        // stopped finding most of what it should. If the enumeration above breaks and returns a handful of
+        // columns instead of all of them, the missing-collation check above still passes on that handful and
+        // Assert.NotEmpty is satisfied - but every column that still carries C in the live catalog and has
+        // dropped out of "required" surfaces HERE, at once. Remove this and a half-broken derivation reads
+        // as a green run.
+        var unexpected = actual
+            .Where(pair => !required.Contains(pair)
+                           && !CollationExtras.Contains(pair)
+                           && !InheritedCollatedNonKeyColumns.Contains(pair))
+            .OrderBy(pair => pair.Item1, StringComparer.Ordinal)
+            .ToList();
+        Assert.True(unexpected.Count == 0,
+            "these columns carry an explicit C collation but are neither a string key column nor a listed "
+            + "exception: " + string.Join(", ", unexpected.Select(u => u.Item1 + "." + u.Item2)));
+
+        // The inherited-debt list is itself hand-kept, so it gets the same treatment as everything else
+        // here: an entry that HAS since been collated must be deleted rather than left, or the list slowly
+        // becomes a place where fixed things are still recorded as broken and nobody trusts it.
+        var fixedSince = InheritedUncollatedKeyColumns.Where(pair => actual.Contains(pair)).ToList();
+        Assert.True(fixedSince.Count == 0,
+            "these columns are listed as inherited debt but now DO carry an explicit C collation - delete "
+            + "them from InheritedUncollatedKeyColumns: "
+            + string.Join(", ", fixedSince.Select(f => f.Table + "." + f.Column)));
+
+        // THE SAME STALENESS GUARD FOR THE OTHER DEBT LIST, and it exists because that list is HAND-KEPT
+        // and every hand-kept list in this file has rotted. The allow-list this check replaced went stale
+        // twice and sat red on main through the v2.0.0 and v2.0.1 tags. A list with no guard is silently
+        // wrong from the moment somebody fixes one of its entries properly, and nothing says so - which is
+        // the exact defect this whole check exists to answer, so shipping a new unguarded list would be
+        // answering it and committing it in the same change.
+        //
+        // Two ways an entry stops describing reality, and each FAILS BY NAME rather than by count.
+        //
+        // One: the model has since made it a key column, so the derived set covers it and the entry is not
+        // debt any more - it is a duplicate that would hide a real regression, because a column listed here
+        // is excluded from the reverse comparison whether or not it deserves to be.
+        var nowDerived = InheritedCollatedNonKeyColumns.Where(pair => required.Contains(pair)).ToList();
+        Assert.True(nowDerived.Count == 0,
+            "these columns are listed as inherited collated non-key columns but the MODEL now declares them "
+            + "as string key columns, so the derived set already covers them - delete them from "
+            + "InheritedCollatedNonKeyColumns: "
+            + string.Join(", ", nowDerived.Select(f => f.Table + "." + f.Column)));
+
+        // Two: it is no longer a collated column in the live catalog at all - the collation was dropped, or
+        // the column was renamed, or the table is gone. Whichever it is, the entry now describes nothing,
+        // and an entry that describes nothing quietly widens the exemption for a name that may come back
+        // later meaning something else.
+        var goneFromCatalog = InheritedCollatedNonKeyColumns.Where(pair => !actual.Contains(pair)).ToList();
+        Assert.True(goneFromCatalog.Count == 0,
+            "these columns are listed as inherited collated non-key columns but no longer carry an explicit "
+            + "C collation in the live catalog - the collation was dropped, or the column or table is gone. "
+            + "Delete them from InheritedCollatedNonKeyColumns: "
+            + string.Join(", ", goneFromCatalog.Select(f => f.Table + "." + f.Column)));
+
 
         // And no gateway column carries any explicit collation OTHER than the default or "C" - nothing
         // unintended slipped in.
@@ -247,6 +449,59 @@ public sealed class PostgresProviderProofTests
             "WHERE n.nspname = 'gateway' AND c.relkind = 'r' AND a.attnum > 0 AND NOT a.attisdropped " +
             "AND col.collname NOT IN ('default', 'C')"));
     }
+
+    /// <summary>
+    /// THE PROPERTY THE BYTE-ORDINAL COLLATION ON session_screens.SessionId BUYS, asserted on REAL Postgres
+    /// rather than inferred from the model: the screen store is idempotent on its natural key, and it draws
+    /// the line between "the same session" and "a different one" in the same place SQLite does.
+    ///
+    /// The store is keyed (tenant, session, captured-at, director) so the SAME Director re-sending a capture
+    /// after a reconnect stores ONE row - and so two Directors capturing one session id at one instant keep
+    /// both, which the key could not express before inspection 01's finding 3. That guarantee is only as
+    /// good as the database agreeing with SQLite about which session ids are equal - which is what
+    /// COLLATE "C" is for, and why this column shipping with no collation was a real defect rather than a
+    /// tidiness one. Both appends below use the SAME Director, so the Director is held constant and the
+    /// session id is the only thing varying.
+    ///
+    /// Two halves, and the second is the one that discriminates. The same id twice must be ONE row - but so
+    /// it would be under any collation, so on its own that says nothing about collation. Two ids differing
+    /// only in CASE must be TWO rows: that is byte-ordinal behaviour, it matches SQLite's BINARY default
+    /// exactly, and it is the answer a case-insensitive collation would get wrong.
+    /// </summary>
+    [RequiresPostgresFact]
+    public void SessionScreens_IdempotentOnTheNaturalKey_AndByteOrdinalAboutIt_OnRealPostgres()
+    {
+        EnsureMigrated();
+        var store = new CcDirector.Gateway.Screens.SessionScreenStore(NewContext);
+        var capturedAt = new DateTime(2026, 9, 2, 11, 0, 0, DateTimeKind.Utc);
+        var lower = "screen-idem-" + Guid.NewGuid().ToString("N");
+        var upper = lower.ToUpperInvariant();
+
+        ScreenPush Push(string sessionId, string row) => new()
+        {
+            SessionId = sessionId,
+            CapturedAtUtc = capturedAt,
+            Rows = new List<string> { row },
+            HasGrid = true,
+            BufferBytes = 10,
+            ActivityState = "WaitingForInput",
+            Agent = "ClaudeCode",
+        };
+
+        // Half one: the same capture twice is ONE row, and the second call SAYS it stored nothing rather
+        // than throwing or silently duplicating.
+        Assert.True(store.Append("d-idem", Push(lower, "first"), DateTime.UtcNow));
+        Assert.False(store.Append("d-idem", Push(lower, "first"), DateTime.UtcNow));
+
+        // Half two, the discriminating one: an id differing only in case is a DIFFERENT session, exactly as
+        // it is under SQLite's BINARY default. A case-insensitive collation would refuse this write as a
+        // duplicate, and then one session's screens would answer another session's reads.
+        Assert.True(store.Append("d-idem", Push(upper, "second"), DateTime.UtcNow));
+
+        Assert.Equal(new[] { "first" }, store.ReadLatest(lower)!.Grid.Rows);
+        Assert.Equal(new[] { "second" }, store.ReadLatest(upper)!.Grid.Rows);
+    }
+
 
     /// <summary>
     /// A JSON-owned-column store: a WorkflowVersion carries Steps and OutcomeCriteria as owned collections

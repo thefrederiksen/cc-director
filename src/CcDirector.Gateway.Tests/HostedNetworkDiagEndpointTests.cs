@@ -131,6 +131,8 @@ public sealed class HostedNetworkDiagEndpointTests
         var instancesDirectory = Path.Combine(Path.GetTempPath(), "cc-netstatus-" + Guid.NewGuid().ToString("N"));
         WebApplication? app = null;
         DirectorRegistry? registry = null;
+        // The screen reader Map now requires; disposed with the host below.
+        Screens.TestScreenReader? screens = null;
         var started = false;
         try
         {
@@ -160,6 +162,7 @@ public sealed class HostedNetworkDiagEndpointTests
                         new CcDirector.Core.Tenancy.AsyncLocalTenantContext(), new CcDirector.Gateway.Pairing.DeviceRegistry())
                     : new CcDirector.Gateway.Tenancy.HostedTenantBoundary(
                         new CcDirector.Core.Tenancy.SingleTenantContext(), new CcDirector.Gateway.Pairing.DeviceRegistry()),
+                screens: (screens = new Screens.TestScreenReader()).Reader,
                 collectNetworkDiagnostic: collectNetworkDiagnostic);
             await app.StartAsync();
             var port = BoundPort.Of(app);
@@ -176,6 +179,7 @@ public sealed class HostedNetworkDiagEndpointTests
                 await app.DisposeAsync();
             }
             registry?.Dispose();
+            screens?.Dispose();
             Environment.SetEnvironmentVariable(GatewayHostedMode.HostedEnvVar, priorHosted);
         }
     }

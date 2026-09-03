@@ -2165,18 +2165,49 @@ public sealed class Session : IDisposable
     /// single lock. Returns empty rows and (-1,-1) with the flags false when there is no grid (an Embedded
     /// session with no server-side parser).
     /// </summary>
-    public (string[] Rows, int CursorRow, int CursorCol, bool CursorVisible, bool IsAlternateScreen) SnapshotLiveScreen()
+    /// <summary>
+    /// <see cref="SnapshotLiveScreen"/> plus the number of terminal bytes THE RETURNED FRAME REFLECTS,
+    /// taken in ONE locked observation - the capture the Terminal Rules mission pushes to the Gateway
+    /// (<c>docs/missions/terminal-rules-2026-09-02/brief.md</c>). The mark describes the frame it came back
+    /// with, and a reader may rely on exactly that and nothing more.
+    ///
+    /// THE MARK IS THE PARSER'S COUNT, NOT THE BUFFER'S, AND THAT IS THE WHOLE POINT (inspection 01,
+    /// finding 2). <see cref="CircularTerminalBuffer.Write"/> increments its own total inside its write
+    /// lock, releases that lock, and only THEN invokes <c>OnBytesWritten</c> - and this session's parser is
+    /// one of those subscribers. So between those two operations the buffer's total has already moved while
+    /// the parser still holds the previous frame. A mark taken from the buffer's total therefore OVERSTATES
+    /// the frame that comes back: it names bytes the returned rows do not reflect. An earlier version of
+    /// this method read the buffer counter first and claimed in this comment that doing so could only ever
+    /// understate the frame; a controlled rendezvous between those two operations showed it returning the
+    /// old frame with the new total, which is the overstatement it said was impossible.
+    ///
+    /// <c>_streamBytesReflected</c> is incremented in the same locked block that feeds both parsers, so
+    /// reading it here - inside that same lock, alongside the rows - makes the mark and the frame ONE
+    /// consistent observation rather than two reads of a moving terminal. It can never exceed the buffer's
+    /// own total, because the parser consumes what the buffer has already accepted.
+    /// </summary>
+    public (string[] Rows, int CursorRow, int CursorCol, bool CursorVisible, bool IsAlternateScreen, long BufferBytes) SnapshotLiveScreenWithBufferMark()
     {
         if (_htmlCells is null || _htmlParser is null)
-            return (System.Array.Empty<string>(), -1, -1, false, false);
+            return (System.Array.Empty<string>(), -1, -1, false, false, 0);
         lock (_htmlParserLock)
         {
             var (rows, cursorRow, cursorCol) = _htmlParser.SnapshotActiveRows();
             // Cursor VISIBILITY is captured in the SAME locked frame as the rows/cursor/alt-screen: it is the
             // discriminator between a text composer (cursor visible) and a drawn Ink menu (cursor hidden, a
-            // stale cursor cell), so it must describe the same frame the rows do (issue #1777).
-            return (rows, cursorRow, cursorCol, _htmlParser.IsCursorVisible, _htmlParser.IsAlternateScreen);
+            // stale cursor cell), so it must describe the same frame the rows do (issue #1777). The byte mark
+            // joins them for the same reason.
+            return (rows, cursorRow, cursorCol, _htmlParser.IsCursorVisible, _htmlParser.IsAlternateScreen,
+                _streamBytesReflected);
         }
+    }
+
+    /// <summary>The locked frame without its byte mark - one implementation, so the rows a caller sees here
+    /// and the rows the capture stores can never come from two different observations.</summary>
+    public (string[] Rows, int CursorRow, int CursorCol, bool CursorVisible, bool IsAlternateScreen) SnapshotLiveScreen()
+    {
+        var (rows, cursorRow, cursorCol, cursorVisible, isAlternateScreen, _) = SnapshotLiveScreenWithBufferMark();
+        return (rows, cursorRow, cursorCol, cursorVisible, isAlternateScreen);
     }
 
     /// <summary>

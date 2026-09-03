@@ -31,6 +31,23 @@ internal sealed class SessionVerbClient
     /// <summary>The resolved owning Director (so a caller can log or thread its id).</summary>
     public DirectorDto Director => _director;
 
+    private static long _screenGridPulls;
+
+    /// <summary>
+    /// How many <c>screen-grid</c> reads this Gateway process has sent down a tunnel since it started.
+    /// Process-wide and monotonic, so a proof reads it before and after and states the DIFFERENCE.
+    ///
+    /// ITS PURPOSE IS NOW THE OPPOSITE OF THE ONE IT WAS BUILT FOR, and that is worth saying out loud. It
+    /// was added to show the Gateway's screen store SAVED tunnel round trips: the number that mattered was
+    /// a difference of zero across a voice turn. The Terminal Rules mission then established that a stored
+    /// screen may never answer a live question at all (see <see cref="Screens.GatewayScreenReader"/>), so
+    /// the number that matters now is a difference of ONE across a live read - it is the instrument that
+    /// shows the read really did reach the owning Director. A change that quietly reintroduced
+    /// store-answered live reads would make this counter move the wrong way, which is exactly what it is
+    /// kept for.
+    /// </summary>
+    public static long ScreenGridPulls => Interlocked.Read(ref _screenGridPulls);
+
     /// <summary>
     /// Gateway Cleanup mission: bind a tunnel-only caller to a Director known only by its
     /// <paramref name="directorId"/> - the shape the machine spawner and the work-list drain driver hold.
@@ -91,6 +108,12 @@ internal sealed class SessionVerbClient
     /// <see cref="GetBufferAsync"/> cannot.</summary>
     public async Task<ScreenGridResponse?> GetScreenGridAsync(string sid, CancellationToken ct = default)
     {
+        // Terminal Rules (issue #2644): counted HERE, on the tunnel send itself, and not on any caller.
+        // The claim phase 0 has to prove is "this turn cost no tunnel screen read", and a counter kept on a
+        // caller only ever measures that caller - a second caller added later would not show up in it, and
+        // the count would go on reading zero while round trips were being made. Counting the thing rather
+        // than a proxy for it is the difference between evidence and a number that cannot fall.
+        Interlocked.Increment(ref _screenGridPulls);
         var result = await DirectorCommandRouter.TrySendAsync(_sendCommand, _director.DirectorId, "screen-grid", sid, null, ct,
             machineName: _director.MachineName);
         return result is not null && result.Ok ? DirectorCommandRouter.ReadBody<ScreenGridResponse>(result) : null;
