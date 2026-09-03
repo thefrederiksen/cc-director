@@ -1513,6 +1513,9 @@ public sealed class GatewayHost : IAsyncDisposable
                 nothingToNarrateFor: sid => _tenantPass.Current is { } t
                     && Wingman.WingmanVoiceService.CanNameVoicePartition(t)
                     && _voiceService?.NothingToNarrateFor(t, sid) == true,
+                directorCannotSendConversationFor: sid => _tenantPass.Current is { } t
+                    && Wingman.WingmanVoiceService.CanNameVoicePartition(t)
+                    && _voiceService?.DirectorCannotSendConversationFor(t, sid) == true,
                 voiceWaitingStampFor: (sid, waiting) => _tenantPass.Current is { } t
                     ? _voiceWaitingClock.Stamp(t, sid, waiting)
                     : null),
@@ -2112,6 +2115,28 @@ public sealed class GatewayHost : IAsyncDisposable
             History.StoredConversationWidgets.From(stored.Value.Messages));
     }
 
+    /// <summary>
+    /// Whether the computer that owns this session is CONNECTED but running a build that cannot send its
+    /// conversation - the single reason the Gateway's store will never fill for it, and therefore the single
+    /// reason a wingman narration is never coming without someone updating that machine.
+    ///
+    /// CONNECTION IS ASKED FIRST, and that ordering is the whole correctness of this method rather than a
+    /// tidiness. <see cref="Streaming.TurnPushCapabilityRegistry"/> is in-memory and learns each Director's
+    /// answer from its Hello, so for a Director it has not heard from - one that is away, and every Director
+    /// alive in the seconds after a Gateway restart - it reports "does not push". That is the safe reading
+    /// for Chat, which asks about connection first too and says "that computer has not checked in". Asked in
+    /// the other order here it would be a slander: every session on the fleet would be told its machine
+    /// needed updating for as long as it took the Directors to reconnect after a deploy. So a session whose
+    /// Director is not currently located answers FALSE - no claim about anybody's build.
+    /// </summary>
+    private bool DirectorCannotSendConversation(TenantId tenant, string sessionId)
+    {
+        if (!tenant.IsValid || string.IsNullOrEmpty(sessionId)) return false;
+        // not connected: "that computer is away", never "it is too old"
+        if (PushedSessions.TryLocate(tenant, sessionId, _streamStaleAfter) is not { } located) return false;
+        return !_turnPushCapabilities.PushesTurns(tenant, located.DirectorId);
+    }
+
     private string? ResolveSessionTitle(TenantId tenant, string sessionId)
     {
         if (!tenant.IsValid)
@@ -2481,7 +2506,8 @@ public sealed class GatewayHost : IAsyncDisposable
             // The narration's words now come from the Gateway's own store (turn-push mission, phase 3), not
             // from a tunnel command asking the Director to re-read the user's transcript. See
             // ReadStoredConversation for why the tenant scope is entered there rather than inside the service.
-            conversationReader: ReadStoredConversation);
+            conversationReader: ReadStoredConversation,
+            directorCannotSendConversation: DirectorCannotSendConversation);
 
         // The session supervisor (issue #915). It hangs off the SAME turn-end boundary as the voice refresh
         // below, deliberately: that event is the only thing that can wake it, so a Working session is out of
@@ -3055,6 +3081,10 @@ public sealed class GatewayHost : IAsyncDisposable
             // VoiceDisplay so the screen shows an honest "nothing to read aloud" instead of a Generate
             // button that cannot work - the client no longer rules on this.
             nothingToNarrateFor: (tenant, sid) => _voiceService?.NothingToNarrateFor(tenant, sid) == true,
+            // The owning computer is connected but cannot send its conversation, so no narration will ever
+            // be made for this session until it is updated. Feeds the folded VoiceDisplay so the screen says
+            // which computer to update instead of counting a wait that would not end (2026-09-02).
+            directorCannotSendConversationFor: (tenant, sid) => _voiceService?.DirectorCannotSendConversationFor(tenant, sid) == true,
             // TTS fallback: this session's ready clip was made by the backup voice provider (the primary
             // was overloaded and the cloud proxy failed over). Feeds the folded VoiceDisplay so the screen
             // shows the generic backup-voice notice. A success-with-a-note, never an outage state.
@@ -3254,7 +3284,8 @@ public sealed class GatewayHost : IAsyncDisposable
             // The narration's words now come from the Gateway's own store (turn-push mission, phase 3), not
             // from a tunnel command asking the Director to re-read the user's transcript. See
             // ReadStoredConversation for why the tenant scope is entered there rather than inside the service.
-            conversationReader: ReadStoredConversation);
+            conversationReader: ReadStoredConversation,
+            directorCannotSendConversation: DirectorCannotSendConversation);
         // The session's conversation, served from THIS Gateway's store (turn-push mission, phase 2). A
         // literal route, so it outranks the /sessions/{sid}/{**rest} catch-all - whose "history" verb entry
         // is removed in the same change, because the whole point is that reading a conversation no longer
@@ -4120,6 +4151,7 @@ public sealed class GatewayHost : IAsyncDisposable
         Snooze.SnoozeRegistry? snoozeRegistry,
         Func<string, Core.HostedAi.HostedAiState?>? voiceUnavailableFor = null,
         Func<string, bool>? nothingToNarrateFor = null,
+        Func<string, bool>? directorCannotSendConversationFor = null,
         Func<string, bool, DateTime?>? voiceWaitingStampFor = null)
     {
         foreach (var s in sessions)
@@ -4149,6 +4181,7 @@ public sealed class GatewayHost : IAsyncDisposable
                 generating: s.VoiceGenerating,
                 unavailable: unavailable,
                 nothingToNarrate: nothingToNarrateFor?.Invoke(s.SessionId) ?? false,
+                directorCannotSendConversation: directorCannotSendConversationFor?.Invoke(s.SessionId) ?? false,
                 waitingSince: s.VoiceWaitingSince);
         }
         Api.GatewayEndpoints.StampFleetRolesAndFold(sessions, sessions, needsYouStampFor, snoozeRegistry, tenant);

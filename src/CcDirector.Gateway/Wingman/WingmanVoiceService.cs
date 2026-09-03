@@ -90,6 +90,7 @@ public sealed class WingmanVoiceService
         public readonly ConcurrentDictionary<string, byte> Generating = new();             // sid -> wingman is running now
         public readonly ConcurrentDictionary<string, HostedAiState> Unavailable = new();   // sid -> why voice is off (issue #939)
         public readonly ConcurrentDictionary<string, byte> NothingToNarrate = new();       // sid -> the last turn has no text reply to read aloud (waiting on a prompt)
+        public readonly ConcurrentDictionary<string, byte> DirectorCannotSend = new();     // sid -> the owning Director's build cannot send conversations, so none will ever be stored
         public readonly ConcurrentDictionary<string, DateTime> PreferBackupUntil = new();  // sid -> UTC deadline while this session routes past a silent primary (issue devthrottle_internal#405)
         public readonly ConcurrentDictionary<string, byte> InFlight = new();               // sid -> a generation is running now
 
@@ -137,6 +138,16 @@ public sealed class WingmanVoiceService
     /// wrong account. Null delegate leaves narration with nothing to read, which is what a Gateway with no
     /// store would honestly be.</summary>
     private readonly Func<TenantId, string, History.StoredConversation?>? _conversationReader;
+
+    /// <summary>
+    /// Whether the computer that OWNS this session is connected but running a build that cannot send its
+    /// conversation - the one reason an empty store never fills. Supplied by the host because answering it
+    /// needs two things this service does not hold: the pushed-session roster (to name the owning Director,
+    /// and to know it is connected at all) and the turn-push capability registry (what that Director said
+    /// about itself on Hello). Null in tests and self-host, which reads as "no such claim" - the safe
+    /// direction, because it leaves the pre-existing "the push is simply late" behaviour untouched.
+    /// </summary>
+    private readonly Func<TenantId, string, bool>? _directorCannotSendConversation;
 
     /// <summary>
     /// True only for the EXACT form <see cref="Tenancy.TenantRegistry"/> mints: a canonical lowercase GUID.
@@ -335,9 +346,11 @@ public sealed class WingmanVoiceService
         Func<string>? instructionsProvider = null,
         HttpClient? ttsHttpClient = null,
         Func<TenantId, string, string?>? sessionTitleResolver = null,
-        Func<TenantId, string, History.StoredConversation?>? conversationReader = null)
+        Func<TenantId, string, History.StoredConversation?>? conversationReader = null,
+        Func<TenantId, string, bool>? directorCannotSendConversation = null)
     {
         _conversationReader = conversationReader;
+        _directorCannotSendConversation = directorCannotSendConversation;
         _vault = vault ?? throw new ArgumentNullException(nameof(vault));
         _tenantSettings = tenantSettings ?? throw new ArgumentNullException(nameof(tenantSettings));
         // The account's spoken language comes from the same per-tenant resolver this service already
@@ -745,6 +758,18 @@ public sealed class WingmanVoiceService
     /// </summary>
     public bool NothingToNarrateFor(TenantId tenant, string sid) => StateFor(tenant).NothingToNarrate.ContainsKey(sid);
 
+    /// <summary>
+    /// True when the computer that owns this session is connected but running a build that cannot send its
+    /// conversation, so no narration can ever be produced for it until that computer is updated. A TERMINAL
+    /// condition with a plain remedy, not a wait: it feeds <see cref="VoiceDisplayFold"/> so the screen says
+    /// "Update DevThrottle" rather than counting minutes at a session whose voice is never coming.
+    ///
+    /// Recorded only from an ACTUAL generation attempt that found an empty store, never guessed from the
+    /// capability registry alone - so a session that has simply not been swept yet makes no claim about
+    /// anybody's build.
+    /// </summary>
+    public bool DirectorCannotSendConversationFor(TenantId tenant, string sid) => StateFor(tenant).DirectorCannotSend.ContainsKey(sid);
+
     /// <summary>Set or clear the "nothing to narrate" fact from a caller that has already read the turn
     /// (the on-demand explain path): true when the last reply is empty (waiting on a prompt), false the
     /// moment a text reply exists. The auto path sets/clears it inline in <c>GenerateOnceAsync</c>.</summary>
@@ -812,6 +837,7 @@ public sealed class WingmanVoiceService
         state.Unavailable.TryRemove(sid, out _);        // voice is off, so its unavailable-state is moot (issue #939)
         state.ReadFailed.TryRemove(sid, out _);         // ...and so is whatever the last transcript read recorded
         state.NothingToNarrate.TryRemove(sid, out _);   // voice is off, so "nothing to narrate" is moot too
+        state.DirectorCannotSend.TryRemove(sid, out _); // ...and so is "update that computer to hear this session"
         state.PreferBackupUntil.TryRemove(sid, out _);  // voice is off, so the backup-routing window is moot too (issue devthrottle_internal#405)
         if (state.Ready.TryRemove(sid, out _))
             DeleteReadyAudio(tenant, sid);   // keep the durable cache in step so a stale tap can't 404
@@ -880,6 +906,7 @@ public sealed class WingmanVoiceService
         var state = StateFor(tenant);
         state.Ready[sid] = ready;
         state.NothingToNarrate.TryRemove(sid, out _);   // audio exists, so there was something to narrate after all
+        state.DirectorCannotSend.TryRemove(sid, out _); // ...and a narration proves that computer CAN send its conversation
         SaveReadyAudio(tenant, sid, ready);
     }
 
@@ -998,9 +1025,48 @@ public sealed class WingmanVoiceService
             // late - a small version of the exact confusion this mission exists to remove (found in review).
             // Nothing here stands the sweep down: ShouldSkipSweep keys on a terminal read verdict only.
             SetNothingToNarrate(tenant, sid, false);
+
+            // BUT NOT EVERY EMPTY STORE IS A WAIT, and the sentence above is a promise this arm cannot keep
+            // for the one Director that will never push. "The Director pushes it and the sweep comes back"
+            // assumes a Director that HAS the pusher; a build older than the turn-push mission does not, so
+            // the store stays empty for as long as that computer keeps running, and every calm "on its way"
+            // said about it is false.
+            //
+            // WHAT THAT COST, on 2026-09-02, is why this branch exists. Phases 3a/3b went live on the hosted
+            // Gateway while the newest RELEASED Director (v2.0.4, 16 August) predated the pusher by a
+            // fortnight. Every voice session on every account fell into the arm above: 297 "no conversation
+            // stored yet" lines in forty minutes, ZERO narrations, and - because the colour fold holds yellow
+            // until voice arrives - eleven of the owner's twenty-one sessions showed "Voice did not arrive
+            // after 3m..22m" instead of the red "Needs you" they had actually earned. He could not see which
+            // sessions wanted him. The Gateway KNEW the cause the whole time: SessionConversationFold was
+            // logging director-too-old for the same sessions, and the Chat screen was saying so in plain
+            // English. The fact simply never reached the voice path.
+            //
+            // NOT RECORDED AS A READ FAILURE, deliberately. NoteReadFailed(Unavailable) would render through
+            // the hosted-AI arm of VoiceDisplayFold and say "Voice unavailable" - a symptom, in the shared
+            // account-condition voice, for something that is neither the account's fault nor about hosted AI.
+            // The fold gets its own arm and its own sentence instead, which is the one the reader can act on.
+            //
+            // NOR DOES IT STAND THE SWEEP DOWN. Re-checking costs a dictionary lookup and a store read that
+            // returns null before any model or speech call, so there is no spend to protect - and paying that
+            // nothing buys the recovery for free: the moment that computer is updated, its next Hello flips
+            // the registry, the marker clears on the following pass, and narration resumes with nobody
+            // touching the Gateway.
+            if (_directorCannotSendConversation?.Invoke(tenant, sid) == true)
+            {
+                state.DirectorCannotSend[sid] = 1;
+                FileLog.Write($"[WingmanVoiceService] sid={sid}: the computer that owns this session is connected but runs a build that cannot send its conversation, so nothing will ever be stored to narrate - the screen says to update it instead of counting a wait that would not end");
+                return false;
+            }
+            state.DirectorCannotSend.TryRemove(sid, out _);
             FileLog.Write($"[WingmanVoiceService] no conversation stored yet for sid={sid} - nothing to narrate from, and not counted as an attempt; the Director pushes it and the sweep comes back");
             return false;
         }
+        // A conversation ARRIVED, so that computer plainly can send one - whatever it said about itself, and
+        // whoever owns the session now. Cleared here rather than only where it is set, for the same reason
+        // ClearReadFailed sits on this path: a marker that outlives the condition it describes is the next
+        // stale sentence, and ownership of a session can move to a different Director mid-life.
+        state.DirectorCannotSend.TryRemove(sid, out _);
         // THE ONE TERMINAL ANSWER LEFT. This agent keeps no readable conversation at all, so no amount of
         // waiting or retrying produces words to narrate. It is recorded as the terminal verdict so the voice
         // screen says "Voice unavailable" instead of an endless quiet wait, and so the sweep stops spending
