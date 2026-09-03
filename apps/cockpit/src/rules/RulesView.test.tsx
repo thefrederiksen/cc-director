@@ -253,6 +253,51 @@ describe("The Rules page", () => {
   });
 
   /**
+   * THE PAGE MUST NOT FABRICATE THE ACKNOWLEDGEMENT (fix round D, ruling D5). The old page sent a
+   * hard-coded sentence claiming the person had read the dry-run record, whether or not the record had
+   * ever been opened. Now the confirmation step SHOWS the dry-run record and the sentence that is sent
+   * describes what was actually shown - and this test asserts the value sent, not merely that a dialog
+   * opened, because any non-blank constant survives the weaker check.
+   */
+  it("shows the dry-run record before making a rule live, and sends an acknowledgement that describes it", async () => {
+    getRules.mockResolvedValue([STORED]);
+    getRuleFirings.mockResolvedValue([
+      {
+        id: "f1",
+        ruleId: STORED.id,
+        sessionId: "abc123",
+        occurredUtc: "2026-09-03T09:30:00Z",
+        screenText: "API Error: overloaded",
+        understanding: "The session stopped on a provider error.",
+        decision: "act",
+        reason: "the screen shows the provider's own error and no work of the session's.",
+        checksRun: [],
+        typedText: "",
+        outcome: "dry run: nothing was typed.",
+        grounding: "grounding: the quoted words are on the screen.",
+      },
+    ]);
+    promoteRule.mockResolvedValue({ ...STORED, state: "live", promotedBy: "someone" });
+    render(<RulesView />);
+
+    await waitFor(() => expect(screen.getByRole("button", { name: "Make it live" })).toBeTruthy());
+    fireEvent.click(screen.getByRole("button", { name: "Make it live" }));
+
+    // The record is in front of the person before they can agree to anything.
+    await waitFor(() => expect(screen.getByText(/no work of the session's/)).toBeTruthy());
+    expect(promoteRule).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Make it live, I have read the record" }));
+
+    await waitFor(() => expect(promoteRule).toHaveBeenCalledTimes(1));
+    const [id, acknowledgement] = promoteRule.mock.calls[0] as [string, string];
+    expect(id).toBe(STORED.id);
+    // What is sent describes what was shown: one firing, and its decision.
+    expect(acknowledgement).toMatch(/1 firing/);
+    expect(acknowledgement).toMatch(/act/);
+  });
+
+  /**
    * A DECLINE IS A FIRING TOO. A rule that decided not to act must not read the same as a rule that
    * did nothing because something broke, so the record shows the decline and its reason.
    */

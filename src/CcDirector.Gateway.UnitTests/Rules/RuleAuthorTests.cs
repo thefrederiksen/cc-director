@@ -141,6 +141,33 @@ public sealed class RuleAuthorTests : IDisposable
         Assert.Equal(TheAllowanceSentence + " All of them.", reading.Proposal!.Instruction);
     }
 
+    /// <summary>
+    /// TWO DISTINCT ACCOUNTS REACH THE MODEL AS THEMSELVES (fix round D, ruling D9). Every other test in
+    /// this file asks as TenantId.Local and discards the tenant at the asking seam, so an author that
+    /// substituted a constant tenant would have stayed green - and on the hosted Gateway a tenant
+    /// constant selects the wrong account's model configuration and charging context. The seam here
+    /// RECORDS the tenant it was asked as, and two different accounts have to arrive as two different
+    /// tenants.
+    /// </summary>
+    [Fact]
+    public async Task Two_accounts_reach_the_model_as_two_different_tenants_and_not_as_a_constant()
+    {
+        var askedAs = new List<TenantId>();
+        var author = new RuleAuthor((tenant, _, _) =>
+        {
+            askedAs.Add(tenant);
+            return Task.FromResult<string?>(AnAllowanceReply);
+        });
+        var accountA = new TenantId("tenant-a-fix-round-d");
+        var accountB = new TenantId("tenant-b-fix-round-d");
+
+        await author.DraftAsync(accountA, Said(TheAllowanceSentence), CancellationToken.None);
+        await author.DraftAsync(accountB, Said(TheAllowanceSentence), CancellationToken.None);
+
+        Assert.Equal(new[] { accountA, accountB }, askedAs);
+        Assert.NotEqual(accountA, accountB);
+    }
+
     // ---- the gate, run before anybody is asked to agree ---------------------------------------------
 
     /// <summary>

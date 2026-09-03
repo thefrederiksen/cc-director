@@ -418,15 +418,142 @@ public sealed class RuleDraftContractTests
         Assert.Equal("ClaudeCode", reading.Proposal!.Scope.Agent);
     }
 
-    /// <summary>With no session known there is no fact to apply, so the model's scope stands - a rule
-    /// described from memory keeps whatever scope it was given.</summary>
+    /// <summary>
+    /// THE MODEL NEVER CHOOSES THE AGENT SCOPE (fix round D, ruling D3). This test replaces one that
+    /// blessed the opposite: with no session known, the old reading let "all-sessions" stand because the
+    /// model wrote it, which is every agent chosen by the answer and not by the account. When the origin
+    /// is not known there is no fact to pin the scope to, and the only honest answer is a refusal.
+    /// </summary>
     [Fact]
-    public void With_no_session_known_the_agent_scope_is_left_as_the_model_wrote_it()
+    public void An_answer_whose_session_origin_is_not_known_is_refused_rather_than_scoped_by_the_model()
     {
-        var reading = RuleDraftContract.Read(AGoodReply, TheSentence, Registry);
+        var reply = AGoodReply.Replace(
+            "\"trigger_words\": [\"usage limit\", \"out of credits\"],",
+            "\"trigger_words\": [\"usage limit reached\"],",
+            StringComparison.Ordinal);
+
+        var reading = RuleDraftContract.Read(reply, TheSentence, Registry, ACapturedLimitScreen, RuleSessionOrigin.None);
+
+        Assert.Null(reading.Proposal);
+        Assert.Contains("which agent", reading.Refusal!, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// TWO DISTINCT ORIGINS, ASSERTED AT THE FAR SIDE (fix round D, ruling D9). Every origin test above
+    /// uses one agent value, so a contract that pinned every rule to "ClaudeCode" regardless of the
+    /// session would have stayed green. Two agents, two machines, and the proposal has to carry EACH.
+    /// </summary>
+    [Theory]
+    [InlineData("ClaudeCode", "SOREN_NORTH")]
+    [InlineData("Codex", "SOREN_SOUTH")]
+    public void The_agent_scope_is_the_origin_that_was_given_and_not_a_constant(string agent, string machine)
+    {
+        var reply = AGoodReply.Replace(
+            "\"trigger_words\": [\"usage limit\", \"out of credits\"],",
+            "\"trigger_words\": [\"usage limit reached\"],",
+            StringComparison.Ordinal);
+        var origin = new RuleSessionOrigin(agent, machine);
+
+        var prompt = RuleDraftContract.BuildDraftPrompt(OneTurn(TheSentence), Registry, ACapturedLimitScreen, origin);
+        var reading = RuleDraftContract.Read(reply, TheSentence, Registry, ACapturedLimitScreen, origin);
+
+        Assert.Contains($"running the agent {agent}", prompt, StringComparison.Ordinal);
+        Assert.Contains(machine, prompt, StringComparison.Ordinal);
+        Assert.Equal(agent, reading.Proposal!.Scope.Agent);
+    }
+
+    // ---- fix round D: the check runs against the EXACT text the model was shown -----------------------
+
+    /// <summary>
+    /// A 41-line screen whose only distinctive word is on line 1. The prompt shows the model the last 40
+    /// non-empty lines, so line 1 is text the model NEVER SAW - and a word from it is a word the model
+    /// invented as far as the prompt is concerned. Inspection D found the check searching the whole
+    /// caller string while the prompt showed the tail, so this word passed.
+    /// </summary>
+    private static string AScreenWhoseFirstLineIsOutsideTheExcerpt()
+    {
+        var lines = new List<string> { "FIRSTLINEWORD only here" };
+        for (var i = 0; i < 40; i++) lines.Add($"ordinary line {i}");
+        return string.Join("\n", lines);
+    }
+
+    [Fact]
+    public void A_trigger_word_outside_the_lines_the_model_was_shown_is_refused()
+    {
+        var reply = AGoodReply.Replace(
+            "\"trigger_words\": [\"usage limit\", \"out of credits\"],",
+            "\"trigger_words\": [\"FIRSTLINEWORD\"],",
+            StringComparison.Ordinal);
+
+        var reading = RuleDraftContract.Read(
+            reply, TheSentence, Registry, AScreenWhoseFirstLineIsOutsideTheExcerpt(), ClaudeOnNorth);
+
+        Assert.Null(reading.Proposal);
+        Assert.Contains("FIRSTLINEWORD", reading.Refusal!, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// ONE NORMALISER FOR A TRIGGER WORD. The store trims a word before storing it; the check used to run
+    /// on the untrimmed word. So " usage limit reached " was checked as the padded string and stored as
+    /// the narrower one - the word that was checked and the word that was stored were not the same string.
+    /// The proposal has to carry the word in the form the store will keep.
+    /// </summary>
+    [Fact]
+    public void A_padded_trigger_word_is_offered_as_the_word_the_store_will_keep()
+    {
+        var reply = AGoodReply.Replace(
+            "\"trigger_words\": [\"usage limit\", \"out of credits\"],",
+            "\"trigger_words\": [\"  usage limit reached  \"],",
+            StringComparison.Ordinal);
+
+        var reading = RuleDraftContract.Read(reply, TheSentence, Registry, ACapturedLimitScreen, ClaudeOnNorth);
 
         Assert.Null(reading.Refusal);
-        Assert.Equal(RuleScope.AllSessions, reading.Proposal!.Scope);
+        Assert.Equal(new[] { "usage limit reached" }, reading.Proposal!.TriggerWords);
+    }
+
+    // ---- fix round D: a number that cannot be read is a refusal, never an exception (ruling D7) ----------
+
+    [Fact]
+    public void A_decimal_ceiling_is_refused_with_a_sentence_and_not_thrown()
+    {
+        var reply = AGoodReply
+            .Replace("\"trigger_words\": [\"usage limit\", \"out of credits\"],",
+                     "\"trigger_words\": [\"usage limit reached\"],", StringComparison.Ordinal)
+            .Replace("\"cooldown_seconds\": 600,", "\"cooldown_seconds\": 600.5,", StringComparison.Ordinal);
+
+        var reading = RuleDraftContract.Read(reply, TheSentence, Registry, ACapturedLimitScreen, ClaudeOnNorth);
+
+        Assert.Null(reading.Proposal);
+        Assert.Contains("cooldown_seconds", reading.Refusal!, StringComparison.Ordinal);
+        Assert.Contains("600.5", reading.Refusal!, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void An_out_of_range_ceiling_is_refused_with_a_sentence_and_not_thrown()
+    {
+        var reply = AGoodReply
+            .Replace("\"trigger_words\": [\"usage limit\", \"out of credits\"],",
+                     "\"trigger_words\": [\"usage limit reached\"],", StringComparison.Ordinal)
+            .Replace("\"daily_cap\": 4,", "\"daily_cap\": 99999999999,", StringComparison.Ordinal);
+
+        var reading = RuleDraftContract.Read(reply, TheSentence, Registry, ACapturedLimitScreen, ClaudeOnNorth);
+
+        Assert.Null(reading.Proposal);
+        Assert.Contains("daily_cap", reading.Refusal!, StringComparison.Ordinal);
+        Assert.Contains("99999999999", reading.Refusal!, StringComparison.Ordinal);
+    }
+
+    // ---- fix round D: the ceilings have real bounds, and the question says what they are (ruling D6) ----
+
+    [Fact]
+    public void The_question_states_the_bounds_of_the_ceilings()
+    {
+        var prompt = RuleDraftContract.BuildDraftPrompt(OneTurn(TheSentence), Registry, ACapturedLimitScreen, ClaudeOnNorth);
+
+        Assert.Contains("at least 60 seconds", prompt, StringComparison.Ordinal);
+        Assert.Contains("at most 24 hours", prompt, StringComparison.Ordinal);
+        Assert.Contains("at most 100", prompt, StringComparison.Ordinal);
     }
 
     // ---- the answer: a question ---------------------------------------------------------------------

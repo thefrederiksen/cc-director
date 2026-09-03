@@ -248,3 +248,74 @@ def test_a_question_back_stores_nothing_and_says_what_it_needs(monkeypatch):
     assert result.exit_code == 2
     assert client.created == []
     assert "Which model should it switch to?" in result.output.replace("\n", " ")
+
+
+# ---- fix round D, ruling D4: `rule add` stores the document that was read -------------------------
+
+def test_add_takes_the_reviewed_proposal_and_makes_no_authoring_call(monkeypatch, tmp_path):
+    """The contract is sentence, read-back, confirmation, store. The old `rule add` drafted, stored and
+    only then printed the read-back - and running `rule draft` first did not help, because `add` drafted
+    AGAIN, so the document stored could differ from the one that was read. `add` now takes the proposal
+    `draft --json` printed, posts exactly that rule to the create route, and never asks a model."""
+    client = FakeClient()
+    _use(monkeypatch, client)
+    proposal = tmp_path / "proposal.json"
+    proposal.write_text(json.dumps(client.draft_answer), encoding="utf-8")
+
+    result = runner.invoke(app, ["rule", "add", str(proposal)])
+
+    assert result.exit_code == 0, result.output
+    # NO AUTHORING CALL. What is stored is what was read, or nothing.
+    assert client.draft_calls == []
+    assert client.screen_calls == []
+    assert client.created == [A_DRAFTED_RULE]
+
+
+# ---- fix round D, ruling D8: a missing field is a broken instrument -------------------------------
+
+class _Answer:
+    """A Gateway answer with the given JSON body and a JSON content type."""
+
+    ok = True
+    status_code = 200
+    headers = {"Content-Type": "application/json"}
+    text = "{}"
+
+    def __init__(self, body):
+        self._body = body
+
+    def json(self):
+        return self._body
+
+
+def _client_answering(monkeypatch, body):
+    monkeypatch.setattr(rule_ops.gateway, "gateway_base_url", lambda: "http://gateway.test")
+    monkeypatch.setattr(rule_ops.gateway, "session_key", lambda: "key")
+    client = rule_ops.RuleClient()
+    monkeypatch.setattr(client, "_request", lambda method, path, json_body=None: _Answer(body))
+    return client
+
+
+def test_a_rules_answer_with_no_rules_field_is_an_error_not_an_empty_list(monkeypatch):
+    import pytest
+
+    with pytest.raises(rule_ops.GatewayError, match="rules"):
+        _client_answering(monkeypatch, {}).rules()
+
+
+def test_a_rule_answer_with_no_rule_field_is_an_error_not_an_empty_rule(monkeypatch):
+    import pytest
+
+    with pytest.raises(rule_ops.GatewayError, match="rule"):
+        _client_answering(monkeypatch, {}).rule("11111111-1111-1111-1111-111111111111")
+
+
+def test_a_firings_answer_with_no_firings_field_is_an_error_not_an_empty_history(monkeypatch):
+    import pytest
+
+    with pytest.raises(rule_ops.GatewayError, match="firings"):
+        _client_answering(monkeypatch, {}).firings("11111111-1111-1111-1111-111111111111")
+
+
+def test_an_answer_carrying_the_field_is_read_as_what_it_carries(monkeypatch):
+    assert _client_answering(monkeypatch, {"firings": []}).firings("x") == []
