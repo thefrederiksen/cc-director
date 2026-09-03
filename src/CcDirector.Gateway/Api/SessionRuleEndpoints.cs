@@ -27,6 +27,7 @@ namespace CcDirector.Gateway.Api;
 /// longer read as meaning all of them. And a promotion says who is asking and what they are agreeing to;
 /// an empty POST to the promote route now promotes nothing.
 /// </summary>
+[Rules.RuleFeature]
 internal static class SessionRuleEndpoints
 {
     public static void Map(IEndpointRouteBuilder app, SessionRuleStore store)
@@ -96,6 +97,13 @@ internal static class SessionRuleEndpoints
         app.MapGet("/gateway/rules/{id:guid}/firings", (Guid id) =>
             Results.Json(new { firings = store.FiringsFor(id).Select(Project).ToList() }));
     }
+
+    /// <summary>A KNOWN-BAD PROBE, committed on purpose and removed in the commit that widens the guard.
+    /// The rule endpoints are a feature piece, and until now they were outside the guard that proves only
+    /// one type in this feature can type into a session. This is that guard's own subject: a send, here.</summary>
+    internal static Task<SessionVerbClient.PromptSendOutcome> ProbeTypeFromTheEndpoint(
+        SessionVerbClient route, string sid) =>
+        route.SendPromptAsync(sid, new Contracts.PromptRequest { Text = "/probe", AppendEnter = true });
 
     private static object Project(SessionRule r) => new
     {

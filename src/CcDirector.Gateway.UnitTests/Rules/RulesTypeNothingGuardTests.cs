@@ -280,6 +280,17 @@ public sealed class RulesTypeNothingGuardTests
     private static bool IsFeatureType(TypeDefinition type)
     {
         if (NamespaceOf(type).StartsWith(RulesNamespace, StringComparison.Ordinal)) return true;
+
+        // MARKED PIECES, wherever they live. The guard used to select the rules namespace plus the two
+        // stored-row types, and the feature had already grown outside that: the rule endpoints live in the
+        // API namespace, and the launch lived inside the Gateway host. Both were listed as phase 2 feature
+        // pieces and both were outside the thing guarding the feature, so typing or command-routing code
+        // placed in either could stay green. The marker travels with the type; a list kept here would have
+        // to be remembered.
+        if (Outermost(type).CustomAttributes.Any(a =>
+                a.AttributeType.FullName == "CcDirector.Gateway.Rules.RuleFeatureAttribute"))
+            return true;
+
         if (!string.Equals(NamespaceOf(type), EntitiesNamespace, StringComparison.Ordinal)) return false;
         var simple = Outermost(type).Name;
         return simple.StartsWith("SessionRule", StringComparison.Ordinal)
@@ -349,7 +360,17 @@ public sealed class RulesTypeNothingGuardTests
         Assert.Contains("CcDirector.Gateway.Data.Entities.SessionRuleEntity", feature);
         Assert.Contains("CcDirector.Gateway.Data.Entities.SessionRuleFiringEntity", feature);
         Assert.Contains("CcDirector.Gateway.Rules.RuleEvaluator", feature);
+
+        // The two pieces that were listed as part of this feature and were outside the guard: the route a
+        // rule arrives on, and the place a pass is started from.
+        Assert.Contains("CcDirector.Gateway.Api.SessionRuleEndpoints", feature);
+        Assert.Contains("CcDirector.Gateway.Rules.RuleTurnEndLauncher", feature);
+
+        // And the scope must still be a scope: the Gateway host runs the whole rest of the product and is
+        // not part of this feature, so a marker that swallowed it would make every assertion below
+        // meaningless in the other direction.
         Assert.DoesNotContain("CcDirector.Gateway.Data.Entities.CronJobEntity", feature);
+        Assert.DoesNotContain("CcDirector.Gateway.GatewayHost", feature);
     }
 
     /// <summary>
