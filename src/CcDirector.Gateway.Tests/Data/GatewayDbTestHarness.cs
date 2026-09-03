@@ -56,8 +56,14 @@ public sealed class GatewayDbTestHarness : IDisposable
         var dir = Path.Combine(Path.GetTempPath(), "cc-gateway-db-template-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(dir);
         var path = Path.Combine(dir, "template.db");
-        // Construct and dispose: the constructor is what applies the migrations.
-        using (var db = new GatewayDatabase(new SingleTenantContext(), path)) { }
+        // Construct and dispose: the constructor is what applies the migrations. Taken under the gate,
+        // because the constructor reads the process-global provider selection and one test in the suite
+        // has to blank it - see GatewayDbEnvironmentGate.
+        GatewayDbEnvironmentGate.WhileTheConfigurationIsStable(() =>
+        {
+            using (var db = new GatewayDatabase(new SingleTenantContext(), path)) { }
+            return true;
+        });
         // Read it back with full sharing rather than clearing the global connection pool.
         byte[] bytes;
         using (var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
@@ -80,7 +86,8 @@ public sealed class GatewayDbTestHarness : IDisposable
         {
             File.WriteAllBytes(DbPath, MigratedTemplate.Value);
         }
-        var db = new GatewayDatabase(tenant ?? new SingleTenantContext(), DbPath);
+        var db = GatewayDbEnvironmentGate.WhileTheConfigurationIsStable(
+            () => new GatewayDatabase(tenant ?? new SingleTenantContext(), DbPath));
         _opened.Add(db);
         return db;
     }

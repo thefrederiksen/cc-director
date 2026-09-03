@@ -35,41 +35,14 @@ public sealed class RulesPromotionBoundaryGuardTests
     /// <summary>The assembly, read ONCE for the whole test process and held. Reading it per test is what
     /// pushed this project past the local gate's two-minute ceiling, and a suite that gets stopped is
     /// neither a pass nor a failure.</summary>
-    private static readonly Lazy<ModuleDefinition> Module = new(() =>
-    {
-        var path = Path.Combine(AppContext.BaseDirectory, "CcDirector.Gateway.dll");
-        Assert.True(File.Exists(path), "the Gateway assembly is not beside the tests at " + path);
-        return ModuleDefinition.ReadModule(path);
-    }, isThreadSafe: true);
+    private static ModuleDefinition GatewayModule() => TheBuiltGatewayAssembly.Module;
 
-    private static ModuleDefinition GatewayModule() => Module.Value;
-
-    private static TypeDefinition Outermost(TypeDefinition type)
-    {
-        var current = type;
-        while (current.DeclaringType is not null) current = current.DeclaringType;
-        return current;
-    }
+    private static TypeDefinition Outermost(TypeDefinition type) => TheBuiltGatewayAssembly.Outermost(type);
 
     private static string NamespaceOf(TypeDefinition type) => Outermost(type).Namespace ?? "";
 
-    private static IEnumerable<TypeDefinition> AllTypes(ModuleDefinition module)
-    {
-        foreach (var type in module.Types)
-        {
-            yield return type;
-            foreach (var nested in Nested(type)) yield return nested;
-        }
-
-        static IEnumerable<TypeDefinition> Nested(TypeDefinition type)
-        {
-            foreach (var nested in type.NestedTypes)
-            {
-                yield return nested;
-                foreach (var deeper in Nested(nested)) yield return deeper;
-            }
-        }
-    }
+    private static IEnumerable<TypeDefinition> AllTypes(ModuleDefinition module) =>
+        TheBuiltGatewayAssembly.AllTypes();
 
     /// <summary>Every place a type is named in another type's SHAPE - a field, a property, a method's
     /// parameters or its return - answered as "TypeFullName (where)".</summary>

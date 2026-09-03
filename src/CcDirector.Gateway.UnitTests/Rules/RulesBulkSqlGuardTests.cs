@@ -31,37 +31,10 @@ public sealed class RulesBulkSqlGuardTests
         "CcDirector.Gateway.Data.Entities.SessionRuleFiringEntity",
     };
 
-    private static readonly Lazy<ModuleDefinition> Module = new(() =>
-    {
-        var path = Path.Combine(AppContext.BaseDirectory, "CcDirector.Gateway.dll");
-        Assert.True(File.Exists(path), "the Gateway assembly is not beside the tests at " + path);
-        return ModuleDefinition.ReadModule(path);
-    }, isThreadSafe: true);
+    private static IEnumerable<TypeDefinition> AllTypes(ModuleDefinition module) =>
+        TheBuiltGatewayAssembly.AllTypes();
 
-    private static IEnumerable<TypeDefinition> AllTypes(ModuleDefinition module)
-    {
-        foreach (var type in module.Types)
-        {
-            yield return type;
-            foreach (var nested in Nested(type)) yield return nested;
-        }
-
-        static IEnumerable<TypeDefinition> Nested(TypeDefinition type)
-        {
-            foreach (var nested in type.NestedTypes)
-            {
-                yield return nested;
-                foreach (var deeper in Nested(nested)) yield return deeper;
-            }
-        }
-    }
-
-    private static TypeDefinition Outermost(TypeDefinition type)
-    {
-        var current = type;
-        while (current.DeclaringType is not null) current = current.DeclaringType;
-        return current;
-    }
+    private static TypeDefinition Outermost(TypeDefinition type) => TheBuiltGatewayAssembly.Outermost(type);
 
     /// <summary>
     /// Every bulk call site in the assembly, as "type -> the entity it operates on". The entity is read
@@ -95,7 +68,7 @@ public sealed class RulesBulkSqlGuardTests
         // THE INSTRUMENT, and this guard needs one more than most: its pass condition is an ABSENCE, so a
         // scanner that found nothing at all would certify the whole assembly as clean. The Gateway really
         // does prune with bulk operations elsewhere, so the list must not be empty.
-        var sites = BulkCallSites(Module.Value);
+        var sites = BulkCallSites(TheBuiltGatewayAssembly.Module);
 
         Assert.True(sites.Count > 0,
             "the scanner found no bulk operation anywhere in the Gateway, but several stores prune with " +
@@ -105,7 +78,7 @@ public sealed class RulesBulkSqlGuardTests
     [Fact]
     public void No_production_code_issues_bulk_sql_against_a_rule_or_a_firing()
     {
-        var offenders = BulkCallSites(Module.Value)
+        var offenders = BulkCallSites(TheBuiltGatewayAssembly.Module)
             .Where(s => TheRuleEntities.Contains(s.Entity, StringComparer.Ordinal))
             .Select(s => s.Type + " -> " + s.Entity)
             .Distinct(StringComparer.Ordinal)
@@ -128,7 +101,7 @@ public sealed class RulesBulkSqlGuardTests
     [Fact]
     public void Every_place_that_builds_a_context_factory_installs_the_interceptors()
     {
-        var module = Module.Value;
+        var module = TheBuiltGatewayAssembly.Module;
         var database = AllTypes(module)
             .Where(t => Outermost(t).FullName == "CcDirector.Gateway.Data.GatewayDatabase")
             .ToList();

@@ -115,17 +115,23 @@ public sealed class DatabaseOpensAfterTheBindTests : IDisposable
         // The split defers only the part that can succeed later - reaching the server. A connection string
         // that is set but blank is misconfiguration: waiting cannot fix it, and a Gateway must not bind a
         // port and serve errors forever because of one. So it must still fail at construction.
-        var prior = Environment.GetEnvironmentVariable(GatewayDatabase.PostgresConnectionEnvVar);
-        try
+        // ALONE. The variable is process-global and the suite runs in parallel, so a database opened by any
+        // other test inside this window fails with a message about THIS test's fault - see
+        // GatewayDbEnvironmentGate for the shape and why it is worth a lock rather than a comment.
+        CcDirector.Gateway.Tests.Data.GatewayDbEnvironmentGate.WhileNobodyIsOpeningADatabase(() =>
         {
-            Environment.SetEnvironmentVariable(GatewayDatabase.PostgresConnectionEnvVar, "   ");
+            var prior = Environment.GetEnvironmentVariable(GatewayDatabase.PostgresConnectionEnvVar);
+            try
+            {
+                Environment.SetEnvironmentVariable(GatewayDatabase.PostgresConnectionEnvVar, "   ");
 
-            Assert.Throws<InvalidOperationException>(
-                () => new GatewayDatabase(new SingleTenantContext(), TempDbPath(), deferOpen: true));
-        }
-        finally
-        {
-            Environment.SetEnvironmentVariable(GatewayDatabase.PostgresConnectionEnvVar, prior);
-        }
+                Assert.Throws<InvalidOperationException>(
+                    () => new GatewayDatabase(new SingleTenantContext(), TempDbPath(), deferOpen: true));
+            }
+            finally
+            {
+                Environment.SetEnvironmentVariable(GatewayDatabase.PostgresConnectionEnvVar, prior);
+            }
+        });
     }
 }

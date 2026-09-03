@@ -96,14 +96,7 @@ public sealed class RulesTypeNothingGuardTests
     /// held for the life of the process, because a module that is disposed takes the type handles in the
     /// index with it.
     /// </summary>
-    private static readonly Lazy<ModuleDefinition> Module = new(() =>
-    {
-        var path = Path.Combine(AppContext.BaseDirectory, "CcDirector.Gateway.dll");
-        Assert.True(File.Exists(path), "the Gateway assembly is not beside the tests at " + path);
-        return ModuleDefinition.ReadModule(path);
-    }, isThreadSafe: true);
-
-    private static ModuleDefinition GatewayModule() => Module.Value;
+    private static ModuleDefinition GatewayModule() => TheBuiltGatewayAssembly.Module;
 
     /// <summary>Who calls what, plus where each method lives. Seam-independent, so one build serves every
     /// question any test asks.</summary>
@@ -257,12 +250,7 @@ public sealed class RulesTypeNothingGuardTests
     /// declaring type would therefore find nothing for every async method in the namespace it is guarding -
     /// and would report that as a clean result. This one cost a red before it was noticed.
     /// </summary>
-    private static TypeDefinition Outermost(TypeDefinition type)
-    {
-        var current = type;
-        while (current.DeclaringType is not null) current = current.DeclaringType;
-        return current;
-    }
+    private static TypeDefinition Outermost(TypeDefinition type) => TheBuiltGatewayAssembly.Outermost(type);
 
     /// <summary>The namespace a type really belongs to - its own, or its outermost declaring type's.</summary>
     private static string NamespaceOf(TypeDefinition type) => Outermost(type).Namespace ?? "";
@@ -299,23 +287,8 @@ public sealed class RulesTypeNothingGuardTests
 
     /// <summary>Every type in the module, nested ones included - a compiler-generated closure is still a
     /// type that could hold the call.</summary>
-    private static IEnumerable<TypeDefinition> AllTypes(ModuleDefinition module)
-    {
-        foreach (var type in module.Types)
-        {
-            yield return type;
-            foreach (var nested in Nested(type)) yield return nested;
-        }
-
-        static IEnumerable<TypeDefinition> Nested(TypeDefinition type)
-        {
-            foreach (var nested in type.NestedTypes)
-            {
-                yield return nested;
-                foreach (var deeper in Nested(nested)) yield return deeper;
-            }
-        }
-    }
+    private static IEnumerable<TypeDefinition> AllTypes(ModuleDefinition module) =>
+        TheBuiltGatewayAssembly.AllTypes();
 
     [Fact]
     public void The_scanner_finds_the_typing_seam_where_it_really_is()
