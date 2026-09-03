@@ -97,3 +97,72 @@ Commit and push on your phase branch. Report to the Architect in ONE SINGLE LINE
 truncate at the first newline. Write the detail to
 `docs/missions/session-rules-2026-09-02/phase-1-fast-model-report.md` and name it in your one line. Do
 not open a pull request and do not merge; only the Architect lands work on main.
+
+---
+
+# ADDENDUM, written after Phase 0 ran. Read this before anything above.
+
+**Phase 0 measured the engine against 32 real screens through the real evaluator, and the engine does
+not work.** The numbers are in `phase-0-report.md` and they change what this phase is for.
+
+| | wingman (thinking, production today) | wingman-fast (this phase's candidate) |
+| --- | --- | --- |
+| Wrong on negatives | 0 of 20 | **7 of 20** |
+| Wrong on positives | **12 of 12** | **12 of 12** |
+| of those, timed out at 60s | 9 | 0 |
+| of those, blocked by the grounding check | 1 | 9 |
+| Right | 20 of 32 | 9 of 32 |
+| Model call time, median | 21.0 s | 12.8 s |
+
+**Read the positives row twice. Both models are wrong on every single positive.** The rules engine as
+shipped on `main` never acts on a real limit screen - the exact case the feature was built for. Nothing
+typed, ever, on any of the twelve real limit screens in the corpus.
+
+## RULING P1-A - the citation is a FIELD, not a hope
+
+The unpredicted finding, and the one that matters most. `RuleReasonGrounding` refuses an act whose
+stated reason carries no citation - Architect ruling A12, and **A12 is correct and stays**: it exists
+because a live rule once quoted a sentence that had been on the screen twelve minutes earlier in an
+unrelated run, and an act on evidence that was not there is the sharpest thing this mission has
+learned about its own design. An act must point at something a person can go back and check.
+
+But A12 was implemented by scanning a free-text reason for quotation marks and hoping the model put
+some there. Phase 0 proves it does not: the grounding check blocked 9 of 12 positives on the fast model
+and 1 on the thinking model. **That is a contract problem, not a model problem, and the contract is
+what this phase is replacing anyway.**
+
+So, in the new yes/no shape:
+
+- **Ask for exactly one verbatim line copied from the screen, as its own named field.** Not "explain
+  your reasoning and quote the screen" - one field, one line, copied.
+- **Verify that field against the same screen excerpt the model was shown**, reusing the function
+  ruling D2 built for authoring rather than writing a second one. One normaliser, one comparison.
+- **An act with no citation field, or a citation not on the screen, is still refused.** A12's property
+  is preserved exactly; only the way the model is asked for it changes.
+- A DECLINE still needs no citation, and its record still says which it had. That asymmetry is
+  deliberate and stays: declining does nothing, so an unfaithful decline is recorded as it happened
+  with the mismatch noted.
+
+This is the smallest thing a fast model can reliably produce that still makes an act checkable, and it
+is why moving to yes/no is a safety improvement rather than a trade against one.
+
+## RULING P1-B - re-run the harness, and the negatives are the gate
+
+The fast model's 7 wrong negatives were measured through TODAY's contract, which asks it to write about
+600 characters of JSON. **That is a baseline, not a verdict on the owner's decision.** This phase
+changes the question to "is this that situation" plus one copied line, which is far less work.
+
+- **Re-run the Phase 0 harness on the new contract, both models, and put both tables in your report.**
+  The comparison IS the evidence.
+- **The gate is the negatives count.** A false act is the unacceptable failure. Zero wrong negatives.
+- **The positives now matter too, and they did not before.** A run where both models are wrong on every
+  positive is not a pass on any reading. State the positives count as prominently as the negatives.
+- **If the fast model still fails the negatives on the NEW contract, STOP and report to the Architect.**
+  Do not quietly keep the thinking model, do not average them, do not tune the corpus. That is the
+  owner's decision changing on new evidence and it is his to change, not yours and not mine.
+
+## What Phase 0 did NOT find, and do not assume
+
+Phase 0 ran the evaluator with a per-case environment. It did not run a Director, did not type into a
+session, and did not exercise `GatewayHost.ReadRuleScreenAsync`. A green harness is not a working
+feature; it is a working judgement. The typing end is proven by the demonstrations, not here.
