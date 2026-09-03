@@ -192,7 +192,7 @@ public sealed class RuleAuthor
 
         // THE AGENT SCOPE IS THE SESSION'S AGENT OR THE STAR - NEVER SOMETHING WRITTEN BY HAND. The draft
         // pinned it; a body that arrives here with a different agent did not come from the draft unchanged.
-        if (scope is not null && false)
+        if (scope is not null)
         {
             var agentWritten = (scope.Agent ?? "").Trim();
             if (allAgents && agentWritten.Length > 0)
