@@ -50,6 +50,12 @@
          assert the hosting/Kestrel surface is absent. The reference exists so the built cc-launcher.dll
          lands in this test's output directory where the guard can read its metadata. -->
     <ProjectReference Include="..\CcDirector.Launcher\CcDirector.Launcher.csproj" />
+    <!-- The SCREEN HARNESS GUARD's subject (Session Rules mission, phase 0): ScreenHarnessGuardTests reads
+         the built CcDirector.Rules.ScreenHarness.dll and asserts it goes through RuleEvaluator.EvaluateAsync
+         and holds no prompt-building, reply-reading or raw HTTP of its own. ScreenCorpusTests also read the
+         corpus through the harness's own reader, so the tests and the runner cannot disagree about a case.
+         The reference exists so the built assembly lands beside the tests where the guard can read it. -->
+    <ProjectReference Include="..\CcDirector.Rules.ScreenHarness\CcDirector.Rules.ScreenHarness.csproj" />
     <!-- The Postgres migration assembly. Nothing here calls into it: EF resolves the migration set BY
          ASSEMBLY NAME at runtime, so it has to be present in the output directory or the model-only tests
          throw FileNotFoundException. That makes this reference load-bearing exactly as it is in the locked

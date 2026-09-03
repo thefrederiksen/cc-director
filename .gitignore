@@ -158,3 +158,6 @@ _inspection/
 codex-review-*.md
 codex-rereview-*.md
 *.received.txt
+
+# Screen harness output (Session Rules phase 0): report.md and results.json from a run against a live model; regenerable
+src/CcDirector.Rules.ScreenHarness/harness-out/
