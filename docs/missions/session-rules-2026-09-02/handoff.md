@@ -8,36 +8,47 @@ conduct). Not a transcript. Not a history.
 
 ## Where things stand
 
-- **Phase:** FIX ROUND A - the disposition of the independent inspection and of the two defects
-  phase 2 found in its own work. Read `fix-round-a.md`; it is the task.
-- **Mission branch:** `mission/session-rules`, pushed. Phases 1 and 2 and the inspection are merged.
-- **Landed on main so far:** NOTHING, and nothing lands until this round is done and re-inspected.
+- **Phase:** FIX ROUND B, in flight on `mission/session-rules-fb`. Twelve findings from the second
+  independent inspection (`inspection-b.md`), four of them critical.
+- **Mission branch:** `mission/session-rules`, pushed. Phases 1 and 2, fix round A, and both
+  inspections are merged.
+- **Landed on main so far:** NOTHING.
 
 **Phase 1 is done:** the rule store, the contract, the reflection-derived check registry, the five
-verified checks, the write-time validator. `phase-1-report.md`.
+verified checks, the write-time validator.
 
-**Phase 2 is done and THE DEMONSTRATION IS CAPTURED** - the mission's headline, already safe on the
-branch. On a real session, with a real screen read and a rule from the real store, `/usage-credits`
-appears on the terminal with nobody having typed it, and the shell's own rejection of the command is
-unambiguous evidence that the text arrived and was submitted. Both negative controls are live: a rule
-declined a screen that merely DISCUSSED a limit, and a second rule declined a screen its instruction
-does not reach. A live abandonment was captured too, where the screen moved on mid-decision.
-`phase-2-report.md`, and the evidence itself is in `qa-report.md`.
+**Phase 2 is done and THE DEMONSTRATION IS CAPTURED** - the mission's headline, safe on the branch.
+On a real session, `/usage-credits` appears on the terminal with nobody having typed it, and the
+shell's own rejection of the command proves the text arrived and was submitted. Both negative
+controls are live, and a live abandonment was captured where the screen moved mid-decision.
 
-**An independent inspection of landing A returned nine findings, three of them blocking**
-(`inspection-a.md`). Phase 2 self-reported two more. The Architect's disposition of all of them,
-including three new rulings A11, A12 and A13, is `fix-round-a.md`.
+**Fix round A is done** - the first inspection's nine findings, including deleting two red-first
+claims that did not reproduce and closing the fail-open that let them stand.
 
-## The next Manager's task
+**Fix round B is in flight** - the second inspection found the ceiling could be walked through by a
+race (proven, not asserted), the human promotion boundary is still a convention any code could mint,
+typing happens before the firing record is durably accepted, and one more set of red-first claims
+does not reproduce.
 
-Work `fix-round-a.md`, worst first, on a phase branch cut from `origin/mission/session-rules`, in its
-OWN worktree. Nothing else. Do not rebuild the demonstration and do not start a new feature.
+## The running order from here
 
-The single most important item is A13: two red-first claims in the phase 1 report do not reproduce
-from the commits they name, and the filtered runner exits 0 on `No test matches`. **That report goes
-to the owner. A false claim in it is worse than a missing feature.** Repair it by committing a
-reproducible red probe, or delete the claim and say so plainly in what is not proven - never by
-restating an unreproducible number in softer words.
+1. Fix round B finishes and is pushed.
+2. **Inspection C**, scoped TIGHTLY to the fix round B diff and to one question per finding: is it
+   really closed, or has it moved? A fix round is new writing and law 3 applies to it like any other.
+3. The Architect merges to `main` through a pull request, and takes the whole-solution run on that
+   pull request as the coverage the parked suite never gave - the machine-wide lock has been held by
+   other missions and a release gate all day, and queueing behind a 48.88-minute suite on a
+   45-minute wait can only ever produce a zero-test timeout.
+4. The Architect finishes `qa-report.md` and emails the owner ONCE.
+
+## Two things the Architect owes the report, and nobody else should write them
+
+- **Row 5, how to write a rule**, is answerable now: `how-to-write-a-rule.md` was corrected to
+  separate what is BUILT today (rules created over the Gateway interface, derived parts written by
+  hand) from what is DESIGNED BUT NOT BUILT (saying it in English and having a model build it). An
+  earlier draft told the owner to press a button that does not exist.
+- **Row 1 stays PENDING and that is the honest answer.** Authoring by conversation is not built, and
+  a run that stops before it is built says so rather than implying otherwise.
 
 ## Branch and worktree convention on this mission
 
