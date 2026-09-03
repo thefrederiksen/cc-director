@@ -147,6 +147,21 @@ public interface IRuleEnvironment
 /// moment earlier, the screen is READ AGAIN: a session that has moved on since the decision is abandoned.
 /// And a rule in dry run never reaches the send at all.
 ///
+/// ONE PASS AT A TIME PER SESSION, AND THAT IS WHAT MAKES THE CEILING A CEILING. Every turn-end signal
+/// starts its own pass, and the free checks read a rule's prior firings BEFORE the agent call and before
+/// anything is typed. Two passes that overlap in that window both see no act yet and both go on to act -
+/// past the cooldown and past the daily cap, because each was counted against a record neither had written
+/// to. The independent inspection of landing B proved exactly that with a synchronised probe: two
+/// evaluations, two sends, two firing records. A ceiling a race can walk through is not a ceiling, and an
+/// agent in a loop is the worst tail risk this feature has.
+///
+/// So a pass takes a per-session gate FIRST, before it reads anything, and a pass that cannot take it does
+/// NOTHING and says so - <see cref="RulePassOutcomes.AlreadyEvaluating"/>. It does not queue. Queuing would
+/// hand the waiting pass a decision made about a screen from before the one that was just acted on, which
+/// is the same staleness the re-read exists to refuse; and a queue of stale passes behind a slow model call
+/// is a pile-up nobody asked for. Dropping the overlapping pass is the direction that acts LESS, and the
+/// next turn-end brings another one along.
+///
 /// SILENCE IS NEVER A DECISION. Every outcome that is not "there was nothing to look at" is written down as
 /// a firing - the decline, the abandonment, and the refusal of an unreadable reply included. A rule that
 /// did nothing because this code threw looks exactly like a rule that considered the screen and declined,
@@ -160,6 +175,12 @@ public sealed class RuleEvaluator
     // The last screen evaluated per session, so "has the screen changed" costs nothing. Never a source of
     // truth about a session - only about what this Gateway has already looked at.
     private readonly System.Collections.Concurrent.ConcurrentDictionary<(TenantId, string), string> _lastScreen = new();
+
+    // ONE PASS AT A TIME PER SESSION. See the serialisation paragraph on this class: this is the ceiling,
+    // and without it the cooldown and the daily cap are both walk-throughs. A session is IN the set for
+    // exactly as long as a pass on it is running, so the set is bounded by the passes in flight rather than
+    // by the number of sessions this Gateway has ever seen - nothing accumulates.
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<(TenantId, string), byte> _passInFlight = new();
 
     /// <param name="environment">Everything it reads and writes.</param>
     /// <param name="registry">The verified checks a reply may name. Defaults to what the product ships.</param>
@@ -177,6 +198,30 @@ public sealed class RuleEvaluator
     public async Task<RulePass> EvaluateAsync(
         TenantId tenant, string directorId, string sessionId, CancellationToken ct)
     {
+        // TAKEN BEFORE ANYTHING IS READ. A gate taken later would still leave the window the overlap
+        // actually uses: the free checks read the firing record, and the record is not written until after
+        // the send.
+        var key = (tenant, sessionId);
+        if (!_passInFlight.TryAdd(key, 0))
+            return Nothing(RulePassOutcomes.AlreadyEvaluating,
+                $"a pass on session {sessionId} was already running, so this one did nothing. Two passes " +
+                "that overlap would both count against a firing record neither had written to yet, and " +
+                "both could act past the cooldown and past the daily cap.");
+
+        try
+        {
+            return await EvaluateOnceAsync(tenant, directorId, sessionId, ct).ConfigureAwait(false);
+        }
+        finally
+        {
+            _passInFlight.TryRemove(key, out _);
+        }
+    }
+
+    /// <summary>One pass, with the per-session gate already held. Everything below assumes it.</summary>
+    private async Task<RulePass> EvaluateOnceAsync(
+        TenantId tenant, string directorId, string sessionId, CancellationToken ct)
+    {
         var rules = _env.Rules(tenant);
         if (rules is null || rules.Count == 0)
             return Nothing(RulePassOutcomes.NoRules, "this account has no rules.");
@@ -192,13 +237,13 @@ public sealed class RuleEvaluator
                 "the session's screen could not be read, and unreadable is not evidence.");
 
         var screen = Join(rows);
-        var key = (tenant, sessionId);
-        _lastScreen.TryGetValue(key, out var previous);
+        var screenKey = (tenant, sessionId);
+        _lastScreen.TryGetValue(screenKey, out var previous);
 
         var candidates = RuleCandidateFilter.Choose(
             rules, facts, screen, previous, id => _env.FiringsFor(tenant, id), _env.NowUtc);
 
-        _lastScreen[key] = screen;
+        _lastScreen[screenKey] = screen;
 
         if (candidates.StoppedBecause is not null)
             return Nothing(RulePassOutcomes.StoppedBeforeAnyRule, candidates.StoppedBecause);
