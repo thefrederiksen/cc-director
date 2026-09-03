@@ -226,3 +226,46 @@ make it pass.** Loosening a comparison so a positive succeeds is exactly how a f
 false act is the failure this whole phase is gated on. The honest options are to change what the model
 is asked to copy, or to accept that some screens cannot carry a citation and to refuse on them. Both are
 decisions to be made and recorded, not a quiet widening of a check.
+
+---
+
+# A PERMANENT FINDING ABOUT THE DESIGN, measured 2026-09-03
+
+## Grounding proves a quote came from the screen. It cannot tell WHOSE STATE the screen describes.
+
+Measured on the new contract at temperature zero, five runs per case, by the phase 1 seat:
+
+- Case `n10`, a report about a sub-agent: the fast model cited **the real line** "the DEV sub-agent hit
+  your monthly spend limit about 31 minutes in and died mid-run".
+- Case `n11`, a fleet listing: it cited **the real banner** "You've used 93% of your weekly limit -
+  resets Jun 13, 3pm".
+
+Both quotes were genuinely on the screen. Both passed the grounding check. Both reached an act on
+**every one of five runs**, recorded as "It would have typed: continue".
+
+**So the grounding check does not catch this class at all, and on a LIVE rule it is an unmitigated
+keystroke** - the only remaining stops are the rule's own checks and its ceilings.
+
+### Why this matters far beyond the model choice
+
+Phase 0 made the safety picture look better than it was. There, all seven of the fast model's wrong
+negatives were stopped by grounding and nothing typed - so a wrong judgement appeared to have a second
+mechanism behind it. **That mitigation was an accident of the old contract**, where the model failed to
+quote anything at all. Ask it for a quote properly and it supplies a real one, and the backstop
+evaporates exactly when the model is confident and wrong.
+
+**Grounding and judgement answer different questions and neither substitutes for the other:**
+
+| Check | Answers | Cannot answer |
+| --- | --- | --- |
+| Grounding (`RuleTriggerWords`, ruling A12) | Are these words really on the screen | Whose state they describe |
+| The model's judgement | Is this session in that situation | Nothing else checks this |
+
+A screen reporting ANOTHER session's limit contains every word a real limit screen contains. **No
+mechanism except the judgement itself can separate the two** - which is precisely why the owner's
+scenario C exists, and why a fixed word list could never do this job.
+
+**This goes in the QA report as a property of the feature**, not as a phase 1 footnote. It is the
+strongest available answer to "why does this need a model at all", and it is also the honest statement
+of where the feature's safety actually rests: on one judgement, with ceilings and dry run behind it, and
+NOT on grounding.
