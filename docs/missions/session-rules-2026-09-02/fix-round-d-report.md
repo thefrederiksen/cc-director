@@ -354,7 +354,7 @@ accident rather than admitting agents, and D11 is defence in depth on a grant th
 | Suite | Result |
 | --- | --- |
 | `.\scripts\test-local.ps1` (9 projects) | every outcome Completed; 4,906 total, 0 failed, 2 skipped. The script's budget verdict flagged `Gateway.UnitTests` at 1 minute 59 seconds against the 120-second ceiling; that is a budget note, not a test failure, and the suite grew by the guard fix's and this round's tests |
-| `Gateway.Tests` (parked, hosted), full | GATEWAY_TESTS_RESULT |
+| `Gateway.Tests` (parked, hosted), full | NOT COMPLETED BY THIS SEAT. A full run at `3020fc945` was moved to the background by the tool cap at ten minutes and killed; a chunked re-run at the same commit completed five filtered chunks green (403, 174 with 4 skipped, 294, 108 and 211 tests - 1,190 of 2,339 - `dotnet test src/CcDirector.Gateway.Tests --no-build --filter "<the chunk's classes>"`, 6m42s, 3m58s, 5m23s, 3m38s and 5m28s of test time) and was then stopped on the Architect's ruling E4. The Architect runs the full parked suite on the final merged tree. This row used to hold a placeholder token, which inspection E named; this is the truth |
 | `Gateway.Tests` filtered to the probe, the census and the guard census | 16 + 2 green |
 | `npm run typecheck` (4 workspaces) | clean |
 | `npm test` per workspace | client-core 982, cockpit 298, mobile 14, cc-assistant 106, all green |
