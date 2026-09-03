@@ -165,11 +165,19 @@ public sealed class HostedProTrialTests : IDisposable
     // ---------------------------------------------------------------------------------------------------
 
     [Fact]
-    public void Fifteen_days_later_with_no_subscription_the_entitlement_read_says_NOT_ENTITLED()
+    public void Fifteen_days_later_with_no_subscription_the_account_lands_on_FREE_and_keeps_running()
     {
-        // The acceptance criterion for expiry. This is the read the request-path cutoff calls on every hosted
-        // request, so a NotEntitled here IS the 402 on dictation, spoken replies and the wingman. If this
-        // returned Entitled, the trial would be a permanent free plan.
+        // The acceptance criterion for expiry, REWRITTEN for the owner decision of 2026-09-02. It used to read
+        // NotEntitled, and that answer travelled all the way to a tombstone: the member devices were revoked
+        // and their sessions dropped, so the end of a trial broke the machine instead of quietening it.
+        //
+        // Now the trial ENDS but the account does not. The assertions below are the whole policy and must be
+        // read together - Entitled ALONE would be a permanent free Pro, which is the failure this test guarded
+        // against before and still guards against now:
+        //   - it is Entitled, so nothing revokes and the sessions keep running;
+        //   - the tier is FREE, not pro, so it is a different plan and not a silent extension of the trial;
+        //   - free grants hosted capacity and NONE of the three artificial-intelligence scopes, which is what
+        //     actually makes dictation, spoken replies and the wingman go quiet.
         var db = OpenWithEntitlements();
         var trials = new TrialRegistry(db);
         var entitlements = new EntitlementRegistry(db, requireLivemode: false, trials: trials);
@@ -178,8 +186,18 @@ public sealed class HostedProTrialTests : IDisposable
 
         var decision = entitlements.Evaluate(Subject, SignupMoment.AddDays(15));
 
-        Assert.Equal(EntitlementOutcome.NotEntitled, decision.Outcome);
-        Assert.NotEqual(EntitlementOutcome.Unknown, decision.Outcome);   // a refusal, not a retry
+        Assert.Equal(EntitlementOutcome.Entitled, decision.Outcome);
+        Assert.Equal(EntitlementRegistry.TierFree, decision.Tier);
+        Assert.NotEqual(EntitlementRegistry.TierPro, decision.Tier);
+
+        // The plan, stated where plans are decided. This is the assertion that stops "the trial never ends".
+        Assert.True(EntitlementScopes.GrantsHostedGateway(decision.Tier));
+        Assert.False(EntitlementScopes.Grants(decision.Tier, EntitlementScopes.Dictation));
+        Assert.False(EntitlementScopes.Grants(decision.Tier, EntitlementScopes.Tts));
+        Assert.False(EntitlementScopes.Grants(decision.Tier, EntitlementScopes.Wingman));
+
+        // A free plan has no paid period, so nothing may be clipped to one.
+        Assert.Null(decision.CurrentPeriodEnd);
     }
 
     [Fact]
@@ -197,17 +215,31 @@ public sealed class HostedProTrialTests : IDisposable
         var oneTickBefore = entitlements.Evaluate(Subject, SignupMoment.AddDays(14).AddTicks(-1));
         var atExpiry = entitlements.Evaluate(Subject, SignupMoment.AddDays(14));
 
+        // The boundary is now a TIER change rather than an outcome change - both instants are Entitled, because
+        // the account survives its own trial. Asserting only the outcome would pass while the trial ran forever,
+        // so the tier is what this test turns on, and the artificial-intelligence scope is what proves the tier
+        // means something.
         Assert.Equal(EntitlementOutcome.Entitled, oneTickBefore.Outcome);
-        Assert.Equal(EntitlementOutcome.NotEntitled, atExpiry.Outcome);
+        Assert.Equal(EntitlementRegistry.TierPro, oneTickBefore.Tier);
+        Assert.True(EntitlementScopes.Grants(oneTickBefore.Tier, EntitlementScopes.Dictation));
+
+        Assert.Equal(EntitlementOutcome.Entitled, atExpiry.Outcome);
+        Assert.Equal(EntitlementRegistry.TierFree, atExpiry.Tier);
+        Assert.False(EntitlementScopes.Grants(atExpiry.Tier, EntitlementScopes.Dictation));
     }
 
     [Fact]
-    public void Enrolling_again_after_the_trial_has_ended_is_refused_and_mints_nothing()
+    public void Enrolling_again_after_the_trial_has_ended_SUCCEEDS_on_the_free_plan()
     {
-        // The expiry proven end to end, through the enrollment path rather than the registry: a member whose
-        // fourteen days are up meets a 402 and gets no key. The tenant they minted during the trial still
-        // exists - the account is not deleted, self-host remains available - so this asserts the DEVICE KEY
-        // was withheld, which is what actually gates hosted use.
+        // The expiry proven end to end through the enrollment path, and this is the test that states the owner
+        // decision most directly: a member whose fourteen days are up used to meet a 402 and get no device key,
+        // which meant a new machine could not be connected and - through the request-path cutoff - the ones
+        // already connected were revoked. Now they enroll, on free.
+        //
+        // The DEVICE KEY is the assertion that matters, exactly as it was when this test asserted the opposite.
+        // The key is what actually unlocks hosted use, so proving it is ISSUED is proving the member still has
+        // a working product. What they no longer have is the artificial intelligence, and that is asserted on
+        // the plan by the tests above rather than re-derived here.
         var db = OpenWithEntitlements();
         var (devices, tenants, validator) = Wire(db);
         var trials = new TrialRegistry(db);
@@ -220,8 +252,15 @@ public sealed class HostedProTrialTests : IDisposable
         var after = HostedEnrollmentEndpoint.Enroll(Token(), Req(), devices, tenants, validator,
             entitlements, SignupMoment.AddDays(15), trials);
 
-        Assert.Equal(402, after.Status);
-        Assert.Null(after.Response);
+        Assert.Equal(200, after.Status);
+        Assert.NotNull(after.Response);
+        Assert.False(string.IsNullOrWhiteSpace(after.Response!.DeviceKey));
+
+        // And enrolling on free must never look like a fresh trial: no trial is running afterwards. That the
+        // spent window is never re-granted is asserted separately, by the second-grant test above.
+        Assert.Equal(TrialOutcome.None, trials.Evaluate(Subject, SignupMoment.AddDays(15)).Outcome);
+        Assert.Equal(EntitlementRegistry.TierFree,
+            entitlements.Evaluate(Subject, SignupMoment.AddDays(15)).Tier);
     }
 
     // ---------------------------------------------------------------------------------------------------
@@ -281,9 +320,15 @@ public sealed class HostedProTrialTests : IDisposable
         var result = HostedEnrollmentEndpoint.Enroll(Token(), Req(), devices, tenants, validator,
             new EntitlementRegistry(db, requireLivemode: false, trials: trials), SignupMoment, trials);
 
-        Assert.Equal(402, result.Status);
-        Assert.Null(result.Response);
+        // NO TRIAL is still the rule, and it is the assertion this test exists for - the owner rollout decision
+        // is untouched by the free plan. What changed is the consequence: being refused a trial is no longer
+        // being refused the product. The account enrolls on free.
         Assert.Equal(TrialOutcome.None, trials.Evaluate(Subject, SignupMoment).Outcome);
+
+        Assert.Equal(200, result.Status);
+        Assert.NotNull(result.Response);
+        Assert.Equal(EntitlementRegistry.TierFree,
+            new EntitlementRegistry(db, requireLivemode: false, trials: trials).Evaluate(Subject, SignupMoment).Tier);
     }
 
     // ---------------------------------------------------------------------------------------------------
@@ -398,19 +443,71 @@ public sealed class HostedProTrialTests : IDisposable
     // ---------------------------------------------------------------------------------------------------
 
     [Fact]
-    public async Task The_402_a_member_meets_after_the_trial_says_what_to_do_about_it()
+    public async Task Over_the_wire_a_member_past_their_trial_is_enrolled_on_free_and_not_refused()
     {
-        // The acceptance criterion is not just "denied" - it is "a message that points at subscribing, not a
-        // raw error". So this drives the REAL endpoint over HTTP and reads the body the client renders. The
-        // Gateway owns the wording; the client only shows it. Asserted on the wire because a constant that is
-        // never written into a response is not a message anybody sees.
+        // THE OWNER DECISION, PROVEN ON THE WIRE. This test used to assert the opposite - that a member past
+        // their trial met a 402 - and it drove the real endpoint over HTTP precisely because the refusal had to
+        // be shown to be real rather than merely coded. The same standard applies to the grant that replaced
+        // it: the member must actually receive a device key from a live endpoint, not just a 200 from a method.
+        //
+        // The account here is already known to this Gateway, so the rollout rule refuses it a trial. That is
+        // exactly the member the old code turned away. Under the free plan they are enrolled.
         var db = OpenWithEntitlements();
         var (devices, tenants, validator) = Wire(db);
         var trials = new TrialRegistry(db);
         var entitlements = new EntitlementRegistry(db, requireLivemode: false, trials: trials);
 
-        // Already known to this Gateway, so the trial is refused and the refusal is the one under test.
         tenants.MintOrLookupBySubject(Subject, "returning@example.com");
+
+        var builder = WebApplication.CreateBuilder();
+        builder.Logging.ClearProviders();
+        var app = builder.Build();
+        app.Urls.Add("http://127.0.0.1:0");
+        HostedEnrollmentEndpoint.Map(app, devices, tenants, validator, entitlements, trials);
+        await app.StartAsync();
+
+        try
+        {
+            using var http = new HttpClient { BaseAddress = new Uri(app.Urls.First()) };
+            var msg = new HttpRequestMessage(HttpMethod.Post, HostedEnrollmentEndpoint.Path)
+            {
+                Content = JsonContent.Create(new { deviceId = "device-1", machineName = "M", platform = "linux", deviceType = "workstation" }),
+            };
+            msg.Headers.Authorization = new AuthenticationHeaderValue("Bearer", Token());
+
+            var resp = await http.SendAsync(msg);
+            var body = await resp.Content.ReadAsStringAsync();
+
+            Assert.Equal(200, (int)resp.StatusCode);
+            Assert.Contains("deviceKey", body, StringComparison.OrdinalIgnoreCase);
+
+            // And it is free, not a trial and not a paid plan.
+            Assert.Equal(EntitlementRegistry.TierFree, entitlements.Evaluate(Subject, SignupMoment).Tier);
+            Assert.Equal(TrialOutcome.None, trials.Evaluate(Subject, SignupMoment).Outcome);
+        }
+        finally
+        {
+            await app.StopAsync();
+        }
+    }
+
+    [Fact]
+    public async Task The_402_that_remains_still_says_what_to_do_about_it()
+    {
+        // THE COVERAGE THE TEST ABOVE GAVE UP, RETARGETED RATHER THAN DELETED. The wire assertion on
+        // SubscribeMessage and SubscribeUrl existed to hold a real acceptance criterion - a refusal must point
+        // at subscribing rather than being a raw error - and those two constants are asserted on the wire in
+        // this file and nowhere else. The free plan removed the 402 that test was reading, so deleting it would
+        // have quietly dropped the only proof that a refusal a member actually meets carries its message.
+        //
+        // A 402 still exists: a plan that pays for the artificial intelligence but NOT for hosted capacity.
+        // That is the pro self-host plan, and it is refused hosted provisioning by the plan gate. Same endpoint,
+        // same response shaping, same two constants - so the criterion is still proven, on the refusal that
+        // still happens.
+        var db = OpenWithEntitlements(status: "active", tier: EntitlementRegistry.TierProSelfHost);
+        var (devices, tenants, validator) = Wire(db);
+        var trials = new TrialRegistry(db);
+        var entitlements = new EntitlementRegistry(db, requireLivemode: false, trials: trials);
 
         var builder = WebApplication.CreateBuilder();
         builder.Logging.ClearProviders();
@@ -434,6 +531,7 @@ public sealed class HostedProTrialTests : IDisposable
             Assert.Equal(402, (int)resp.StatusCode);
             Assert.Contains(EntitlementRegistry.SubscribeMessage, body, StringComparison.Ordinal);
             Assert.Contains(EntitlementRegistry.SubscribeUrl, body, StringComparison.Ordinal);
+            AssertNothingWasGivenAway(tenants);
         }
         finally
         {

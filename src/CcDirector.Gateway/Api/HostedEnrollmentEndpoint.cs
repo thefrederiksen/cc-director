@@ -148,7 +148,20 @@ internal static class HostedEnrollmentEndpoint
             // hosted before the trial existed, and the owner's rollout rule grants it nothing (issue #2117).
             // TrialRegistry re-checks its own ledger, so an account whose trial has already ended is refused
             // here rather than being handed a second one.
-            if (outcome == Tenancy.EntitlementOutcome.NotEntitled && trials is not null)
+            // "NOT PAYING" IS THE CONDITION, AND IT IS NOT THE SAME AS "NOT ENTITLED" ANY MORE. Since the free
+            // plan arrived (2026-09-02) an account with no paid row and no running trial comes back ENTITLED, on
+            // tier free - so a test for NotEntitled alone would silently stop handing out trials, and every new
+            // member would be enrolled straight onto free and quietly lose the fourteen days they are owed.
+            // Nothing would look broken: enrolment would simply succeed. The question this gate has always been
+            // asking is "is this account PAYING", so it now asks exactly that.
+            //
+            // Unknown is still excluded, for the reason stated above: a trial granted on a failed read hands a
+            // free window to an account whose subscription we could not see.
+            var notPaying = outcome == Tenancy.EntitlementOutcome.NotEntitled
+                            || (outcome == Tenancy.EntitlementOutcome.Entitled
+                                && Tenancy.EntitlementRegistry.IsFree(tier));
+
+            if (notPaying && trials is not null)
             {
                 var alreadyKnown = tenants.LookupBySubject(validation.Subject) is not null;
                 var trial = trials.GrantIfFirstArrival(validation.Subject, alreadyKnown, now);
@@ -181,6 +194,10 @@ internal static class HostedEnrollmentEndpoint
                     "the entitlement service is temporarily unavailable; please try again");
             }
 
+            // Reachable only where the free plan is not in play - a Gateway wired with no trial ledger at all,
+            // which is the self-host control. On the hosted service a successful pair of reads now yields free
+            // rather than a refusal, which is the whole point of the change: the door below is the plan gate,
+            // not a paywall.
             if (outcome == Tenancy.EntitlementOutcome.NotEntitled)
             {
                 FileLog.Write("[HostedEnrollment] REFUSED: the entitlement read succeeded and this account has no active entitlement (no tenant minted, no device key issued)");

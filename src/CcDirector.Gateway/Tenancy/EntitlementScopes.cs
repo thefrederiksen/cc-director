@@ -69,6 +69,24 @@ public static class EntitlementScopes
             // The pro SELF-HOST plan: the artificial-intelligence features and NOTHING ELSE. The absence of
             // HostedGateway on this line is the whole point of the plan and of this file.
             [EntitlementRegistry.TierProSelfHost] = Set(AiScopes),
+
+            // The FREE plan: hosted capacity and NOTHING ELSE - the exact mirror of the self-host line above.
+            // An account with no paid row and no running trial holds this, so this single line is what makes
+            // the end of a trial a downgrade instead of a cutoff: the member keeps the tunnel, the cockpit, the
+            // mobile application and every session on every machine, and loses dictation, spoken replies and
+            // the wingman.
+            //
+            // THE THREE ABSENT SCOPES ARE THE PRICE OF THE PLAN. Free costs us hosting, which is small and
+            // fixed; it must never cost us a model call, which is neither. If a future feature runs a model on
+            // our meter, it belongs behind one of the artificial-intelligence scopes and therefore behind Pro -
+            // adding it to this line would give away the thing the plans are drawn around.
+            //
+            // Note that this Gateway does not itself police the three artificial-intelligence scopes today -
+            // they are enforced at the website proxy that actually calls the models, and a free account is
+            // refused there because it has neither a subscription row nor a live trial. This line is still the
+            // truthful statement of what the plan grants, and it is what any Gateway-side check must read the
+            // day one is added.
+            [EntitlementRegistry.TierFree] = Set(HostedGateway),
         };
 
     // The pre-column row. Carried separately from the table because its key is null and because its reason is
