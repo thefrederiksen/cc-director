@@ -3499,7 +3499,7 @@ public sealed class GatewayHost : IAsyncDisposable
         // roster and drive the draft route over real HTTP with two real tenants.
         var ruleAuthor = new Rules.RuleAuthor(
             (tenant, prompt, ct) => (RuleAuthoringAskForTests ?? AskTheAuthoringModelAsync)(tenant, prompt, ct),
-            (tenant, sessionId, ct) => (RuleScreenReaderForTests ?? ReadRuleScreenAsync)(TenantId.Local, sessionId, ct));
+            (tenant, sessionId, ct) => (RuleScreenReaderForTests ?? ReadRuleScreenAsync)(tenant, sessionId, ct));
         Api.SessionRuleEndpoints.Map(_app, _sessionRules, ruleAuthor, () => _tenantContext.Current);
 
         // Workflow runs (phase 4, issue #1771): the outcome spine's REST surface. One row per
