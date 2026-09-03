@@ -189,6 +189,13 @@ public sealed class SessionRuleStore : IRuleReading
                 $"this evidence was given for the rule {grant.RuleId}, not for {id}. A person agrees to " +
                 "one rule going live, not to whichever rule is asked for next.");
 
+        // SPENT HERE, ONCE. A person agreed to one rule going live on one occasion; evidence that could be
+        // presented twice is evidence that could be captured and replayed.
+        if (!grant.TryConsume())
+            throw new RuleRejectedException(
+                "this evidence has already been used to promote a rule. A person agrees once, to one rule, " +
+                "and the same agreement cannot be presented again.");
+
         lock (_gate)
         {
             using var ctx = _db.CreateContext();

@@ -103,7 +103,8 @@ public sealed class RuleEvaluatorAgainstTheRealStoreTests : IDisposable
         return store.Promote(
             rule.Id,
             RulePromotionGrant.FromAuthenticatedRequest(
-                rule.Id, "device-9f2c", "I have read this rule's dry-run record and I am making it live.", Now),
+                rule.Id, AnInboundRequest.FromDevice(),
+                "I have read this rule's dry-run record and I am making it live.", Now),
             Now);
     }
 

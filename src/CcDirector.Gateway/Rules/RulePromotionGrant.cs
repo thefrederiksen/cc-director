@@ -1,31 +1,50 @@
+using Microsoft.AspNetCore.Http;
+
 namespace CcDirector.Gateway.Rules;
 
 /// <summary>
 /// THE EVIDENCE THAT A PERSON ASKED FOR A RULE TO GO LIVE. Dry run is the owner's most important bound -
 /// it is what puts a human between a standing instruction and its first real use - and bound 6 forbids a
-/// rule promoting itself. Before this type existed, <c>Promote</c> took a rule id and a timestamp and
-/// nothing else, so any code that could read rules could also move one to live. The independent inspection
-/// of landing A found that, and it was right: nothing about the caller in that test made it a person.
+/// rule promoting itself.
 ///
-/// WHAT THIS ACTUALLY ENFORCES, STATED EXACTLY, because a security bound that is described more broadly
-/// than it holds is worse than none:
+/// THIS TYPE HAS BEEN WRONG TWICE, AND BOTH VERSIONS ARE WORTH KEEPING WRITTEN DOWN, because each one read
+/// as a bound while being a convention:
 ///
-///  - A grant cannot be constructed. The only way to obtain one is
-///    <see cref="FromAuthenticatedRequest"/>, which REFUSES unless it is given an authenticated caller
-///    identity that the Gateway's own request pipeline resolved, and an acknowledgement written by whoever
-///    is asking. Code with no inbound request has neither, so no code path inside this feature can mint one.
-///  - A grant names ONE rule. A grant obtained for one rule cannot promote another, so a grant cannot be
-///    captured and reused against a different instruction.
-///  - The evaluation path cannot reach this type at all, and that is asserted against the built assembly by
-///    <c>RulesPromotionBoundaryGuardTests</c> rather than left as a convention.
+///  1. <c>Promote</c> first took a rule id and a timestamp and nothing else, so anything that could read
+///     rules could move one to live. The independent inspection of landing A found it.
+///  2. This type was then introduced - and its factory was PUBLIC and took the caller's identity and their
+///     acknowledgement as STRINGS. It proved that two strings a caller made up were not blank. Any Gateway
+///     code could invent both, and the comment sitting beside it said nothing automated could promote a
+///     rule. The independent inspection of landing B found that.
 ///
-/// WHAT IT DOES NOT ENFORCE. It is not a proof that a human being was at a keyboard - nothing in a process
-/// can be. It is a proof that the act was carried by an authenticated request, is attributable to the
-/// caller the pipeline resolved, and cannot be performed by the code that evaluates rules. An attacker
-/// already holding a device key is authentication's problem, not this bound's.
+/// WHAT IT ENFORCES NOW, STATED EXACTLY, because a security bound described more broadly than it holds is
+/// worse than none:
+///
+///  - A grant cannot be constructed: the constructor is private and a structural test asserts that nothing
+///    in the built assembly calls it.
+///  - The only way to obtain one is <see cref="FromAuthenticatedRequest"/>, which is INTERNAL - so nothing
+///    outside this assembly can reach it at all - and which takes THE INBOUND REQUEST ITSELF rather than a
+///    description of one. The caller identity is read from what the request pipeline authenticated. Code
+///    with no inbound request has nothing to pass, and cannot invent a value that would do instead.
+///  - Inside this assembly, a structural test over the built code asserts that the ONLY type reaching the
+///    factory, or reaching <c>SessionRuleStore.Promote</c>, is the promote endpoint. That guard has been
+///    watched failing on exactly the shape it is there to catch: a probe was committed that minted a grant
+///    from ordinary rules code, and the guard named it.
+///  - A grant names ONE rule and is SINGLE USE. It is consumed by the promotion it was obtained for, so a
+///    grant cannot be captured and replayed, and cannot be turned on a different instruction.
+///
+/// WHAT IT DOES NOT ENFORCE. It is not proof that a human being was at a keyboard - nothing inside a
+/// process can be. Within one assembly, access modifiers cannot make a capability physically unreachable
+/// either: code in this assembly could fabricate an <see cref="HttpContext"/> and stamp an identity on it.
+/// What stands against that is not a hope - it is a structural test that reads the built assembly and
+/// fails on any type but the endpoint reaching this factory, so doing it would be a visible, reviewable act
+/// and not a quiet one. An attacker already holding a device key is authentication's problem, not this
+/// bound's.
 /// </summary>
 public sealed class RulePromotionGrant
 {
+    private int _used;
+
     private RulePromotionGrant(Guid ruleId, string actor, string acknowledgement, DateTime askedUtc)
     {
         RuleId = ruleId;
@@ -48,20 +67,30 @@ public sealed class RulePromotionGrant
     public DateTime AskedUtc { get; }
 
     /// <summary>
-    /// The ONLY way to obtain a grant: from an inbound request the Gateway authenticated.
+    /// Spend this grant. It answers true exactly once: a person agreed to ONE rule going live, on one
+    /// occasion, and a piece of evidence that could be presented again is a piece of evidence that could be
+    /// captured and replayed.
+    /// </summary>
+    internal bool TryConsume() => Interlocked.Exchange(ref _used, 1) == 0;
+
+    /// <summary>
+    /// The ONLY way to obtain a grant: from an inbound request THIS GATEWAY AUTHENTICATED. Internal, so
+    /// nothing outside this assembly can reach it, and taking the request itself so that the caller cannot
+    /// supply an identity of its own invention.
     /// </summary>
     /// <param name="ruleId">The rule the caller asked to promote.</param>
-    /// <param name="callerIdentity">Who the request pipeline resolved this caller to be. Blank means the
-    /// caller is not attributable, which is exactly the case a grant must refuse.</param>
+    /// <param name="http">The inbound request. Its caller identity is READ, never accepted as a parameter -
+    /// that difference is the whole bound. A request the pipeline could not name is refused, which is
+    /// exactly the case anything running on its own would present.</param>
     /// <param name="acknowledgement">What the person said when they asked. Required, so promoting is a
     /// deliberate sentence rather than an empty POST that could be replayed by anything.</param>
     /// <param name="askedUtc">When they asked.</param>
-    /// <exception cref="RuleRejectedException">The caller is not attributable, or said nothing.</exception>
-    public static RulePromotionGrant FromAuthenticatedRequest(
-        Guid ruleId, string? callerIdentity, string? acknowledgement, DateTime askedUtc)
+    /// <exception cref="RuleRejectedException">The request is not attributable, or said nothing.</exception>
+    internal static RulePromotionGrant FromAuthenticatedRequest(
+        Guid ruleId, HttpContext? http, string? acknowledgement, DateTime askedUtc)
     {
-        var actor = (callerIdentity ?? "").Trim();
-        if (actor.Length == 0)
+        var actor = CallerOf(http);
+        if (actor is null)
             throw new RuleRejectedException(
                 "a rule is moved out of dry run by a person, and this request has no caller the Gateway " +
                 "could name. Nothing that runs on its own can promote a rule.");
@@ -74,4 +103,28 @@ public sealed class RulePromotionGrant
 
         return new RulePromotionGrant(ruleId, actor, said, askedUtc.ToUniversalTime());
     }
+
+    /// <summary>
+    /// Who the request pipeline resolved this caller to be, or null when it resolved nobody. It READS what
+    /// the pipeline already decided - the authenticated principal, or the device the key middleware
+    /// matched - and decides nothing itself: a second answer to a question the pipeline has answered is a
+    /// second place for the two to disagree.
+    /// </summary>
+    private static string? CallerOf(HttpContext? http)
+    {
+        if (http is null) return null;
+
+        var identity = http.User?.Identity;
+        if (identity is { IsAuthenticated: true } && !string.IsNullOrWhiteSpace(identity.Name))
+            return identity.Name!.Trim();
+
+        if (http.Items.TryGetValue(DeviceKeyItem, out var device) && device is string deviceId
+            && !string.IsNullOrWhiteSpace(deviceId))
+            return deviceId.Trim();
+
+        return null;
+    }
+
+    /// <summary>Where the device-key middleware leaves the device it authenticated.</summary>
+    internal const string DeviceKeyItem = "DeviceKeyId";
 }
