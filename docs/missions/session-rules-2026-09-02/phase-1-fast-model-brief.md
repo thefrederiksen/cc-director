@@ -210,3 +210,19 @@ the check and the prompt looking at different text.
 
 One normaliser, applied to both sides, at one call site. The test is a real glyph-laden line from the
 corpus: a faithful quote passes, an invented one still fails.
+
+### Resolution of P1-E, recorded 2026-09-03
+
+**The phase did better than this ruling.** P1-E assumed a glyph normaliser would be added and required
+it to be applied to both sides. Instead the phase added NO normaliser at all: the model is asked for the
+words only, the sole normaliser remains D2's trim, and the sole comparison remains D2's check against
+the very excerpt the prompt carried. That removes the failure mode rather than balancing it, and it is
+the better answer.
+
+**The guard that replaces the ruling.** The test with the real glyph-laden line from case `p01` is the
+arbiter. If a faithful words-only quote does NOT pass against that line - because the glyphs sit between
+the words rather than around them, or the spacing differs - **the comparison must not be loosened to
+make it pass.** Loosening a comparison so a positive succeeds is exactly how a false act gets in, and a
+false act is the failure this whole phase is gated on. The honest options are to change what the model
+is asked to copy, or to accept that some screens cannot carry a citation and to refuse on them. Both are
+decisions to be made and recorded, not a quiet widening of a check.
