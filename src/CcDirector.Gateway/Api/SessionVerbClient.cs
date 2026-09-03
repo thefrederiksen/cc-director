@@ -96,19 +96,66 @@ internal sealed class SessionVerbClient
         return result is not null && result.Ok ? DirectorCommandRouter.ReadBody<ScreenGridResponse>(result) : null;
     }
 
-    /// <summary>Send a prompt into the session. Tunnel-only ("prompt" verb, the <see cref="PromptRequest"/>
-    /// as payload -> <see cref="PromptResponse"/>); a failed or absent tunnel result maps to the same
-    /// (false, null, error) tuple. This is the UserInput send the voice cluster needs.</summary>
-    public async Task<(bool ok, PromptResponse? body, string? error)> PostPromptAsync(
+    /// <summary>What became of a prompt send. THREE answers, because the boolean below has only two and the
+    /// missing one is the one that matters: a command that never left this Gateway is not the same event as
+    /// one that went out and came back a failure.</summary>
+    internal enum PromptSendKind
+    {
+        /// <summary>The Director answered Ok. The prompt was accepted.</summary>
+        Accepted,
+
+        /// <summary>The command produced no result at all - the owning Director is not on the tunnel, or
+        /// this Gateway refused the send before it left. NOTHING was sent.</summary>
+        NeverLeftTheGateway,
+
+        /// <summary>The command went out and what became of it is not known: a timeout, a dropped tunnel, or
+        /// a Director that answered a failure. It must not be reported as accepted OR as never sent.</summary>
+        Unanswered,
+    }
+
+    /// <summary>What became of a prompt send, and the route's own words for it.</summary>
+    internal sealed record PromptSendOutcome(PromptSendKind Kind, PromptResponse? Body, string Detail);
+
+    /// <summary>
+    /// Send a prompt into the session, KEEPING THE THREE OUTCOMES APART. Tunnel-only ("prompt" verb, the
+    /// <see cref="PromptRequest"/> as payload -> <see cref="PromptResponse"/>).
+    ///
+    /// <see cref="PostPromptAsync"/> collapses the last two into one false, deliberately, because its
+    /// callers only ever needed "did it work". A caller that writes a DURABLE RECORD of what it did to
+    /// somebody's session needs more than that: reporting an absent tunnel result and a remote refusal the
+    /// same way is how a firing record came to say that text had been typed into a session that never
+    /// received it. So the distinction is preserved here rather than reconstructed by parsing an error
+    /// string, which would be a second answer to a question this layer already knows.
+    /// </summary>
+    public async Task<PromptSendOutcome> SendPromptAsync(
         string sid, PromptRequest req, CancellationToken ct = default)
     {
         var result = await DirectorCommandRouter.TrySendAsync(_sendCommand, _director.DirectorId, "prompt", sid, req, ct,
             machineName: _director.MachineName);
+
         if (result is null)
-            return (false, null, "owning Director is not connected to the tunnel");
+            return new PromptSendOutcome(
+                PromptSendKind.NeverLeftTheGateway, null,
+                "the owning Director is not connected to the tunnel, so the prompt never left this Gateway.");
+
         return result.Ok
-            ? (true, DirectorCommandRouter.ReadBody<PromptResponse>(result), null)
-            : (false, null, DirectorCommandRouter.DescribeFailure(result));
+            ? new PromptSendOutcome(PromptSendKind.Accepted, DirectorCommandRouter.ReadBody<PromptResponse>(result), "")
+            : new PromptSendOutcome(PromptSendKind.Unanswered, null, DirectorCommandRouter.DescribeFailure(result));
+    }
+
+    /// <summary>Send a prompt into the session. Tunnel-only ("prompt" verb, the <see cref="PromptRequest"/>
+    /// as payload -> <see cref="PromptResponse"/>); a failed or absent tunnel result maps to the same
+    /// (false, null, error) tuple. This is the UserInput send the voice cluster needs. A caller that RECORDS
+    /// what it did should use <see cref="SendPromptAsync"/> instead - see its remarks.</summary>
+    public async Task<(bool ok, PromptResponse? body, string? error)> PostPromptAsync(
+        string sid, PromptRequest req, CancellationToken ct = default)
+    {
+        var sent = await SendPromptAsync(sid, req, ct).ConfigureAwait(false);
+        return sent.Kind == PromptSendKind.Accepted
+            ? (true, sent.Body, null)
+            : (false, null, sent.Kind == PromptSendKind.NeverLeftTheGateway
+                ? "owning Director is not connected to the tunnel"
+                : sent.Detail);
     }
 
     /// <summary>

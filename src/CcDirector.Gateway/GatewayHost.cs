@@ -560,6 +560,9 @@ public sealed class GatewayHost : IAsyncDisposable
     // held here and fetched, instead of copied onto every machine by the installer. Served by
     // Api.SkillEndpoints - a separate register from workflows, sharing their storage shape.
     private readonly Skills.SkillStore _skills;
+    // The standing instructions an account gives about its sessions, and the record of every time one
+    // fired (Session Rules mission). Served by Api.SessionRuleEndpoints; read by the evaluator below.
+    private readonly Rules.SessionRuleStore _sessionRules;
     // The append-only governance event ledger (issue #1771, spine item 2): immutable session/run state
     // transitions, the duration spine no run row can give.
     private readonly Governance.GovernanceEventLedger _governanceEvents;
@@ -784,6 +787,11 @@ public sealed class GatewayHost : IAsyncDisposable
     // It rides the SAME Working -> idle boundary the watcher already observes, which is what makes it
     // non-interruptive by construction: a Working session is never evaluated and never touched.
     private Supervision.SessionSupervisor? _sessionSupervisor;
+
+    // The rule evaluator (Session Rules mission, phase 2). Hangs off the SAME Working -> idle boundary the
+    // supervisor does, so a working session is out of its reach by construction rather than by a rule
+    // somebody has to remember.
+    private Rules.RuleTurnEndLauncher? _ruleLauncher;
     private Wingman.WingmanVoiceService? _voiceService;
     // Voice mode is a standing intent, not a one-time action: a tenant that is in voice mode wants EVERY one
     // of its sessions narrating, including the ones that do not exist yet. This timer is how that intent
@@ -1322,6 +1330,9 @@ public sealed class GatewayHost : IAsyncDisposable
         // The central skill library: persisted in the skills tables, the shipped built-ins
         // seeded/upgraded at construction. Nothing is deployed to any machine - agents fetch.
         _skills = new Skills.SkillStore(_gatewayDb, deferInitialize: true);
+        // The rule store (Session Rules mission, phase 1). No built-ins to seed - every rule is one the
+        // account said - and no legacy file to import.
+        _sessionRules = new Rules.SessionRuleStore(_gatewayDb);
         // The governance event ledger (issue #1771, spine item 2): append-only session/run transitions on
         // the EF data layer, so a Gateway restart never loses a recorded transition.
         _governanceEvents = new Governance.GovernanceEventLedger(_gatewayDb);
@@ -2356,6 +2367,26 @@ public sealed class GatewayHost : IAsyncDisposable
     /// activity ledger for the recovery log; and the owner-notify channel the network-diagnostics alerts use
     /// for the escalation email.
     /// </summary>
+    /// <summary>
+    /// The rule evaluator's production wiring (Session Rules mission, phase 2). Every dependency is the same
+    /// one the supervisor beside it uses, and for the same reasons: the Director is resolved WITHIN ITS OWN
+    /// TENANT, a Director that is not connected resolves to null and every read treats that as "cannot tell",
+    /// and the session's facts come from the pushed roster snapshot rather than from dialing the session.
+    /// </summary>
+    private Rules.GatewayRuleEnvironment BuildRuleEnvironment() =>
+        new(
+            store: _sessionRules,
+            route: (tenant, directorId) =>
+            {
+                var director = Registry.Get(tenant, directorId);
+                if (director is null) return null;
+                Api.DirectorCommandRouter.SendDirectorCommandAsync sendCommand = SendCommandAsync;
+                return new Api.SessionVerbClient(director, sendCommand);
+            },
+            session: (tenant, sessionId) => PushedSessions.TryLocate(tenant, sessionId, _streamStaleAfter)?.Session,
+            brainProvider: WingmanBrainAsync,
+            enterTenantScope: tenant => _tenantBoundary.EnterScope(tenant));
+
     private Supervision.GatewaySupervisorEnvironment BuildSupervisorEnvironment()
     {
         var notify = new Core.Account.AccountNotifyClient(new HttpClient { Timeout = TimeSpan.FromSeconds(30) });
@@ -2484,6 +2515,14 @@ public sealed class GatewayHost : IAsyncDisposable
         _sessionSupervisor ??= new Supervision.SessionSupervisor(BuildSupervisorEnvironment());
         FileLog.Write("[GatewayHost] StartAsync: session supervisor armed (auto-recovery on a transient transport fault)");
 
+        // The rule evaluator (Session Rules mission, phase 2). It hangs off the SAME turn-end boundary, so
+        // a working session cannot be reached by a rule at all - the only thing that wakes it is a session
+        // crossing into idle.
+        _ruleLauncher ??= new Rules.RuleTurnEndLauncher(
+            new Rules.RuleEvaluator(BuildRuleEnvironment()),
+            enterTenantScope: tenant => _tenantBoundary.EnterScope(tenant));
+        FileLog.Write("[GatewayHost] StartAsync: rule evaluator armed (standing instructions, dry run unless promoted)");
+
         _turnEndWatcher = new TurnEndWatcher(
             onTurnEnd: signal =>
             {
@@ -2532,6 +2571,12 @@ public sealed class GatewayHost : IAsyncDisposable
                 {
                     FileLog.Write($"[GatewayHost] turn-end supervision FAILED: sid={signal.SessionId}: {ex.Message}");
                 }
+
+                // Session Rules (mission phase 2): evaluate this idle transition against the account's
+                // standing instructions. The launch is a piece of that FEATURE and lives with it - see
+                // RuleTurnEndLauncher, which holds the tenant scope, the fire-and-forget and the isolation,
+                // and which the feature's own guards can therefore see. It never throws.
+                _ruleLauncher?.OnTurnEnd(tenant, signal.DirectorId, signal.SessionId);
 
                 // Voice sessions (issue #531): the turn just finished on its own, so re-make the
                 // spoken summary + audio in the background. It is then "voice ready" in the session
@@ -3347,6 +3392,11 @@ public sealed class GatewayHost : IAsyncDisposable
         // authoring routes are the next phase. Inherits the host-wide token middleware above.
         Api.WorkflowEndpoints.Map(_app, _workflows);
         Api.SkillEndpoints.Map(_app, _skills);
+
+        // The standing instructions an account gives about its sessions, and the record of every firing
+        // (Session Rules mission). A device-authed client route under the "/gateway/..." prefix, gated by
+        // the host-wide token middleware like every other client data endpoint.
+        Api.SessionRuleEndpoints.Map(_app, _sessionRules);
 
         // Workflow runs (phase 4, issue #1771): the outcome spine's REST surface. One row per
         // execution of a workflow, pinned to the exact published version that governed it.

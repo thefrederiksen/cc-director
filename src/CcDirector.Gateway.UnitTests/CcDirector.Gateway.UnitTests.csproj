@@ -87,6 +87,11 @@
          take the lock - but tests on BOTH sides of the split use them, and two copies of a helper drift.
          One source, compiled into both assemblies. -->
     <Compile Include="..\CcDirector.Gateway.Tests\Data\GatewayDbTestHarness.cs" Link="Data/GatewayDbTestHarness.cs" />
+    <!-- Linked with the harness above, and load-bearing beside it: it serialises the one test that blanks
+         the process-global CC_GATEWAY_DB_CONNECTION against every test that opens a database. Without it a
+         full parallel run fails exactly one database test, a different one each time, all passing in
+         isolation. -->
+    <Compile Include="..\CcDirector.Gateway.Tests\Data\GatewayDbEnvironmentGate.cs" Link="Data/GatewayDbEnvironmentGate.cs" />
     <Compile Include="..\CcDirector.Gateway.Tests\StatsConcurrencyTestDb.cs" Link="StatsConcurrencyTestDb.cs" />
     <Compile Include="..\CcDirector.Gateway.Tests\TestEs256Key.cs" Link="TestEs256Key.cs" />
     <Compile Include="..\CcDirector.Gateway.Tests\Stats\FrozenSqliteStatsReader.cs" Link="Stats/FrozenSqliteStatsReader.cs" />

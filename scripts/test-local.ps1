@@ -45,6 +45,14 @@
     be invoked by hand; a gate that depends on remembering two extra commands is one that will eventually
     be run without them, and a release is the one place there is no fixing it forward.
 
+    A RUN THAT COLLECTED ZERO TESTS - OR ONLY PART OF WHAT IT WAS ASKED FOR - IS REFUSED, WITH ITS OWN
+    EXIT CODE. A filter that matches nothing
+    used to exit 0 from every project and end on "all projects exited zero" - a green that means nothing
+    ran. Red-first evidence is gathered with this command, so that shape of green is now a failure:
+    exit 3 means zero tests were collected anywhere, exit 4 means a project exited zero without writing a
+    result file, and exit 5 means part of the filter matched nothing (or -ExpectTests was not met). None of
+    them is a test failure (exit 1) and none of them is ever evidence.
+
     EVERY RUN WRITES A TRX FILE AND PRINTS ITS OUTCOME AND TEST COUNT. That pair, not the console
     "Passed!" line, is the verdict - see the comment above the run loop for why. A green with a collapsed
     count is the result most worth being able to go back and check.
@@ -62,6 +70,15 @@
 .PARAMETER Filter
     An xUnit filter passed through to every project (e.g. "FullyQualifiedName~Dictation").
 
+    EVERY "FullyQualifiedName~" TERM MUST MATCH SOMETHING. A composite filter whose second term is a typo
+    used to collect from the first, exit 0, and read as a pass. Exit 5 means part of the filter matched
+    nothing anywhere - the run is not empty, which is exactly why it would otherwise have gone unnoticed.
+
+.PARAMETER ExpectTests
+    The number of tests this evidence command is expected to collect across the whole run. Exit 5 when the
+    run collects a different number. Use it when a claim rests on a COUNT: a count that is checked by
+    nothing is a count that drifts.
+
 .EXAMPLE
     .\scripts\test-local.ps1
     .\scripts\test-local.ps1 -Fast
@@ -72,6 +89,7 @@ param(
     [switch]$Parked,
     [switch]$Fast,
     [string]$Filter = "",
+    [int]$ExpectTests = 0,
     [string]$Configuration = "Debug"
 )
 
@@ -321,6 +339,112 @@ if ($overBudget.Count -gt 0) {
     Write-Host "the ceiling is the point, and every second added to it is paid by every person and agent"
     Write-Host "on every change, forever."
     exit 1
+}
+
+# A RUN THAT COLLECTED ZERO TESTS IS A BROKEN INSTRUMENT, NOT A PASS.
+#
+# This is the fail-open that let a mission report two red-first claims that could not be reproduced. A
+# filtered run whose filter matches nothing exits ZERO from every project, prints "Passed!", writes a TRX
+# saying outcome=Completed with total=0, and this script used to end on "RESULT: all projects exited zero."
+# Nothing anywhere said that nothing had run. Red-first evidence is gathered with exactly this command, and
+# a filter that has drifted from the test name it was written for - or a test file that is not in the
+# checkout yet - produces a green that means nothing.
+#
+# So the pass condition is stated as a PRESENCE: at least one test must have been COLLECTED across the run.
+# A per-project zero is normal and is not failed - a filter naming a Gateway test legitimately collects
+# nothing in the Avalonia suite - but a run in which NOTHING ran anywhere is refused, loudly, with its own
+# exit code so a caller can tell it apart from a test failure.
+$collected = 0
+foreach ($r in $running) { $collected += [int] $r.Total }
+$noTrx = @($running | Where-Object { $_.Outcome -eq "NO-TRX" -and $_.Process.ExitCode -eq 0 })
+
+if ($noTrx.Count -gt 0) {
+    Write-Host ""
+    Write-Host "RESULT: NO RESULT FILE - $($noTrx.Count) project(s) exited zero without writing a TRX:"
+    foreach ($r in $noTrx) { Write-Host "  $($r.Name) -> $($r.Log)" }
+    Write-Host ""
+    Write-Host "A project that exited zero and produced no result file did not report a run. That is a"
+    Write-Host "broken instrument, not a pass. Do not quote a number from this run."
+    exit 4
+}
+
+# A RUN THAT COLLECTED ONLY PART OF WHAT IT WAS ASKED FOR IS NOT EVIDENCE EITHER.
+#
+# The all-zero refusal below catches a filter that matched nothing ANYWHERE. It does not catch a filter
+# that matched something somewhere, which is the shape a composite filter produces when one of its terms
+# has drifted from the test it was written for: on the landing this was found in,
+#
+#   -Filter "FullyQualifiedName~RuleReasonGroundingTests|FullyQualifiedName~DefinitelyNoSuchTest_dnkeyz"
+#
+# collected eight tests from the first term, collected NOTHING from the second, and exited 0. Every term
+# after the first could be a typo and the run would still read as a pass. Removing or renaming a required
+# test does the same thing, quietly, on the day it happens.
+#
+# So the pass condition is stated as a PRESENCE, per term: each "FullyQualifiedName~TOKEN" the caller
+# named must have COLLECTED at least one test whose name contains that token. It is derived from the
+# filter the caller passed - never a second list kept here, which would be one more thing to keep in step.
+if ($Filter -ne "") {
+    $names = New-Object System.Collections.Generic.List[string]
+    foreach ($r in $running) {
+        if (-not (Test-Path $r.Trx)) { continue }
+        [xml] $doc = Get-Content $r.Trx -Raw
+        $defs = $doc.TestRun.TestDefinitions
+        if ($null -eq $defs) { continue }
+        foreach ($u in @($defs.UnitTest)) {
+            if ($null -ne $u -and $null -ne $u.name) { $names.Add([string]$u.name) }
+        }
+    }
+
+    # Each OR term of the filter, in the caller's own words.
+    $terms = @($Filter -split '\|' | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne "" })
+    $absent = @()
+    foreach ($term in $terms) {
+        # Only the "contains" form can be checked against a collected test name. Anything else (a Category
+        # trait, an equality match, a negation) is left alone rather than guessed at - a checker that
+        # invented a verdict for a form it does not understand would be worse than one that says nothing.
+        if ($term -notmatch '^FullyQualifiedName~(.+)$') { continue }
+        $token = $Matches[1]
+        $hit = $false
+        foreach ($n in $names) { if ($n -like "*$token*") { $hit = $true; break } }
+        if (-not $hit) { $absent += $term }
+    }
+
+    if ($absent.Count -gt 0) {
+        Write-Host ""
+        Write-Host "RESULT: PART OF THE FILTER MATCHED NOTHING - this run is not evidence for what it named."
+        Write-Host "These terms collected no test anywhere in the run:"
+        foreach ($t in $absent) { Write-Host "  $t" }
+        Write-Host ""
+        Write-Host "$($names.Count) test(s) were collected in total, so the run is not empty - which is exactly"
+        Write-Host "why it would otherwise have passed. A term that matches nothing is a test name that has"
+        Write-Host "drifted, a test that has been removed, or a typo; in all three the claim this run was"
+        Write-Host "gathered to support is unproven."
+        exit 5
+    }
+
+    if ($ExpectTests -gt 0 -and $collected -ne $ExpectTests) {
+        Write-Host ""
+        Write-Host "RESULT: EXPECTED $ExpectTests TEST(S), COLLECTED $collected."
+        Write-Host "The caller declared the inventory this evidence needs and the run did not match it."
+        exit 5
+    }
+}
+
+if ($collected -eq 0) {
+    Write-Host ""
+    Write-Host "RESULT: ZERO TESTS COLLECTED - nothing ran, so this is not a pass."
+    if ($Filter -ne "") {
+        Write-Host "The filter was: $Filter"
+        Write-Host "No test in any project matched it. Check the test name, and check that the test file is"
+        Write-Host "actually in THIS checkout - a filter naming a class that does not exist here exits zero"
+        Write-Host "with 'No test matches', which is the shape of a green and the substance of nothing."
+    } else {
+        Write-Host "No filter was passed, so a total of zero means the run did not execute at all."
+    }
+    Write-Host ""
+    Write-Host "A run that collected zero tests is a broken instrument. It is never evidence, and a red-first"
+    Write-Host "claim must never be quoted from one."
+    exit 3
 }
 
 if ($failed.Count -eq 0) {
