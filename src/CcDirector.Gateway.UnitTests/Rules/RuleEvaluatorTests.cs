@@ -63,6 +63,13 @@ public sealed class RuleEvaluatorTests
         private int _screenReads;
 
         public string ActivityState { get; set; } = "WaitingForInput";
+
+        /// <summary>The activity states the session reports, in the order they are asked for; the last one
+        /// repeats once the list runs out. Empty means <see cref="ActivityState"/> every time. This is how a
+        /// test makes the session START WORKING during the agent call - the gap the evaluator's decision is
+        /// made across - while leaving the visible rows exactly as they were.</summary>
+        public List<string> ActivityStatesInOrder { get; } = new();
+        private int _factReads;
         public string? AgentReply { get; set; }
 
         public int ScreenReads => _screenReads;
@@ -102,8 +109,23 @@ public sealed class RuleEvaluatorTests
         /// could not appear by accident and then look for it where it must not be.</summary>
         public string RepositoryPath { get; set; } = @"D:\ReposFred\scratch";
 
-        public RuleSessionFacts? ReadSessionFacts(TenantId tenant, string sessionId) =>
-            new(sessionId, "RawCli", RepositoryPath, "SOREN_NORTH", "Session Rules", ActivityState);
+        /// <summary>How many times the session's facts were asked for. A re-read immediately before the
+        /// keystroke is a PRESENCE, and this is what counts it.</summary>
+        public int FactReads => _factReads;
+
+        /// <summary>Set to make the session vanish from the roster after this many fact reads.</summary>
+        public int? SessionVanishesAfterFactRead { get; set; }
+
+        public RuleSessionFacts? ReadSessionFacts(TenantId tenant, string sessionId)
+        {
+            var index = _factReads;
+            _factReads++;
+            if (SessionVanishesAfterFactRead is { } vanishAfter && index >= vanishAfter) return null;
+            var state = ActivityStatesInOrder.Count == 0
+                ? ActivityState
+                : ActivityStatesInOrder[Math.Min(index, ActivityStatesInOrder.Count - 1)];
+            return new(sessionId, "RawCli", RepositoryPath, "SOREN_NORTH", "Session Rules", state);
+        }
 
         public Task<IReadOnlyList<string>?> ReadScreenRowsAsync(
             TenantId tenant, string directorId, string sessionId, CancellationToken ct)
@@ -654,6 +676,57 @@ public sealed class RuleEvaluatorTests
 
         Assert.Equal(RulePassOutcomes.Acted, pass.What);
         Assert.Equal("/usage-credits", Assert.Single(env.Typed));
+    }
+
+    // ---- still idle, immediately before the keystroke -----------------------------------------------
+
+    /// <summary>
+    /// THE SESSION MUST STILL BE IDLE WHEN THE KEYSTROKE GOES, NOT MERELY WHEN THE DECISION WAS MADE.
+    ///
+    /// "Idle sessions only" is a primary bound, and it was read ONCE, before the agent call. Between that
+    /// read and the keystroke there is a model call - the longest gap in the whole pass - and the only thing
+    /// re-read across it was the terminal screen. A new owner turn makes the session Working before any of
+    /// its output appears, so the visible rows are briefly identical and the stale decision types anyway,
+    /// straight into a turn somebody else just started.
+    ///
+    /// Screen equality is not proof that a session is still idle. This holds the screen still and changes
+    /// only the thing that actually says whether the session is working.
+    /// </summary>
+    [Fact]
+    public async Task A_session_that_started_working_during_the_agent_call_is_abandoned_though_the_screen_is_unchanged()
+    {
+        var rule = Rule(state: RuleState.Live);
+        var env = EnvironmentWith(rule);
+        env.AgentReply = ActReply(rule.Id);
+        // Idle when the pass starts; working by the time the keystroke would go. The screen never changes.
+        env.ActivityStatesInOrder.Add("WaitingForInput");
+        env.ActivityStatesInOrder.Add(RuleCandidateFilter.WorkingState);
+
+        var pass = await Run(env);
+
+        Assert.Equal(RulePassOutcomes.Abandoned, pass.What);
+        Assert.Contains("working", pass.Detail, StringComparison.OrdinalIgnoreCase);
+        Assert.Empty(env.Typed);
+        var firing = Assert.Single(pass.Recorded);
+        Assert.Equal(RuleDecisions.Abandoned, firing.Decision);
+        Assert.True(env.FactReads >= 2,
+            "the session's facts were read " + env.FactReads + " time(s). A bound that is checked before a " +
+            "model call and never again is a bound about a moment that has passed.");
+    }
+
+    [Fact]
+    public async Task A_session_that_left_the_roster_during_the_agent_call_is_abandoned()
+    {
+        var rule = Rule(state: RuleState.Live);
+        var env = EnvironmentWith(rule);
+        env.AgentReply = ActReply(rule.Id);
+        env.SessionVanishesAfterFactRead = 1;
+
+        var pass = await Run(env);
+
+        Assert.Equal(RulePassOutcomes.Abandoned, pass.What);
+        Assert.Empty(env.Typed);
+        Assert.Single(pass.Recorded);
     }
 
     // ---- two passes on one session ------------------------------------------------------------------
