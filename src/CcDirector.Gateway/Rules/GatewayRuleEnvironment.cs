@@ -193,10 +193,10 @@ internal sealed class GatewayRuleEnvironment : IRuleEnvironment
     }
 
     /// <inheritdoc />
-    public void RecordFiring(TenantId tenant, RuleFiringDraft draft)
+    public Guid RecordFiring(TenantId tenant, RuleFiringDraft draft)
     {
         using var scope = _enterTenantScope?.Invoke(tenant);
-        _store.RecordFiring(
+        return _store.RecordFiring(
             draft.RuleId,
             draft.SessionId,
             draft.ScreenText,
@@ -207,6 +207,13 @@ internal sealed class GatewayRuleEnvironment : IRuleEnvironment
             draft.TypedText,
             draft.Outcome,
             draft.Grounding,
-            _nowUtc());
+            _nowUtc()).Id;
+    }
+
+    /// <inheritdoc />
+    public void CompleteFiring(TenantId tenant, Guid firingId, string typedText, string outcome)
+    {
+        using var scope = _enterTenantScope?.Invoke(tenant);
+        _store.CompleteFiring(firingId, typedText, outcome, _nowUtc());
     }
 }

@@ -48,6 +48,11 @@ public static class RulePassOutcomes
     /// <summary>The act was given up before the keystroke. Recorded.</summary>
     public const string Abandoned = "abandoned";
 
+    /// <summary>The act could not be WRITTEN DOWN, so it was not carried out. The record is the product;
+    /// an action nobody can reconstruct is an action nobody can supervise, so the record being refused is
+    /// a reason not to act rather than a detail to log afterwards.</summary>
+    public const string NotRecorded = "not-recorded";
+
     /// <summary>The reply decided to ACT and its stated reason quoted text the screen does not contain, so
     /// the act was refused (Architect ruling A12). Recorded, with what was quoted and where it was not.</summary>
     public const string Ungrounded = "ungrounded";
@@ -129,8 +134,12 @@ public interface IRuleEnvironment
     Task<RuleSendResult> TypeIntoSessionAsync(
         TenantId tenant, string directorId, string sessionId, string text, CancellationToken ct);
 
-    /// <summary>Write one firing down.</summary>
-    void RecordFiring(TenantId tenant, RuleFiringDraft draft);
+    /// <summary>Write one firing down, and answer with its id. The id is what lets the record be written
+    /// BEFORE the keystroke and completed after it.</summary>
+    Guid RecordFiring(TenantId tenant, RuleFiringDraft draft);
+
+    /// <summary>Say what became of a firing that was written down before its keystroke went out.</summary>
+    void CompleteFiring(TenantId tenant, Guid firingId, string typedText, string outcome);
 
     /// <summary>The clock, as a seam.</summary>
     DateTime NowUtc { get; }
@@ -407,11 +416,16 @@ public sealed class RuleEvaluator
 
     private RuleFiringDraft Record(TenantId tenant, RuleFiringDraft draft)
     {
+        Write(tenant, draft);
+        return draft;
+    }
+
+    private Guid Write(TenantId tenant, RuleFiringDraft draft)
+    {
         FileLog.Write(
             $"[RuleEvaluator] firing: rule={draft.RuleId} sid={draft.SessionId} " +
             $"decision={draft.Decision} typed={(draft.TypedText.Length > 0 ? "yes" : "no")}");
-        _env.RecordFiring(tenant, draft);
-        return draft;
+        return _env.RecordFiring(tenant, draft);
     }
 
     private static RulePass Nothing(string what, string detail)

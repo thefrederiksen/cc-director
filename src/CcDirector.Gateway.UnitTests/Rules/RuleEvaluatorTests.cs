@@ -142,22 +142,53 @@ public sealed class RuleEvaluatorTests
             return Task.FromResult(AgentReply);
         }
 
+        /// <summary>Read at the moment the send seam is reached, so a test can assert that the record
+        /// already existed BEFORE the keystroke rather than inferring it from the order of a list.</summary>
+        public Func<int>? RecordedWhenTyping { get; set; }
+
+        /// <summary>How many firings had been written when the send seam was reached.</summary>
+        public int RecordsWhenTheSendHappened { get; private set; } = -1;
+
         public Task<RuleSendResult> TypeIntoSessionAsync(
             TenantId tenant, string directorId, string sessionId, string text, CancellationToken ct)
         {
+            if (RecordedWhenTyping is not null) RecordsWhenTheSendHappened = RecordedWhenTyping();
             lock (Typed) Typed.Add(text);
             return Task.FromResult(SendResult);
         }
 
-        public void RecordFiring(TenantId tenant, RuleFiringDraft draft)
+        /// <summary>Set to make the store refuse to write a firing with this decision - what a real store
+        /// does for a rule deleted mid-pass, a record it will not accept, or a database that is down.</summary>
+        public string? RefuseToRecordDecision { get; set; }
+
+        /// <summary>What each written firing was completed with afterwards, by id.</summary>
+        public Dictionary<Guid, (string TypedText, string Outcome)> Completed { get; } = new();
+
+        public Guid RecordFiring(TenantId tenant, RuleFiringDraft draft)
         {
+            if (string.Equals(RefuseToRecordDecision, draft.Decision, StringComparison.Ordinal))
+                throw new RuleRejectedException(
+                    "this record was refused by the store, which is what a rule deleted during the model " +
+                    "call looks like from here.");
+
+            var id = Guid.NewGuid();
             lock (Recorded) Recorded.Add(draft);
-            if (!FiringsAreVisibleToTheFreeChecks) return;
+            lock (WrittenIds) WrittenIds.Add(id);
+            if (!FiringsAreVisibleToTheFreeChecks) return id;
             lock (StoredFirings)
                 StoredFirings.Add(new SessionRuleFiring(
-                    Guid.NewGuid(), draft.RuleId, draft.SessionId, NowUtc, draft.ScreenText,
+                    id, draft.RuleId, draft.SessionId, NowUtc, draft.ScreenText,
                     draft.Understanding, draft.Decision, draft.Reason, draft.Runs, draft.TypedText,
                     draft.Outcome, draft.Grounding));
+            return id;
+        }
+
+        /// <summary>The ids handed out, in order.</summary>
+        public List<Guid> WrittenIds { get; } = new();
+
+        public void CompleteFiring(TenantId tenant, Guid firingId, string typedText, string outcome)
+        {
+            lock (Completed) Completed[firingId] = (typedText, outcome);
         }
     }
 
@@ -749,6 +780,62 @@ public sealed class RuleEvaluatorTests
         var firing = Assert.Single(env.Recorded);
         Assert.Equal(RuleDecisions.Decline, firing.Decision);
         Assert.Contains("cite", firing.Grounding, StringComparison.OrdinalIgnoreCase);
+    }
+
+    // ---- the record exists before the keystroke ------------------------------------------------------
+
+    /// <summary>
+    /// AN ACTION THE PRODUCT CANNOT ACCOUNT FOR IS AN ACTION NOBODY CAN SUPERVISE.
+    ///
+    /// The evaluator typed first and recorded afterwards. Everything that can make the record fail - a rule
+    /// deleted during the model call, a record the store will not accept, a database that is down - then
+    /// happened AFTER something had already been done to somebody's session, and the only trace was a log
+    /// line. The record is the product; it has to exist before the side effect and be reconciled after it.
+    ///
+    /// So the store's refusal is a REASON NOT TO ACT, not a detail discovered too late. Here the store
+    /// refuses the act's record, and nothing may be typed.
+    /// </summary>
+    [Fact]
+    public async Task An_act_whose_record_the_store_refuses_is_not_carried_out()
+    {
+        var rule = Rule(state: RuleState.Live);
+        var env = EnvironmentWith(rule);
+        env.AgentReply = ActReply(rule.Id);
+        env.RefuseToRecordDecision = RuleDecisions.Act;
+
+        var pass = await Run(env);
+
+        Assert.Equal(RulePassOutcomes.NotRecorded, pass.What);
+        Assert.Empty(env.Typed);
+    }
+
+    [Fact]
+    public async Task The_record_of_an_act_is_written_before_the_keystroke_and_completed_after_it()
+    {
+        // THE PRESENCE, and it is what makes the test above mean something: a pass that simply refused to
+        // act would satisfy "nothing was typed" while proving nothing about the ordering. Here the act goes
+        // through, and the record must have been WRITTEN before the send and COMPLETED afterwards - two
+        // observable events on one row, in that order.
+        var rule = Rule(state: RuleState.Live);
+        var env = EnvironmentWith(rule);
+        env.AgentReply = ActReply(rule.Id);
+        env.RecordedWhenTyping = () => env.WrittenIds.Count;
+
+        var pass = await Run(env);
+
+        Assert.Equal(RulePassOutcomes.Acted, pass.What);
+        Assert.Equal("/usage-credits", Assert.Single(env.Typed));
+
+        // Written first: by the time the send seam was reached, the record already existed.
+        Assert.Equal(1, env.RecordsWhenTheSendHappened);
+
+        // Completed after: the same row, told what became of the keystroke.
+        var id = Assert.Single(env.WrittenIds);
+        Assert.True(env.Completed.ContainsKey(id),
+            "the firing was written before the keystroke and never completed afterwards, so the record " +
+            "still says only that a keystroke was about to go.");
+        Assert.Contains("/usage-credits", env.Completed[id].Outcome);
+        Assert.Equal("/usage-credits", env.Completed[id].TypedText);
     }
 
     // ---- still idle, immediately before the keystroke -----------------------------------------------

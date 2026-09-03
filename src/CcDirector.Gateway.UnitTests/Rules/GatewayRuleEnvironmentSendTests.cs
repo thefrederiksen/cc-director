@@ -46,6 +46,9 @@ public sealed class GatewayRuleEnvironmentSendTests
             string reason, IEnumerable<RulePrimitiveRun> primitiveRuns, string typedText, string outcome,
             string grounding, DateTime nowUtc) =>
             throw new NotSupportedException("these tests are about the send seam, not the record.");
+
+        public SessionRuleFiring CompleteFiring(Guid firingId, string typedText, string outcome, DateTime nowUtc) =>
+            throw new NotSupportedException("these tests are about the send seam, not the record.");
     }
 
     private static GatewayRuleEnvironment EnvironmentWhoseTunnelAnswers(

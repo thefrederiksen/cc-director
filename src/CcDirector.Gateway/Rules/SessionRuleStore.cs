@@ -326,6 +326,48 @@ public sealed class SessionRuleStore : IRuleReading
         }
     }
 
+    /// <summary>
+    /// Say what became of a firing that was written down BEFORE its keystroke went out.
+    ///
+    /// THE RECORD IS WRITTEN FIRST AND RECONCILED AFTER, and that ordering is the point of this method
+    /// existing at all. The evaluator used to type and then record, so a store refusal, a database error,
+    /// or a rule deleted during the model call each produced an action against somebody's session that
+    /// nothing durable accounted for. The record is the product; an action nobody can reconstruct is an
+    /// action nobody can supervise.
+    ///
+    /// It changes only what became of the send - never the screen, the decision or the reason, which were
+    /// settled before the keystroke and must read the same afterwards.
+    /// </summary>
+    /// <exception cref="RuleRejectedException">There is no such firing, the outcome says nothing, or the
+    /// rule is in dry run and this says it typed something.</exception>
+    public SessionRuleFiring CompleteFiring(Guid firingId, string typedText, string outcome, DateTime nowUtc)
+    {
+        var typed = typedText ?? "";
+        RequireSomething(outcome, "what happened next");
+
+        lock (_gate)
+        {
+            using var ctx = _db.CreateContext();
+            var entity = ctx.SessionRuleFirings.FirstOrDefault(f => f.Id == firingId)
+                ?? throw new RuleRejectedException(
+                    $"there is no firing with the id {firingId}, so there is nothing to say happened.");
+
+            var rule = ctx.SessionRules.AsNoTracking().FirstOrDefault(r => r.Id == entity.RuleId);
+            if (rule is not null && typed.Length > 0
+                && string.Equals(rule.State, DryRunValue, StringComparison.Ordinal))
+                throw new RuleRejectedException(
+                    "this rule is in dry run, so it types nothing - a firing cannot be completed as having " +
+                    "typed '" + typed + "'.");
+
+            entity.TypedText = typed;
+            entity.Outcome = outcome.Trim();
+            ctx.SaveChanges();
+            FileLog.Write(
+                $"[SessionRuleStore] CompleteFiring: firing={firingId} typed={(typed.Length > 0 ? "yes" : "no")}");
+            return ToRecord(entity);
+        }
+    }
+
     /// <summary>Every firing of one rule, newest first.</summary>
     public IReadOnlyList<SessionRuleFiring> FiringsFor(Guid ruleId)
     {
