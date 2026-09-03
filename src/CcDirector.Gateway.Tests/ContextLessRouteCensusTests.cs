@@ -140,6 +140,82 @@ public sealed class ContextLessRouteCensusTests
         "POST /exes/slots/{n}/build-start",
     };
 
+    /// <summary>
+    /// THE BODY-SCOPED ROUTES OF THE RULES SURFACE (fix round D, ruling D9). The context-less census
+    /// above counts routes that take a PATH parameter and no HttpContext. The draft route and the write
+    /// route take no path parameter - which is exactly why the census could not vouch for them - but
+    /// since ruling D2 each takes a SESSION ID in its body, and a session id is a tenant-scoped fact
+    /// exactly like a rule id: the route has to look it up in the caller's tenant, and a lookup that did
+    /// not would read another account's screen. So they are censused here as their own family, derived
+    /// from the same route table by the same mechanism (a JsonElement body, no path parameter, no
+    /// HttpContext), and asserted EXACTLY, so a new bodied rules route cannot appear without a verdict.
+    ///
+    /// The verdict for both rows: the session is located through the tenant-keyed pushed roster and the
+    /// screen read through a Director resolved in that same tenant (GatewayHost.ReadRuleScreenAsync),
+    /// EXECUTED cross-tenant over HTTP by
+    /// CensusRouteTenancyProbeTests.SessionRuleDraft_ReachesTheModelAndTheRosterAsTheCallersOwnTenant_ForTwoTenants,
+    /// SessionRuleDraft_CannotGroundInAnotherTenantsSession and
+    /// SessionRuleCreate_ReadsTheSessionsScreenAgainAndRefusesAnUngroundedWord. The rule rows the write
+    /// route creates are tenant-scoped by the entity filter proved by the rules probe above.
+    /// </summary>
+    private static readonly string[] HostedBodyScopedRuleRoutes =
+    {
+        "POST /gateway/rules",
+        "POST /gateway/rules/draft",
+    };
+
+    [Fact]
+    public async Task The_hosted_body_scoped_rule_route_set_is_exactly_the_ruled_census()
+    {
+        var actual = await BodyScopedRuleRoutes(hosted: true);
+        foreach (var row in actual) _out.WriteLine(row);
+
+        // THE INSTRUMENT CHECK: an empty enumeration would satisfy a weaker assertion without having
+        // looked at anything. The surface has to be there before its contents are judged.
+        Assert.NotEmpty(actual);
+        Assert.Equal(HostedBodyScopedRuleRoutes, actual);
+    }
+
+    /// <summary>The rules routes that take a body and no path parameter and no HttpContext - the family
+    /// whose tenant-scoped fact arrives in the BODY rather than the path.</summary>
+    private static async Task<string[]> BodyScopedRuleRoutes(bool hosted)
+    {
+        var prior = Environment.GetEnvironmentVariable("CC_GATEWAY_HOSTED");
+        Environment.SetEnvironmentVariable("CC_GATEWAY_HOSTED", hosted ? "1" : null);
+        var dir = Path.Combine(Path.GetTempPath(), "cc-census-rules-" + Guid.NewGuid().ToString("N"));
+        var gateway = new GatewayHost(port: GatewayHost.OperatingSystemAssignedPort, token: "census-token",
+            authEnabled: true,
+            instancesDirectory: dir,
+            workListsPath: Path.Combine(dir, "worklists", "worklists.json"));
+        try
+        {
+            await gateway.StartAsync();
+
+            return gateway.MappedEndpoints.OfType<RouteEndpoint>()
+                .Select(e => new
+                {
+                    Pattern = "/" + (e.RoutePattern.RawText ?? "").TrimStart('/'),
+                    Methods = e.Metadata.GetMetadata<HttpMethodMetadata>()?.HttpMethods ?? Array.Empty<string>(),
+                    Handler = e.Metadata.GetMetadata<MethodInfo>(),
+                })
+                .Where(r => r.Pattern.StartsWith("/gateway/rules", StringComparison.Ordinal))
+                .Where(r => !r.Pattern.Contains('{', StringComparison.Ordinal))
+                .Where(r => r.Handler is not null
+                            && r.Handler.GetParameters().Any(p => p.ParameterType == typeof(System.Text.Json.JsonElement))
+                            && !r.Handler.GetParameters().Any(p => p.ParameterType == typeof(HttpContext)))
+                .SelectMany(r => r.Methods.DefaultIfEmpty("ANY"), (r, m) => $"{m} {r.Pattern}")
+                .Distinct(StringComparer.Ordinal)
+                .OrderBy(s => s, StringComparer.Ordinal)
+                .ToArray();
+        }
+        finally
+        {
+            await gateway.StopAsync();
+            Environment.SetEnvironmentVariable("CC_GATEWAY_HOSTED", prior);
+            try { if (Directory.Exists(dir)) Directory.Delete(dir, true); } catch { /* best-effort */ }
+        }
+    }
+
     [Fact]
     public async Task The_hosted_context_less_route_set_is_exactly_the_ruled_census()
     {
