@@ -43,6 +43,129 @@ public sealed class GatewayDbContext : DbContext
     {
     }
 
+    /// <summary>
+    /// Set by <see cref="Rules.SessionRuleStore.Promote"/> for the one save that moves a rule to live,
+    /// naming the rule a person asked about. Null the rest of the time, which is what makes a rule
+    /// changing state through any other route a refusal - see <see cref="GuardRuleWrites"/>.
+    /// </summary>
+    internal Guid? PromotionInEffect { get; set; }
+
+    /// <summary>
+    /// True for exactly as long as a save that has been through <see cref="GuardRuleWrites"/> is issuing
+    /// its statements. <see cref="RuleTableWriteInterceptor"/> reads it to tell a gated write from a bulk
+    /// statement that never met the gate at all.
+    /// </summary>
+    internal bool SavingThroughTheGate { get; private set; }
+
+    /// <inheritdoc />
+    public override int SaveChanges(bool acceptAllChangesOnSuccess)
+    {
+        GuardRuleWrites();
+        SavingThroughTheGate = true;
+        try { return base.SaveChanges(acceptAllChangesOnSuccess); }
+        finally { SavingThroughTheGate = false; }
+    }
+
+    /// <inheritdoc />
+    public override async Task<int> SaveChangesAsync(
+        bool acceptAllChangesOnSuccess, CancellationToken cancellationToken = default)
+    {
+        GuardRuleWrites();
+        SavingThroughTheGate = true;
+        try { return await base.SaveChangesAsync(acceptAllChangesOnSuccess, cancellationToken); }
+        finally { SavingThroughTheGate = false; }
+    }
+
+
+    /// <summary>
+    /// THE WRITE GATE FOR SESSION RULES, AND IT IS HERE BECAUSE HERE IS WHERE IT CANNOT BE GONE ROUND.
+    ///
+    /// The store's own source used to claim that nothing reached <c>session_rules</c> without passing
+    /// <see cref="Rules.RuleCallValidator"/>. It was not true. The entity, its setters, the DbSet and the
+    /// context factory are all public, so any Gateway caller could build a rule with an arbitrary call
+    /// document, an arbitrary tenant and <c>State = "live"</c>, add it and save it - meeting neither the
+    /// validator nor dry run. An independent inspection found the claim and the code disagreeing, and a
+    /// FALSE STRUCTURAL CLAIM IN A COMMENT IS WORSE THAN AN HONEST ABSENCE, because the next author
+    /// trusts it.
+    ///
+    /// So the claim was made true rather than deleted. Every route to the table - the store, the DbSet, a
+    /// context built by hand - ends at <c>SaveChanges</c>, and this runs there. What it holds:
+    ///
+    ///  - a rule's calls are valid against the shipped check registry, on every write;
+    ///  - a NEW rule is in dry run, whoever wrote it (owner ruling 14, the bound that puts a person
+    ///    between an instruction and its first real use);
+    ///  - a rule moving to live carries a promotion a person asked for (<see cref="PromotionInEffect"/>);
+    ///  - a rule belongs to the tenant this context is scoped to, so a write cannot plant a row in
+    ///    another account's partition - which reading is already scoped against, but writing was not.
+    ///
+    /// It is a GATE and not a wall: a rule the store built passes straight through it, and there is a test
+    /// that says so, because every refusal test above would also pass on a gate that refused everything.
+    /// </summary>
+    /// <exception cref="Rules.RuleRejectedException">A rule write does not hold, with the reason.</exception>
+    private void GuardRuleWrites()
+    {
+        foreach (var entry in ChangeTracker.Entries<SessionRuleEntity>())
+        {
+            if (entry.State != EntityState.Added && entry.State != EntityState.Modified) continue;
+            var rule = entry.Entity;
+
+            if (!string.Equals(rule.TenantId, ActiveTenant, StringComparison.Ordinal))
+                throw new Rules.RuleRejectedException(
+                    $"this rule says it belongs to '{rule.TenantId}', and this connection belongs to " +
+                    $"'{ActiveTenant}'. A rule is written into the account that is writing it.");
+
+            // EVERYTHING A RULE HAS TO BE, from the one place that says so. This used to check the call
+            // document alone, so a rule with no instruction, no screen description, no trigger words and
+            // no ceilings passed the gate while the store refused every one of them.
+            Rules.SessionRuleRecordRules.CheckRule(rule, Rules.RulePrimitiveRegistry.Default);
+
+            if (entry.State == EntityState.Added && !string.Equals(rule.State, DryRunState, StringComparison.Ordinal))
+                throw new Rules.RuleRejectedException(
+                    $"a new rule is always created in dry run, and this one says '{rule.State}'. Dry run is " +
+                    "what puts a person between a standing instruction and the first time it types " +
+                    "anything, so there is no route by which a rule can start live.");
+
+            if (entry.State == EntityState.Modified
+                && string.Equals(rule.State, LiveState, StringComparison.Ordinal)
+                && PromotionInEffect != rule.Id)
+                throw new Rules.RuleRejectedException(
+                    "a rule is moved out of dry run by a person, and this write carried no evidence that a " +
+                    "person asked. Nothing that runs on its own can promote a rule.");
+        }
+
+        // THE RECORD IS GATED TOO, AND IT WAS NOT. The firing table had no gate at all, so an invented row
+        // saying nothing could be written straight through the context and read back later as evidence of
+        // something that never happened. The record is the product; a row nobody can trust is worse than no
+        // row, because a reader trusts it.
+        foreach (var entry in ChangeTracker.Entries<SessionRuleFiringEntity>())
+        {
+            if (entry.State != EntityState.Added && entry.State != EntityState.Modified) continue;
+            var firing = entry.Entity;
+
+            if (!string.Equals(firing.TenantId, ActiveTenant, StringComparison.Ordinal))
+                throw new Rules.RuleRejectedException(
+                    $"this firing says it belongs to '{firing.TenantId}', and this connection belongs to " +
+                    $"'{ActiveTenant}'. A record is written into the account it happened in.");
+
+            // The rule's stored state, read through this same scoped context, because "may this firing say
+            // it typed something" is a question about the rule and not about the row being written.
+            var state = SessionRules.AsNoTracking()
+                .Where(r => r.Id == firing.RuleId)
+                .Select(r => r.State)
+                .FirstOrDefault();
+
+            Rules.SessionRuleRecordRules.CheckFiring(
+                firing, Rules.RulePrimitiveRegistry.Default, state, DryRunState);
+        }
+    }
+
+    // Derived from the states themselves, never typed out again: a second copy of a wire value is a
+    // second thing to keep in step, and this one decides whether a rule may act.
+    private static readonly string DryRunState =
+        Rules.RuleWireNames.ToWireName(nameof(Rules.RuleState.DryRun));
+    private static readonly string LiveState =
+        Rules.RuleWireNames.ToWireName(nameof(Rules.RuleState.Live));
+
     /// <summary>Cron job definitions (<c>cron_jobs</c>).</summary>
     public DbSet<CronJobEntity> CronJobs => Set<CronJobEntity>();
 
@@ -222,6 +345,19 @@ public sealed class GatewayDbContext : DbContext
     /// for the same reason as <see cref="DeviceCredentials"/>: a presented key is resolved by its hash before
     /// any tenant is known, and the tenant is read off the matched row.</summary>
     public DbSet<SessionKeyEntity> SessionKeys => Set<SessionKeyEntity>();
+
+    /// <summary>Standing instructions the account gave in English (<c>session_rules</c>, the Session Rules
+    /// mission). A rule holds the sentence itself plus what a model derived from it - never code.</summary>
+    /// <remarks>INTERNAL on purpose. A rule is written through the rule store, which is where a rule is
+    /// checked and where dry run is enforced; a DbSet other assemblies could reach is a second write
+    /// surface that no comment can make safe. Inside this assembly the gate above, the interceptor, and a
+    /// structural test over the built code are what stand in the way.</remarks>
+    internal DbSet<SessionRuleEntity> SessionRules => Set<SessionRuleEntity>();
+
+    /// <summary>The record of every rule firing (<c>session_rule_firings</c>) - screen, understanding,
+    /// decision, reason, which verified checks ran, what was typed, and what happened next.</summary>
+    /// <remarks>INTERNAL, for the same reason as <see cref="SessionRules"/>: the record is the product.</remarks>
+    internal DbSet<SessionRuleFiringEntity> SessionRuleFirings => Set<SessionRuleFiringEntity>();
 
     /// <summary>Serializer options for the skill metadata column. One shared instance: constructing
     /// fresh options per call defeats the serializer's internal caching.</summary>
@@ -486,6 +622,40 @@ public sealed class GatewayDbContext : DbContext
             b.Property(e => e.Role).HasMaxLength(16);
             // Retention cuts on received-at, tenant-leading for the global filter.
             b.HasIndex(e => new { e.TenantId, e.ReceivedAtUtc });
+        });
+
+        // ---- the Session Rules mission: standing instructions and the record of every firing -------
+
+        modelBuilder.Entity<SessionRuleEntity>(b =>
+        {
+            b.ToTable("session_rules");
+            b.HasKey(e => e.Id);
+            // The rules list is read per tenant, newest first; tenant-leading for the global filter.
+            b.HasIndex(e => new { e.TenantId, e.CreatedUtc });
+            b.Property(e => e.State).HasMaxLength(32);
+            // The trigger words are a bounded sub-document: a primitive collection, like skill triggers.
+            b.PrimitiveCollection(e => e.TriggerWords);
+            // The derived calls are TYPED sub-documents serialized to a JSON column (the cron store's
+            // "sub-doc -> JSON in a column" pattern). This is the shape that makes ruling 15 structural
+            // rather than a promise: the column holds a name and argument VALUES, checked against a real
+            // primitive signature before the row is written, and there is nowhere for a program to sit.
+            b.OwnsMany(e => e.Calls, o =>
+            {
+                o.ToJson();
+                o.OwnsMany(c => c.Arguments, a => a.PrimitiveCollection(x => x.Values));
+            });
+        });
+
+        modelBuilder.Entity<SessionRuleFiringEntity>(b =>
+        {
+            b.ToTable("session_rule_firings");
+            b.HasKey(e => e.Id);
+            b.Property(e => e.SessionId).HasMaxLength(64);
+            b.Property(e => e.Decision).HasMaxLength(64);
+            // "What did this rule do?" and "what happened on this session?" are the two reads.
+            b.HasIndex(e => new { e.TenantId, e.RuleId, e.OccurredUtc });
+            b.HasIndex(e => new { e.TenantId, e.SessionId, e.OccurredUtc });
+            b.OwnsMany(e => e.PrimitiveRuns, o => o.ToJson());
         });
 
         modelBuilder.Entity<SessionTurnHeadEntity>(b =>
@@ -883,6 +1053,8 @@ public sealed class GatewayDbContext : DbContext
         ApplyTenantScope<SessionHistoryRollupEntity>(modelBuilder);
         ApplyTenantScope<SessionTurnEntity>(modelBuilder);
         ApplyTenantScope<SessionTurnHeadEntity>(modelBuilder);
+        ApplyTenantScope<SessionRuleEntity>(modelBuilder);
+        ApplyTenantScope<SessionRuleFiringEntity>(modelBuilder);
 
         ApplyCommonSubsetConventions(modelBuilder);
 

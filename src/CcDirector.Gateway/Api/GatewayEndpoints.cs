@@ -73,6 +73,7 @@ internal static class GatewayEndpoints
         Func<TenantId, string, bool>? voiceAudioReadyFor = null,
         Func<TenantId, string, Core.HostedAi.HostedAiState?>? voiceUnavailableFor = null,
         Func<TenantId, string, bool>? nothingToNarrateFor = null,
+        Func<TenantId, string, bool>? directorCannotSendConversationFor = null,
         Func<TenantId, string, bool>? servedViaFallbackFor = null,
         /// <summary>Issue #2576: stamps and returns SessionDto.VoiceWaitingSince - when this session's wait
         /// for voice began, or null when it is not waiting. Null delegate leaves the field unset, so a caller
@@ -1526,6 +1527,7 @@ internal static class GatewayEndpoints
                         generating: s.VoiceGenerating,
                         unavailable: voiceUnavailableFor?.Invoke(reqTenant.Value, s.SessionId),
                         nothingToNarrate: nothingToNarrateFor?.Invoke(reqTenant.Value, s.SessionId) ?? false,
+                        directorCannotSendConversation: directorCannotSendConversationFor?.Invoke(reqTenant.Value, s.SessionId) ?? false,
                         servedViaFallback: servedViaFallbackFor?.Invoke(reqTenant.Value, s.SessionId) ?? false,
                         waitingSince: s.VoiceWaitingSince);
                     // Orange "Transcribing..." while a dictated utterance is uploading/transcribing in

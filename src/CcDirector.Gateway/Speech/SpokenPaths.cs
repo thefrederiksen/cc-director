@@ -107,5 +107,11 @@ public static class SpokenPaths
             + "to decide whether to resume the session. Translating either half would break it: the words "
             + "are an enumeration the parser matches, not prose, and an unparsable reply is deliberately "
             + "treated as no verdict at all. Nothing it produces is ever spoken or shown.",
+        ["RuleAgentContract.BuildPrompt"] =
+            "Asks whether a standing instruction reaches the screen a session has stopped on, and returns "
+            + "JSON that code validates and acts on: a rule id, a decision from a closed set, the checks to "
+            + "run, and the exact text to TYPE INTO A TERMINAL. Nothing it produces is spoken. The text it "
+            + "yields is a keystroke, not prose, so translating it would change what is typed - the reply "
+            + "is machine-read from end to end and an unreadable one is recorded as a refusal.",
     };
 }

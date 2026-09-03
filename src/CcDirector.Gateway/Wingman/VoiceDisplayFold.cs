@@ -61,6 +61,20 @@ public static class VoiceDisplayFold
     public const string BackupVoiceNotice =
         "Some voice providers are overloaded right now, so we switched you to a backup voice. No extra charge.";
 
+    /// <summary>
+    /// Shown when the computer that owns this session is connected but running a build that cannot send its
+    /// conversation. Nothing will ever be stored to narrate until it is updated, so this says the remedy
+    /// instead of asking the reader to keep waiting.
+    ///
+    /// It is the VOICE wording of the fact <see cref="History.SessionConversationFold.DirectorTooOldText"/>
+    /// states for Chat, and the two must keep agreeing about the CAUSE while differing about the
+    /// consequence - one loses the chat, the other loses the narration. They are deliberately not one
+    /// shared string: a sentence that has to be true of both surfaces ends up naming neither.
+    /// </summary>
+    public const string DirectorTooOldText =
+        "This session's computer is running an older DevThrottle that cannot send its conversation, "
+      + "so there is nothing here to read aloud. Update it to hear this session.";
+
     /// <param name="voiceMode">The session is in voice mode (the Director's authoritative flag).</param>
     /// <param name="agentWorking">The agent is mid-turn (a blue / working activity state). The
     /// finished-turn narration is stale while it works, so this dominates: no play, no Generate button,
@@ -83,7 +97,11 @@ public static class VoiceDisplayFold
     /// "gave up" instead of another calm "on its way" - see that field for why a promise with no end is
     /// worse than an admission.</param>
     /// <param name="utcNow">Now, injected so the give-up boundary is testable without waiting for it.</param>
-    public static VoiceDisplay Fold(bool voiceMode, bool agentWorking, bool hasAudio, bool generating, HostedAiState? unavailable, bool nothingToNarrate, bool servedViaFallback = false, DateTime? waitingSince = null, DateTime? utcNow = null)
+    /// <param name="directorCannotSendConversation">The computer that owns this session is connected but
+    /// running a build that cannot send its conversation, so the Gateway will never hold words to narrate
+    /// for it. A SPECIFIC, ACTIONABLE reason with a one-line remedy - which is why it outranks every
+    /// "be patient" verdict below it. See <see cref="DirectorTooOldText"/>.</param>
+    public static VoiceDisplay Fold(bool voiceMode, bool agentWorking, bool hasAudio, bool generating, HostedAiState? unavailable, bool nothingToNarrate, bool servedViaFallback = false, DateTime? waitingSince = null, DateTime? utcNow = null, bool directorCannotSendConversation = false)
     {
         // Computed once, up front, because more than one verdict below carries it: the calm "on its way"
         // wants it so a healthy wait can be seen climbing, and the give-up verdict wants it in its own
@@ -207,6 +225,32 @@ public static class VoiceDisplayFold
                     Reason = HostedAiHttp.Dto(unavailable.Value),
                 };
         }
+
+        // THE OWNING COMPUTER CANNOT SEND ITS CONVERSATION. One more member of the category the comment above
+        // already names - a SPECIFIC, ACTIONABLE reason - so it sits with those, above every sentence whose
+        // content is "be patient". It is placed BELOW the hosted-AI switch on purpose: an account that is out
+        // of credits or needs setup must still be told that first, because those conditions are what the rest
+        // of the product is already saying about the account and this one is about a single machine.
+        //
+        // Above nothingToNarrate as well as above gaveUp. Both would be FALSE CLAIMS here and they are false
+        // in different directions: "nothing to read aloud" asserts the session is parked on a prompt, which
+        // is a statement about the conversation nobody here has read, and "voice did not arrive" reports a
+        // narration that was never attempted. The wingman clears nothingToNarrate on this path for the same
+        // reason, so in practice they do not collide - the ordering is here because a defence that depends on
+        // another file's clearing discipline is not a defence.
+        //
+        // The remedy is a single sentence and the recovery needs nobody: updating that computer flips its
+        // next Hello, the wingman's marker clears on the following pass, and narration resumes.
+        if (directorCannotSendConversation)
+            return new VoiceDisplay
+            {
+                Kind = "directorTooOld",
+                Tone = "red",
+                Label = "Update DevThrottle",
+                Message = DirectorTooOldText,
+                // No Generate button: pressing it would re-read the same empty store. The action is on the
+                // other machine, and the message names it.
+            };
 
         // Nothing to read aloud: the session needs the user, but on a prompt / menu, not a text reply. This
         // is the honest state that replaces the old "red badge next to a Generate button that can never
