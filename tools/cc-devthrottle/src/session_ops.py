@@ -414,6 +414,100 @@ def hold_session(target: Optional[str], release: bool = False, minutes: Optional
     return resp if isinstance(resp, dict) else {}
 
 
+def raise_hand(reason: Optional[str], target: Optional[str] = None, clear: bool = False) -> Dict[str, Any]:
+    """Put your hand up to the session that is driving you, or take it back down.
+
+    A supervised session (a worker with a live supervisor, an architect, a scheduled run) is quiet
+    toward the owner BY CONSTRUCTION - it is parked on every screen the moment it stops working, and
+    it has no channel to him. This is the channel it has instead: it tells the session that started
+    it, in its own words, what decision it is blocked on.
+
+    Your hand LOWERS ITSELF when you stop working. That is not a shortcut - stopping already tells
+    your supervisor to look at you, so a flag that outlived the turn would just be noise nobody
+    cleared. Raise it when you are mid-turn and cannot go on without an answer.
+    """
+    sid = resolve_target_or_current(target)
+    if clear:
+        body: Dict[str, Any] = {"raised": False}
+    else:
+        text = (reason or "").strip()
+        if not text:
+            console.print(
+                "[red]Error:[/red] say what you need. A raised hand with no words is a 'notice me' "
+                "ping - your supervisor would have to open you to find out what for, which is the "
+                "work this is meant to save."
+            )
+            raise typer.Exit(1)
+        body = {"raised": True, "reason": text}
+
+    try:
+        resp = gateway.post_json(f"sessions/{sid}/needs-manager", body)
+    except gateway.GatewayError as err:
+        console.print(f"[red]Error:[/red] {err}")
+        raise typer.Exit(1)
+
+    short = gateway.short_id(sid)
+    if clear:
+        console.print(f"[green]Hand down[/green] {short}.")
+    else:
+        console.print(
+            f"[green]Hand up[/green] {short}. Your supervisor sees it on the roster while you keep "
+            "working; it lowers itself when your turn ends."
+        )
+    return resp if isinstance(resp, dict) else {}
+
+
+def list_my_workers(target: Optional[str] = None) -> None:
+    """Show the sessions THIS session is driving, and which of them have their hand up.
+
+    The manager's half of the supervised rule. Workers never reach the owner, so a manager is the
+    only one who can see a blocked one - and the design says a manager learns by READING its workers,
+    not by being messaged 'notice me'. This is that read, in one line instead of one session at a time.
+    """
+    me = resolve_target_or_current(target)
+    try:
+        rows = gateway.get_json("sessions")
+    except gateway.GatewayError as err:
+        console.print(f"[red]Error:[/red] {err}")
+        raise typer.Exit(1)
+
+    sessions = rows.get("sessions") if isinstance(rows, dict) else rows
+    if not isinstance(sessions, list):
+        console.print("[red]Error:[/red] the Gateway did not return a session list.")
+        raise typer.Exit(1)
+
+    mine = [
+        x for x in sessions
+        if str(gateway.field(x, "controllerSessionId", "ControllerSessionId") or "").lower() == me.lower()
+    ]
+    if not mine:
+        console.print("You are not driving any sessions.")
+        return
+
+    table = Table(title=f"Sessions driven by {gateway.short_id(me)}")
+    table.add_column("ID")
+    table.add_column("NAME")
+    table.add_column("STATE")
+    table.add_column("HAND UP - WHAT THEY NEED")
+    for x in mine:
+        sid = str(gateway.field(x, "sessionId", "SessionId") or "")
+        raised = bool(gateway.field(x, "needsManager", "NeedsManager"))
+        reason = str(gateway.field(x, "needsManagerReason", "NeedsManagerReason") or "")
+        table.add_row(
+            gateway.short_id(sid),
+            str(gateway.field(x, "name", "Name") or ""),
+            str(gateway.field(x, "stateLabel", "StateLabel") or ""),
+            f"[yellow]{reason}[/yellow]" if raised else "",
+        )
+    console.print(table)
+    # A session that has STOPPED has its hand lowered by the fold, so an empty column does not mean
+    # "nothing needs you" - it means nothing needs you MID-TURN. Say so rather than let the table imply it.
+    console.print(
+        "[dim]A hand lowers itself when its session stops working. A stopped worker has finished or is "
+        "stuck - read it to find out which.[/dim]"
+    )
+
+
 def compact_session(target: Optional[str], continue_prompt: Optional[str]) -> Dict[str, Any]:
     """Compact a session's context and, unless asked not to, continue it. Issue #2150.
 

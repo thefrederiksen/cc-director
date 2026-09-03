@@ -169,6 +169,64 @@ public static class SessionOrdering
     }
 
     /// <summary>
+    /// TRUE WHEN THIS SESSION ANSWERS TO SOMETHING OTHER THAN THE OWNER - the one question that decides
+    /// whether a stopped session is allowed to ask for him.
+    ///
+    /// Three kinds, and they are three because they are three different reasons, not one rule stretched:
+    ///  - <see cref="SessionRoles.Worker"/> - it has a LIVE supervisor. The role is resolved by
+    ///    <c>FleetRoleResolver</c> from the WHOLE fleet, so "Worker" already means "controlled AND the
+    ///    controller is still alive". A worker whose supervisor DIED resolves to Standalone/Manager and is
+    ///    therefore NOT supervised here - which is the escape hatch, unchanged and deliberate: an orphan
+    ///    reaches the owner, because a dead supervisor is an exception and an exception always involves him.
+    ///  - <see cref="SessionRoles.Architect"/> - a design seat. The owner ruled on 2026-07-09 that an
+    ///    Architect never PUSHES to him; he PULLS it into a conversation when he wants one. It is explicit
+    ///    and sticky, so it can never be inferred by accident.
+    ///  - <c>OriginKind == "schedule"</c> - a cron firing or a work-list item. Nobody was at a keyboard and
+    ///    no session made the call, so there is nobody it can be reporting to. The owner's standing rule for
+    ///    scheduled runs is that they reap themselves and escalate BY EMAIL, never by sitting red on the
+    ///    roster; this makes the roster agree with that rule instead of contradicting it.
+    ///
+    /// A MANAGER AND A STANDALONE ARE NEVER SUPERVISED, and that is the whole point. They are the two
+    /// human-facing seats: a Manager surfaces on its own judgement (a decision OR an update), a Standalone
+    /// is the ordinary single session. Everything the fleet does reaches the owner through one of those two,
+    /// consolidated - which is what makes the rest of the roster safe to quieten.
+    ///
+    /// Reads only facts already on the wire. It adds no state, arms no timer, and writes nothing: a session
+    /// stops being supervised the instant its role resolves differently, with no latch to get stuck.
+    /// </summary>
+    public static bool IsSupervised(SessionDto s) =>
+        string.Equals(s.SessionRole, SessionRoles.Worker, StringComparison.OrdinalIgnoreCase)
+        || string.Equals(s.SessionRole, SessionRoles.Architect, StringComparison.OrdinalIgnoreCase)
+        || string.Equals(s.OriginKind, "schedule", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// True when a supervised session has STOPPED and must therefore present as snoozed (owner's ruling,
+    /// 2026-09-02: "supervised still show up in Director and Cockpit, session should go to onhold when not
+    /// working").
+    ///
+    /// THIS IS THE WHOLE OF THE NEW RULE, and it is deliberately one predicate read by all three fold arms
+    /// so the dot, the words and the bucket cannot disagree about it - the standing requirement in
+    /// docs/new_architecture/session-state.html.
+    ///
+    /// EXITED IS EXCLUDED, and it is not an oversight. The owner already ruled the identical question for
+    /// the owner's own snooze (defect 21): "a dead session must never hide behind a Snoozed label". A
+    /// supervised session that has exited reads Exited - or Crashed, which is the one thing on this whole
+    /// ladder nobody may ever quieten.
+    ///
+    /// WORKING IS EXCLUDED BY THE CALLERS, not here, because every caller already answers it first: nothing
+    /// outranks working. Do NOT add a working check to this method - a second answer to that question is
+    /// exactly the defect this file's history is made of.
+    /// </summary>
+    private static bool IsSupervisedAndStopped(SessionDto s) =>
+        IsSupervised(s) && !Is(s.ActivityState, "Exited");
+
+    /// <summary>Case-insensitive activity-state comparison, shared by every reader of the field in this
+    /// file. Named once here because a second, ordinal copy six lines from a case-insensitive one is how
+    /// this file previously came to compare the same field two different ways.</summary>
+    private static bool Is(string? value, string name) =>
+        string.Equals(value, name, StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
     /// True when the Director's terminal sensor says bytes are flowing: the session IS WORKING.
     /// This is the top of the ladder and the only rule that cannot be overridden.
     ///
@@ -176,6 +234,16 @@ public static class SessionOrdering
     /// dictation, not briefing, not role. Those answer "why is it NOT working?", which is a
     /// question that only means anything once this returns false.
     /// </summary>
+    /// <summary>
+    /// PUBLIC face of <see cref="IsWorking"/> - "is this session mid-turn?" - for the one caller outside this
+    /// file that needs it: the fold pass, which lowers a raised hand the moment its worker stops (#2662).
+    ///
+    /// It delegates rather than re-testing the field, so there is still exactly ONE definition of working in
+    /// the system. A second copy would be a second answer to the question the whole ladder is built on, and
+    /// this file's history is a list of what that costs.
+    /// </summary>
+    public static bool IsWorkingSession(SessionDto s) => IsWorking(s);
+
     private static bool IsWorking(SessionDto s) =>
         string.Equals(s.ActivityState, "Working", StringComparison.OrdinalIgnoreCase)
         || string.Equals(s.ActivityState, "Starting", StringComparison.OrdinalIgnoreCase);
@@ -209,6 +277,24 @@ public static class SessionOrdering
         // It marks "a dictated utterance is in flight, do not grab this session" - which is only
         // meaningful at a prompt. Mid-turn it is invisible anyway: blue already won above.
         : (DictationPhaseLabel(s) != null || s.Transcribing || s.IsTranscribing) ? "orange"
+        // SUPERVISED AND STOPPED -> SLATE (owner's ruling, 2026-09-02). A session that answers to another
+        // session, to a design seat, or to a schedule has nobody to ask when it stops, so it presents as
+        // snoozed: it keeps its row on every screen, and it sinks out of the owner's queue.
+        //
+        // ABOVE the two yellows on purpose. A supervised session must never read "Wingman reading" or
+        // "Preparing voice" at the owner, and this arm must be true on its own rather than by trusting the
+        // wingman not to have started - the fold's correctness cannot rest on a producer's good behaviour,
+        // which is the lesson of the voice-enrichment hole (#1843).
+        //
+        // BELOW dictation orange, also on purpose: an utterance in flight means the OWNER is speaking into
+        // this session right now. He is driving it, so the row must say so - the same reasoning that lets
+        // an owner's own words supersede an owner's own snooze.
+        //
+        // It cannot touch a working session: order 0 returned already. Slate rather than the snooze grey
+        // because the two are genuinely different facts - grey is "YOU parked this, and a timer will bring
+        // it back", slate is "this one is not yours to watch". Four indistinguishable greys is a defect this
+        // document already carries (17); adding a fifth to save a colour would be the wrong trade.
+        : IsSupervisedAndStopped(s) ? "supporting"
         // THERE IS NO "EXPLAINING" ORANGE ARM HERE, AND THERE NEVER WORKED ONE. This used to read
         // `: IsExplaining(s) ? "orange"`, gated on BriefingState == "Explaining" (issue #217's
         // user-initiated "I am lost - explain" deep dive). #217's roster orange has never once worked -
@@ -269,19 +355,18 @@ public static class SessionOrdering
     /// </summary>
     private static string BaseColor(SessionDto s)
     {
-        var activity = ResolveActivity(s);
-        var isRed = string.Equals(activity, "red", StringComparison.OrdinalIgnoreCase);
-
-        // Automatic session roles (Layer 1 - "workers never nag the human"): a LIVE-controlled Worker
-        // suppresses its red - it recedes to slate and never surfaces red to the human (its manager sees it
-        // via the rail). SessionRole is stamped by the Gateway aggregation from the WHOLE fleet, so
-        // "Worker" already means "controlled AND controller ALIVE". A Worker whose controller has DIED is
-        // role Manager/Standalone (not "Worker"), so this does NOT fire and its red surfaces - the escape
-        // hatch. Managers and Standalones are human-facing, so their red always breaks through.
-        if (isRed && string.Equals(s.SessionRole, SessionRoles.Worker, StringComparison.OrdinalIgnoreCase))
-            return "supporting";
-
-        return activity;
+        // THE WORKER RED-SUPPRESSION ARM THAT USED TO LIVE HERE HAS MOVED UP THE LADDER, NOT BEEN DELETED.
+        // It read: a live-controlled Worker that is red recedes to "supporting" instead of surfacing. The
+        // owner widened that rule on 2026-09-02 - it now covers every SUPERVISED session (Worker, Architect,
+        // scheduled run), and it puts them in the parked bucket rather than merely recolouring them. A rule
+        // that answers "may this session ask the owner?" belongs beside the other rules that suppress
+        // attention, above the two yellows, not at the bottom underneath them; down here it could recolour a
+        // row the wingman had already claimed for a narration nobody wanted.
+        //
+        // So "supporting" still has exactly one producer and every consumer of it still has one - it is
+        // IsSupervisedAndStopped in EffectiveColor. Do not re-add a role check here: two producers of one
+        // colour, agreeing today and drifting tomorrow, is the defect class this file's history is made of.
+        return ResolveActivity(s);
     }
 
     /// <summary>The activity color plus the turn-end overlays the Director bakes: auto-explain yellow,
@@ -328,9 +413,6 @@ public static class SessionOrdering
             || Is(s.ActivityState, "Idle")) return "red";
         if (Is(s.ActivityState, "Exited")) return s.Crashed ? "error" : "grey";
         return "unknown";
-
-        static bool Is(string? value, string name) =>
-            string.Equals(value, name, StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>True when the session is parked at a turn-end (WaitingForInput / WaitingForPerm), the
@@ -356,6 +438,16 @@ public static class SessionOrdering
         // "Transcribing" for the legacy flag / the desktop's own dictation.
         if (DictationPhaseLabel(s) is { } dictationPhase) return dictationPhase;
         if (s.Transcribing || s.IsTranscribing) return "Transcribing";
+        // Mirrors EffectiveColor's supervised arm, in the same position, so the dot and the words are folded
+        // from the same inputs in the same order. "Snoozed" is the owner's own word for this state and it is
+        // true of all three kinds; the row's role badge says WHOSE it is.
+        //
+        // This retires the label "Sub-agent", which was the answer here while the rule fired only for a
+        // Worker. It was wrong for the two kinds this arm adds - an Architect is not a sub-agent and neither
+        // is a cron firing - and it described the session's PARENTAGE where every other label on this ladder
+        // describes its STATE. The slate dot still carries "not yours to watch"; the word now carries what
+        // the session is actually doing, which is nothing.
+        if (IsSupervisedAndStopped(s)) return "Snoozed";
         // No "Explaining" arm: BriefingState can never be "Explaining" - see the tombstone in
         // EffectiveColor above. The label and the dot are folded from the same inputs in the same
         // order, so this deletion keeps them in lockstep.
@@ -367,9 +459,11 @@ public static class SessionOrdering
         if (IsVoicePreparing(s)) return VoiceHoldLabel(s);
         return BaseColor(s) switch
         {
-            // "supporting" now means ONLY a Worker whose red was suppressed (see BaseColor). A working
-            // controlled sub-agent reads "Working" like any other working session.
-            "supporting" => "Sub-agent",
+            // NO "supporting" ARM. It is not missing - it is unreachable, and saying so here is cheaper than
+            // the next reader re-deriving it. BaseColor no longer produces that colour (see the tombstone in
+            // it), and the only thing that does - the supervised arm - already returned "Snoozed" above this
+            // switch. A "supporting" => something mapping here would be a second answer to a question that
+            // has already been answered, which is how this file previously came to label a blue dot "Snoozed".
             "purple" => "Background",
             "green" => "Ready",
             "yellow" => "Wingman reading",   // Director auto-explain base yellow
@@ -464,6 +558,64 @@ public static class SessionOrdering
     }
 
     /// <summary>
+    /// THE WORDS FOR AN ORPHAN (owner's orphan ruling, 2026-07-09), or null when there is nothing to say.
+    ///
+    /// A session that was being driven by another session, whose driver has now gone, is the ONE case where
+    /// a session the fleet was handling lands back on the owner. That hand-back already works - the role
+    /// resolver answers Standalone rather than Worker once the supervisor is not alive, so the suppression
+    /// stops and the red surfaces. What was missing is the ruling's other half: he was told THAT something
+    /// wants him and never WHY, so an orphan looked exactly like an ordinary session at a prompt.
+    ///
+    /// WHY IT TAKES THE SUPERVISOR RATHER THAN LOOKING IT UP. This method is pure and per-session like every
+    /// other rule in this file; "which session is id X, and is it alive?" is a question about the whole
+    /// fleet, and the fleet is something only the Gateway's fold pass holds. So the caller does the lookup
+    /// and passes what it found - including NULL, which is itself an answer and the commonest one (a
+    /// supervisor that exited long enough ago to have left the roster entirely).
+    ///
+    /// SILENT WHILE IT IS WORKING, and that is deliberate rather than an oversight: a session mid-turn is
+    /// getting on with the work it was given and there is nothing for anyone to decide yet. It speaks when
+    /// the session STOPS, which is the moment it would otherwise sit red and unexplained.
+    ///
+    /// It is a NOTICE, NOT A COLOUR, for the same reason the delivery notice is: recolouring would say
+    /// something false about what the agent is doing in order to say something true about its supervision.
+    /// The dot keeps telling the truth and this rides beside it.
+    /// </summary>
+    /// <param name="s">The possibly-orphaned session.</param>
+    /// <param name="supervisor">The session named by its <see cref="SessionDto.ControllerSessionId"/> as the
+    /// caller found it in the fleet, or null when the fleet no longer contains it at all.</param>
+    public static string? SupervisorLostNotice(SessionDto s, SessionDto? supervisor)
+    {
+        if (s is null) throw new ArgumentNullException(nameof(s));
+
+        // Never had a supervisor: an ordinary session, nothing to explain.
+        if (!s.IsControlled || string.IsNullOrEmpty(s.ControllerSessionId)) return null;
+
+        // STILL SUPERVISED. Read from the RESOLVED ROLE rather than re-deciding it here, because "Worker"
+        // already means "controlled AND the controller is alive" - that is the single fact the resolver
+        // exists to own, and asking it a second way here would be a second answer to it.
+        if (string.Equals(s.SessionRole, SessionRoles.Worker, StringComparison.OrdinalIgnoreCase)) return null;
+
+        // An explicit Architect that happens to carry a controller is a design seat, not an abandoned
+        // worker. It is supervised by declaration, so losing a spawner strands nothing.
+        if (string.Equals(s.SessionRole, SessionRoles.Architect, StringComparison.OrdinalIgnoreCase)) return null;
+
+        // Working: getting on with it. Nothing to decide until it stops.
+        if (IsWorking(s)) return null;
+
+        // Dead: it is not stranded, it is over. Saying "nothing is supervising this" about a session that
+        // has itself exited would send the owner to look at wreckage twice.
+        if (Is(s.ActivityState, "Exited")) return null;
+
+        var name = (supervisor?.Name ?? "").Trim();
+        var who = name.Length > 0
+            ? $"The session that was driving this one (\"{name}\") has gone."
+            : "The session that was driving this one has gone.";
+
+        return who + " Nothing is supervising it now, so it came back to you - read it, then resume it, "
+             + "hand it to another session, or stop it.";
+    }
+
+    /// <summary>
     /// Classify a session for triage, folded in the same order as <see cref="EffectiveColor"/> and
     /// <see cref="StateLabel"/> so all three always agree.
     ///
@@ -481,6 +633,15 @@ public static class SessionOrdering
     public static TriageBucket Classify(SessionDto s) =>
         IsWorking(s) ? TriageBucket.Active
         : s.OnHold ? TriageBucket.OnHold
+        // Supervised and stopped sinks to the parked bucket beside the owner's own snoozes (owner's ruling,
+        // 2026-09-02). This is the half of the rule that does the work he actually asked for: the colour
+        // stops it going red, and THIS stops it sitting in the middle of his list. Folded in the same order
+        // as the colour and the label above.
+        //
+        // It is what keeps every downstream count honest without any of them learning a new rule: the "N
+        // need you" header, the phone's web-push badge and Car Mode all select on this bucket, so all three
+        // go quiet from this one line.
+        : IsSupervisedAndStopped(s) ? TriageBucket.OnHold
         : EffectiveColor(s) == "red" ? TriageBucket.NeedsYou
         : TriageBucket.Active;
 

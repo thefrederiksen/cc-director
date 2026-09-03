@@ -45,7 +45,10 @@ public sealed class DisplayPushVoiceEnrichmentTests
             voiceAudioReadyFor: _ => true,
             tenant: TenantId.Local,
             needsYouStampFor: null,
-            snoozeRegistry: null);
+            snoozeRegistry: null,
+            // #2662: passed EXPLICITLY. The parameter is required rather than optional so a fold input can
+            // never be silently omitted on this seam again - which is exactly what #1843 was.
+            handRaises: null);
 
         Assert.True(s.VoiceAudioReady);           // enrichment overwrote the snapshot's stale false
         Assert.Equal("red", s.EffectiveColor);    // -> red, not the frozen yellow
@@ -64,7 +67,10 @@ public sealed class DisplayPushVoiceEnrichmentTests
             voiceAudioReadyFor: _ => false,
             tenant: TenantId.Local,
             needsYouStampFor: null,
-            snoozeRegistry: null);
+            snoozeRegistry: null,
+            // #2662: passed EXPLICITLY. The parameter is required rather than optional so a fold input can
+            // never be silently omitted on this seam again - which is exactly what #1843 was.
+            handRaises: null);
 
         Assert.False(s.VoiceAudioReady);          // enrichment overwrote the snapshot's stale true
         Assert.Equal("yellow", s.EffectiveColor);
@@ -82,7 +88,10 @@ public sealed class DisplayPushVoiceEnrichmentTests
             voiceAudioReadyFor: _ => true,
             tenant: TenantId.Local,
             needsYouStampFor: null,
-            snoozeRegistry: null);
+            snoozeRegistry: null,
+            // #2662: passed EXPLICITLY. The parameter is required rather than optional so a fold input can
+            // never be silently omitted on this seam again - which is exactly what #1843 was.
+            handRaises: null);
 
         Assert.Equal("yellow", s.EffectiveColor);
     }
@@ -111,6 +120,9 @@ public sealed class DisplayPushVoiceEnrichmentTests
             tenant: TenantId.Local,
             needsYouStampFor: null,
             snoozeRegistry: null,
+            // #2662: passed EXPLICITLY. The parameter is required rather than optional so a fold input can
+            // never be silently omitted on this seam again - which is exactly what #1843 was.
+            handRaises: null,
             voiceUnavailableFor: _ => null,
             nothingToNarrateFor: _ => true);
 
@@ -131,6 +143,9 @@ public sealed class DisplayPushVoiceEnrichmentTests
             tenant: TenantId.Local,
             needsYouStampFor: null,
             snoozeRegistry: null,
+            // #2662: passed EXPLICITLY. The parameter is required rather than optional so a fold input can
+            // never be silently omitted on this seam again - which is exactly what #1843 was.
+            handRaises: null,
             voiceUnavailableFor: _ => Core.HostedAi.HostedAiState.ServiceDown,
             nothingToNarrateFor: _ => false);
 
@@ -154,6 +169,9 @@ public sealed class DisplayPushVoiceEnrichmentTests
             tenant: TenantId.Local,
             needsYouStampFor: null,
             snoozeRegistry: null,
+            // #2662: passed EXPLICITLY. The parameter is required rather than optional so a fold input can
+            // never be silently omitted on this seam again - which is exactly what #1843 was.
+            handRaises: null,
             voiceUnavailableFor: _ => null,
             nothingToNarrateFor: _ => false);
 

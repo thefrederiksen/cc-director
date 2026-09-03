@@ -24,9 +24,11 @@ from .session_ops import (
     compact_session,
     hold_session,
     interrupt_session,
+    list_my_workers,
     list_sessions,
     mark_done,
     prompt_session,
+    raise_hand,
     read_session_buffer,
     rename_session,
     set_session_role,
@@ -1041,6 +1043,46 @@ def interrupt(
 ) -> None:
     """Stop what a session is currently doing."""
     interrupt_session(target)
+
+
+@session_app.command(name="raise")
+def raise_(
+    reason: Optional[str] = typer.Argument(
+        None, help="What you are blocked on, in your own words. Required unless --clear."
+    ),
+    target: Optional[str] = typer.Option(
+        None, "--target", help="Session to raise for. Defaults to THIS session (CC_SESSION_ID)."
+    ),
+    clear: bool = typer.Option(False, "--clear", help="Take the hand back down - the decision was answered."),
+) -> None:
+    """Put your hand up to the session driving you, when you cannot go on without an answer.
+
+    A supervised session - a worker with a live supervisor, an architect, a scheduled run - is quiet
+    toward the owner by construction: it parks on every screen when it stops and it has no channel to
+    him. This is the channel it has instead.
+
+    Raise it only when you are STILL WORKING and have hit something you cannot decide inside your
+    mandate: an ambiguous requirement, an irreversible step, a real design fork, an authorisation you
+    do not hold. Not for progress, and not for "I finished" - stopping already says that.
+
+    Your hand lowers itself when your turn ends.
+    """
+    raise_hand(reason, target, clear)
+
+
+@session_app.command()
+def workers(
+    target: Optional[str] = typer.Option(
+        None, "--target", help="Whose workers to list. Defaults to THIS session (CC_SESSION_ID)."
+    ),
+) -> None:
+    """List the sessions you are driving, and which of them have their hand up.
+
+    A manager learns what its workers are doing by READING them, not by being messaged "notice me".
+    This is that read in one line - who you are driving, what state each is in, and what any of them
+    is blocked on.
+    """
+    list_my_workers(target)
 
 
 @session_app.command()

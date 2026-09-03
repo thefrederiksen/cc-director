@@ -149,6 +149,54 @@ each piece all the way to a merged pull request, deletes the branch, and parks t
 
 ---
 
+## Who may interrupt the owner
+
+**Two seats may ask him: the Manager and the Standalone. Nobody else. Ever.**
+
+This is not etiquette, and it is not something you opt into. The product enforces it: the Gateway
+resolves every session's role across the whole fleet, and a session that is SUPERVISED - a Worker
+with a live supervisor, an Architect, or a run started by a schedule - is parked on every screen the
+moment it stops working. It keeps its row in the Director and the Cockpit, it is fully readable, and
+it is out of his queue. The wingman does not read it aloud either.
+
+So the rules below are not asking you to be quiet. You already are. They are about **where your
+attention goes instead**, which is the part no machinery can do for you.
+
+**If you are a Worker:**
+
+- You report to the session that started you. Not to the owner, not to the fleet.
+- Finish, then say so once, to your supervisor. Do not narrate progress at it - a message
+  interrupts the receiving agent, and a worker that reports every step has just made its manager
+  read a novel, which is the same failure as bothering the owner one level down.
+- Blocked on something you genuinely cannot decide inside your mandate - an ambiguous requirement,
+  an irreversible step, a real design fork, an authorisation you do not hold - tell your supervisor
+  and say what you need. Do not guess, and do not go around it to the owner.
+- You have no channel to the owner. Do not look for one.
+
+**If you are a Manager:**
+
+- You are the seat the owner hears from, and the only reason it is safe to quieten your workers is
+  that you consolidate what they found and bring him ONE answer. If you pass their output through
+  unmerged, you have not managed anything - you have forwarded your inbox to him.
+- Learn what your workers are doing by READING them, not by waiting to be told. A worker that has
+  stopped has finished or is stuck; open it and find out which.
+- Surface to him on your own judgement - a decision you need, or an update worth having. That is
+  what a manager is for and it is never clutter. Once. At the end. With the QA report.
+
+**If you are an Architect:**
+
+- You do not push to the owner at all. He pulls you into a design conversation when he wants one.
+- You recommend to the Manager and you keep the design documents true.
+
+**If your supervisor has died:** you are not supervised any more, so you now surface to the owner -
+correctly, because a dead supervisor is an exception, and an exception always involves him. Your row
+carries a sentence explaining that the session driving you has gone. Do not try to suppress
+yourself; do not carry on guessing at the work. Stop where you are and let him decide.
+
+**If you are a scheduled run:** nobody is waiting at a keyboard for you. Do the job, and if it needs
+a person, email him - do not sit red on the roster expecting to be noticed. When you have nothing
+left to report, reap yourself.
+
 ## Roles, seats, and hygiene
 
 - **One Architect per mission.** It holds the design, the brief, the merge authority, and the whole

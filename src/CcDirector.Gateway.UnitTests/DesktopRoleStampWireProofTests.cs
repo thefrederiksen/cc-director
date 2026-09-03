@@ -1,4 +1,4 @@
-using CcDirector.ControlApi;
+﻿using CcDirector.ControlApi;
 using CcDirector.Core.Sessions;
 using CcDirector.Gateway.Contracts;
 using Xunit;
@@ -119,7 +119,10 @@ public sealed class DesktopRoleStampWireProofTests
         var after = ControlEndpoints.Map(worker, directorId: "");
         Assert.Equal(SessionRoles.Worker, after.SessionRole);
         Assert.Equal("supporting", SessionOrdering.EffectiveColor(after));
-        Assert.Equal("Sub-agent", SessionOrdering.StateLabel(after));
+        // The label is "Snoozed" (was "Sub-agent") since the owner ruled on 2026-09-02 that a supervised
+        // session goes to on-hold when it is not working; the slate dot is unchanged. See the supervised arm
+        // in SessionOrdering.EffectiveColor.
+        Assert.Equal("Snoozed", SessionOrdering.StateLabel(after));
 
         // The law: the role changed the ANSWER, not the underlying activity fact. The session is still
         // genuinely at a turn end - ownership travels on the role, and the dot says what it is DOING.

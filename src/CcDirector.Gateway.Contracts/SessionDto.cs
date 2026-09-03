@@ -129,7 +129,7 @@ public sealed class SessionDto
     /// from other fields.
     /// Values: "blue" (agent is working), "red" (needs the user - input/permission/idle),
     /// "yellow" (the Wingman is reading the screen and narrating), "purple" (parked on its
-    /// own background task, will resume itself), "supporting" (a controlled sub-agent another
+    /// own background task, will resume itself), "supporting" (a SUPERVISED session - one another session, a design seat or a schedule owns, and which therefore
     /// session is driving - issue #815, rendered as a recessive slate #64748B), "unknown"
     /// (process exited, or source unreachable/unparseable - rendered gray). On-hold is separate:
     /// see <see cref="OnHold"/>. ("green" is legacy and no longer emitted.)
@@ -276,6 +276,25 @@ public sealed class SessionDto
     public string? PromptDeliveryNotice { get; set; }
 
     /// <summary>
+    /// Gateway-owned plain-English notice that the session which was DRIVING this one is gone, or null when
+    /// there is nothing to say. Folded once by <c>SessionOrdering.SupervisorLostNotice</c> and rendered
+    /// VERBATIM by every client (CLAUDE.md rule 7).
+    ///
+    /// WHY IT EXISTS. Suppressing a supervised session's attention is only safe while it HAS a supervisor.
+    /// When that supervisor dies the suppression correctly stops - the role resolves to Standalone, so the
+    /// red surfaces and the owner is involved, which is his 2026-07-09 orphan ruling ("ALWAYS involve the
+    /// operator" on an exception). But the ruling asked for more than a red dot: "the Manager &lt;name&gt; you
+    /// were working for is gone; here is the task; here is where you are stuck". Without that, an orphan is
+    /// indistinguishable from an ordinary session wanting attention, and the owner has to open it to find
+    /// out it is wreckage rather than work.
+    ///
+    /// Only the Gateway can produce it: naming the supervisor means looking it up across the WHOLE fleet,
+    /// which no single Director can do - the supervisor may be on another machine. Always null in
+    /// Director-local responses, which carry raw facts and no verdict.
+    /// </summary>
+    public string? SupervisorLostNotice { get; set; }
+
+    /// <summary>
     /// Gateway-owned presentation color after all overlays are folded in
     /// (<see cref="SessionOrdering.EffectiveColor"/>): on-hold, transcribing, explaining,
     /// briefing, and voice-generation state. Stamped by the Gateway aggregator so browser
@@ -306,7 +325,7 @@ public sealed class SessionDto
     /// <summary>
     /// Gateway-owned human-readable state label after the same fold (issue #1177, Phase 2):
     /// e.g. "Needs you" | "Working" | "Ready" | "Wingman reading" | "Preparing voice" |
-    /// "Transcribing" | "Sub-agent" | "Background" | "Snoozed" | "Exited".
+    /// "Transcribing" | "Background" | "Snoozed" | "Exited".
     /// ("Explaining" was in this list and was never once emitted - see the tombstone in
     /// <see cref="SessionOrdering.EffectiveColor"/>.)
     /// Computed by <see cref="SessionOrdering.StateLabel"/> from the same raw facts + overlays as
@@ -708,10 +727,34 @@ public sealed class SessionDto
     public string? ExplicitRole { get; set; }
 
     /// <summary>
-    /// RAW FACT: a still-Working Worker wants its manager's attention (an explicit escalation signal),
-    /// default false. Reserved for the manager-facing rail; the global fold does not consume it yet.
+    /// A supervised session has its hand up: it is still WORKING and has hit something it cannot decide
+    /// inside its mandate (issue #2662). Gateway-owned and Gateway-stamped, from the hand-raise registry.
+    ///
+    /// THIS USED TO BE A DECLARATION AND NOTHING ELSE. Its old comment said "reserved for the manager-facing
+    /// rail; the global fold does not consume it yet", and that stayed true from July until it was built -
+    /// zero writers, zero readers, on a field the whole worker-suppression design depends on. Suppressing a
+    /// worker's attention is only safe if something else is listening, and for that whole period nothing was.
+    ///
+    /// IT LOWERS ITSELF. The fold stamps it as "raised AND still working", so a worker that stops - finished
+    /// or blocked - has its hand lowered with no sweep, no timer and nothing to remember. Stopping already
+    /// carries its own cue to the supervisor, so the flag would be redundant the moment it went quiet, and a
+    /// latch that had to be cleared by someone is exactly the thing that would still be up next week.
+    ///
+    /// THE OWNER NEVER SEES IT. It is not read by <c>SessionOrdering</c>'s colour, label or triage arms and
+    /// must never be: it is a signal between two sessions. Adding a branch for it would put a worker's
+    /// problem back in his queue, which is the whole thing the supervised rule exists to stop.
     /// </summary>
     public bool NeedsManager { get; set; }
+
+    /// <summary>
+    /// The worker's OWN WORDS for what it is blocked on, or null when its hand is down. Rides beside
+    /// <see cref="NeedsManager"/> so a supervisor learns WHAT is wanted from the roster it already reads,
+    /// rather than having to open the session to find out - the same reason the delivery notice exists.
+    ///
+    /// Never composed by us. A worker that raises its hand without saying why has told its supervisor almost
+    /// nothing, so the command that sets this requires the words.
+    /// </summary>
+    public string? NeedsManagerReason { get; set; }
 
     /// <summary>
     /// RAW FACT: the display name was AUTO-composed at birth (mirrors <c>Session.IsAutoNamed</c>); false once
