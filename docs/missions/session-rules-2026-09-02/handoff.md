@@ -1,87 +1,113 @@
 # Session Rules - the running handoff
 
-The Architect keeps this current. It is the ONLY thing a fresh Manager needs, alongside `brief.md`
-(the work), `plan.md` (the running order and the rulings) and the fleet's `mission` workflow (the
-conduct). Not a transcript. Not a history.
+The Architect keeps this current. It is the ONLY thing a fresh Manager needs, alongside
+`implementation-plan-for-the-architect.html` (the settled design, the phases, the acceptance rows)
+and the fleet's `mission` workflow (the conduct). Not a transcript. Not a history.
+
+**Last updated: 2026-09-03 by the Architect, on evidence, replacing a stale version that said
+NOTHING had landed on main.**
 
 ---
 
-## Where things stand
+## Where things stand, verified against origin/main
 
-- **Phase:** FIX ROUND B, in flight on `mission/session-rules-fb`. Twelve findings from the second
-  independent inspection (`inspection-b.md`), four of them critical.
-- **Mission branch:** `mission/session-rules`, pushed. Phases 1 and 2, fix round A, and both
-  inspections are merged.
-- **Landed on main so far:** NOTHING.
+`origin/main` is `2a8679007`. Verified by reading `origin/main` directly, not a working tree.
 
-**Phase 1 is done:** the rule store, the contract, the reflection-derived check registry, the five
-verified checks, the write-time validator.
+**ALREADY ON MAIN.** The engine's first half shipped in pull request 2665 (`d447736c1`): the
+tenant-scoped rule and firing store with its migration, the five verified checks and the
+reflection-derived registry, the write-time validator, the evaluator, the dry-run shape and the
+promotion boundary, and the demonstration that a rule fires on a real session. The mission record
+through fix round B and inspections A and B is on main too.
 
-**Phase 2 is done and THE DEMONSTRATION IS CAPTURED** - the mission's headline, safe on the branch.
-On a real session, `/usage-credits` appears on the terminal with nobody having typed it, and the
-shell's own rejection of the command proves the text arrived and was submitted. Both negative
-controls are live, and a live abandonment was captured where the screen moved mid-decision.
+**LANDING NOW - the authoring half, built in the worktree and uncommitted until today.** Two slices,
+two stacked pull requests, both open:
 
-**Fix round A is done** - the first inspection's nine findings, including deleting two red-first
-claims that did not reproduce and closing the fail-open that let them stand.
+| Slice | Pull request | Branch | What |
+| --- | --- | --- | --- |
+| Gateway | 2671 | `mission/rules-authoring-gateway` | `RuleDraftContract`, `RuleAuthor`, the draft route, grounding, agent scope, the cross-tenant probe |
+| Clients | 2672 | `rule-authoring-by-conversation` | The Rules page, `client-core/rules`, the `cc-devthrottle rule` command group, the mission record |
 
-**Fix round B is in flight** - the second inspection found the ceiling could be walked through by a
-race (proven, not asserted), the human promotion boundary is still a convention any code could mint,
-typing happens before the firing record is durably accepted, and one more set of red-first claims
-does not reproduce.
+2672 is stacked on 2671 and retargets to `main` when 2671 merges.
 
-## The running order from here
+**The gate, run by the Architect on the branch, not taken on trust:**
 
-1. Fix round B finishes and is pushed.
-2. **Inspection C**, scoped TIGHTLY to the fix round B diff and to one question per finding: is it
-   really closed, or has it moved? A fix round is new writing and law 3 applies to it like any other.
-3. The Architect merges to `main` through a pull request, and takes the whole-solution run on that
-   pull request as the coverage the parked suite never gave - the machine-wide lock has been held by
-   other missions and a release gate all day, and queueing behind a 48.88-minute suite on a
-   45-minute wait can only ever produce a zero-test timeout.
-4. The Architect finishes `qa-report.md` and emails the owner ONCE.
+| Suite | Result |
+| --- | --- |
+| `.\scripts\test-local.ps1` (9 projects) | green, 4,848 tests, every outcome Completed |
+| `Gateway.Tests` (parked) filtered to the two new classes | green, 7 tests |
+| Every web workspace + `npm run typecheck` | green - 979 + 106 + 292 + 14 |
+| `pytest tools/cc-devthrottle/tests/test_rule_ops.py` | green, 10 tests |
 
-## Two things the Architect owes the report, and nobody else should write them
+The Postgres proof rig was already up on port 55432 (container `cc-pg-test`); without it this gate is
+red by default on this machine and the red is environmental. Full parked `Gateway.Tests` is the one
+remaining coverage gap and is owed before 2671 merges, because that slice touches `GatewayHost.cs`.
 
-- **Row 5, how to write a rule**, is answerable now: `how-to-write-a-rule.md` was corrected to
-  separate what is BUILT today (rules created over the Gateway interface, derived parts written by
-  hand) from what is DESIGNED BUT NOT BUILT (saying it in English and having a model build it). An
-  earlier draft told the owner to press a button that does not exist.
-- **Row 1 stays PENDING and that is the honest answer.** Authoring by conversation is not built, and
-  a run that stops before it is built says so rather than implying otherwise.
+**Inspection D is in flight** - an independent inspector from a different agent family, on its own
+worktree `D:/ReposFred/devthrottle-inspect-d`, brief at `inspection-d-brief.md`, verdict due at
+`inspection-d.md`.
 
-## Branch and worktree convention on this mission
+## The phases still to build, in dependency order
 
-- Manager: worktree `D:\ReposFred\devthrottle-session-rules-p<N>`, branch
-  `mission/session-rules-p<N>`, cut from `origin/mission/session-rules`.
-- Worker: its OWN worktree, cut from the Manager's phase branch. Never the Manager's tree.
-- The Architect merges the phase branch into `mission/session-rules`, and only the Architect lands
-  anything on `main`.
+From `implementation-plan-for-the-architect.html`, which holds the acceptance row for each. Do not
+re-derive the design; it is settled.
+
+0. **The harness of real captured screens.** Nothing later is trusted until it exists. At least 20
+   real cases, at least half NEGATIVE (trigger words present, right answer still "decline"). Runs
+   against the real engine, not a copy. Reports per model, per case: answer, right or wrong, time -
+   and the count of wrong answers on negatives, which is the number that matters.
+1. **Make the run-time call reliable.** The measured fact that reorders everything: the run-time call
+   asks a reasoning model for ~600 characters of JSON and times out about one time in three. Move it
+   to the fast model as a yes/no question - measured at 0.4s, and it answered all six screens
+   correctly including the three that must be declined. Gate: zero timeouts and zero wrong answers
+   on the negatives, against the Phase 0 harness.
+2. **The clock.** The owner's most common case: a limit at 3am with everything sitting until morning.
+   A rule says "come back at 11:50pm" and something wakes the stopped session then. `retry_delay_from`
+   already ships; use the existing schedule machinery. Ceilings still bound it.
+3. **The page agent.** The authoring call becomes a tool-use loop that can list sessions and read a
+   screen itself, so the page stops needing a pasted screen. The command line already reaches this
+   via `--session`; this is the page catching up.
+4. **Pro gating.** Gate rule CREATION behind Pro. Do NOT gate RUNNING - a free account's live rules
+   must keep firing, because a rule that silently stopped is a trust failure.
+
+Deferred on the owner's call: Director-side rules (issue 2669) and the "only turn red when it needs
+me" case.
+
+## The owner's four decisions - ANSWERED, run with these
+
+He authorised the defaults. They are no longer open.
+
+1. Fast model for the run-time call, **with the negative control re-run as the gate**.
+2. Agent credentials can do everything **except promote**.
+3. Screens are captured **automatically on idle**.
+4. Captured terminal text gets **short, tenant-scoped retention**, same as turns.
+
+## What the QA report must prove, and it is the deliverable
+
+Three scenarios, each with screenshots showing set-up AND the rule being used and triggered:
+
+- **A - the usage limit.** Authored from the real limit screen, waits until the stated reset time,
+  types continue, and the screen afterwards shows it accepted.
+- **B - the provider outage.** Waits the cooldown, continues, and stops at the daily cap rather than
+  looping when the error persists.
+- **C - the negative control.** A LIVE rule whose trigger words are on the screen - but in
+  documentation the session is reading, not in its report of its own state - DECLINES and says why.
+  This is the proof it judges rather than pattern-matches, and a decline is proven by the recorded
+  firing, never by the absence of a keystroke.
+
+The report must state plainly what is proven versus only unit-tested.
+
+## Conventions on this mission
+
+- Manager: its own worktree `D:/ReposFred/devthrottle-rules-p<N>`, branch `mission/rules-p<N>`, cut
+  from `origin/main`. Never the shared checkout, never the Architect's tree.
+- Worker: its OWN worktree, cut from the Manager's phase branch.
+- Only the Architect lands anything on `main`.
+- Merge on local green. Never wait for continuous integration; chase a red forward.
 
 ## Migration slot
 
-`mission/terminal-rules` holds an unlanded screen-store migration dated 2026-09-02 on top of the
-same base. Generate this mission's migration on top of `origin/main` and expect to regenerate the
-model snapshot if that mission lands first. Fetch with `--prune`; test PRESENCE ON MAIN, not
-difference from the merge base.
-
----
-
-## Migration slot sweep, run by the Architect 2026-09-02
-
-Method (ruling A10): fetch with `--prune`, then for each candidate branch list its migration files
-and test whether each one is PRESENT ON `origin/main`. Never test difference from the merge base - a
-squash-merged branch still differs and therefore still votes, which produced a false holder on the
-sister mission earlier the same day.
-
-Result - three holders besides this mission:
-
-| Branch | Migrations absent from origin/main |
-| --- | --- |
-| `origin/mission/terminal-rules` | `20260902154804_AddSessionScreens` |
-| `origin/prompt-delete-erases` (pull request 2379, open, untouched since 8 August) | `20260802044500_PromptErasureWatermark`, `20260802141655_RollupMaterialReadTime`, `20260802153217_SealBoundAndFirstSeen` |
-| `mission/session-rules-p1` (this mission) | `20260902191922_AddSessionRules` |
-
-The Terminal Rules mission has given this one PRIORITY on the slot and will regenerate its own model
-snapshot if the two collide. Take the slot; do not sequence anything on that mission's timing. Whoever
-lands last regenerates - that is mechanical, not a dispute.
+`origin/mission/terminal-rules` holds an unlanded `20260902154804_AddSessionScreens`. Phase 0 needs a
+screen store, so expect a collision. Method: fetch with `--prune`, then test whether each candidate
+migration is PRESENT ON `origin/main` - never difference from the merge base, which makes a
+squash-merged branch vote and produced a false holder earlier. Whoever lands last regenerates the
+model snapshot; that is mechanical, not a dispute.
