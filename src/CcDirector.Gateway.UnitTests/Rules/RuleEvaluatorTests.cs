@@ -77,11 +77,13 @@ public sealed class RuleEvaluatorTests
 
         public IReadOnlyList<SessionRule> Rules(TenantId tenant) => StoredRules;
 
-        /// <summary>Run just before the firings are read, which is INSIDE the free checks and therefore
-        /// before the evaluator has recorded that it has looked at this screen. That is the exact window an
-        /// overlapping pass arrives in, so it is where a test has to hold one pass to make the overlap
-        /// deterministic rather than hoping for a race.</summary>
-        public Action? BeforeReadingFirings { get; set; }
+        /// <summary>Run with the firings ALREADY READ and about to be handed back, which is INSIDE the free
+        /// checks and therefore before the evaluator has recorded that it has looked at this screen. That is
+        /// the exact window an overlapping pass arrives in - one pass holding a snapshot of the record that
+        /// another pass is about to write to - so it is where a test has to hold a pass to make the overlap
+        /// deterministic rather than hoping for a race. Holding it BEFORE the read instead would let the
+        /// held pass see the other pass's act when it resumed, and the cooldown would hide the defect.</summary>
+        public Action? WhileHoldingTheFiringsSnapshot { get; set; }
 
         /// <summary>Whether a firing this environment is told about becomes visible to the free checks, the
         /// way a real store's does. Off by default so the tests written before it keep their exact shape;
@@ -90,8 +92,10 @@ public sealed class RuleEvaluatorTests
 
         public IReadOnlyList<SessionRuleFiring> FiringsFor(TenantId tenant, Guid ruleId)
         {
-            BeforeReadingFirings?.Invoke();
-            return StoredFirings.Where(f => f.RuleId == ruleId).ToList();
+            List<SessionRuleFiring> snapshot;
+            lock (StoredFirings) snapshot = StoredFirings.Where(f => f.RuleId == ruleId).ToList();
+            WhileHoldingTheFiringsSnapshot?.Invoke();
+            return snapshot;
         }
 
         /// <summary>The repository the session is working in. Settable so a test can give it a string that
@@ -683,7 +687,7 @@ public sealed class RuleEvaluatorTests
         var firstPassIsInTheWindow = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var letTheFirstPassGo = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var readers = 0;
-        env.BeforeReadingFirings = () =>
+        env.WhileHoldingTheFiringsSnapshot = () =>
         {
             // ONLY the first reader is held. A gate that held every reader would deadlock the fixed code as
             // surely as it would hold the broken code, and a test that cannot finish proves nothing.
