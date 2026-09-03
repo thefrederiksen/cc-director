@@ -1,0 +1,332 @@
+<title>How rules work, and why they time out</title>
+<style>
+  :root {
+    --bg: #0b1020;
+    --surface: #141a2e;
+    --surface2: #1b2238;
+    --border: #28304a;
+    --text: #e6e9f2;
+    --dim: #99a0b8;
+    --accent: #3b82f6;
+    --warn: #f59e0b;
+    --bad: #f14c4c;
+    --good: #34d399;
+    --code: #0a0f1e;
+  }
+  body {
+    margin: 0;
+    padding: 32px 24px 64px;
+    background: var(--bg);
+    color: var(--text);
+    font: 15px/1.6 -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  .wrap { max-width: 1080px; margin: 0 auto; }
+  h1 { font-size: 30px; line-height: 1.25; margin: 0 0 8px; letter-spacing: -0.01em; }
+  h2 { font-size: 20px; margin: 44px 0 6px; letter-spacing: -0.005em; }
+  h3 { font-size: 15px; margin: 26px 0 8px; color: var(--dim); text-transform: uppercase; letter-spacing: 0.07em; }
+  p { margin: 0 0 14px; max-width: 74ch; }
+  .lede { color: var(--dim); font-size: 17px; max-width: 74ch; }
+  .rule { border: 0; border-top: 1px solid var(--border); margin: 36px 0 0; }
+
+  .panel {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 18px 20px;
+    margin: 16px 0;
+  }
+  .verdict {
+    border-left: 4px solid var(--accent);
+    background: var(--surface2);
+    border-radius: 0 10px 10px 0;
+    padding: 16px 20px;
+    margin: 18px 0;
+  }
+  .verdict.bad { border-left-color: var(--bad); }
+  .verdict.warn { border-left-color: var(--warn); }
+  .verdict p:last-child { margin-bottom: 0; }
+  .k { color: var(--text); font-weight: 600; }
+
+  svg { display: block; width: 100%; height: auto; margin: 8px 0 4px; }
+  svg text { font: 12px -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; fill: var(--text); }
+  svg text.small { font-size: 10.5px; fill: var(--dim); }
+  svg text.title { font-size: 12.5px; font-weight: 700; }
+  svg text.mono { font-family: ui-monospace, Consolas, "Courier New", monospace; font-size: 10.5px; fill: var(--dim); }
+  .box { fill: var(--surface); stroke: var(--border); stroke-width: 1; }
+  .box-person { fill: #1c2b45; stroke: #3b5b8a; }
+  .box-model { fill: #2a2417; stroke: var(--warn); stroke-width: 1.5; }
+  .box-gate { fill: #14251f; stroke: #2f6b52; }
+  .flow { stroke: var(--border); stroke-width: 1.5; fill: none; }
+  .flow-head { fill: var(--border); }
+
+  table { border-collapse: collapse; width: 100%; margin: 12px 0 6px; font-size: 13.5px; }
+  th, td { text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--border); }
+  th { color: var(--dim); font-weight: 600; font-size: 11.5px; text-transform: uppercase; letter-spacing: 0.06em; }
+  td.num { font-variant-numeric: tabular-nums; font-family: ui-monospace, Consolas, monospace; }
+  .ok { color: var(--good); }
+  .no { color: var(--bad); }
+  .warnt { color: var(--warn); }
+  code { background: var(--code); border: 1px solid var(--border); border-radius: 4px; padding: 1px 6px;
+         font-family: ui-monospace, Consolas, "Courier New", monospace; font-size: 12.5px; }
+  ul { max-width: 74ch; padding-left: 20px; }
+  li { margin-bottom: 8px; }
+  .legend { display: flex; gap: 22px; flex-wrap: wrap; font-size: 12.5px; color: var(--dim); margin: 4px 0 10px; }
+  .sw { display: inline-block; width: 12px; height: 12px; border-radius: 3px; vertical-align: -1px; margin-right: 6px; }
+</style>
+
+<div class="wrap">
+
+<h1>How a rule gets made, how a rule runs, and why they time out</h1>
+<p class="lede">Measured on 3 September 2026 against the live hosted model, using the product's own code.
+Everything on this page is from a run, not an estimate.</p>
+
+<div class="verdict bad">
+  <p><span class="k">The headline, and it is worse than I said earlier.</span> The timeouts are not caused by
+  the size of the prompt going in - I claimed that without measuring it, and it is wrong. They are caused
+  by how much the model has to WRITE back. And it is not only the authoring call: the call a
+  <span class="k">live rule makes every time it fires</span> has the same problem. On the current model,
+  roughly one in three of those runs out of time and the rule does nothing.</p>
+</div>
+
+<hr class="rule">
+
+<h2>1. Making a rule</h2>
+<p>This is the new half. Nothing here is stored until you say so, and nothing is live until you say so
+again.</p>
+
+<div class="legend">
+  <span><span class="sw" style="background:#1c2b45;border:1px solid #3b5b8a"></span>you</span>
+  <span><span class="sw" style="background:#2a2417;border:1px solid #f59e0b"></span>a model call</span>
+  <span><span class="sw" style="background:#14251f;border:1px solid #2f6b52"></span>a gate that can refuse</span>
+  <span><span class="sw" style="background:#141a2e;border:1px solid #28304a"></span>our code</span>
+</div>
+
+<svg viewBox="0 0 1040 300" role="img" aria-label="How a rule is made">
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" class="flow-head"/>
+    </marker>
+  </defs>
+
+  <rect class="box box-person" x="10" y="20" width="150" height="62" rx="8"/>
+  <text class="title" x="24" y="42">You, on the Rules page</text>
+  <text class="small" x="24" y="60">"when the provider stops</text>
+  <text class="small" x="24" y="74">working, wait and restart"</text>
+
+  <path class="flow" d="M 160 51 H 210" marker-end="url(#a)"/>
+
+  <rect class="box" x="212" y="20" width="150" height="62" rx="8"/>
+  <text class="title" x="226" y="42">RuleAuthor</text>
+  <text class="small" x="226" y="60">builds the question from</text>
+  <text class="small" x="226" y="74">the checks we ship</text>
+
+  <path class="flow" d="M 362 51 H 412" marker-end="url(#a)"/>
+
+  <rect class="box box-model" x="414" y="10" width="190" height="82" rx="8"/>
+  <text class="title" x="428" y="32">MODEL CALL 1</text>
+  <text class="small" x="428" y="50">3,377 characters in</text>
+  <text class="small" x="428" y="65">~700 characters of JSON out</text>
+  <text class="mono" x="428" y="82">60s deadline, no streaming</text>
+
+  <path class="flow" d="M 604 51 H 654" marker-end="url(#a)"/>
+
+  <rect class="box box-gate" x="656" y="20" width="160" height="62" rx="8"/>
+  <text class="title" x="670" y="42">The same gate</text>
+  <text class="small" x="670" y="60">the store uses. A rule it</text>
+  <text class="small" x="670" y="74">would refuse is never shown</text>
+
+  <path class="flow" d="M 816 51 H 866" marker-end="url(#a)"/>
+
+  <rect class="box box-person" x="868" y="20" width="160" height="62" rx="8"/>
+  <text class="title" x="882" y="42">You read it back</text>
+  <text class="small" x="882" y="60">in plain English, and</text>
+  <text class="small" x="882" y="74">decide whether to keep it</text>
+
+  <path class="flow" d="M 948 82 V 128" marker-end="url(#a)"/>
+
+  <rect class="box" x="828" y="130" width="200" height="54" rx="8"/>
+  <text class="title" x="842" y="152">Stored as a DRY RUN</text>
+  <text class="small" x="842" y="170">it watches and types nothing</text>
+
+  <path class="flow" d="M 928 184 V 226" marker-end="url(#a)"/>
+
+  <rect class="box box-person" x="828" y="228" width="200" height="54" rx="8"/>
+  <text class="title" x="842" y="250">You make it live</text>
+  <text class="small" x="842" y="268">the second time you decide</text>
+
+  <path class="flow" d="M 509 92 V 132 H 300" marker-end="url(#a)"/>
+  <text class="small" x="318" y="128">if it needs to know something, it asks you one question instead</text>
+  <path class="flow" d="M 214 132 V 82" marker-end="url(#a)"/>
+</svg>
+
+<hr class="rule">
+
+<h2>2. Running a rule</h2>
+<p>This is the half that shipped in the last mission. A rule costs nothing until a session stops.</p>
+
+<svg viewBox="0 0 1040 250" role="img" aria-label="How a rule runs">
+  <rect class="box" x="10" y="26" width="152" height="62" rx="8"/>
+  <text class="title" x="24" y="48">A session goes idle</text>
+  <text class="small" x="24" y="66">working -&gt; idle is the ONLY</text>
+  <text class="small" x="24" y="80">thing that wakes a rule</text>
+
+  <path class="flow" d="M 162 57 H 208" marker-end="url(#a)"/>
+
+  <rect class="box" x="210" y="16" width="164" height="82" rx="8"/>
+  <text class="title" x="224" y="38">The free checks</text>
+  <text class="small" x="224" y="56">screen changed? a trigger</text>
+  <text class="small" x="224" y="70">word on it? cooldown? cap?</text>
+  <text class="mono" x="224" y="88">no model, costs nothing</text>
+
+  <path class="flow" d="M 374 57 H 420" marker-end="url(#a)"/>
+
+  <rect class="box box-model" x="422" y="8" width="196" height="98" rx="8"/>
+  <text class="title" x="436" y="30">MODEL CALL 2</text>
+  <text class="small" x="436" y="48">does the instruction really</text>
+  <text class="small" x="436" y="62">reach THIS screen?</text>
+  <text class="small" x="436" y="79">4,681 characters in</text>
+  <text class="mono" x="436" y="96">~550 out, 60s, no streaming</text>
+
+  <path class="flow" d="M 618 57 H 664" marker-end="url(#a)"/>
+
+  <rect class="box" x="666" y="26" width="152" height="62" rx="8"/>
+  <text class="title" x="680" y="48">Read the screen</text>
+  <text class="title" x="680" y="64">AGAIN</text>
+  <text class="small" x="680" y="82">changed? abandon.</text>
+
+  <path class="flow" d="M 818 57 H 864" marker-end="url(#a)"/>
+
+  <rect class="box box-person" x="866" y="26" width="162" height="62" rx="8"/>
+  <text class="title" x="880" y="48">Type into the session</text>
+  <text class="small" x="880" y="66">only if the rule is LIVE.</text>
+  <text class="small" x="880" y="80">A dry run stops here.</text>
+
+  <path class="flow" d="M 520 106 V 150 H 300" marker-end="url(#a)"/>
+  <rect class="box" x="120" y="128" width="180" height="46" rx="8"/>
+  <text class="title" x="134" y="150">Every outcome recorded</text>
+  <text class="small" x="134" y="166">act, decline, abandon, refuse</text>
+
+  <text class="small" x="330" y="146">a decline is written down exactly like an action - so is a timeout</text>
+
+  <rect class="box" x="666" y="188" width="362" height="46" rx="8"/>
+  <text class="small" x="680" y="208">This is the call that fails one time in three today. When it does,</text>
+  <text class="small" x="680" y="224">the rule does nothing and the record says it was refused.</text>
+  <path class="flow" d="M 520 106 V 211 H 662" marker-end="url(#a)"/>
+</svg>
+
+<hr class="rule">
+
+<h2>3. Why they time out</h2>
+
+<p>Two candidate causes were being confused: how much the model has to READ, and how much it has to
+WRITE. Holding one fixed and varying the other separates them. Three runs each, same endpoint, same
+model, same code path as production.</p>
+
+<h3>Is it the size of the question?</h3>
+<table>
+  <tr><th>Trial</th><th>Run 1</th><th>Run 2</th><th>Run 3</th><th>Verdict</th></tr>
+  <tr>
+    <td>short question, short answer</td>
+    <td class="num ok">2.4s</td><td class="num ok">3.7s</td><td class="num ok">4.1s</td>
+    <td>baseline</td>
+  </tr>
+  <tr>
+    <td>LONG question (as long as ours), short answer</td>
+    <td class="num ok">4.0s</td><td class="num ok">3.8s</td><td class="num ok">6.6s</td>
+    <td class="ok">reading is free</td>
+  </tr>
+  <tr>
+    <td>short question, LONG answer (400 words)</td>
+    <td class="num no">timed out</td><td class="num no">timed out</td><td class="num no">timed out</td>
+    <td class="no">writing is the cost</td>
+  </tr>
+</table>
+
+<div class="verdict">
+  <p><span class="k">It is not the prompt size.</span> A question as long as ours, answered in one word,
+  comes back in four seconds. A one-line question that asks for 400 words back never finishes inside the
+  limit. The model is slow at <span class="k">writing</span>, and both of our calls ask it to write five to
+  eight hundred characters of JSON.</p>
+</div>
+
+<h3>How slow, and on which model?</h3>
+<table>
+  <tr><th>The real call</th><th>Run 1</th><th>Run 2</th><th>Run 3</th></tr>
+  <tr>
+    <td>MAKING a rule, on the thinking model</td>
+    <td class="num no">timed out</td><td class="num no">timed out</td><td class="num warnt">45.7s</td>
+  </tr>
+  <tr>
+    <td>MAKING a rule, on the fast model</td>
+    <td class="num ok">8.8s</td><td class="num ok">8.1s</td><td class="num ok">13.7s</td>
+  </tr>
+  <tr>
+    <td>RUNNING a rule, on the thinking model</td>
+    <td class="num warnt">38.8s</td><td class="num no">timed out</td><td class="num warnt">38.0s</td>
+  </tr>
+  <tr>
+    <td>RUNNING a rule, on the fast model</td>
+    <td class="num ok">11.1s</td><td class="num ok">8.2s</td><td class="num ok">8.4s</td>
+  </tr>
+</table>
+
+<p>The answers were the same size in every row - about 500 to 760 characters. The thinking model writes
+them at roughly 15 to 20 characters a second, which puts a 600-character answer right on top of a
+60-second deadline. The fast model does the identical work in 8 to 14 seconds, every time.</p>
+
+<div class="verdict warn">
+  <p><span class="k">Where the 60 seconds came from.</span> It is <code>HostedInferenceBrain</code>'s
+  deadline, written for the voice path, where a real call takes ten to twenty seconds. It was never
+  calibrated for a call that has to write a paragraph of JSON. The client also asks for the whole answer
+  at once (<code>stream = false</code>), so every second of writing counts against it.</p>
+</div>
+
+<hr class="rule">
+
+<h2>4. So what do we do</h2>
+
+<p>You were right that this should not be committed as it stands. Not because the authoring is broken -
+it works - but because the measurement above says a <span class="k">live rule fails about one time in
+three</span>, and that is the feature, not a rough edge on it.</p>
+
+<p>There are three ways out, and the third is the one I would not take:</p>
+
+<ul>
+  <li><span class="k">Move both calls to the fast model.</span> Measured: 8 to 14 seconds, no failures.
+  It is the obvious fix for MAKING a rule and I would do it today. For RUNNING a rule it is a real
+  product decision and yours, not mine: the thinking model was chosen deliberately, because judging
+  whether an instruction reaches a screen is the thing that stops a rule acting on a screen that merely
+  mentions the words. That judgement is what made the negative control work. Trading it for speed needs
+  the negative control re-run on the fast model before anyone believes it still holds.</li>
+
+  <li><span class="k">Raise the deadline for these two calls.</span> Honest and small, and it does not
+  touch which model judges a screen. It makes a slow case slower to sit through rather than failing,
+  which is the right trade for a rule running at 3am and the wrong one for a person waiting at a
+  keyboard.</li>
+
+  <li><span class="k">Ask the model to write less.</span> Cheapest to do and the one I would refuse:
+  most of what it writes back is the reason and the read-back, and those ARE the product. Cutting them to
+  fit a deadline would buy speed by deleting the record.</li>
+</ul>
+
+<div class="verdict">
+  <p><span class="k">What I would do, if you want a recommendation.</span> Fast model for MAKING a rule,
+  now - it is a person waiting at a keyboard and there is no judgement at stake. Raise the deadline for
+  RUNNING a rule rather than changing its model, and put the fast model for that path behind a measured
+  re-run of the negative control. That way nothing about how a rule decides changes without evidence.</p>
+</div>
+
+<hr class="rule">
+
+<h2>What this page does not tell you</h2>
+<ul>
+  <li>Three runs per row, on one machine, on one afternoon. It is enough to separate reading from writing
+  and to rank the two models; it is not a latency budget.</li>
+  <li>The fast model was measured for SPEED only. Nothing here says its answers are as good - the
+  negative control (a rule declining a screen that carries its own trigger words) has not been re-run on
+  it.</li>
+  <li>Why the thinking model is this slow is not established here. That is on the other side of our own
+  hosted endpoint and has not been looked at.</li>
+</ul>
+
+</div>

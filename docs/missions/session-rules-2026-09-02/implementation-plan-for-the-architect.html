@@ -1,0 +1,545 @@
+<title>Session Rules - the implementation plan</title>
+<style>
+  :root {
+    --bg:#0b1020; --surface:#141a2e; --surface2:#1b2238; --border:#28304a;
+    --text:#e6e9f2; --dim:#99a0b8; --accent:#3b82f6; --warn:#f59e0b;
+    --bad:#f14c4c; --good:#34d399; --code:#0a0f1e;
+    --needsyou-fyi-bg:#262017; --needsyou-fyi-text:#e8dcc8;
+  }
+  body { margin:0; padding:0 0 80px; background:var(--bg); color:var(--text);
+         font:15px/1.62 -apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif; }
+  .wrap { max-width:1120px; margin:0 auto; padding:0 24px; }
+  header.top { background:linear-gradient(160deg,#141a2e,#0b1020); border-bottom:1px solid var(--border); padding:40px 0 30px; margin-bottom:8px; }
+  h1 { font-size:34px; line-height:1.15; margin:0 0 10px; letter-spacing:-0.015em; }
+  h2 { font-size:23px; margin:52px 0 10px; letter-spacing:-0.01em; padding-top:8px; }
+  h3 { font-size:16px; margin:30px 0 8px; }
+  h4 { font-size:12px; margin:26px 0 8px; color:var(--dim); text-transform:uppercase; letter-spacing:0.09em; }
+  p, li { max-width:82ch; }
+  p { margin:0 0 14px; }
+  .lede { color:var(--dim); font-size:18px; max-width:82ch; }
+  hr { border:0; border-top:1px solid var(--border); margin:46px 0 0; }
+  .k { font-weight:600; }
+  code { background:var(--code); border:1px solid var(--border); border-radius:4px; padding:1px 6px;
+         font-family:ui-monospace,Consolas,"Courier New",monospace; font-size:12.5px; }
+  a { color:var(--accent); }
+
+  .toc { display:flex; flex-wrap:wrap; gap:8px 18px; margin:14px 0 0; font-size:13.5px; }
+  .toc a { color:var(--dim); text-decoration:none; }
+  .toc a:hover { color:var(--text); }
+
+  .note { border-left:4px solid var(--accent); background:var(--surface2); border-radius:0 10px 10px 0; padding:16px 20px; margin:18px 0; }
+  .note.bad { border-left-color:var(--bad); } .note.warn { border-left-color:var(--warn); } .note.good { border-left-color:var(--good); }
+  .note p:last-child { margin-bottom:0; }
+
+  table { border-collapse:collapse; width:100%; margin:14px 0 6px; font-size:13.5px; }
+  th,td { text-align:left; padding:9px 12px; border-bottom:1px solid var(--border); vertical-align:top; }
+  th { color:var(--dim); font-weight:600; font-size:11px; text-transform:uppercase; letter-spacing:0.07em; }
+  .yes { color:var(--good); font-weight:600; } .no { color:var(--bad); font-weight:600; } .part { color:var(--warn); font-weight:600; }
+
+  ul,ol { padding-left:22px; } li { margin-bottom:8px; }
+
+  .tag { display:inline-block; font-size:10px; font-weight:700; letter-spacing:.06em; text-transform:uppercase; padding:1px 7px; border-radius:4px; vertical-align:middle; }
+  .tag.built { background:rgba(52,211,153,.15); color:var(--good); }
+  .tag.notyet { background:rgba(245,158,11,.15); color:var(--warn); }
+  .tag.decide { background:rgba(59,130,246,.16); color:var(--accent); }
+
+  .phase { border:1px solid var(--border); border-radius:12px; margin:16px 0; overflow:hidden; }
+  .phase > .ph-head { display:flex; align-items:baseline; gap:14px; padding:14px 18px; background:var(--surface); border-bottom:1px solid var(--border); }
+  .ph-num { flex:0 0 auto; font-weight:700; font-size:12px; letter-spacing:.08em; text-transform:uppercase; color:var(--accent); background:rgba(59,130,246,.12); padding:3px 10px; border-radius:999px; }
+  .ph-title { font-size:16px; font-weight:700; } .ph-goal { color:var(--dim); font-size:13px; }
+  .ph-body { padding:16px 20px; }
+  .ph-body .accept { margin-top:8px; }
+  .ph-body dt { color:var(--dim); font-size:11px; text-transform:uppercase; letter-spacing:.06em; margin-top:10px; }
+  .ph-body dd { margin:2px 0 0; }
+
+  /* diagrams */
+  svg { display:block; width:100%; height:auto; margin:10px 0 6px; }
+  svg text { font:12px -apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif; fill:var(--text); }
+  svg text.s { font-size:10.5px; fill:var(--dim); } svg text.t { font-size:12.5px; font-weight:700; }
+  svg text.m { font-family:ui-monospace,Consolas,monospace; font-size:10.5px; fill:var(--dim); }
+  .bx { fill:var(--surface); stroke:var(--border); } .bx-in { fill:#1c2b45; stroke:#3b5b8a; }
+  .bx-rule { fill:#14251f; stroke:#2f6b52; stroke-width:1.5; } .bx-out { fill:#2a1d1f; stroke:var(--bad); stroke-width:1.5; }
+  .bx-model { fill:#2a2417; stroke:var(--warn); stroke-width:1.5; } .bx-person { fill:#1c2b45; stroke:#3b5b8a; }
+  .fl2 { stroke:var(--border); stroke-width:1.5; fill:none; } .hd { fill:var(--border); }
+  .bx-bound { fill:none; stroke:var(--accent); stroke-width:1.5; stroke-dasharray:6 4; }
+
+  /* mockup frame */
+  .frame { margin:18px 0 8px; border:1px solid var(--border); border-radius:12px; overflow:hidden; background:var(--bg); }
+  .chrome { display:flex; align-items:center; gap:8px; padding:9px 14px; background:var(--surface); border-bottom:1px solid var(--border); font-size:12px; color:var(--dim); }
+  .dot { width:10px; height:10px; border-radius:50%; background:var(--border); display:inline-block; }
+  .url { margin-left:10px; flex:1; background:var(--bg); border:1px solid var(--border); border-radius:6px; padding:3px 10px; font-family:ui-monospace,Consolas,monospace; }
+  .app { display:grid; grid-template-columns:186px 1fr; min-height:600px; }
+  .rail { background:var(--surface); border-right:1px solid var(--border); padding:12px 9px; font-size:12.5px; }
+  .rail div { padding:6px 11px; border-radius:6px; color:var(--dim); }
+  .rail .on { background:var(--surface2); color:var(--text); font-weight:600; }
+  .rail .gap { height:10px; }
+  .main { padding:22px 26px; }
+  .eyebrow { font-size:11px; font-weight:600; letter-spacing:0.08em; text-transform:uppercase; color:var(--dim); margin:0 0 2px; }
+  .m-title { font-size:24px; font-weight:700; margin:0 0 4px; }
+  .m-sub { color:var(--dim); font-size:13.5px; margin:0 0 16px; max-width:66ch; }
+  .composer { padding:15px 17px; background:var(--surface); border:1px solid var(--border); border-radius:10px; margin:0 0 18px; }
+  .composer h5 { margin:0 0 12px; font-size:14px; }
+  .turn { display:flex; gap:10px; font-size:13px; line-height:1.5; margin:0 0 9px; }
+  .who { flex:0 0 82px; color:var(--dim); font-size:10.5px; font-weight:600; letter-spacing:0.05em; text-transform:uppercase; padding-top:2px; }
+  .turn.us .what { color:var(--dim); }
+  .term { margin:8px 0 12px 92px; padding:10px 12px; background:var(--code); border:1px solid var(--accent); border-radius:6px; font-family:ui-monospace,Consolas,monospace; font-size:11.5px; line-height:1.45; white-space:pre; overflow:auto; }
+  .readback { margin:14px 0 12px; padding-top:14px; border-top:1px solid var(--border); font-size:14.5px; line-height:1.55; }
+  .detail { display:grid; grid-template-columns:180px 1fr; gap:7px 16px; font-size:12.5px; margin:0 0 12px; }
+  .detail dt { color:var(--dim); } .detail dd { margin:0; }
+  .chip { display:inline-block; margin:0 4px 4px 0; padding:1px 7px; background:var(--code); border:1px solid var(--border); border-radius:4px; font-family:ui-monospace,Consolas,monospace; font-size:11.5px; }
+  .chip.agent { border-color:#3b5b8a; color:#9dc0ff; }
+  .dry { margin:0 0 12px; padding:9px 12px; background:var(--bg); border-left:3px solid var(--accent); border-radius:0 6px 6px 0; font-size:12.5px; color:var(--dim); }
+  .checked { margin:0 0 10px; font-size:12px; color:var(--accent); }
+  .btns { display:flex; gap:8px; flex-wrap:wrap; }
+  .btn { padding:6px 13px; border-radius:6px; border:1px solid var(--border); background:var(--surface2); color:var(--text); font-size:12.5px; }
+  .btn.primary { background:var(--accent); border-color:var(--accent); color:#fff; font-weight:600; }
+  .btn.ghost { background:transparent; color:var(--dim); }
+  .toggle { display:inline-flex; align-items:center; gap:8px; font-size:12.5px; color:var(--dim); margin:0 0 12px; }
+  .sw { width:34px; height:18px; border-radius:999px; background:var(--border); position:relative; }
+  .sw::after { content:""; position:absolute; top:2px; left:2px; width:14px; height:14px; border-radius:50%; background:var(--dim); }
+  .card2 { display:flex; background:var(--surface); border:1px solid var(--border); border-radius:10px; overflow:hidden; margin:0 0 10px; }
+  .spine { flex:0 0 4px; background:var(--border); } .card2.live .spine { background:var(--accent); }
+  .cbody { flex:1; padding:12px 15px; min-width:0; }
+  .chead { display:flex; justify-content:space-between; gap:12px; align-items:flex-start; }
+  .instr { font-weight:600; line-height:1.45; font-size:13.5px; }
+  .pill { flex:0 0 auto; padding:2px 8px; border-radius:999px; font-size:10.5px; font-weight:600; white-space:nowrap; }
+  .pill.dry { background:var(--bg); color:var(--dim); } .pill.live { background:rgba(59,130,246,.18); color:var(--accent); }
+  .facts { display:flex; flex-wrap:wrap; gap:5px 16px; font-size:11.5px; margin-top:8px; }
+  .fl { color:var(--dim); font-size:10.5px; letter-spacing:.04em; text-transform:uppercase; margin-right:4px; }
+</style>
+
+<header class="top"><div class="wrap">
+  <h1>Session Rules - the implementation plan</h1>
+  <p class="lede">Everything needed to hand this to an Architect and get back a working, tested rules
+  engine with a QA report. What the feature is, what exists today, the architecture, the phases in order,
+  the screens, and the three scenarios the QA report must prove with screenshots.</p>
+  <div class="toc">
+    <a href="#goal">1 The goal</a>
+    <a href="#today">2 What exists today</a>
+    <a href="#arch">3 Architecture</a>
+    <a href="#can">4 What a rule can do</a>
+    <a href="#screens">5 The screens</a>
+    <a href="#phases">6 The phases</a>
+    <a href="#qa">7 The QA report</a>
+    <a href="#open">8 Owner decisions</a>
+  </div>
+</div></header>
+
+<div class="wrap">
+
+<!-- ============================================================================================= -->
+<h2 id="goal">1. The goal, in the owner's words</h2>
+<p><em>"The user should be able to set up rules: when you see this message in the terminal window, do
+this. We need a rule language. And we need a small language model involved in these decisions. This would
+be a massively beneficial new feature for making our agents more autonomous."</em></p>
+<p>The measure of done is not that the machinery is elegant. It is that <span class="k">the things that
+actually stop the owner's sessions get handled without him</span> - a usage limit at 3am, a provider
+outage that killed every session, a permission prompt he would always say yes to. The QA report proves
+exactly those, on real screens.</p>
+
+<div class="note">
+  <p><span class="k">Two rulings that bound the whole design, settled with the owner and not to be
+  re-litigated:</span></p>
+  <ul style="margin:8px 0 0">
+    <li><span class="k">The terminal screen is the only input to the decision.</span> A rule wakes only
+    when a session goes idle, and reads only that session's screen.</li>
+    <li><span class="k">No generated code ever runs.</span> A rule holds the NAME of a reviewed check plus
+    argument values - never a program, a script, or "a little bit of Python". There is no interpreter, so
+    there is nothing to sandbox. Widening the checks is a code review and a release.</li>
+  </ul>
+</div>
+
+<!-- ============================================================================================= -->
+<h2 id="today">2. What exists today</h2>
+<p>A working half shipped on 3 September (pull request 2665) and more was built in the worktree since.
+This is the honest inventory - <span class="tag built">built</span> exists and is tested,
+<span class="tag notyet">to build</span> is design only.</p>
+
+<table>
+  <tr><th style="width:46%">Capability</th><th style="width:14%">State</th><th>Where</th></tr>
+  <tr><td>The rule + firing store, tenant-scoped, one migration per provider</td><td><span class="tag built">built</span></td><td>Gateway <code>Rules/SessionRuleStore</code></td></tr>
+  <tr><td>Five verified checks + a registry derived by reflection</td><td><span class="tag built">built</span></td><td><code>RulePrimitives</code>, <code>RulePrimitiveRegistry</code></td></tr>
+  <tr><td>Write-time validator - a rule naming an unknown check is refused</td><td><span class="tag built">built</span></td><td><code>RuleCallValidator</code></td></tr>
+  <tr><td>The evaluator: free checks, one model call, re-read, record</td><td><span class="tag built">built</span></td><td><code>RuleEvaluator</code></td></tr>
+  <tr><td>Dry run enforced by shape; a person promotes</td><td><span class="tag built">built</span></td><td><code>SessionRuleStore</code>, <code>RulePromotionGrant</code></td></tr>
+  <tr><td>Fires on a real session (proven: a command typed by nobody)</td><td><span class="tag built">built</span></td><td>pull request 2665</td></tr>
+  <tr><td><span class="k">Authoring by conversation</span> - say it in English, get a rule back</td><td><span class="tag built">built</span></td><td><code>RuleDraftContract</code>, <code>RuleAuthor</code>, <code>POST /gateway/rules/draft</code></td></tr>
+  <tr><td>Grounding - trigger words must be on the captured screen, or refused</td><td><span class="tag built">built</span></td><td><code>RuleDraftContract.Read</code></td></tr>
+  <tr><td>Agent-specific scope by default; the star for all agents; model told which agent</td><td><span class="tag built">built</span></td><td><code>RuleDraftContract</code>, <code>RuleAgentContract</code></td></tr>
+  <tr><td>The Rules page (English-only today), in the rail beside Workflows/Skills</td><td><span class="tag built">built</span></td><td><code>apps/cockpit/src/rules</code></td></tr>
+  <tr><td>Command line + API: <code>cc-devthrottle rule draft/add/screen/list/show/delete</code></td><td><span class="tag built">built</span></td><td><code>tools/cc-devthrottle/src/rule_ops.py</code></td></tr>
+  <tr><td>Cross-tenant isolation of the rule routes, proven by probe</td><td><span class="tag built">built</span></td><td><code>CensusRouteTenancyProbeTests</code></td></tr>
+  <tr><td colspan="3" style="padding-top:14px;color:var(--dim)"><span class="k" style="color:var(--warn)">Still to build:</span></td></tr>
+  <tr><td>Run-time call moved to the fast model / a yes-no shape (fixes the ~1-in-3 timeout)</td><td><span class="tag notyet">to build</span></td><td>Phase 1</td></tr>
+  <tr><td><span class="k">The clock</span> - a rule that waits and comes back (the 3am case)</td><td><span class="tag notyet">to build</span></td><td>Phase 2</td></tr>
+  <tr><td>The page agent that fetches a session's terminal itself</td><td><span class="tag notyet">to build</span></td><td>Phase 3</td></tr>
+  <tr><td>The test harness of real captured screens</td><td><span class="tag notyet">to build</span></td><td>Phase 0</td></tr>
+  <tr><td>Pro gating on rule creation</td><td><span class="tag notyet">to build</span></td><td>Phase 4</td></tr>
+  <tr><td>Director-side rules (the sign-in case) - <a href="#">issue 2669</a></td><td><span class="tag notyet">to build</span></td><td>later</td></tr>
+</table>
+
+<div class="note warn">
+  <p><span class="k">The one measured fact that reorders everything.</span> The run-time model call asks a
+  REASONING model to write ~600 characters of JSON and times out about one time in three. A live rule that
+  fails a third of the time is the feature failing, not a rough edge. Measured: the same work on the fast
+  model (Qwen2.5-72B) as a yes/no question returns in <span class="k">0.4 seconds, every time</span>, and
+  answered all six screens - including three that carry the trigger words and must still be declined -
+  correctly. That is why Phase 1 comes first among the builds.</p>
+</div>
+
+<!-- ============================================================================================= -->
+<h2 id="arch">3. Architecture</h2>
+<p>Two separate model calls with opposite requirements, one store, and a client surface that is
+identical whether driven from the Cockpit or from Claude Code.</p>
+
+<svg viewBox="0 0 1120 400" role="img" aria-label="Architecture">
+  <defs><marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" class="hd"/></marker></defs>
+
+  <!-- authoring -->
+  <text class="t" x="14" y="24">AUTHORING - once, a person waits, quality matters</text>
+  <rect class="bx-person" x="10" y="34" width="150" height="60" rx="8"/>
+  <text class="t" x="24" y="56">You, or Claude Code</text>
+  <text class="s" x="24" y="74">say it in English</text>
+  <text class="s" x="24" y="88">via page OR command line</text>
+
+  <path class="fl2" d="M160 64 H206" marker-end="url(#a)"/>
+  <rect class="bx" x="208" y="34" width="170" height="60" rx="8"/>
+  <text class="t" x="222" y="54">RuleAuthor</text>
+  <text class="s" x="222" y="72">fetch the session screen,</text>
+  <text class="s" x="222" y="86">decide the agent scope</text>
+
+  <path class="fl2" d="M378 64 H424" marker-end="url(#a)"/>
+  <rect class="bx-model" x="426" y="28" width="180" height="74" rx="8"/>
+  <text class="t" x="440" y="48">SMART model</text>
+  <text class="s" x="440" y="66">turns words into a rule,</text>
+  <text class="s" x="440" y="80">reads trigger words off</text>
+  <text class="s" x="440" y="94">the real screen</text>
+
+  <path class="fl2" d="M606 64 H652" marker-end="url(#a)"/>
+  <rect class="bx-person" x="654" y="34" width="150" height="60" rx="8"/>
+  <text class="t" x="668" y="54">You confirm</text>
+  <text class="s" x="668" y="72">read-back, then store</text>
+  <text class="s" x="668" y="86">as a dry run</text>
+
+  <!-- store -->
+  <path class="fl2" d="M729 94 V150" marker-end="url(#a)"/>
+  <rect class="bx" x="430" y="152" width="260" height="58" rx="8"/>
+  <text class="t" x="560" y="176" text-anchor="middle">THE STORE (Gateway, tenant-scoped)</text>
+  <text class="s" x="560" y="194" text-anchor="middle">rules + every firing. The write gate is the one door.</text>
+  <path class="fl2" d="M654 181 H694" /><text class="s" x="700" y="184">a person promotes -&gt; live</text>
+
+  <!-- evaluating -->
+  <text class="t" x="14" y="256">RUNNING - constantly, unattended, must be boring and fast</text>
+  <rect class="bx" x="10" y="266" width="150" height="60" rx="8"/>
+  <text class="t" x="24" y="288">Session goes idle</text>
+  <text class="s" x="24" y="306">the ONLY trigger</text>
+
+  <path class="fl2" d="M160 296 H206" marker-end="url(#a)"/>
+  <rect class="bx" x="208" y="266" width="170" height="60" rx="8"/>
+  <text class="t" x="222" y="286">Free checks</text>
+  <text class="s" x="222" y="304">scope, trigger word, ceilings</text>
+  <text class="m" x="222" y="320">no model, no cost</text>
+
+  <path class="fl2" d="M378 296 H424" marker-end="url(#a)"/>
+  <rect class="bx-model" x="426" y="266" width="180" height="60" rx="8"/>
+  <text class="t" x="440" y="286">FAST model - yes/no</text>
+  <text class="s" x="440" y="304">is this that situation?</text>
+  <text class="m" x="440" y="320">~0.4s (Phase 1)</text>
+
+  <path class="fl2" d="M606 296 H652" marker-end="url(#a)"/>
+  <rect class="bx" x="654" y="266" width="150" height="60" rx="8"/>
+  <text class="t" x="668" y="286">Re-read screen</text>
+  <text class="s" x="668" y="304">changed? abandon</text>
+
+  <path class="fl2" d="M804 296 H850" marker-end="url(#a)"/>
+  <rect class="bx-out" x="852" y="266" width="180" height="60" rx="8"/>
+  <text class="t" x="866" y="286">Type into the session</text>
+  <text class="s" x="866" y="304">only if LIVE; dry run</text>
+  <text class="s" x="866" y="318">records and stops</text>
+
+  <path class="fl2" d="M525 210 V266" marker-end="url(#a)"/>
+  <text class="s" x="533" y="244">reads its rules from the store</text>
+
+  <!-- clock -->
+  <rect class="bx-bound" x="852" y="150" width="180" height="60" rx="8"/>
+  <text class="t" x="866" y="172" style="fill:#3b82f6">THE CLOCK (Phase 2)</text>
+  <text class="s" x="866" y="190">wakes a stopped session</text>
+  <text class="s" x="866" y="204">later - the 3am case</text>
+  <path class="fl2" d="M942 210 V262" marker-end="url(#a)"/>
+</svg>
+
+<div class="note good">
+  <p><span class="k">The client is dumb; the Gateway owns everything.</span> The Cockpit page and the
+  command line are two thin clients of the same four routes. The Gateway decides, scopes, validates, and
+  records; the Director only ever types. This is why "set up a rule from Claude Code" is the same feature
+  as "set up a rule on the page" - and why the built-in page never has to be the clever one.</p>
+</div>
+
+<!-- ============================================================================================= -->
+<h2 id="can">4. What a rule can do - and cannot</h2>
+<p>Smaller than the word "rule" suggests. When it fires it does exactly one thing: <span class="k">types
+one piece of text into one idle session.</span> Everything else is deciding whether to.</p>
+
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:18px">
+  <div>
+    <h4>It can see (four inputs)</h4>
+    <ul>
+      <li><code>screen_text</code> - the terminal tail</li>
+      <li><code>session_repository_path</code></li>
+      <li><code>now</code> - the clock</li>
+      <li><code>first_failure</code> - when trouble began</li>
+    </ul>
+    <p style="font-size:13px;color:var(--dim)">Plus the agent it runs, used to scope and to read the
+    screen - never to read a file, the network, or another session.</p>
+  </div>
+  <div>
+    <h4>It can decide with (five checks)</h4>
+    <ul>
+      <li><code>matches_any(text, terms)</code></li>
+      <li><code>is_path_inside(target, root)</code></li>
+      <li><code>retry_delay_from(screen, now)</code></li>
+      <li><code>elapsed_since(first, now)</code></li>
+      <li><code>extract_first(screen, kind)</code></li>
+    </ul>
+    <p style="font-size:13px;color:var(--dim)">Stored as a NAME plus values, checked against the real
+    signature before it can be written. A sixth is a release, not a setting.</p>
+  </div>
+</div>
+
+<div class="note">
+  <p><span class="k">The blast radius is the session, not the server.</span> A rule's own powers are tiny,
+  but it types into a coding agent, and a coding agent is unbounded - that is the settled ruling, and it
+  is why "which actions are allowed" was never the boundary. The real boundary is
+  <span class="k">scope, ceilings, idle-only, dry-run, and who promoted</span>. That is where the safety
+  lives, and all of it is on the Gateway.</p>
+</div>
+
+<!-- ============================================================================================= -->
+<h2 id="screens">5. The screens</h2>
+<p>The Rules page at its target state. <span class="tag built">built</span> exists today;
+<span class="tag notyet">to build</span> is what the phases below deliver.</p>
+
+<div class="frame">
+  <div class="chrome"><span class="dot"></span><span class="dot"></span><span class="dot"></span>
+    <span class="url">gateway.devthrottle.com/c/rules</span></div>
+  <div class="app">
+    <div class="rail">
+      <div>Sessions</div><div>Fleet Map</div><div>Assistant</div><div>History</div><div>Directors</div>
+      <div>Schedule</div><div>Workflows</div><div class="on">Rules</div><div>Skills</div><div>Dictionary</div>
+      <div>Voice Recorder</div><div>Transcription</div><div>Network</div>
+      <div class="gap"></div><div>Account</div><div>Settings</div>
+    </div>
+    <div class="main">
+      <p class="eyebrow">Standing instructions <span class="tag decide">Pro</span></p>
+      <div class="m-title">Rules</div>
+      <p class="m-sub">Tell DevThrottle what to do when a session gets stuck, in ordinary words. It works
+        out what to watch for, shows you exactly what it would do, and does nothing at all until you say so.</p>
+
+      <div class="composer">
+        <h5>Make a rule by saying what you want</h5>
+        <div class="turn"><span class="who">You</span><span class="what">When a session runs out of allowance and
+          says when it comes back, wait until then and tell it to continue.</span></div>
+        <div class="turn us"><span class="who">DevThrottle</span><span class="what">Which session is showing this?
+          I'll read its screen so the words come from the real thing. <span class="tag notyet">to build</span></span></div>
+        <div class="turn"><span class="who">You</span><span class="what">conductor.build</span></div>
+        <div class="turn us"><span class="who">DevThrottle</span><span class="what">Here is what it is showing.
+          <span class="tag notyet">to build</span></span></div>
+<pre class="term">&gt; keep going with the refactor
+
+Claude usage limit reached. Your limit will reset at 11:50pm.
+
+&gt; </pre>
+        <div class="toggle"><span class="sw"></span> Make this a rule for every agent <span style="color:var(--dim)">(off = ClaudeCode only)</span> <span class="tag built">built</span></div>
+        <p class="readback">When one of your ClaudeCode sessions stops on a usage-limit notice that gives a
+          reset time, I will wait until that time and then tell it to continue - at most five times a day for
+          any one session.</p>
+        <dl class="detail">
+          <dt>Your words</dt><dd class="instr">When a session runs out of allowance and says when it comes back, wait until then and tell it to continue.</dd>
+          <dt>Watches for</dt><dd>A usage-limit notice that gives a reset time.</dd>
+          <dt>Wakes on</dt><dd><span class="chip">Claude usage limit reached</span><span class="chip">Your limit will reset at</span></dd>
+          <dt>Which sessions</dt><dd><span class="chip agent">agent ClaudeCode</span></dd>
+          <dt>Ceilings</dt><dd>10 minutes apart, 5 a day</dd>
+        </dl>
+        <p class="checked">Every word above was checked against the screen; an invented one would have been refused. <span class="tag built">built</span></p>
+        <div class="dry">Storing this does not turn it on. It goes in as a dry run: it watches, records what it WOULD have done, and types nothing. You make it live afterwards.</div>
+        <div class="btns"><span class="btn primary">Store it as a dry run</span><span class="btn ghost">Throw it away</span></div>
+      </div>
+
+      <div class="card2">
+        <div class="spine"></div><div class="cbody">
+          <div class="chead"><span class="instr">When the provider stops working, wait a while and start the session back up.</span>
+            <span class="pill dry">Dry run</span></div>
+          <div class="facts"><span><span class="fl">wakes on</span><span class="chip">API Error</span><span class="chip">overloaded</span></span>
+            <span><span class="fl">acts on</span><span class="chip agent">agent ClaudeCode</span></span>
+            <span><span class="fl">ceilings</span>15 min apart, 6 a day</span></div>
+        </div>
+      </div>
+      <div class="card2 live">
+        <div class="spine"></div><div class="cbody">
+          <div class="chead"><span class="instr">If a session asks to edit a file inside its own repository, say yes.</span>
+            <span class="pill live">Live</span></div>
+          <div class="facts"><span><span class="fl">wakes on</span><span class="chip">Do you want to</span></span>
+            <span><span class="fl">acts on</span><span class="chip agent">agent ClaudeCode</span>, repo devthrottle</span>
+            <span><span class="fl">made live by</span>soren@centerconsulting.com</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<p style="font-size:13px;color:var(--dim)">The mockup companion file
+<code>rules-screen-mockup-and-what-a-rule-can-do.html</code> carries the full-size screen and the
+capability diagram.</p>
+
+<!-- ============================================================================================= -->
+<h2 id="phases">6. The phases</h2>
+<p>Ordered so each one is independently valuable and mergeable, and so nothing later is built on an
+unproven earlier step. Phase 0 comes first because it is what tells us the rest works.</p>
+
+<div class="phase"><div class="ph-head"><span class="ph-num">Phase 0</span>
+  <div><div class="ph-title">The test harness of real screens</div>
+  <div class="ph-goal">Nothing else is trusted until this exists.</div></div></div>
+  <div class="ph-body">
+    <p>A corpus of REAL captured terminal screens with the right answer written down, and a runner that
+    puts each through the real engine. Half must be negatives - the trigger words present, the answer still
+    "decline" (words in docs being read, in code just written, in a report about another session). Screens
+    come from a capture command and, once Phase 2 lands, from what the engine already reads on every turn.</p>
+    <dl class="accept">
+      <dt>Acceptance</dt>
+      <dd>The runner reports, per model, per case: the answer, whether it was right, the time - and the count
+      of wrong answers on negatives, which is the number that matters. It runs against the real engine, not
+      a copy. At least 20 real cases, at least half negative.</dd>
+    </dl>
+  </div>
+</div>
+
+<div class="phase"><div class="ph-head"><span class="ph-num">Phase 1</span>
+  <div><div class="ph-title">Make the run-time call reliable</div>
+  <div class="ph-goal">Fixes the ~1-in-3 timeout that makes live rules unreliable today.</div></div></div>
+  <div class="ph-body">
+    <p>Move the evaluating call to the fast model and a yes/no shape: the text to type was already decided
+    and approved at authoring time, so the run-time call only has to answer "is this that situation".
+    Measured at 0.4s. Keep the smart model for authoring, where a person waits and quality matters.</p>
+    <dl class="accept">
+      <dt>Acceptance</dt>
+      <dd>Against the Phase 0 harness: zero timeouts across 20+ cases; zero wrong answers on the negatives
+      (a false "act" is the unacceptable failure); the negative control (a rule declining a screen that
+      carries its own trigger words) passes on the fast model. The text typed is the authored text, verbatim
+      - nothing composed at run time.</dd>
+    </dl>
+  </div>
+</div>
+
+<div class="phase"><div class="ph-head"><span class="ph-num">Phase 2</span>
+  <div><div class="ph-title">The clock</div>
+  <div class="ph-goal">The owner's most common case: limit at 3am, everything sitting until morning.</div></div></div>
+  <div class="ph-body">
+    <p>A rule can say "not now - come back at 11:50pm", and something wakes the stopped session then. Today
+    the only trigger is working-to-idle, so a session parked overnight is never looked at again. Use
+    <code>retry_delay_from</code> (already shipped) to read the reset time, and DevThrottle's existing
+    schedule machinery to re-evaluate. Ceilings still bound it.</p>
+    <dl class="accept">
+      <dt>Acceptance</dt>
+      <dd>A rule scheduled to re-look fires within a small window of the stated time, on a real session, end
+      to end. A limit that never clears does not loop past the daily cap. The firing record shows the wait
+      and the wake. Proven on a real (or faithfully simulated) limit screen - not only in the unit suite.</dd>
+    </dl>
+  </div>
+</div>
+
+<div class="phase"><div class="ph-head"><span class="ph-num">Phase 3</span>
+  <div><div class="ph-title">The page agent that fetches the terminal itself</div>
+  <div class="ph-goal">The conversation in the mockup - ask which session, read it, propose.</div></div></div>
+  <div class="ph-body">
+    <p>The authoring call becomes a tool-use loop: the model can list sessions and read a screen, show it,
+    and then propose. The grounding, scope, and agent handling all already exist - this is the loop that
+    lets the page reach them without a person pasting a screen. The command line already reaches them via
+    <code>--session</code>, so this is the page catching up to the API.</p>
+    <dl class="accept">
+      <dt>Acceptance</dt>
+      <dd>On the page, from "set up a rule for conductor.build", the agent reads that session, shows the
+      screen, and proposes a rule whose words are on it. A question back is a first-class outcome. Nothing is
+      stored without confirmation; nothing is armed without promotion.</dd>
+    </dl>
+  </div>
+</div>
+
+<div class="phase"><div class="ph-head"><span class="ph-num">Phase 4</span>
+  <div><div class="ph-title">Pro gating</div>
+  <div class="ph-goal">Creating rules is Pro. Running them is not.</div></div></div>
+  <div class="ph-body">
+    <p>Gate rule CREATION (the smart authoring call) behind Pro. Do NOT gate running: a free user's existing
+    rules must keep firing - a rule that silently stopped is a trust failure, and running one costs 0.4s of
+    a cheap model.</p>
+    <dl class="accept">
+      <dt>Acceptance</dt>
+      <dd>A free account cannot draft or store a rule, and is told why. A free account's already-live rules
+      still fire and still record. The boundary is enforced on the Gateway, not the client.</dd>
+    </dl>
+  </div>
+</div>
+
+<div class="note">
+  <p><span class="k">Deferred, on the owner's call:</span> Director-side rules (the sign-in case, issue
+  2669) - needs vocabulary beyond one keystroke and steps that reach a browser and an inbox; and the
+  "only turn red when it needs me" case, which is likely a product fix to how a session's colour is
+  computed rather than a rule. Both wait until the harness has real screens for them.</p>
+</div>
+
+<!-- ============================================================================================= -->
+<h2 id="qa">7. The QA report - what it must prove</h2>
+<p>The point of the mission is the QA report. It must show the engine implemented AND working, on
+<span class="k">three real scenarios</span>, each with screenshots: the screen before, the firing record,
+and the result after. A decline is proven the same way an act is - by the recorded firing, never by the
+absence of a keystroke.</p>
+
+<h3>Scenario A - the usage limit at 3am <span class="tag decide">the headline</span></h3>
+<table>
+  <tr><th style="width:22%">Step</th><th>What the screenshot shows</th></tr>
+  <tr><td>Set up</td><td>The Rules page: a rule authored from the real limit screen, trigger words taken off it, scoped to ClaudeCode, in dry run.</td></tr>
+  <tr><td>Trigger</td><td>A session stopped on <code>Claude usage limit reached. Your limit will reset at HH:MM</code>.</td></tr>
+  <tr><td>Wait (Phase 2)</td><td>The firing record: decided to act, read the reset time, waiting until then - typed nothing yet.</td></tr>
+  <tr><td>Act</td><td>After promotion: the wake at the reset time, <code>continue</code> typed by nobody, the screen afterwards showing it accepted.</td></tr>
+  <tr><td>Proof</td><td>The whole firing chain in the record: screen, understanding, decision, reason, wait, keystroke, outcome.</td></tr>
+</table>
+
+<h3>Scenario B - the provider outage</h3>
+<table>
+  <tr><th style="width:22%">Step</th><th>What the screenshot shows</th></tr>
+  <tr><td>Set up</td><td>A rule authored from a real provider-error screen: wakes on the error text, waits, then continues; ceilings bound the retries.</td></tr>
+  <tr><td>Act</td><td>Session stopped on an API error; rule waits the cooldown, types continue; the record shows the wait and the send.</td></tr>
+  <tr><td>Bound</td><td>An error that persists: the rule stops at the daily cap rather than looping. The record shows the cap reached.</td></tr>
+</table>
+
+<h3>Scenario C - the negative control <span class="tag decide">the one that proves it is safe</span></h3>
+<table>
+  <tr><th style="width:22%">Step</th><th>What the screenshot shows</th></tr>
+  <tr><td>The trap</td><td>A live rule whose trigger words are on the screen - but in documentation the session is reading, not in the session's own state.</td></tr>
+  <tr><td>The decline</td><td>The firing record: the model read it, DECLINED, and said why - "the words are in something the session is reading, not its report of its own state". Nothing typed.</td></tr>
+  <tr><td>Why it matters</td><td>A rule that never declines has not been shown to have a boundary. This is the proof the engine judges rather than pattern-matches - the thing a fixed word list could never do.</td></tr>
+</table>
+
+<div class="note good">
+  <p><span class="k">The report must also state what is NOT proven</span>, plainly - the mission's own
+  standard. Every red before its green, every claim tied to the commit it ran on, and an honest list of
+  what was demonstrated versus what was only unit-tested.</p>
+</div>
+
+<!-- ============================================================================================= -->
+<h2 id="open">8. Decisions only the owner can make</h2>
+<table>
+  <tr><th style="width:34%">Decision</th><th>Why it needs you</th><th style="width:20%">Default if unanswered</th></tr>
+  <tr><td>Fast model for the RUN-TIME call</td><td>The thinking model was chosen deliberately for judgement; the fast one is 10x faster and passed the negatives. This is a quality-vs-speed call.</td><td>Fast model, with the negative control re-run as the gate.</td></tr>
+  <tr><td>Can an agent credential PROMOTE a rule?</td><td>The command line deliberately cannot promote, so "Claude Code, set up a rule" lands in dry run. The API still can. An agent that can arm rules unattended is the one real exposure.</td><td>No - agent credentials can do everything except promote.</td></tr>
+  <tr><td>How real screens are captured for the harness</td><td>A command you run when a session stops, or automatic capture from the fleet on every idle transition.</td><td>Automatic on idle (also feeds retrospective rules).</td></tr>
+  <tr><td>Retention of captured terminal text</td><td>It is the rawest data we hold - whatever was on screen. Where it lives and for how long is a privacy call.</td><td>Short retention, tenant-scoped, same as turns.</td></tr>
+</table>
+
+<hr>
+<p style="color:var(--dim);font-size:13px;margin-top:20px">Companion files in this folder:
+<code>rules-screen-mockup-and-what-a-rule-can-do.html</code> (full screens + capability diagram),
+<code>how-rules-work-and-why-they-time-out.html</code> (the measured timeout diagnosis),
+<code>plan-the-harness-first.html</code> (the four real cases against what exists),
+<code>phase-3-authoring-report.md</code> (what was built and proven for authoring).</p>
+
+</div>
