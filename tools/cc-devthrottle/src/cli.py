@@ -562,21 +562,21 @@ _ACTIONS = [
     },
     {
         "id": "rule-draft",
-        "description": "Work out a rule from a plain-English sentence and print it WITHOUT storing it. Pass --session to read that session's screen first, which is what stops the trigger words being a guess.",
-        "command": 'cc-devthrottle rule draft "<what you want>" [--session <session>]',
+        "description": "Work out a Session Rule from a plain-English sentence about ONE session and print the proposal WITHOUT storing it. The Gateway reads that session's screen itself and refuses any trigger word that is not on it, so --session is required. A rule written against a session is for THAT SESSION'S AGENT only, by default; pass --all-agents to make it a rule for every agent. Run with --json and save the answer: that file is what 'rule add' stores.",
+        "command": 'cc-devthrottle rule draft "<what you want>" --session <session> [--all-agents] --json',
         "mutatesState": False,
-        "args": [{"name": "said", "required": True}, {"name": "session", "required": False}],
+        "args": [
+            {"name": "said", "required": True},
+            {"name": "session", "required": True},
+            {"name": "all-agents", "required": False},
+        ],
     },
     {
         "id": "rule-add",
-        "description": "Set up a Session Rule from a plain-English sentence. ALWAYS stored in dry run - it watches, records what it would have done, and types nothing until a person makes it live in the Cockpit. Pass --session to read that session's screen first; without it the words the rule watches for are guessed and the rule may never fire. A rule written against a session is for THAT SESSION'S AGENT only, by default; pass --all-agents to make it a rule for every agent.",
-        "command": 'cc-devthrottle rule add "<what you want>" --session <session> [--all-agents]',
+        "description": "Store the proposal 'rule draft --json' printed - exactly that document, read first, with no second model call. ALWAYS stored in dry run: it watches, records what it would have done, and types nothing until a person makes it live in the Cockpit. The Gateway reads the session's screen again before storing, so an edited proposal with a word that is not on the screen is refused.",
+        "command": "cc-devthrottle rule add <proposal.json>",
         "mutatesState": True,
-        "args": [
-            {"name": "said", "required": True},
-            {"name": "session", "required": False},
-            {"name": "all-agents", "required": False},
-        ],
+        "args": [{"name": "proposal", "required": True}],
     },
     {
         "id": "rule-delete",
@@ -1646,33 +1646,31 @@ def rule_screen(
 @rule_app.command("draft")
 def rule_draft(
     said: str = typer.Argument(..., help="What you want the rule to do, in plain English."),
-    session: str = typer.Option(None, "--session", help="Read this session's screen first (strongly advised)."),
-    lines: int = typer.Option(60, "--lines", help="How many lines of the screen to read."),
-    json_output: bool = typer.Option(False, "--json", help="Print as JSON."),
+    session: str = typer.Option(
+        ...,
+        "--session",
+        help="The session it is happening on (number, id prefix, or name). The Gateway reads its screen itself; a rule cannot be written without one.",
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Print the whole answer as JSON - the file 'rule add' takes."),
     all_agents: bool = typer.Option(
         False,
         "--all-agents",
         help="This rule is for EVERY agent (the star). Without it, a rule written against a session is for that session's agent only.",
     ),
 ) -> None:
-    """Work out a rule and print it. STORES NOTHING."""
-    rule_ops.draft_rule(said, session, lines, json_output, all_agents)
+    """Work out a rule about a session and print the proposal. STORES NOTHING - read it, then 'rule add' it."""
+    rule_ops.draft_rule(said, session, json_output, all_agents)
 
 
 @rule_app.command("add")
 def rule_add(
-    said: str = typer.Argument(..., help="What you want the rule to do, in plain English."),
-    session: str = typer.Option(None, "--session", help="Read this session's screen first (strongly advised)."),
-    lines: int = typer.Option(60, "--lines", help="How many lines of the screen to read."),
-    json_output: bool = typer.Option(False, "--json", help="Print as JSON."),
-    all_agents: bool = typer.Option(
-        False,
-        "--all-agents",
-        help="This rule is for EVERY agent (the star). Without it, a rule written against a session is for that session's agent only.",
+    proposal: str = typer.Argument(
+        ..., help="The file 'rule draft --json' wrote (or - for standard input). Exactly that document is stored."
     ),
+    json_output: bool = typer.Option(False, "--json", help="Print as JSON."),
 ) -> None:
-    """Work out a rule and store it. ALWAYS stored in dry run - it watches and types nothing."""
-    rule_ops.add_rule(said, session, lines, json_output, all_agents)
+    """Store the proposal 'rule draft' printed, unchanged and with no second model call. ALWAYS stored in dry run."""
+    rule_ops.add_rule(proposal, json_output)
 
 
 @rule_app.command("delete")

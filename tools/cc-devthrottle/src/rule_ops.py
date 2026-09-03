@@ -10,18 +10,30 @@ and let a genuinely capable agent do the authoring. That is only possible if the
 reachable from a command line. It also means the built-in page never has to be the clever one - the
 clever one is whatever agent you point at this.
 
-THE SCREEN IS THE POINT. `rule add` reads the named session's terminal and hands it to the drafting
-call, and the Gateway then REFUSES any trigger word that is not on that screen. Written blind, the
-words are the model's guess at what a screen SAYS - measured on 3 September, describing a usage-limit
-rule from memory produced one watching for "hit its limit" and "when it comes back", which are the
-person's own phrasing and appear on no screen anywhere. It would have sat in the list looking correct
-and never fired once. Reading the real screen first is the difference between a rule and a decoration.
+THE SCREEN IS READ BY THE GATEWAY, NEVER SENT FROM HERE (fix round D, ruling D2). `rule draft` names the
+session; the Gateway reads that session's screen itself, takes the agent and the machine from its own
+roster, and REFUSES any trigger word that is not on the screen. There is no way to draft without a
+session, because that was the path on which the words were the model's guess at what a screen says -
+measured on 3 September, describing a usage-limit rule from memory produced one watching for "hit its
+limit" and "when it comes back", which are the person's own phrasing and appear on no screen anywhere.
+
+THE CONTRACT IS SENTENCE, READ-BACK, CONFIRMATION, STORE - AND THIS COMMAND GROUP CANNOT COLLAPSE IT
+(fix round D, ruling D4). `rule draft` asks the model and prints the proposal; `rule add` takes THAT
+proposal and posts it to the create route, making NO authoring call of its own. The old `rule add`
+drafted, stored, and only then printed the read-back, so what was stored could differ from what was
+read. Now what is stored is the document that was read, or nothing - and the Gateway reads the session's
+screen again at the write gate, so a hand-edited proposal cannot smuggle an ungrounded word past it.
+
+THIS CLIENT DECIDES NOTHING (repository rule 7, and fix round D, ruling D8). The words a person reads for
+a rule's scope and its wait are stamped onto the rule by the Gateway as `scopeLabel` and `waitLabel`,
+and this prints them verbatim. And an answer that is missing the field this client asked for is an
+ERROR, never an empty list: "No rules yet" printed over a broken answer is an absence-shaped check
+reporting a positive fact when the data never arrived.
 
 WHAT IS DELIBERATELY NOT HERE: promoting a rule out of dry run. Everything below stores a rule that
 WATCHES and TYPES NOTHING; arming it is the one step that lets a machine act on somebody's sessions
-unattended, and whether an agent's credential should be able to do that is an open question the owner
-has not answered. Leaving it out costs one click in the Cockpit and keeps a person on the only step
-where it matters. Adding it later is four lines.
+unattended, and the owner's ruling is that an agent's credential may not do it. The Gateway refuses it
+twice - at the route guard and at the promotion grant itself - and this command group does not offer it.
 """
 
 from __future__ import annotations
@@ -120,23 +132,40 @@ class RuleClient:
         text = (resp.text or "").strip()
         return text if text else f"the Gateway returned HTTP {resp.status_code}"
 
+    @staticmethod
+    def _field(answer: Dict[str, Any], what: str, field: str) -> Any:
+        """The field the caller asked for, or an ERROR - never a quiet empty value.
+
+        A MISSING FIELD IS A BROKEN INSTRUMENT (fix round D, ruling D8). An answer without `rules` in it
+        is not an account with no rules; it is an answer this client cannot read, and saying "No rules
+        yet" over it would report a positive fact the data never supported.
+        """
+        if not isinstance(answer, dict) or field not in answer:
+            raise GatewayError(
+                f"{what} answered without a '{field}' field, so nothing can be said about it. That is "
+                "not an empty result; it is an answer this command cannot read."
+            )
+        return answer[field]
+
     def rules(self) -> List[Dict[str, Any]]:
-        return self._json_or_raise(self._request("GET", "/gateway/rules")).get("rules", [])
+        return self._field(self._json_or_raise(self._request("GET", "/gateway/rules")), "GET /gateway/rules", "rules")
 
     def rule(self, rule_id: str) -> Dict[str, Any]:
-        return self._json_or_raise(self._request("GET", f"/gateway/rules/{rule_id}")).get("rule", {})
+        return self._field(
+            self._json_or_raise(self._request("GET", f"/gateway/rules/{rule_id}")), "GET /gateway/rules/{id}", "rule"
+        )
 
     def firings(self, rule_id: str) -> List[Dict[str, Any]]:
-        return self._json_or_raise(
-            self._request("GET", f"/gateway/rules/{rule_id}/firings")
-        ).get("firings", [])
+        return self._field(
+            self._json_or_raise(self._request("GET", f"/gateway/rules/{rule_id}/firings")),
+            "GET /gateway/rules/{id}/firings",
+            "firings",
+        )
 
     def screen(self, session_id: str, lines: int = 60) -> str:
-        """The session's terminal text as it is RIGHT NOW.
-
-        Nothing stores terminal output, so this is the only place a rule's example screen can come
-        from - and it is the screen as it is at this moment, not the one that annoyed you an hour ago.
-        """
+        """The session's terminal text as it is RIGHT NOW, for an agent that wants to LOOK at the thing a
+        rule would watch for. This is never sent to the Gateway - the Gateway reads the screen itself
+        when a rule is drafted or stored."""
         resp = self._request("GET", f"/sessions/{session_id}/buffer?lines={lines}")
         text = (self._json_or_raise(resp).get("text") or "").strip()
         if not text:
@@ -146,19 +175,12 @@ class RuleClient:
             )
         return text
 
-    def draft(
-        self,
-        said: str,
-        screen: str,
-        session_agent: str = "",
-        session_machine: str = "",
-        all_agents: bool = False,
-    ) -> Dict[str, Any]:
-        """Turn a sentence into a rule. STORES NOTHING.
+    def draft(self, said: str, session_id: str, all_agents: bool = False) -> Dict[str, Any]:
+        """Turn a sentence into a rule, about the named session. STORES NOTHING.
 
-        `session_agent` and `session_machine` say which session the screen came from. The Gateway scopes the
-        rule to that agent unless `all_agents` (the star) is set, whatever the model would have chosen - it
-        is a fact we hold, not a guess to make.
+        The Gateway reads the session's screen itself and scopes the rule to that session's agent unless
+        `all_agents` (the star) is set. Nothing about the screen, the agent or the machine is sent from
+        here - they are facts the Gateway holds, not claims this client makes.
         """
         return self._json_or_raise(
             self._request(
@@ -166,21 +188,26 @@ class RuleClient:
                 "/gateway/rules/draft",
                 {
                     "turns": [{"who": "person", "text": said}],
-                    "screen": screen,
-                    "sessionAgent": session_agent,
-                    "sessionMachine": session_machine,
+                    "sessionId": session_id,
                     "allAgents": all_agents,
                 },
             )
         )
 
     def create(self, rule_body: Dict[str, Any]) -> Dict[str, Any]:
-        """Store a rule. It is ALWAYS stored in dry run - there is no argument that could make it live."""
-        return self._json_or_raise(self._request("POST", "/gateway/rules", rule_body)).get("rule", {})
+        """Store a rule. It is ALWAYS stored in dry run - there is no argument that could make it live.
+        The body names the session it was grounded in; the Gateway reads that screen again first."""
+        return self._field(
+            self._json_or_raise(self._request("POST", "/gateway/rules", rule_body)), "POST /gateway/rules", "rule"
+        )
 
     def delete(self, rule_id: str) -> bool:
         return bool(
-            self._json_or_raise(self._request("DELETE", f"/gateway/rules/{rule_id}")).get("deleted")
+            self._field(
+                self._json_or_raise(self._request("DELETE", f"/gateway/rules/{rule_id}")),
+                "DELETE /gateway/rules/{id}",
+                "deleted",
+            )
         )
 
 
@@ -192,22 +219,23 @@ def _client() -> RuleClient:
         raise typer.Exit(1)
 
 
-def _session(target: str) -> Dict[str, str]:
-    """The session a rule is being written against: its id, and the two facts that change what its screen
-    MEANS - which agent it runs and where. A usage-limit notice on Claude Code reads "Claude usage limit
-    reached"; on Codex it reads something else. The Gateway uses the agent to scope the rule (the owner's
-    ruling: a rule written against a session is for that session's agent unless you say every agent) and
-    to tell the drafting model whose screen it is looking at."""
-    chosen = session_ops.resolve_session(target, command_name="cc-devthrottle rule")
-    return {
-        "id": gateway.field(chosen, "sessionId", "SessionId"),
-        "agent": gateway.field(chosen, "agent", "Agent") or "",
-        "machine": gateway.field(chosen, "machineName", "MachineName") or "",
-    }
-
-
 def _session_id(target: str) -> str:
-    return _session(target)["id"]
+    """The session a rule is being written against, resolved the way every session verb resolves one -
+    by number, id prefix, or name. Only the id is needed: the agent and the machine are facts the
+    Gateway reads off its own roster, never something this client tells it."""
+    chosen = session_ops.resolve_session(target, command_name="cc-devthrottle rule")
+    return gateway.field(chosen, "sessionId", "SessionId")
+
+
+def _label(rule: Dict[str, Any], field: str) -> str:
+    """A label the Gateway stamped on the rule, printed verbatim. A rule served without one is an
+    answer this client cannot read - it composes no words of its own for the scope or the wait."""
+    if field not in rule:
+        raise GatewayError(
+            f"the Gateway served a rule without its '{field}', which happens on a build from before "
+            "the labels were stamped on the Gateway. Upgrade or redeploy the Gateway."
+        )
+    return str(rule[field])
 
 
 def _describe(rule: Dict[str, Any]) -> None:
@@ -218,35 +246,30 @@ def _describe(rule: Dict[str, Any]) -> None:
     console.print(f"  trigger words {', '.join(rule.get('triggerWords') or []) or '(none)'}")
     checks = rule.get("checks") or []
     console.print(f"  checks        {', '.join(checks) if checks else '(none)'}")
-    scope = rule.get("scope") or {}
-    named = [f"{k} {v}" for k, v in scope.items() if v]
-    console.print(f"  acts on       {', '.join(named) if named else 'every session'}")
-    console.print(
-        f"  ceilings      {rule.get('cooldownSeconds', 0)}s apart, "
-        f"{rule.get('dailyCap', 0)} a day"
-    )
+    console.print(f"  acts on       {_label(rule, 'scopeLabel')}")
+    console.print(f"  ceilings      {_label(rule, 'waitLabel')} apart, {rule.get('dailyCap', 0)} a day")
     if rule.get("promotedBy"):
         console.print(f"  made live by  {rule['promotedBy']}")
+    if rule.get("acknowledgement"):
+        console.print(f"  who agreed to {rule['acknowledgement']}")
 
 
 def list_rules(json_output: bool) -> None:
     client = _client()
     try:
         rules = client.rules()
+        if json_output:
+            console.print_json(json.dumps({"rules": rules}))
+            return
+        if not rules:
+            console.print("No rules yet.")
+            return
+        for rule in rules:
+            _describe(rule)
+            console.print("")
     except GatewayError as exc:
         err_console.print(f"[red]Error:[/red] {exc}")
         raise typer.Exit(1)
-
-    if json_output:
-        console.print_json(json.dumps({"rules": rules}))
-        return
-
-    if not rules:
-        console.print("No rules yet.")
-        return
-    for rule in rules:
-        _describe(rule)
-        console.print("")
 
 
 def show_rule(rule_id: str, json_output: bool) -> None:
@@ -254,15 +277,14 @@ def show_rule(rule_id: str, json_output: bool) -> None:
     try:
         rule = client.rule(rule_id)
         firings = client.firings(rule_id)
+        if json_output:
+            console.print_json(json.dumps({"rule": rule, "firings": firings}))
+            return
+        _describe(rule)
     except GatewayError as exc:
         err_console.print(f"[red]Error:[/red] {exc}")
         raise typer.Exit(1)
 
-    if json_output:
-        console.print_json(json.dumps({"rule": rule, "firings": firings}))
-        return
-
-    _describe(rule)
     console.print("")
     if not firings:
         console.print("It has not fired yet.")
@@ -291,23 +313,15 @@ def show_screen(target: str, lines: int) -> None:
         raise typer.Exit(1)
 
 
-def _draft(
-    client: RuleClient, said: str, target: Optional[str], lines: int, all_agents: bool
-) -> Dict[str, Any]:
-    if not target:
-        return client.draft(said, "", all_agents=all_agents)
-    session = _session(target)
-    screen = client.screen(session["id"], lines)
-    return client.draft(said, screen, session["agent"], session["machine"], all_agents)
+def draft_rule(said: str, target: str, json_output: bool, all_agents: bool = False) -> None:
+    """Work out a rule about the named session and print the proposal. STORES NOTHING.
 
-
-def draft_rule(
-    said: str, target: Optional[str], lines: int, json_output: bool, all_agents: bool = False
-) -> None:
-    """Work out a rule and print it. STORES NOTHING."""
+    The proposal printed under 'rule' (and the whole JSON answer with --json) is exactly what
+    `rule add` takes, so the document a person reads here is the document that gets stored.
+    """
     client = _client()
     try:
-        answer = _draft(client, said, target, lines, all_agents)
+        answer = client.draft(said, _session_id(target), all_agents)
     except GatewayError as exc:
         err_console.print(f"[red]Error:[/red] {exc}")
         raise typer.Exit(1)
@@ -325,41 +339,69 @@ def draft_rule(
 
     console.print(answer.get("readBack", ""))
     console.print("")
-    console.print("[dim]Nothing was stored. Use 'rule add' to store it as a dry run.[/dim]")
-    console.print_json(json.dumps(answer.get("rule", {})))
+    try:
+        console.print(f"  acts on       {_label(answer, 'scopeLabel')}")
+        console.print(
+            f"  ceilings      {_label(answer, 'waitLabel')} apart, "
+            f"{(answer.get('rule') or {}).get('dailyCap', 0)} a day"
+        )
+    except GatewayError as exc:
+        err_console.print(f"[red]Error:[/red] {exc}")
+        raise typer.Exit(1)
+    console.print("")
+    console.print(
+        "[dim]Nothing was stored. Save this answer as JSON (run again with --json) and pass the file to "
+        "'rule add' to store exactly this as a dry run.[/dim]"
+    )
+    console.print_json(json.dumps(answer))
 
 
-def add_rule(
-    said: str, target: Optional[str], lines: int, json_output: bool, all_agents: bool = False
-) -> None:
-    """Work out a rule from what you said and STORE it - always in dry run, watching and typing nothing."""
+def _read_proposal(source: str) -> Dict[str, Any]:
+    """The proposal `rule draft --json` printed: the whole answer, or just its 'rule' body."""
+    try:
+        text = sys.stdin.read() if source == "-" else Path(source).read_text(encoding="utf-8")
+    except OSError as exc:
+        raise GatewayError(f"the proposal could not be read from {source}: {exc}") from exc
+    try:
+        document = json.loads(text)
+    except ValueError as exc:
+        raise GatewayError(
+            f"the proposal in {source} is not JSON. Pass the file 'rule draft --json' wrote."
+        ) from exc
+    if not isinstance(document, dict):
+        raise GatewayError(f"the proposal in {source} is not a JSON object.")
+    if document.get("question"):
+        raise GatewayError(
+            "that answer is a question, not a rule: " + str(document["question"]) + ". Nothing was "
+            "stored. Draft again with the question answered in the sentence."
+        )
+    rule_body = document.get("rule") if "rule" in document else document
+    if not isinstance(rule_body, dict) or not rule_body.get("instruction"):
+        raise GatewayError(
+            f"the proposal in {source} holds no rule to store - it has no 'rule' with an 'instruction'. "
+            "Pass the file 'rule draft --json' wrote."
+        )
+    return {"rule": rule_body, "readBack": document.get("readBack", "")}
+
+
+def add_rule(source: str, json_output: bool) -> None:
+    """Store the proposal `rule draft` printed - exactly that document, with NO authoring call - as a
+    dry run that watches and types nothing."""
     client = _client()
     try:
-        answer = _draft(client, said, target, lines, all_agents)
-        if answer.get("question"):
-            # Refusing to guess is the whole point. Storing a rule built on an unanswered question
-            # would store a rule the person did not describe.
-            err_console.print(f"[yellow]It needs to know:[/yellow] {answer['question']}")
-            err_console.print("Nothing was stored. Run this again with that answered in the sentence.")
-            raise typer.Exit(2)
-
-        rule_body = answer.get("rule")
-        if not rule_body:
-            err_console.print("[red]Error:[/red] the Gateway drafted no rule and gave no question.")
-            raise typer.Exit(1)
-
-        stored = client.create(rule_body)
+        proposal = _read_proposal(source)
+        stored = client.create(proposal["rule"])
+        if json_output:
+            console.print_json(json.dumps({"rule": stored, "readBack": proposal["readBack"]}))
+            return
+        if proposal["readBack"]:
+            console.print(proposal["readBack"])
+            console.print("")
+        _describe(stored)
     except GatewayError as exc:
         err_console.print(f"[red]Error:[/red] {exc}")
         raise typer.Exit(1)
 
-    if json_output:
-        console.print_json(json.dumps({"rule": stored, "readBack": answer.get("readBack", "")}))
-        return
-
-    console.print(answer.get("readBack", ""))
-    console.print("")
-    _describe(stored)
     console.print("")
     console.print(
         "[dim]Stored as a DRY RUN: it watches, records what it WOULD have done, and types nothing. "

@@ -1,20 +1,34 @@
 // The standing instructions an account gives about its sessions, and the record of every time one
 // fired (the Session Rules mission). The typed, same-origin client the Rules page reads and writes.
 //
-// A rule is an INSTRUCTION, not a form. You say what you want in ordinary words; a model on the
-// Gateway works out what the product has to hold - what the screen looks like when it applies, the
-// cheap words that make a screen worth a closer look, any check the act depends on, which sessions,
-// and the two ceilings - and hands the whole thing back for you to read before anything is stored.
+// A rule is an INSTRUCTION, not a form. You say what you want in ordinary words and name the session it
+// is happening on; a model on the Gateway reads that session's screen and works out what the product
+// has to hold - what the screen looks like when it applies, the cheap words that make a screen worth a
+// closer look, any check the act depends on, which sessions, and the two ceilings - and hands the whole
+// thing back for you to read before anything is stored.
+//
+// THE SCREEN IS NEVER SENT FROM HERE (fix round D, ruling D2). This client names a session; the Gateway
+// reads the screen itself, takes the agent and the machine from its own roster, and REFUSES a request
+// that names no session. There is no way to write a rule from memory, because that was the path on
+// which the trigger words were a guess.
 //
 // THE THREE CALLS ARE DELIBERATELY SEPARATE, and the separation is the safety rather than the
-// plumbing. `draftRule` stores NOTHING. `createRule` stores what you confirmed, and the Gateway has
-// no way to create anything but a dry-run rule, which types nothing and only records what it would
-// have done. `promoteRule` is a person deciding it may act for real. Two people-shaped steps sit
-// between a sentence and the first keystroke, and this client cannot skip either.
+// plumbing. `draftRule` stores NOTHING. `createRule` stores what you confirmed - and the Gateway reads
+// the session's screen AGAIN and checks every trigger word before it stores anything - and it has no
+// way to create anything but a dry-run rule, which types nothing and only records what it would have
+// done. `promoteRule` is a person deciding it may act for real. Two people-shaped steps sit between a
+// sentence and the first keystroke, and this client cannot skip either.
 //
-// The body `draftRule` returns under `rule` is EXACTLY the body `createRule` takes, so confirming a
-// drafted rule is posting it back unchanged. Do not rebuild it field by field on the way through:
-// the point of the shape is that what was read and what is stored cannot differ.
+// The body `draftRule` returns under `rule` is EXACTLY the body `createRule` takes, and it carries the
+// session it was grounded in and whether you said every agent, so confirming a drafted rule is posting
+// it back unchanged. Do not rebuild it field by field on the way through: the point of the shape is
+// that what was read and what is stored cannot differ.
+//
+// THIS CLIENT DECIDES NOTHING (repository rule 7, and fix round D, ruling D8). The words a person reads
+// for a rule's scope and its wait - "every session", "10 minutes" - are stamped onto the rule by the
+// Gateway as `scopeLabel` and `waitLabel`, and the page renders them verbatim. It used to compose them
+// here, and again in the page, and the command line composed its own, so two clients could disagree
+// about one stored state.
 import { authHeaders, GatewayError } from "../api/client";
 
 /** Which sessions a rule may act on. A null part means "any". All four null is every session. */
@@ -37,12 +51,18 @@ export interface SessionRule {
   /** The verified checks this rule runs, each already rendered for reading by the Gateway. */
   checks: string[];
   scope: RuleScope;
+  /** THE FINISHED WORDS for the scope, stamped by the Gateway. Render verbatim. */
+  scopeLabel: string;
   cooldownSeconds: number;
+  /** THE FINISHED WORDS for the wait, stamped by the Gateway ("10 minutes"). Render verbatim. */
+  waitLabel: string;
   dailyCap: number;
   /** "dry_run" or "live". Every rule starts in dry run and only a person moves it. */
   state: string;
   /** Who made it live. Empty for exactly as long as it is in dry run. */
   promotedBy: string;
+  /** What that person said they were agreeing to, verbatim. Empty while in dry run. */
+  acknowledgement: string;
   createdUtc: string;
   updatedUtc: string;
 }
@@ -85,10 +105,13 @@ export interface RuleDraftTurn {
 
 /**
  * The rule the Gateway drafted, in the exact shape `createRule` takes. Passed straight back through
- * without being rebuilt - see the note at the top of this file.
+ * without being rebuilt - see the note at the top of this file. It names the session it was grounded
+ * in and whether every agent was chosen, because the write gate runs the same grounding again.
  */
 export interface RuleWriteBody {
   instruction: string;
+  sessionId: string;
+  allAgents: boolean;
   screenDescription: string;
   triggerWords: string[];
   checks: unknown[];
@@ -97,14 +120,27 @@ export interface RuleWriteBody {
   dailyCap: number;
 }
 
+/** A rule to read and confirm, with the read-back, the labels, and the exact screen excerpt it was
+ *  checked against. */
+export interface RuleProposal {
+  readBack: string;
+  rule: RuleWriteBody;
+  /** The exact excerpt of the session's screen the model was shown and every trigger word was checked
+   *  against - the Gateway's own reading, never something this client sent. */
+  exampleScreen: string;
+  /** The finished words for the unstored rule's scope, stamped by the Gateway. */
+  scopeLabel: string;
+  /** The finished words for the unstored rule's wait, stamped by the Gateway. */
+  waitLabel: string;
+}
+
 /**
- * What one authoring turn answered. Exactly one of the three is set, and a QUESTION is a first-class
+ * What one authoring turn answered. Exactly one of the two is set, and a QUESTION is a first-class
  * answer rather than a failure: a model that does not know which sessions a rule is for has to be
  * able to ask, or it will pick the widest scope it can and hand back a rule nobody asked for.
  */
 export interface RuleDraftAnswer {
-  /** A rule to read and confirm, with the read-back and the screen it was made from. */
-  proposal?: { readBack: string; rule: RuleWriteBody; exampleScreen: string };
+  proposal?: RuleProposal;
   /** The one thing that has to be answered before a rule can be written. */
   question?: string;
 }
@@ -142,6 +178,14 @@ async function readJson<T>(res: Response, what: string): Promise<T> {
   return (await res.json()) as T;
 }
 
+// A MISSING FIELD IS A BROKEN INSTRUMENT, NOT AN EMPTY RESULT (fix round D, ruling D8). An answer
+// without the field this client asked for is reported as exactly that - never read as an empty list
+// that then becomes "No rules yet" or "It has not fired yet" on the page, which would be an absence-
+// shaped check reporting a positive fact when the data never arrived.
+function missing(res: Response, what: string, field: string): GatewayError {
+  return new GatewayError(res.status, `${what} returned no ${field} field, so nothing can be said about it.`);
+}
+
 /** GET /gateway/rules - every standing instruction this account has. */
 export async function getRules(signal?: AbortSignal): Promise<SessionRule[]> {
   const res = await fetch("/gateway/rules", {
@@ -150,7 +194,7 @@ export async function getRules(signal?: AbortSignal): Promise<SessionRule[]> {
     signal,
   });
   const body = await readJson<{ rules?: SessionRule[] }>(res, "read your rules");
-  if (body.rules === undefined) throw new GatewayError(res.status, "GET /gateway/rules returned no rules field");
+  if (body.rules === undefined) throw missing(res, "GET /gateway/rules", "rules");
   return body.rules;
 }
 
@@ -162,63 +206,52 @@ export async function getRuleFirings(id: string, signal?: AbortSignal): Promise<
     signal,
   });
   const body = await readJson<{ firings?: RuleFiring[] }>(res, "read what this rule has done");
-  return body.firings ?? [];
+  if (body.firings === undefined) throw missing(res, "GET /gateway/rules/{id}/firings", "firings");
+  return body.firings;
 }
 
 /**
- * GET /sessions/{id}/buffer - the terminal text a session is showing right now.
- *
- * THIS IS WHAT MAKES A RULE REAL. Written without one, a rule's trigger words are the model's guess at
- * what a screen SAYS - and a guess is plausible and wrong: asked about a provider outage with no screen,
- * a live model proposed ECONNREFUSED and 429, strings a coding agent may never print. A rule watching for
- * a word that never appears never fires, and looks entirely correct sitting in the list. Capture the
- * screen you are actually looking at and the words come from the text instead.
- */
-export async function captureSessionScreen(
-  sessionId: string,
-  lines = 60,
-  signal?: AbortSignal,
-): Promise<string> {
-  const res = await fetch(`/sessions/${encodeURIComponent(sessionId)}/buffer?lines=${lines}`, {
-    method: "GET",
-    headers: { Accept: "application/json", ...authHeaders() },
-    signal,
-  });
-  const body = await readJson<{ text?: string }>(res, "read this session's screen");
-  const text = (body.text ?? "").trim();
-  if (text.length === 0) {
-    // An empty screen is not a capture. Returning it would send the model away to guess, which is the
-    // exact thing capturing exists to stop - and the person would never know that is what happened.
-    throw new GatewayError(502, "That session's screen came back empty, so there is nothing to capture.");
-  }
-  return text;
-}
-
-/**
- * POST /gateway/rules/draft - say what you want; get a rule to read, or one question, back.
+ * POST /gateway/rules/draft - say what you want, name the session it is happening on; get a rule to
+ * read, or one question, back.
  *
  * THIS STORES NOTHING. Pass the whole conversation so far, including anything the Gateway asked and
- * what you answered, so the model can see the question its answer belongs to. Pass the captured screen
- * whenever there is one: the Gateway then REFUSES any trigger word that is not on it, so a rule that
- * would never have fired is caught while you are still looking at it.
+ * what you answered, so the model can see the question its answer belongs to. The Gateway reads the
+ * named session's screen itself and REFUSES any trigger word that is not on it, so a rule that would
+ * never have fired is caught while you are still looking at it. `allAgents` is the star: you saying
+ * this rule is for every agent rather than the named session's agent, which is the default.
  */
 export async function draftRule(
   turns: RuleDraftTurn[],
-  screen?: string,
+  sessionId: string,
+  allAgents: boolean,
   signal?: AbortSignal,
 ): Promise<RuleDraftAnswer> {
   const res = await fetch("/gateway/rules/draft", {
     method: "POST",
     headers: { "Content-Type": "application/json", Accept: "application/json", ...authHeaders() },
-    body: JSON.stringify({ turns, screen: screen ?? "" }),
+    body: JSON.stringify({ turns, sessionId, allAgents }),
     signal,
   });
   const body = await readJson<{
-    readBack?: string; rule?: RuleWriteBody; question?: string; exampleScreen?: string;
+    readBack?: string;
+    rule?: RuleWriteBody;
+    question?: string;
+    exampleScreen?: string;
+    scopeLabel?: string;
+    waitLabel?: string;
   }>(res, "work out a rule from what you said");
   if (body.rule !== undefined && body.readBack !== undefined) {
+    if (body.exampleScreen === undefined) throw missing(res, "POST /gateway/rules/draft", "exampleScreen");
+    if (body.scopeLabel === undefined) throw missing(res, "POST /gateway/rules/draft", "scopeLabel");
+    if (body.waitLabel === undefined) throw missing(res, "POST /gateway/rules/draft", "waitLabel");
     return {
-      proposal: { readBack: body.readBack, rule: body.rule, exampleScreen: body.exampleScreen ?? "" },
+      proposal: {
+        readBack: body.readBack,
+        rule: body.rule,
+        exampleScreen: body.exampleScreen,
+        scopeLabel: body.scopeLabel,
+        waitLabel: body.waitLabel,
+      },
     };
   }
   if (body.question !== undefined) return { question: body.question };
@@ -227,7 +260,8 @@ export async function draftRule(
 
 /**
  * POST /gateway/rules - store the rule you confirmed. It is ALWAYS stored in dry run: there is no
- * argument here that could make it live, because there is none on the Gateway either.
+ * argument here that could make it live, because there is none on the Gateway either. The body
+ * carries the session it was grounded in, and the Gateway reads that screen again before storing.
  */
 export async function createRule(rule: RuleWriteBody, signal?: AbortSignal): Promise<SessionRule> {
   const res = await fetch("/gateway/rules", {
@@ -237,15 +271,17 @@ export async function createRule(rule: RuleWriteBody, signal?: AbortSignal): Pro
     signal,
   });
   const body = await readJson<{ rule?: SessionRule }>(res, "store this rule");
-  if (!body.rule) throw new GatewayError(res.status, "POST /gateway/rules stored nothing it could return.");
+  if (!body.rule) throw missing(res, "POST /gateway/rules", "rule");
   return body.rule;
 }
 
 /**
  * POST /gateway/rules/{id}/promote - a person takes the rule out of dry run.
  *
- * The acknowledgement is REQUIRED by the Gateway and is not a formality: it is what the record shows
- * the person agreed to, beside their name, for as long as the rule is live.
+ * The acknowledgement is REQUIRED by the Gateway and is not a formality: it is persisted on the rule
+ * and served back as `acknowledgement`, beside the person's name, for as long as the rule is live. So
+ * what is sent here has to describe what the person was actually shown - the page builds it from the
+ * dry-run record it put in front of them, never from a constant.
  */
 export async function promoteRule(
   id: string,
@@ -259,7 +295,7 @@ export async function promoteRule(
     signal,
   });
   const body = await readJson<{ rule?: SessionRule }>(res, "make this rule live");
-  if (!body.rule) throw new GatewayError(res.status, "The Gateway promoted nothing it could return.");
+  if (!body.rule) throw missing(res, "POST /gateway/rules/{id}/promote", "rule");
   return body.rule;
 }
 
@@ -271,23 +307,6 @@ export async function deleteRule(id: string, signal?: AbortSignal): Promise<bool
     signal,
   });
   const body = await readJson<{ deleted?: boolean }>(res, "delete this rule");
+  if (body.deleted === undefined) throw missing(res, "DELETE /gateway/rules/{id}", "deleted");
   return body.deleted === true;
-}
-
-/** How a rule's scope reads on a page. Every session is the honest answer when nothing is named. */
-export function describeScope(scope: RuleScope | undefined): string {
-  if (!scope) return "every session";
-  const parts: string[] = [];
-  if (scope.agent) parts.push(`agent ${scope.agent}`);
-  if (scope.repository) parts.push(`repository ${scope.repository}`);
-  if (scope.machine) parts.push(`machine ${scope.machine}`);
-  if (scope.mission) parts.push(`mission ${scope.mission}`);
-  return parts.length === 0 ? "every session" : parts.join(", ");
-}
-
-/** A ceiling in the words a person uses for it. */
-export function describeWait(seconds: number): string {
-  if (seconds >= 3600 && seconds % 3600 === 0) return `${seconds / 3600} hour${seconds === 3600 ? "" : "s"}`;
-  if (seconds >= 60 && seconds % 60 === 0) return `${seconds / 60} minute${seconds === 60 ? "" : "s"}`;
-  return `${seconds} second${seconds === 1 ? "" : "s"}`;
 }
