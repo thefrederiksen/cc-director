@@ -61,6 +61,9 @@ const THE_OUTAGE_SENTENCE =
 
 const SESSION_ID = "3f1a2b4c-1111-4000-8000-000000000001";
 
+/** THE EXACT TEXT THE RULE TYPES - decided when it was written, and the thing a person is agreeing to. */
+const THE_TEXT = "carry on from where you stopped";
+
 const THE_ROSTER = [
   { sessionId: SESSION_ID, name: "refactor the parser", agent: "ClaudeCode", machineName: "SOREN_NORTH" },
   { sessionId: "3f1a2b4c-2222-4000-8000-000000000002", name: "write the docs", agent: "Codex", machineName: "SOREN_SOUTH" },
@@ -71,6 +74,7 @@ const DRAFTED: RuleWriteBody = {
   sessionId: SESSION_ID,
   allAgents: false,
   screenDescription: "The session has stopped on an error from the provider rather than on its own work.",
+  textToType: THE_TEXT,
   triggerWords: ["API Error", "overloaded"],
   checks: [],
   scope: { agent: "ClaudeCode" },
@@ -96,6 +100,7 @@ const STORED: SessionRule = {
   id: "11111111-1111-1111-1111-111111111111",
   instruction: THE_OUTAGE_SENTENCE,
   screenDescription: DRAFTED.screenDescription,
+  textToType: THE_TEXT,
   triggerWords: DRAFTED.triggerWords,
   checks: [],
   scope: { agent: "ClaudeCode", repository: null, machine: null, mission: null },
@@ -236,6 +241,29 @@ describe("The Rules page", () => {
     expect(createRule).not.toHaveBeenCalled();
   });
 
+  /**
+   * THE KEYSTROKE IS SHOWN, VERBATIM, BEFORE ANYTHING ELSE ABOUT THE RULE (phase 1). The text a rule
+   * types is the most consequential thing it does and the read-back is what a person confirms - a
+   * read-back that described the situation but hid the keystroke asked somebody to approve an action
+   * they were not shown. So the proposal shows the exact string, in a monospace element, ahead of the
+   * trigger words.
+   */
+  it("shows the exact text the drafted rule would type, verbatim, before the trigger words", async () => {
+    draftRule.mockResolvedValue({ proposal: PROPOSAL });
+    render(<RulesView />);
+
+    await chooseTheSession();
+    say(THE_OUTAGE_SENTENCE);
+    fireEvent.click(screen.getByRole("button", { name: "Work it out" }));
+    await waitFor(() => expect(screen.getByText(READ_BACK)).toBeTruthy());
+
+    const typed = screen.getByText(THE_TEXT);
+    expect(typed.tagName).toBe("CODE");
+    // Ahead of the trigger words in the document, so it is read first.
+    const firstWord = screen.getByText("API Error");
+    expect(typed.compareDocumentPosition(firstWord) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
   it("says out loud that storing it does not turn it on", async () => {
     draftRule.mockResolvedValue({ proposal: PROPOSAL });
     render(<RulesView />);
@@ -326,6 +354,26 @@ describe("The Rules page", () => {
     await waitFor(() => expect(screen.getByText("Dry run - types nothing")).toBeTruthy());
     expect(screen.getByText(THE_OUTAGE_SENTENCE)).toBeTruthy();
     expect(screen.getByRole("button", { name: "Make it live" })).toBeTruthy();
+  });
+
+  it("shows the exact text a stored rule types, verbatim", async () => {
+    getRules.mockResolvedValue([STORED]);
+    render(<RulesView />);
+
+    await waitFor(() => expect(screen.getByText(THE_TEXT)).toBeTruthy());
+    expect(screen.getByText(THE_TEXT).tagName).toBe("CODE");
+  });
+
+  /**
+   * A RULE WITH NOTHING TO TYPE IS SAID TO NEED RE-AUTHORING - the Gateway's own word for it. Such a
+   * rule was stored before rules carried their text; the Gateway refuses to fire it and refuses to
+   * promote it, and a card that showed it looking like every other rule would hide exactly that.
+   */
+  it("says a rule served with no text to type needs re-authoring", async () => {
+    getRules.mockResolvedValue([{ ...STORED, textToType: "" }]);
+    render(<RulesView />);
+
+    await waitFor(() => expect(screen.getByText(/needs re-authoring/)).toBeTruthy());
   });
 
   /**
