@@ -172,7 +172,11 @@ public sealed class RuleEvaluatorTests
                     "call looks like from here.");
 
             var id = Guid.NewGuid();
-            lock (Recorded) Recorded.Add(draft);
+            lock (Recorded)
+            {
+                _rowOf[id] = Recorded.Count;
+                Recorded.Add(draft);
+            }
             lock (WrittenIds) WrittenIds.Add(id);
             if (!FiringsAreVisibleToTheFreeChecks) return id;
             lock (StoredFirings)
@@ -186,9 +190,19 @@ public sealed class RuleEvaluatorTests
         /// <summary>The ids handed out, in order.</summary>
         public List<Guid> WrittenIds { get; } = new();
 
+        /// <summary>Where each written firing sits in <see cref="Recorded"/>, so completing one UPDATES the
+        /// row rather than adding a second - which is what a real store does, and what makes
+        /// <see cref="Recorded"/> the record a reader would actually find.</summary>
+        private readonly Dictionary<Guid, int> _rowOf = new();
+
         public void CompleteFiring(TenantId tenant, Guid firingId, string typedText, string outcome)
         {
             lock (Completed) Completed[firingId] = (typedText, outcome);
+            lock (Recorded)
+            {
+                if (!_rowOf.TryGetValue(firingId, out var row)) return;
+                Recorded[row] = Recorded[row] with { TypedText = typedText, Outcome = outcome };
+            }
         }
     }
 

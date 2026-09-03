@@ -366,40 +366,66 @@ public sealed class RuleEvaluator
             return new RulePass(RulePassOutcomes.DryRun, reply.TextToType, new[] { wouldHave });
         }
 
+        // THE RECORD EXISTS BEFORE THE KEYSTROKE DOES. Everything that can make a record fail - a rule
+        // deleted during the model call, a record this store will not accept, a database that is down -
+        // used to happen AFTER something had been done to somebody's session, leaving the action with
+        // nothing durable to account for it and a log line as the only trace. The record is the product,
+        // so it is written first as an INTENT and reconciled afterwards with what actually happened.
+        //
+        // A refusal here is therefore a reason NOT to act. Only the store's own stated refusal is caught,
+        // and only so the pass can say what happened in words; any other failure propagates, which stops
+        // the send just as effectively because it happens before it.
+        var intent = new RuleFiringDraft(
+            chosen.Id, sessionId, screen, reply.Understanding, RuleDecisions.Act, reply.Reason,
+            checks.Runs, "",
+            "about to type into the session: " + reply.TextToType +
+            ". This record was written BEFORE the keystroke went out; if it still says only this, nothing " +
+            "ever came back to say what became of it.",
+            grounding.Statement);
+
+        Guid firingId;
+        try
+        {
+            firingId = Write(tenant, intent);
+        }
+        catch (RuleRejectedException ex)
+        {
+            FileLog.Write($"[RuleEvaluator] sid={sessionId}: act NOT carried out, the record was refused: {ex.Reason}");
+            return Nothing(RulePassOutcomes.NotRecorded,
+                "nothing was typed, because what would have been done could not be written down first: " +
+                ex.Reason);
+        }
+
         var sent = await _env.TypeIntoSessionAsync(tenant, directorId, sessionId, reply.TextToType, ct)
             .ConfigureAwait(false);
 
         // A keystroke that never left this Gateway is the only case in which nothing was typed. The
         // record says so, and the typed text is blank, because claiming text that never went anywhere
         // would be the same lie in the other direction.
-        if (sent.What == RuleSendOutcomes.NotSent)
-        {
-            var notSent = Record(tenant, new RuleFiringDraft(
-                chosen.Id, sessionId, screen, reply.Understanding, RuleDecisions.Act, reply.Reason,
-                checks.Runs, "",
-                "nothing was typed: " + sent.Detail, grounding.Statement));
-            return new RulePass(RulePassOutcomes.NotSent, sent.Detail, new[] { notSent });
-        }
-
+        //
         // TYPED TEXT IS THIS PRODUCT'S WORD FOR "IT REACHED THE SESSION", so it is written only when
         // something said so. An unanswered send names what went on the wire, in the outcome, and claims
         // nothing about what became of it - the route answers the same way for a shell whose turn was over
         // in milliseconds (the text DID land) as for a Director that refused the command outright (it did
         // not), and a record that picks one of those is wrong half the time in whichever direction it picks.
         var confirmed = sent.What == RuleSendOutcomes.Confirmed;
-        var acted = Record(tenant, new RuleFiringDraft(
-            chosen.Id, sessionId, screen, reply.Understanding, RuleDecisions.Act, reply.Reason,
-            checks.Runs, confirmed ? reply.TextToType : "",
-            confirmed
-                ? "typed into the session: " + reply.TextToType
-                : "sent to the machine running this session: " + reply.TextToType +
-                  " - and nothing confirmed what became of it (" + sent.Detail +
-                  "). The session's screen is the only evidence of whether it landed.",
-            grounding.Statement));
+        var (what, typed, outcome) = sent.What switch
+        {
+            RuleSendOutcomes.NotSent => (
+                RulePassOutcomes.NotSent, "", "nothing was typed: " + sent.Detail),
+            RuleSendOutcomes.Confirmed => (
+                RulePassOutcomes.Acted, reply.TextToType, "typed into the session: " + reply.TextToType),
+            _ => (
+                RulePassOutcomes.SendUnconfirmed, "",
+                "sent to the machine running this session: " + reply.TextToType +
+                " - and nothing confirmed what became of it (" + sent.Detail +
+                "). The session's screen is the only evidence of whether it landed."),
+        };
 
-        return new RulePass(
-            confirmed ? RulePassOutcomes.Acted : RulePassOutcomes.SendUnconfirmed,
-            reply.TextToType, new[] { acted });
+        Complete(tenant, firingId, typed, outcome);
+
+        var acted = intent with { TypedText = typed, Outcome = outcome };
+        return new RulePass(what, confirmed ? reply.TextToType : sent.Detail, new[] { acted });
     }
 
     private RulePass Abandon(
@@ -418,6 +444,23 @@ public sealed class RuleEvaluator
     {
         Write(tenant, draft);
         return draft;
+    }
+
+    /// <summary>Tell the record what became of the keystroke it was written for. A completion that is
+    /// refused leaves the intent standing, which says in its own words that nothing came back - that is a
+    /// worse record than the truth and a far better one than an action with no row at all.</summary>
+    private void Complete(TenantId tenant, Guid firingId, string typedText, string outcome)
+    {
+        try
+        {
+            _env.CompleteFiring(tenant, firingId, typedText, outcome);
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write(
+                $"[RuleEvaluator] firing {firingId} could not be completed: {ex.Message}. The record still " +
+                "says the keystroke was about to go out.");
+        }
     }
 
     private Guid Write(TenantId tenant, RuleFiringDraft draft)
