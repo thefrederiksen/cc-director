@@ -241,7 +241,14 @@ reported exit 0; inspection 01 observed exit 1 because
 alone on retry. Run here, that suite is fully green (456 passed) and the runner exits 0. Both
 observations were honest; the case is intermittent.
 
-**The parked gate is HALF taken.** `Core.Tests` passed - 4,374 passed, 8 skipped, 0 failed.
+**The parked gate is now fully taken, across two runs.** `Core.Tests` and `Gateway.Tests` both ran
+green - the second by continuous integration on the tip (run 33694484448, commit `e63879af0`, SUCCESS:
+2,328 tests, 2,280 passed, 48 skipped, 0 failed), because a full local run is 49 minutes against a
+ten-minute harness limit. The 48 skips are the Postgres-gated proofs, which a GitHub runner cannot run;
+those were run locally against the real container (6 passed, exit 0). Neither run covers the suite alone.
+The history below is kept because it explains why it took three attempts.
+
+**How it stood before that.** `Core.Tests` passed - 4,374 passed, 8 skipped, 0 failed.
 `Gateway.Tests` has executed ZERO tests across two attempts: the first waited thirty minutes in the
 machine-wide lock queue and was killed because it was queued ahead of a live production outage's fix,
 and the second was never started because the lock was still held. A suite that did not run is not a

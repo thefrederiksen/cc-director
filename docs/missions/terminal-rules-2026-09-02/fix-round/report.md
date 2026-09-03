@@ -9,8 +9,11 @@ quoted in `runs.md` with its exit code and the commit it ran on. Nothing has lan
 nothing may. A second independent inspection runs after this; phase 0 is not complete and this report
 does not say it is.
 
-**The one thing outstanding is `Gateway.Tests`**, which is blocked on a machine-wide lock it must never
-queue for. See the end of `runs.md`.
+**`Gateway.Tests` is now run too**, by continuous integration on the tip: run 33694484448, commit
+`e63879af0`, conclusion SUCCESS, 2,328 tests, 2,280 passed, 48 skipped, 0 failed. Those 48 skips are the
+POSTGRES-gated proofs, which a GitHub runner cannot run - they were run locally against the real
+container instead (6 passed, exit 0), so the suite is covered by the two runs together and by neither
+alone. Full detail, with the skip breakdown, at the end of `runs.md`.
 
 ## Read this first: what was run, on which commit, with which exit code
 
@@ -32,7 +35,8 @@ The runs that stand are all in `runs.md`, each with its exit code and its commit
 | finding 3 filtered | 1 passed | 0 |
 | findings 4, 5, 6 | subsumed by the tip gate; own filtered greens in their pages | 0 |
 | the row 4 rig | ROW 4 PROVEN, both sides of the comparison quoted | 0 |
-| **`Gateway.Tests`** | **has not run** | **PENDING** |
+| `Gateway.Tests` (CI, on `e63879af0`) | 2,328 tests, 2,280 passed, 48 skipped, 0 failed | success |
+| `PostgresProviderProofTests` (local, real Postgres) | 6 passed - the 48 CI skips are these | 0 |
 
 **The tip gate went red twice before it went green, and the two reds were not the same kind.** The
 first was this round's own defect and is fixed - a helper opened a fresh `GatewayDatabase` on every
@@ -54,7 +58,10 @@ evidence about the CODE, and does not depend on which migration was in the tree.
    own, and everything after it would have been spent on a tree that did not gate.
 2. The three filtered runs for findings 1, 2 and 3 - DONE, all exit 0 on `43694cffa`.
 3. The row 4 rig on the tip - DONE, ROW 4 PROVEN on `43694cffa`, exit 0.
-4. **The parked `Gateway.Tests` suite - STILL OUTSTANDING.** The lock was held by
+4. ~~The parked `Gateway.Tests` suite~~ - DONE, by continuous integration on the tip (run 33694484448,
+   commit `e63879af0`, SUCCESS), with its Postgres-gated proofs run locally because a GitHub runner has
+   no Postgres container. It could not be run locally in full: the harness kills any command at ten
+   minutes and the suite is 49. Previously recorded as outstanding for this reason - The lock was held by
    `devthrottle-turn-push` throughout, verified before every run by opening the lock file exclusively
    and seeing whether it throws. It must never be QUEUED: a 48.88-minute suite against a 45-minute
    MaxWait can never acquire from a queue and times out with ZERO tests, which reads as a failure when

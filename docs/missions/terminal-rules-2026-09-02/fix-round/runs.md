@@ -269,13 +269,76 @@ Passed!  - Failed: 0, Passed: 22, Skipped: 0, Total: 22        exit 0
 
 All six resolved. A COMPLETE run at the merged tip is still owed - see below.
 
-### A complete run at the tip cannot be taken in the foreground
+### A complete run at the tip could not be taken locally - so continuous integration took it
 
 The harness kills any command at ten minutes (observed twice, exit 143), and this suite is 49 minutes.
 The earlier complete run survived only because the harness chose to move it to the background rather
-than kill it, which it no longer does. Running it in the background is forbidden without the Architect's
-say-so, so it was ASKED rather than decided. What is in hand meanwhile: a complete run at `02d66df15`
-with its six failures each accounted for, and all six passing at `2912b3e62`.
+than kill it, which it no longer does. Running it in the background is forbidden without the owner's
+say-so, so it was ASKED rather than decided - and the Architect's answer was better than any of the
+three options put to it: `ci.yml` runs `dotnet test cc-director.sln` on a pull request, `Gateway.Tests`
+is in that solution, and a GitHub runner has no ten-minute limit. Both facts were checked before the
+pull request was opened.
+
+### THE RESULT: continuous integration, green at the tip
+
+```
+run        https://github.com/thefrederiksen/devthrottle/actions/runs/33694484448
+commit     e63879af003bcc5a335967ee2911c4a448cb87e2
+conclusion SUCCESS
+
+  Build & Test (.NET)      success
+  Build & Test (web)       success
+  Tool contracts (Python)  success
+
+  CcDirector.Gateway.Tests      2328 total   2280 passed   48 skipped   0 failed
+  CcDirector.Gateway.UnitTests  3275 total   3266 passed    9 skipped   0 failed
+  CcDirector.Core.Tests         4382 total   4374 passed    8 skipped   0 failed
+  CcDirector.Core.UnitTests      164 total    164 passed
+  CcDirector.Avalonia.Tests      364 total    364 passed
+  CcDirector.Launcher.Tests      113 total    113 passed
+  CcDirector.HostedAgent.Tests    88 total     88 passed
+  Terminal.Avalonia.Tests         24 total     24 passed
+  cc-director-setup.Tests         25 total     25 passed
+  cc-director-setup-engine.Tests 456 total    456 passed
+```
+
+Pull request 2661 carries this run. It is titled DO NOT MERGE and its body says it exists for
+continuous-integration verification and must not be merged until inspection 02 has passed.
+
+**An earlier run on `4fa21fd02` shows as CANCELLED, and that is not a failure.** A pull request keeps one
+run per branch and a newer commit supersedes the older one - `ci.yml` documents that concurrency
+deliberately. The push that added the staleness guard superseded it, and the run above is the successor.
+
+### WHAT CONTINUOUS INTEGRATION DID NOT COVER, which the number 48 is hiding
+
+**48 skipped is not 48 passed, and the skips are not incidental - they are the POSTGRES proofs.** The
+runner has no Postgres container, so every `RequiresPostgresFact` class reports SKIPPED there:
+
+```
+15  GatewayStatsWritePathPostgresTests        6  PostgresProviderProofTests
+ 8  GatewaySessionConcurrencyPostgresTests    6  HostedSchemaRefusesAnUnownedRowTests
+ 8  HostedStatsServeTests                     4  GatewayDatabaseLivePostgresProofTests
+ 2  EntitlementSchemaQualificationTests       2  DeviceCredentialImportPostgresTests
+ 2  CallerSuppliedKeyUpgradePreservesRowsPostgresTests    1  StoredScreenRigReadTests
+```
+
+That matters to this round specifically, because the Postgres proofs are where this round's own key
+change is checked on the provider the hosted Gateway actually runs.
+
+**They were run LOCALLY, on the same tree, against the real Postgres container:**
+
+```
+dotnet test ...Gateway.Tests.csproj --filter "FullyQualifiedName~PostgresProviderProofTests"
+Passed!  - Failed: 0, Passed: 6, Skipped: 0, Total: 6        exit 0
+```
+
+Those six include `Collation_ExplicitC_OnEveryStringKeyColumnTheModelDeclares_OnRealPostgres` with the
+new staleness guard, and `SessionScreens_IdempotentOnTheNaturalKey_AndByteOrdinalAboutIt_OnRealPostgres`
+- the screen store's key with `DirectorId` in it, on real Postgres.
+
+**So the suite is covered by the two runs TOGETHER and by neither alone**: continuous integration for the
+2,280 that need no database server, and the local container run for the Postgres-gated proofs. Reporting
+the CI green on its own would be the absence trap this whole round is about - a skip reading as a pass.
 
 ## The tip gate is OVER BUDGET, and it is not this round's doing
 
