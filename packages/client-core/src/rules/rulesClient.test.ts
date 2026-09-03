@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { draftRule, getRuleFirings, getRules } from "./rulesClient";
+import { createRule, deleteRule, draftRule, getRuleFirings, getRules } from "./rulesClient";
 
 // THE INSTRUMENT MUST NOT FAIL OPEN (fix round D, ruling D8). A Gateway answer that is missing the
 // field the client asked for is a broken instrument, not an empty result. Read as an empty list it
@@ -97,5 +97,123 @@ describe("the text a rule types is read verbatim off the wire", () => {
     const [rule] = await getRules();
 
     expect(rule.textToType).toBe(THE_TEXT);
+  });
+});
+
+// A PRESENT FIELD OF THE WRONG SHAPE IS AS BROKEN AS A MISSING ONE (fix round E, ruling E2). Inspection E
+// posted {"rules": null} and watched the client resolve null; a page reading that prints "No rules
+// yet" over an answer it could not read. Every reader validates the runtime shape - the container, and
+// the required fields inside each record - and each case below sits beside a valid non-empty control.
+
+const A_RULE = {
+  id: "11111111-1111-1111-1111-111111111111",
+  instruction: "when the limit hits, wait and carry on",
+  screenDescription: "a limit notice",
+  textToType: "carry on",
+  triggerWords: ["usage limit"],
+  checks: [],
+  scope: { agent: "ClaudeCode", repository: null, machine: null, mission: null },
+  scopeLabel: "agent ClaudeCode",
+  cooldownSeconds: 600,
+  waitLabel: "10 minutes",
+  dailyCap: 5,
+  state: "dry_run",
+  promotedBy: "",
+  acknowledgement: "",
+  createdUtc: "2026-09-03T09:00:00Z",
+  updatedUtc: "2026-09-03T09:00:00Z",
+};
+
+const A_FIRING = {
+  id: "f1",
+  ruleId: A_RULE.id,
+  sessionId: "abc123",
+  occurredUtc: "2026-09-03T09:30:00Z",
+  screenText: "API Error",
+  understanding: "a provider error",
+  decision: "act",
+  reason: "the screen shows the provider's own error.",
+  checksRun: [],
+  typedText: "",
+  outcome: "dry run: nothing was typed.",
+  grounding: "grounding: the quoted words are on the screen.",
+};
+
+describe("the rule readers refuse an answer whose field is present but not the shape asked for", () => {
+  it("rules: null is an error, never an empty list", async () => {
+    answering({ rules: null });
+    await expect(getRules()).rejects.toThrow(/rules/);
+  });
+
+  it("rules: a string where the list should be is an error", async () => {
+    answering({ rules: "none" });
+    await expect(getRules()).rejects.toThrow(/rules/);
+  });
+
+  it("rules: a record missing a required field is an error naming the field", async () => {
+    const { triggerWords: _dropped, ...withoutWords } = A_RULE;
+    answering({ rules: [withoutWords] });
+    await expect(getRules()).rejects.toThrow(/triggerWords/);
+  });
+
+  it("rules: a valid non-empty list is read as the rules it carries", async () => {
+    answering({ rules: [A_RULE] });
+    expect(await getRules()).toEqual([A_RULE]);
+  });
+
+  it("firings: null is an error, never an empty history", async () => {
+    answering({ firings: null });
+    await expect(getRuleFirings(A_RULE.id)).rejects.toThrow(/firings/);
+  });
+
+  it("firings: an object where the list should be is an error", async () => {
+    answering({ firings: { count: 0 } });
+    await expect(getRuleFirings(A_RULE.id)).rejects.toThrow(/firings/);
+  });
+
+  it("firings: a record whose decision is not a string is an error naming the field", async () => {
+    answering({ firings: [{ ...A_FIRING, decision: 7 }] });
+    await expect(getRuleFirings(A_RULE.id)).rejects.toThrow(/decision/);
+  });
+
+  it("firings: a valid non-empty history is read as what it carries", async () => {
+    answering({ firings: [A_FIRING] });
+    expect(await getRuleFirings(A_RULE.id)).toEqual([A_FIRING]);
+  });
+
+  it("delete: a deleted flag that is not a boolean is an error, never a client-authored outcome", async () => {
+    answering({ deleted: "yes" });
+    await expect(deleteRule(A_RULE.id)).rejects.toThrow(/deleted/);
+  });
+
+  it("delete: a boolean is read as itself", async () => {
+    answering({ deleted: true });
+    expect(await deleteRule(A_RULE.id)).toBe(true);
+  });
+
+  it("create: a rule that is not an object is an error", async () => {
+    answering({ rule: "stored" });
+    await expect(createRule({ ...A_RULE, sessionId: "s", allAgents: false })).rejects.toThrow(/rule/);
+  });
+
+  it("draft: a proposal whose rule lacks its instruction is an error naming the field", async () => {
+    answering({
+      readBack: "read back",
+      rule: {
+        sessionId: "s",
+        allAgents: false,
+        triggerWords: ["usage limit"],
+        checks: [],
+        scope: "all-sessions",
+        cooldownSeconds: 600,
+        dailyCap: 5,
+        screenDescription: "x",
+        textToType: "carry on",
+      },
+      exampleScreen: "usage limit",
+      scopeLabel: "agent ClaudeCode",
+      waitLabel: "10 minutes",
+    });
+    await expect(draftRule([{ who: "person", text: "wait" }], "s", false)).rejects.toThrow(/instruction/);
   });
 });

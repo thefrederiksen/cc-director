@@ -55,7 +55,7 @@ public sealed class SessionRuleStoreTests : IDisposable
         RuleScope.AllSessions,
         cooldownSeconds: 300,
         dailyCap: 5,
-        Now);
+        Now, Grounded.For(new[] { "limit", "usage-credits", "out of credits", "allowance", "/model" }));
 
     // ---- acceptance row 1: a rule round-trips ------------------------------------------------------
 
@@ -99,7 +99,7 @@ public sealed class SessionRuleStoreTests : IDisposable
     {
         var store = NewStore();
         var scope = new RuleScope("claude", "D:\\ReposFred\\devthrottle", "SOREN_NORTH", "Session Rules");
-        var created = store.Create(TheSentence, "a screen", "/model opus", new[] { "limit" }, GoodCalls(), scope, 60, 3, Now);
+        var created = store.Create(TheSentence, "a screen", "/model opus", new[] { "limit" }, GoodCalls(), scope, 60, 3, Now, Grounded.For(new[] { "limit" }));
 
         var read = new SessionRuleStore(_h.Open()).Get(created.Id);
         Assert.Equal(scope, read!.Scope);
@@ -110,9 +110,9 @@ public sealed class SessionRuleStoreTests : IDisposable
     {
         var store = NewStore();
         var first = store.Create(TheSentence, "a screen", "/model opus", new[] { "limit" }, GoodCalls(),
-            RuleScope.AllSessions, 60, 3, Now);
+            RuleScope.AllSessions, 60, 3, Now, Grounded.For(new[] { "limit" }));
         var second = store.Create("Another instruction entirely.", "another screen", "/compact", new[] { "permission" },
-            GoodCalls(), RuleScope.AllSessions, 60, 3, Now.AddMinutes(5));
+            GoodCalls(), RuleScope.AllSessions, 60, 3, Now.AddMinutes(5), Grounded.For(new[] { "permission" }));
 
         var all = store.All();
         Assert.Equal(2, all.Count);
@@ -127,7 +127,7 @@ public sealed class SessionRuleStoreTests : IDisposable
         var theirs = new SessionRuleStore(_h.Open(new FixedTenantContext(new TenantId("tenant-b"))));
 
         var created = mine.Create(TheSentence, "a screen", "/model opus", new[] { "limit" }, GoodCalls(),
-            RuleScope.AllSessions, 60, 3, Now);
+            RuleScope.AllSessions, 60, 3, Now, Grounded.For(new[] { "limit" }));
 
         Assert.NotNull(mine.Get(created.Id));
         Assert.Null(theirs.Get(created.Id));
@@ -144,7 +144,7 @@ public sealed class SessionRuleStoreTests : IDisposable
 
         var ex = Assert.Throws<RuleRejectedException>(() => store.Create(
             TheSentence, "a screen", "/model opus", new[] { "limit" }, new[] { badCall },
-            RuleScope.AllSessions, 60, 3, Now));
+            RuleScope.AllSessions, 60, 3, Now, Grounded.For(new[] { "limit" })));
 
         Assert.Contains("run_python", ex.Reason, StringComparison.Ordinal);
         Assert.Contains("matches_any", ex.Reason, StringComparison.Ordinal);
@@ -163,7 +163,7 @@ public sealed class SessionRuleStoreTests : IDisposable
 
         var ex = Assert.Throws<RuleRejectedException>(() => store.Create(
             TheSentence, "a screen", "/model opus", new[] { "limit" }, new[] { badCall },
-            RuleScope.AllSessions, 60, 3, Now));
+            RuleScope.AllSessions, 60, 3, Now, Grounded.For(new[] { "limit" })));
 
         Assert.Contains("is_path_inside", ex.Reason, StringComparison.Ordinal);
         Assert.Contains("root", ex.Reason, StringComparison.Ordinal);
@@ -178,7 +178,7 @@ public sealed class SessionRuleStoreTests : IDisposable
     {
         var store = NewStore();
         var ex = Assert.Throws<RuleRejectedException>(() => store.Create(
-            instruction, screen, "/model opus", new[] { "limit" }, GoodCalls(), RuleScope.AllSessions, cooldown, cap, Now));
+            instruction, screen, "/model opus", new[] { "limit" }, GoodCalls(), RuleScope.AllSessions, cooldown, cap, Now, Grounded.For(new[] { "limit" })));
         Assert.NotEqual("", ex.Reason);
     }
 
@@ -188,7 +188,7 @@ public sealed class SessionRuleStoreTests : IDisposable
         var store = NewStore();
         var ex = Assert.Throws<RuleRejectedException>(() => store.Create(
             TheSentence, "a screen", "/model opus", Array.Empty<string>(), GoodCalls(),
-            RuleScope.AllSessions, 60, 3, Now));
+            RuleScope.AllSessions, 60, 3, Now, Grounded.For(Array.Empty<string>())));
         Assert.NotEqual("", ex.Reason);
     }
 
@@ -202,7 +202,7 @@ public sealed class SessionRuleStoreTests : IDisposable
         var store = NewStore();
         var ex = Assert.Throws<RuleRejectedException>(() => store.Create(
             TheSentence, "a screen", "/model opus", new[] { "limit" }, GoodCalls(),
-            RuleScope.AllSessions, cooldown, cap, Now));
+            RuleScope.AllSessions, cooldown, cap, Now, Grounded.For(new[] { "limit" })));
         Assert.NotEqual("", ex.Reason);
     }
 
@@ -219,6 +219,77 @@ public sealed class SessionRuleStoreTests : IDisposable
         Assert.Equal(RuleState.Live, promoted.State);
         Assert.Equal(Now.AddHours(1), promoted.UpdatedUtc);
         Assert.Equal(RuleState.Live, new SessionRuleStore(_h.Open()).Get(created.Id)!.State);
+    }
+
+    // ---- fix round E, ruling E1: the store demands grounding evidence --------------------------------
+
+    /// <summary>
+    /// THE PUBLIC STORE PATH WITHOUT EVIDENCE IS REFUSED. This is the positive control the inspection ran
+    /// turned into a refusal: five trigger strings through <c>Create</c> with no screen read anywhere in
+    /// the call path. The control that reaches storage through the real grounded route is
+    /// <c>RuleAuthorTests.A_drafted_rule_is_stored_by_the_writing_route_with_every_part_intact</c>, so
+    /// these refusals cannot pass on a store that refuses everything.
+    /// </summary>
+    [Fact]
+    public void A_rule_with_no_grounding_evidence_is_refused_by_the_store_and_nothing_is_written()
+    {
+        var store = NewStore();
+
+        var ex = Assert.Throws<RuleRejectedException>(() => store.Create(
+            TheSentence, "a screen", "/model opus", new[] { "limit", "usage-credits", "out of credits", "allowance", "/model" },
+            GoodCalls(), RuleScope.AllSessions, 300, 5, Now, evidence: null));
+
+        Assert.Contains("evidence", ex.Reason, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("screen", ex.Reason, StringComparison.OrdinalIgnoreCase);
+        Assert.Empty(store.All());
+    }
+
+    /// <summary>Evidence for one set of words cannot be spent on another - a word more, a word fewer, or a
+    /// different word is a different set.</summary>
+    [Theory]
+    [InlineData("limit", "rm -rf")]
+    [InlineData("limit", "limit", "and one more")]
+    [InlineData("limit")]
+    public void Evidence_minted_for_other_words_is_refused(params string[] wordsToStore)
+    {
+        var store = NewStore();
+        var evidence = Grounded.For("limit", "allowance");
+
+        var ex = Assert.Throws<RuleRejectedException>(() => store.Create(
+            TheSentence, "a screen", "/model opus", wordsToStore, GoodCalls(), RuleScope.AllSessions, 300, 5, Now, evidence));
+
+        Assert.Contains("minted for the words", ex.Reason, StringComparison.Ordinal);
+        Assert.Empty(store.All());
+    }
+
+    /// <summary>Evidence is spent by the write it vouched for; presenting it again is refused.</summary>
+    [Fact]
+    public void Evidence_is_spent_by_the_write_it_was_minted_for_and_cannot_be_presented_again()
+    {
+        var store = NewStore();
+        var evidence = Grounded.For("limit");
+        store.Create(TheSentence, "a screen", "/model opus", new[] { "limit" }, GoodCalls(), RuleScope.AllSessions, 300, 5, Now, evidence);
+
+        var ex = Assert.Throws<RuleRejectedException>(() => store.Create(
+            "Another instruction.", "a screen", "/compact", new[] { "limit" }, GoodCalls(), RuleScope.AllSessions, 300, 5, Now, evidence));
+
+        Assert.Contains("already been spent", ex.Reason, StringComparison.Ordinal);
+        Assert.Single(store.All());
+    }
+
+    /// <summary>The evidence normalises the words the way the store does, so padding and order do not make
+    /// a different set - the same words are the same words.</summary>
+    [Fact]
+    public void Evidence_covers_the_same_words_in_stored_form_whatever_their_order_or_padding()
+    {
+        var store = NewStore();
+        var evidence = Grounded.For("allowance", "limit");
+
+        var rule = store.Create(
+            TheSentence, "a screen", "/model opus", new[] { "  limit ", "allowance" }, GoodCalls(),
+            RuleScope.AllSessions, 300, 5, Now, evidence);
+
+        Assert.Equal(new[] { "limit", "allowance" }, rule.TriggerWords);
     }
 
     // ---- fix round D, ruling D6: the ceilings have real bounds ----------------------------------------
@@ -240,7 +311,7 @@ public sealed class SessionRuleStoreTests : IDisposable
         var store = NewStore();
         var ex = Assert.Throws<RuleRejectedException>(() => store.Create(
             TheSentence, "a screen", "/model opus", new[] { "limit" }, GoodCalls(),
-            RuleScope.AllSessions, cooldown, cap, Now));
+            RuleScope.AllSessions, cooldown, cap, Now, Grounded.For(new[] { "limit" })));
 
         var outOfBounds = cooldown is < 60 or > 86400 ? cooldown : cap;
         Assert.Contains(outOfBounds.ToString(), ex.Reason, StringComparison.Ordinal);
@@ -255,7 +326,7 @@ public sealed class SessionRuleStoreTests : IDisposable
         var store = NewStore();
         var rule = store.Create(
             TheSentence, "a screen", "/model opus", new[] { "limit" }, GoodCalls(),
-            RuleScope.AllSessions, cooldown, cap, Now);
+            RuleScope.AllSessions, cooldown, cap, Now, Grounded.For(new[] { "limit" }));
 
         Assert.Equal(cooldown, rule.CooldownSeconds);
         Assert.Equal(cap, rule.DailyCap);
@@ -427,7 +498,7 @@ public sealed class SessionRuleStoreTests : IDisposable
         var store = NewStore();
         var ex = Assert.Throws<RuleRejectedException>(() => store.Create(
             TheSentence, "a screen", text, new[] { "limit" }, GoodCalls(),
-            RuleScope.AllSessions, 60, 3, Now));
+            RuleScope.AllSessions, 60, 3, Now, Grounded.For("limit")));
         Assert.Contains("type", ex.Reason, StringComparison.OrdinalIgnoreCase);
         Assert.Empty(store.All());
     }
@@ -438,7 +509,7 @@ public sealed class SessionRuleStoreTests : IDisposable
         var store = NewStore();
         var rule = store.Create(
             TheSentence, "a screen", "  /model opus  ", new[] { "limit" }, GoodCalls(),
-            RuleScope.AllSessions, 60, 3, Now);
+            RuleScope.AllSessions, 60, 3, Now, Grounded.For("limit"));
 
         Assert.Equal("/model opus", rule.TextToType);
         Assert.Equal("/model opus", store.Get(rule.Id)!.TextToType);

@@ -119,7 +119,7 @@ public sealed class RulesWriteGateTests : IDisposable
             "When I run out of allowance, switch me to Opus.",
             "A session stopped on a provider allowance notice.",
             "/model opus",
-            new[] { "limit" }, GoodCalls(), RuleScope.AllSessions, 300, 5, Now);
+            new[] { "limit" }, GoodCalls(), RuleScope.AllSessions, 300, 5, Now, Grounded.For(new[] { "limit" }));
 
         using var ctx = Db.CreateContext();
         var row = ctx.SessionRules.First(r => r.Id == rule.Id);
@@ -128,6 +128,45 @@ public sealed class RulesWriteGateTests : IDisposable
         var ex = Assert.Throws<RuleRejectedException>(() => ctx.SaveChanges());
         Assert.Contains("person", ex.Reason, StringComparison.OrdinalIgnoreCase);
         Assert.Equal(RuleState.DryRun, new SessionRuleStore(Db).Get(rule.Id)!.State);
+    }
+
+    // ---- fix round E, ruling E1: grounding is an invariant of the STORE, not a habit of one route --------
+
+    /// <summary>
+    /// A NEW RULE'S TRIGGER WORDS CANNOT REACH THE TABLE WITHOUT EVIDENCE THEY WERE CHECKED AGAINST THE
+    /// SESSION'S SCREEN. Inspection E persisted five trigger strings straight through the store with no
+    /// screen read anywhere in the call path, as an executed positive control: the grounding ruling D2
+    /// made unbypassable on the create route was unbypassable on ONE route, by convention. This is the
+    /// direct-context half of the regression test: a well-formed dry-run rule added straight to the context
+    /// is refused, with the reason, because the write carries no grounding evidence.
+    /// </summary>
+    [Fact]
+    public void A_rule_written_straight_through_the_context_is_refused_because_its_words_carry_no_grounding_evidence()
+    {
+        using var ctx = Db.CreateContext();
+        ctx.SessionRules.Add(Straight(ctx.ActiveTenant!, DryRun, GoodCalls()));
+
+        var ex = Assert.Throws<RuleRejectedException>(() => ctx.SaveChanges());
+        Assert.Contains("evidence", ex.Reason, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("screen", ex.Reason, StringComparison.OrdinalIgnoreCase);
+        Assert.Empty(new SessionRuleStore(Db).All());
+    }
+
+    /// <summary>The other half of the same hole: a stored rule loaded through the context and given new
+    /// trigger words carries no evidence for the new words, so the save is refused. Changing the words
+    /// is writing words.</summary>
+    [Fact]
+    public void A_stored_rules_trigger_words_cannot_be_changed_through_the_context_without_grounding_evidence()
+    {
+        var (_, rule) = StoreWithARule();
+
+        using var ctx = Db.CreateContext();
+        var entity = ctx.SessionRules.First(r => r.Id == rule.Id);
+        entity.TriggerWords = new List<string> { "a word nobody checked" };
+
+        var ex = Assert.Throws<RuleRejectedException>(() => ctx.SaveChanges());
+        Assert.Contains("evidence", ex.Reason, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(new[] { "limit" }, new SessionRuleStore(Db).Get(rule.Id)!.TriggerWords);
     }
 
     [Fact]
@@ -140,7 +179,7 @@ public sealed class RulesWriteGateTests : IDisposable
             "When I run out of allowance, switch me to Opus.",
             "A session stopped on a provider allowance notice.",
             "/model opus",
-            new[] { "limit" }, GoodCalls(), RuleScope.AllSessions, 300, 5, Now);
+            new[] { "limit" }, GoodCalls(), RuleScope.AllSessions, 300, 5, Now, Grounded.For(new[] { "limit" }));
 
         Assert.Equal(RuleState.DryRun, rule.State);
         Assert.Single(new SessionRuleStore(Db).All());
@@ -155,7 +194,7 @@ public sealed class RulesWriteGateTests : IDisposable
             "When I run out of allowance, switch me to Opus.",
             "A session stopped on a provider allowance notice.",
             "/model opus",
-            new[] { "limit" }, GoodCalls(), RuleScope.AllSessions, 300, 5, Now);
+            new[] { "limit" }, GoodCalls(), RuleScope.AllSessions, 300, 5, Now, Grounded.For(new[] { "limit" }));
         return (store, rule);
     }
 
@@ -264,7 +303,7 @@ public sealed class RulesWriteGateTests : IDisposable
             "When I run out of allowance, switch me to Opus.",
             "A session stopped on a provider allowance notice.",
             "/model opus",
-            new[] { "limit" }, GoodCalls(), scope: null!, 300, 5, Now));
+            new[] { "limit" }, GoodCalls(), scope: null!, 300, 5, Now, Grounded.For(new[] { "limit" })));
 
         Assert.NotEqual("", ex.Reason);
         Assert.Empty(store.All());
@@ -278,7 +317,7 @@ public sealed class RulesWriteGateTests : IDisposable
             "When I run out of allowance, switch me to Opus.",
             "A session stopped on a provider allowance notice.",
             "/model opus",
-            new[] { "limit" }, GoodCalls(), RuleScope.AllSessions, 300, 5, Now);
+            new[] { "limit" }, GoodCalls(), RuleScope.AllSessions, 300, 5, Now, Grounded.For(new[] { "limit" }));
 
         Assert.Equal(RuleScope.AllSessions, store.Get(rule.Id)!.Scope);
     }
@@ -306,7 +345,7 @@ public sealed class RulesWriteGateTests : IDisposable
             RuleScope.AllSessions,
             cooldownSeconds: 300,
             dailyCap: 5,
-            Now);
+            Now, Grounded.For(new[] { "limit" }));
 
         using (var ctx = Db.CreateContext())
         {
@@ -333,7 +372,7 @@ public sealed class RulesWriteGateTests : IDisposable
             RuleScope.AllSessions,
             cooldownSeconds: 300,
             dailyCap: 5,
-            Now);
+            Now, Grounded.For(new[] { "limit" }));
 
         store.RecordFiring(
             rule.Id, "sid-1", "screen", "u", RuleDecisions.Decline, "the screen is not what this is about",
@@ -368,7 +407,7 @@ public sealed class RulesWriteGateTests : IDisposable
             RuleScope.AllSessions,
             cooldownSeconds: 300,
             dailyCap: 5,
-            Now);
+            Now, Grounded.For(new[] { "limit" }));
 
         using var ctx = Db.CreateContext();
         ctx.SessionRuleFirings.Add(new SessionRuleFiringEntity
@@ -399,7 +438,7 @@ public sealed class RulesWriteGateTests : IDisposable
             RuleScope.AllSessions,
             cooldownSeconds: 300,
             dailyCap: 5,
-            Now);
+            Now, Grounded.For(new[] { "limit" }));
 
         using var ctx = Db.CreateContext();
         ctx.SessionRuleFirings.Add(new SessionRuleFiringEntity
@@ -435,7 +474,7 @@ public sealed class RulesWriteGateTests : IDisposable
             RuleScope.AllSessions,
             cooldownSeconds: 300,
             dailyCap: 5,
-            Now);
+            Now, Grounded.For(new[] { "limit" }));
 
         using var ctx = Db.CreateContext();
         ctx.SessionRuleFirings.Add(new SessionRuleFiringEntity
@@ -469,7 +508,7 @@ public sealed class RulesWriteGateTests : IDisposable
             RuleScope.AllSessions,
             cooldownSeconds: 300,
             dailyCap: 5,
-            Now);
+            Now, Grounded.For(new[] { "limit" }));
 
         using (var ctx = Db.CreateContext())
         {

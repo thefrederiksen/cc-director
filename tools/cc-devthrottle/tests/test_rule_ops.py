@@ -82,6 +82,8 @@ A_STORED_RULE = dict(
     scopeLabel="agent ClaudeCode",
     waitLabel="10 minutes",
     checks=[],
+    createdUtc="2026-09-03T09:00:00Z",
+    updatedUtc="2026-09-03T09:00:00Z",
 )
 
 
@@ -472,3 +474,95 @@ def test_the_draft_request_carries_the_session_id_and_the_star_and_no_screen(mon
     }
     assert "screen" not in sent["body"]
     assert "sessionAgent" not in sent["body"]
+
+
+# ---- fix round E, ruling E2: a present field of the wrong shape is as broken as a missing one --------
+
+A_FIRING = {
+    "id": "f1",
+    "ruleId": A_STORED_RULE["id"],
+    "sessionId": "abc123",
+    "occurredUtc": "2026-09-03T09:30:00Z",
+    "screenText": "API Error",
+    "understanding": "a provider error",
+    "decision": "act",
+    "reason": "the screen shows the provider's own error.",
+    "checksRun": [],
+    "typedText": "",
+    "outcome": "dry run: nothing was typed.",
+    "grounding": "grounding: the quoted words are on the screen.",
+}
+
+
+def test_rules_null_is_an_error_not_an_empty_list(monkeypatch):
+    with pytest.raises(rule_ops.GatewayError, match="rules"):
+        _client_answering(monkeypatch, {"rules": None}).rules()
+
+
+def test_rules_of_the_wrong_type_is_an_error(monkeypatch):
+    with pytest.raises(rule_ops.GatewayError, match="rules"):
+        _client_answering(monkeypatch, {"rules": "none"}).rules()
+
+
+def test_a_rule_record_missing_a_required_field_is_an_error_naming_the_field(monkeypatch):
+    broken = {k: v for k, v in A_STORED_RULE.items() if k != "triggerWords"}
+    with pytest.raises(rule_ops.GatewayError, match="triggerWords"):
+        _client_answering(monkeypatch, {"rules": [broken]}).rules()
+
+
+def test_a_valid_non_empty_rules_list_is_read_as_what_it_carries(monkeypatch):
+    assert _client_answering(monkeypatch, {"rules": [A_STORED_RULE]}).rules() == [A_STORED_RULE]
+
+
+def test_firings_null_is_an_error_not_an_empty_history(monkeypatch):
+    with pytest.raises(rule_ops.GatewayError, match="firings"):
+        _client_answering(monkeypatch, {"firings": None}).firings("x")
+
+
+def test_firings_of_the_wrong_type_is_an_error(monkeypatch):
+    with pytest.raises(rule_ops.GatewayError, match="firings"):
+        _client_answering(monkeypatch, {"firings": {"count": 0}}).firings("x")
+
+
+def test_a_firing_whose_decision_is_not_a_string_is_an_error_naming_the_field(monkeypatch):
+    with pytest.raises(rule_ops.GatewayError, match="decision"):
+        _client_answering(monkeypatch, {"firings": [dict(A_FIRING, decision=7)]}).firings("x")
+
+
+def test_a_valid_non_empty_history_is_read_as_what_it_carries(monkeypatch):
+    assert _client_answering(monkeypatch, {"firings": [A_FIRING]}).firings("x") == [A_FIRING]
+
+
+def test_a_deleted_flag_that_is_not_a_boolean_is_an_error_not_a_client_authored_outcome(monkeypatch):
+    with pytest.raises(rule_ops.GatewayError, match="deleted"):
+        _client_answering(monkeypatch, {"deleted": "yes"}).delete("x")
+
+
+def test_a_rule_that_is_not_an_object_is_an_error(monkeypatch):
+    with pytest.raises(rule_ops.GatewayError, match="rule"):
+        _client_answering(monkeypatch, {"rule": "stored"}).rule("x")
+
+
+def test_list_does_not_print_a_zero_or_none_for_a_field_the_gateway_did_not_send(monkeypatch):
+    """The renderer used to supply '', '(none)' and 0 for missing fields. A field the Gateway did not send
+    is a broken answer, not a zero - the listing errors and names the field."""
+    broken = {k: v for k, v in A_STORED_RULE.items() if k != "dailyCap"}
+    client = FakeClient(rules=[broken])
+    _use(monkeypatch, client)
+
+    result = runner.invoke(app, ["rule", "list"])
+
+    assert result.exit_code == 1
+    assert "dailyCap" in flat(result.output)
+    assert " 0 a day" not in flat(result.output)
+
+
+def test_show_does_not_print_blanks_for_a_firing_the_gateway_sent_broken(monkeypatch):
+    client = FakeClient()
+    client.firings = lambda rule_id: [{k: v for k, v in A_FIRING.items() if k != "reason"}]
+    _use(monkeypatch, client)
+
+    result = runner.invoke(app, ["rule", "show", A_STORED_RULE["id"]])
+
+    assert result.exit_code == 1
+    assert "reason" in flat(result.output)

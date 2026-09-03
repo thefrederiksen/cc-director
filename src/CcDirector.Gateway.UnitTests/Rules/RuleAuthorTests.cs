@@ -336,14 +336,19 @@ public sealed class RuleAuthorTests : IDisposable
 
         var words = SessionRuleWire.Strings(body, "triggerWords");
         var scope = SessionRuleWire.ReadScope(body);
-        var notGrounded = await author.WhyNotGroundedAsync(
+        // THE GROUNDED ROUTE, exactly as the write route runs it: the author reads the screen again and
+        // mints the evidence the store demands. This is the CONTROL for the store's invariant (fix round
+        // E, ruling E1) - the refusal tests in the store's own file could all pass on a store that refused
+        // everything, and this is what says it does not.
+        var grounding = await author.GroundAsync(
             TenantId.Local,
             RuleCallJson.Text(body, "sessionId"),
             words,
             scope,
             SessionRuleWire.Flag(body, "allAgents"),
             CancellationToken.None);
-        Assert.Null(notGrounded);
+        Assert.Null(grounding.Refusal);
+        Assert.NotNull(grounding.Evidence);
 
         return new SessionRuleStore(_h.Open()).Create(
             RuleCallJson.Text(body, "instruction") ?? "",
@@ -354,7 +359,8 @@ public sealed class RuleAuthorTests : IDisposable
             scope,
             SessionRuleWire.Number(body, "cooldownSeconds"),
             SessionRuleWire.Number(body, "dailyCap"),
-            Now);
+            Now,
+            grounding.Evidence);
     }
 
     [Fact]

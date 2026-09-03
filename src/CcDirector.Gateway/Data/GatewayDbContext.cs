@@ -51,6 +51,16 @@ public sealed class GatewayDbContext : DbContext
     internal Guid? PromotionInEffect { get; set; }
 
     /// <summary>
+    /// Set by <see cref="Rules.SessionRuleStore.Create"/> for the one save that writes a rule whose trigger
+    /// words carry <see cref="Rules.RuleGroundingEvidence"/> - evidence only <see cref="Rules.RuleAuthor"/>
+    /// can mint, after a fresh Gateway read of the session's screen found every word on it. Null the rest
+    /// of the time, which is what makes a new rule, or a change to a stored rule's words, arriving through
+    /// any other route a refusal - see <see cref="GuardRuleWrites"/>. The same shape as
+    /// <see cref="PromotionInEffect"/>, on purpose (fix round E, ruling E1).
+    /// </summary>
+    internal Guid? GroundingInEffect { get; set; }
+
+    /// <summary>
     /// True for exactly as long as a save that has been through <see cref="GuardRuleWrites"/> is issuing
     /// its statements. <see cref="RuleTableWriteInterceptor"/> reads it to tell a gated write from a bulk
     /// statement that never met the gate at all.
@@ -124,6 +134,19 @@ public sealed class GatewayDbContext : DbContext
                     $"a new rule is always created in dry run, and this one says '{rule.State}'. Dry run is " +
                     "what puts a person between a standing instruction and the first time it types " +
                     "anything, so there is no route by which a rule can start live.");
+
+            // THE WORDS CARRY EVIDENCE OR THEY DO NOT REACH THE TABLE (fix round E, ruling E1). A new rule,
+            // or a stored rule whose words are being changed, is written only by the save the store marked
+            // as carrying grounding evidence for THIS rule. An inspection wrote five trigger strings
+            // straight through this context with no screen read anywhere; the store's own check was a
+            // convention of one route, and this is where it cannot be gone round.
+            var wordsAreBeingWritten = entry.State == EntityState.Added
+                || entry.Property(e => e.TriggerWords).IsModified;
+            if (wordsAreBeingWritten && GroundingInEffect != rule.Id)
+                throw new Rules.RuleRejectedException(
+                    "a rule's trigger words are stored only with evidence that they were checked against " +
+                    "the session's screen by the Gateway, and this write carried none. Words that were not " +
+                    "read off a real screen are not stored.");
 
             if (entry.State == EntityState.Modified
                 && string.Equals(rule.State, LiveState, StringComparison.Ordinal)

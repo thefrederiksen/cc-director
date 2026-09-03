@@ -49,7 +49,7 @@ public sealed class RulePromotionBoundaryTests : IDisposable
         RuleScope.AllSessions,
         cooldownSeconds: 300,
         dailyCap: 5,
-        Now);
+        Now, Grounded.For(new[] { "limit" }));
 
     /// <summary>A grant as the endpoint mints one, for a caller the request pipeline named.</summary>
     private static RulePromotionGrant GrantFor(Guid ruleId) =>

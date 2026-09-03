@@ -25,11 +25,16 @@ namespace CcDirector.Gateway.Rules;
 /// through the same read the evaluator uses, and the agent and machine come from the roster. A caller
 /// that names no session is REFUSED - authoring from memory is no longer a mode.
 ///
-/// THE SAME CHECK RUNS AT THE WRITE GATE. <see cref="WhyNotGroundedAsync"/> is what the writing route
-/// calls before it stores anything: it reads the session's screen again, freshly, and runs the same
-/// grounding function over the same normalised words, and holds the agent scope to the session's agent
-/// or the account's stated star. A check that ran only on the draft route would be a check a caller
-/// could walk around by posting to create.
+/// THE SAME CHECK RUNS AT THE WRITE GATE, AND IT IS THE ONLY THING THAT CAN MINT THE EVIDENCE THE STORE
+/// DEMANDS. <see cref="GroundAsync"/> is what the writing route calls before it stores anything: it reads
+/// the session's screen again, freshly, runs the same grounding function over the same normalised words,
+/// holds the agent scope to the session's agent or the account's stated star, and - when every word is
+/// on the screen - mints a <see cref="RuleGroundingEvidence"/> naming exactly those words.
+/// <see cref="SessionRuleStore.Create"/> refuses to persist trigger words without one, and the database
+/// gate refuses a write that carries none (fix round E, ruling E1). A check that ran only on the draft
+/// route was a check a caller could walk around by posting to create; a check that ran only on the
+/// create route was one a caller could walk around by calling the store. Now the store cannot be called
+/// without the check having run.
 ///
 /// A PROPOSAL IS CHECKED AGAINST THE SAME GATE THE STORE USES BEFORE IT IS SHOWN. It would be worse than
 /// useless to put a rule in front of somebody, have them agree to it, and only then discover the writing
@@ -48,6 +53,17 @@ namespace CcDirector.Gateway.Rules;
 /// model gave no answer at all" after waiting a minute is being told something true about the call and
 /// misleading about their situation. The timeout is reported as a timeout, and it says to try again.
 /// </summary>
+/// <summary>What grounding a rule at the write gate produced: the evidence the store demands, or the
+/// reason there is none. Exactly one is set.</summary>
+public sealed record RuleWriteGrounding(RuleGroundingEvidence? Evidence, string? Refusal)
+{
+    /// <summary>Every word was on the screen that was just read; here is the evidence.</summary>
+    public static RuleWriteGrounding Grounded(RuleGroundingEvidence evidence) => new(evidence, null);
+
+    /// <summary>It is not grounded, and this is why, in words the account reads.</summary>
+    public static RuleWriteGrounding Refused(string reason) => new(null, reason);
+}
+
 public sealed class RuleAuthor
 {
     private readonly Func<TenantId, string, CancellationToken, Task<string?>> _ask;
@@ -163,11 +179,12 @@ public sealed class RuleAuthor
     }
 
     /// <summary>
-    /// THE WRITE GATE'S HALF OF GROUNDING (fix round D, ruling D2, item 5). Reads the named session's
-    /// screen again, freshly, and answers why the rule about to be stored is not grounded in it - a
-    /// trigger word that is not on the screen right now, an agent scope that is not the session's agent
-    /// (or not lifted by the star) - or null when it is. The draft route ran the same function over the
-    /// same normalised words; running it here again is what makes the one door the one door.
+    /// THE WRITE GATE'S HALF OF GROUNDING (fix round D, ruling D2, item 5; fix round E, ruling E1). Reads
+    /// the named session's screen again, freshly, and either mints the evidence the store demands - every
+    /// trigger word on the screen right now, the agent scope the session's agent or lifted by the star -
+    /// or answers why not. The draft route ran the same function over the same normalised words; running
+    /// it here again, and being the only thing that can mint evidence, is what makes the one door the
+    /// one door.
     /// </summary>
     /// <param name="tenant">The account the rule would belong to.</param>
     /// <param name="sessionId">The session the rule is about. Required.</param>
@@ -176,6 +193,25 @@ public sealed class RuleAuthor
     /// its own sentence, so it is not this method's to refuse).</param>
     /// <param name="allAgents">The account said this rule is for every agent (the star).</param>
     /// <param name="ct">Cancellation.</param>
+    public async Task<RuleWriteGrounding> GroundAsync(
+        TenantId tenant,
+        string? sessionId,
+        IEnumerable<string> triggerWords,
+        RuleScope? scope,
+        bool allAgents,
+        CancellationToken ct)
+    {
+        var refusal = await WhyNotGroundedCoreAsync(tenant, sessionId, triggerWords, scope, allAgents, ct)
+            .ConfigureAwait(false);
+        if (refusal.Refusal is not null) return RuleWriteGrounding.Refused(refusal.Refusal);
+
+        // EVERY WORD IS ON THE SCREEN THAT WAS JUST READ, so the evidence can be minted - and this is the
+        // only place in production code that mints it (a structural test over the built assembly says so).
+        return RuleWriteGrounding.Grounded(RuleGroundingEvidence.Minted(refusal.Screen!, triggerWords));
+    }
+
+    /// <summary>Why the rule is not grounded, or null when it is - the same reading as
+    /// <see cref="GroundAsync"/> without the evidence, for a caller that only wants the sentence.</summary>
     public async Task<string?> WhyNotGroundedAsync(
         TenantId tenant,
         string? sessionId,
@@ -184,11 +220,24 @@ public sealed class RuleAuthor
         bool allAgents,
         CancellationToken ct)
     {
+        var read = await WhyNotGroundedCoreAsync(tenant, sessionId, triggerWords, scope, allAgents, ct)
+            .ConfigureAwait(false);
+        return read.Refusal;
+    }
+
+    private async Task<(RuleScreenReading? Screen, string? Refusal)> WhyNotGroundedCoreAsync(
+        TenantId tenant,
+        string? sessionId,
+        IEnumerable<string> triggerWords,
+        RuleScope? scope,
+        bool allAgents,
+        CancellationToken ct)
+    {
         var (screen, noScreen) = await ReadScreenAsync(tenant, sessionId, ct).ConfigureAwait(false);
-        if (screen is null) return noScreen + " Nothing was stored.";
+        if (screen is null) return (null, noScreen + " Nothing was stored.");
 
         var notGrounded = RuleTriggerWords.WhyNotGrounded(triggerWords, screen, "that session's screen right now");
-        if (notGrounded is not null) return notGrounded + " Nothing was stored.";
+        if (notGrounded is not null) return (null, notGrounded + " Nothing was stored.");
 
         // THE AGENT SCOPE IS THE SESSION'S AGENT OR THE STAR - NEVER SOMETHING WRITTEN BY HAND. The draft
         // pinned it; a body that arrives here with a different agent did not come from the draft unchanged.
@@ -196,16 +245,16 @@ public sealed class RuleAuthor
         {
             var agentWritten = (scope.Agent ?? "").Trim();
             if (allAgents && agentWritten.Length > 0)
-                return "this rule says it is for every agent and also names the agent " + agentWritten +
-                       ". It is one or the other, and it is the account that chooses. Nothing was stored.";
+                return (null, "this rule says it is for every agent and also names the agent " + agentWritten +
+                       ". It is one or the other, and it is the account that chooses. Nothing was stored.");
             if (!allAgents && !string.Equals(agentWritten, screen.Origin.Agent, StringComparison.Ordinal))
-                return "this rule is written against a session running " + screen.Origin.Agent + ", so it " +
+                return (null, "this rule is written against a session running " + screen.Origin.Agent + ", so it " +
                        "is for " + screen.Origin.Agent + " sessions unless you say every agent" +
                        (agentWritten.Length == 0 ? "" : " - it names " + agentWritten + " instead") +
-                       ". The agent is a fact the session holds, not something to write by hand. Nothing was stored.";
+                       ". The agent is a fact the session holds, not something to write by hand. Nothing was stored.");
         }
 
-        return null;
+        return (screen, null);
     }
 
     /// <summary>
