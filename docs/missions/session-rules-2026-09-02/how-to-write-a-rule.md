@@ -21,14 +21,22 @@ everything it saw and did.
 
 ## Part one - how a rule is written TODAY
 
-Today a rule is created over the Gateway's own interface, `POST /gateway/rules`, and **the derived
-parts are written by hand rather than worked out from your sentence**. There is no conversation, and
-there is no Rules page. A rule you create carries:
+Today a rule is created over the Gateway's own interface, in two calls, and there is still no Rules
+page - so this is a description of the machinery rather than of a screen you can use.
+
+**You say what you want and a model works the rest out.** `POST /gateway/rules/draft`, carrying what
+has been said so far, comes back with one of three things: a rule to look at, with a plain-English
+read-back of exactly what it would do; a single question, when guessing would make the rule do
+something you did not ask for; or a refusal saying why it could not draft one. It stores nothing. You
+confirm by posting the rule it handed back to `POST /gateway/rules`, unchanged - the two are the same
+document on purpose, so what you read and what gets stored cannot differ.
+
+A rule carries:
 
 - **your sentence**, which is the authority and is stored exactly as you said it;
 - **the screen description** - what the agent should be looking for, in plain English;
 - **the trigger words** - the cheap check that keeps the rule free on the thousands of screens that
-  have nothing to do with it;
+  have nothing to do with it. These are worked out from your sentence by the drafting call above;
 - **the scope** - which sessions it may touch. This has to be SAID. An earlier version quietly turned
   a missing scope into "every session", which is a fail-open on the widest possible blast radius, and
   an inspection caught it. Name an agent, a repository, a machine or a mission, or say "all sessions"
@@ -44,19 +52,28 @@ what they are agreeing to. An empty request promotes nothing.
 You can read the rules with `GET /gateway/rules` and everything a rule has ever done with
 `GET /gateway/rules/{id}/firings`.
 
-## Part two - how a rule is MEANT to be written, and this is NOT BUILT
+## Part two - what is still missing
 
-The design, settled with the owner, is that you never touch any of the derived parts above:
+The drafting call exists; **the screen to use it on does not**. There is no Rules page on the desktop
+or the phone, so today talking to it means posting to the two routes above. That is the next thing.
 
-> You write a rule by saying what you want, in English. That is the whole of your job.
+Two limits are worth knowing before you rely on a rule, because neither is obvious from the outside.
 
-You would say it - "when I run out of allowance on a model, switch me to Opus and carry on with what
-you were doing" - and a model would read it, ask about the parts where guessing would make the rule
-do something you did not ask for, and build the screen description and the trigger words for you. It
-would show you what it built in your own words before saving.
+**A rule only ever looks at the screen of a session that has just stopped.** The only thing that wakes
+a rule is a session crossing from working to idle, and the only thing it reads is the tail of that
+session's terminal screen. So a rule can act on trouble that PRINTS SOMETHING and hands the prompt
+back - which is what a provider error, an allowance notice or a question waiting for an answer all do.
+It cannot see a session that hangs in the middle of a turn and never goes idle, and it cannot see
+trouble that puts nothing on the screen at all. Those are not rules you can write badly; they are
+rules that cannot fire.
 
-**None of that exists yet.** It is the next phase. Until it does, the sentence is stored as the
-authority but the derived parts are ours, not the model's.
+**A rule types into a session. It cannot start one that is gone.** "Start it back up" means typing
+something into a session that is sitting there idle. If the session itself has died, no rule reaches
+it.
+
+The model's own judgement is what a plain word list is not. It has declined a screen carrying its own
+trigger words, on a real session, because the words were in something the session was reading rather
+than in the session's report of its own state.
 
 ---
 
