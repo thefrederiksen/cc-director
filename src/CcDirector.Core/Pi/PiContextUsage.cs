@@ -17,16 +17,17 @@ namespace CcDirector.Core.Pi;
 /// ingested = context fullness). pi does NOT record the window anywhere in this file, and since issue
 /// #1100 it is no longer inferred from the model id - the window is reported as unknown and the gauge
 /// shows the raw token count with no percentage. See <see cref="Drivers.ContextWindowSource"/>.
-/// The session file for a repo is located by reading each session line's <c>cwd</c> (pi has no
-/// preassigned id the Director can use), newest matching file wins.
+/// The session file is the one named by the session's id (<see cref="PiSessionLocator"/>): the Director
+/// launches pi with <c>--session-id</c>, so the file is known and never guessed from the newest file in
+/// the repo (issue #2670).
 /// </summary>
 public static class PiContextUsage
 {
-    /// <summary>Context usage for the newest pi session matching <paramref name="repoPath"/>, or null
-    /// when none matches or it has no assistant usage yet.</summary>
-    public static ContextUsageDto? ReadForRepo(string repoPath)
+    /// <summary>Context usage for the pi session with this id, or null when pi has not written its file
+    /// yet or it has no assistant usage yet.</summary>
+    public static ContextUsageDto? ReadForSession(string agentSessionId)
     {
-        var file = LocateNewestForRepo(repoPath);
+        var file = PiSessionLocator.Resolve(agentSessionId);
         if (file is null)
             return null;
         return ReadFromFile(file);
@@ -101,69 +102,6 @@ public static class PiContextUsage
         if (latest is not null)
             FileLog.Write($"[PiContextUsage] used={latest.UsedTokens}, window={latest.WindowTokens}, pct={latest.PercentUsed}");
         return latest;
-    }
-
-    /// <summary>The newest pi session file whose <c>session</c> line cwd matches the repo, or null.
-    /// Scans <c>~/.pi/agent/sessions</c> recursively; skips pi's <c>_archived_*</c> folders.</summary>
-    public static string? LocateNewestForRepo(string repoPath)
-    {
-        var dir = SessionsDirectory();
-        if (string.IsNullOrWhiteSpace(repoPath) || !Directory.Exists(dir))
-            return null;
-        var target = NormalizePath(repoPath);
-
-        List<FileInfo> files;
-        try
-        {
-            files = new DirectoryInfo(dir)
-                .EnumerateFiles("*.jsonl", SearchOption.AllDirectories)
-                .Where(f => !f.FullName.Contains("_archived", StringComparison.OrdinalIgnoreCase))
-                .OrderByDescending(f => f.LastWriteTimeUtc)
-                .ToList();
-        }
-        catch
-        {
-            return null;
-        }
-
-        foreach (var file in files)
-            if (NormalizePath(ReadSessionCwd(file.FullName)) == target)
-                return file.FullName;
-        return null;
-    }
-
-    /// <summary>Read the <c>cwd</c> from a pi session file's first <c>session</c> line, or null.</summary>
-    private static string? ReadSessionCwd(string path)
-    {
-        try
-        {
-            using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
-            using var reader = new StreamReader(fs);
-            var first = reader.ReadLine();
-            if (string.IsNullOrEmpty(first))
-                return null;
-            using var doc = JsonDocument.Parse(first);
-            var root = doc.RootElement;
-            if (root.ValueKind != JsonValueKind.Object) return null;
-            if (!(root.TryGetProperty("type", out var t) && t.GetString() == "session")) return null;
-            return root.TryGetProperty("cwd", out var cwd) && cwd.ValueKind == JsonValueKind.String
-                ? cwd.GetString()
-                : null;
-        }
-        catch
-        {
-            return null;
-        }
-    }
-
-    private static string SessionsDirectory()
-        => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".pi", "agent", "sessions");
-
-    private static string NormalizePath(string? p)
-    {
-        if (string.IsNullOrWhiteSpace(p)) return "";
-        try { return Path.GetFullPath(p).TrimEnd('\\', '/').ToLowerInvariant(); }
-        catch { return p.TrimEnd('\\', '/').ToLowerInvariant(); }
     }
 
     private static long Long(JsonElement el, string prop)

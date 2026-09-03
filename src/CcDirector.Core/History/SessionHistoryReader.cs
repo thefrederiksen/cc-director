@@ -20,7 +20,8 @@ namespace CcDirector.Core.History;
 ///   kept current across /clear by the SessionStart hook), falling back to deriving the path from
 ///   the session id.
 /// - Codex: the newest rollout for the session's repo (<see cref="CodexRolloutLocator"/>).
-/// - Pi: the newest session file for the session's repo (<see cref="PiSessionLocator"/>).
+/// - Pi: the session file named by the id the Director launched pi with (<see cref="PiSessionLocator"/>;
+///   pi's /new is followed by <see cref="PiSessionRebinder"/>).
 /// - Grok: the newest chat_history.jsonl for the session's repo (<see cref="GrokSessionLocator"/>).
 /// - Copilot: the newest session in its SQLite store whose cwd matches the session's repo
 ///   (<see cref="CopilotHistoryReader"/>); resolved by repo, not a single transcript file.
@@ -54,7 +55,8 @@ public static class SessionHistoryReader
         {
             AgentKind.ClaudeCode => ResolveClaude(session),
             AgentKind.Codex => CodexRolloutLocator.Resolve(session.Id, session.RepoPath, session.CreatedAt),
-            AgentKind.Pi => PiSessionLocator.Resolve(session.Id, session.RepoPath),
+            // Pi is launched with --session-id, so its file is named by the session's agent id (issue #2670).
+            AgentKind.Pi => PiSessionLocator.Resolve(session.ClaudeSessionId),
             AgentKind.Grok => GrokSessionLocator.Resolve(session.Id, session.RepoPath),
             // Copilot has no per-session transcript file; the readable source is its SQLite store.
             // Return the store path (when present) so a caller can stat it to detect changes.

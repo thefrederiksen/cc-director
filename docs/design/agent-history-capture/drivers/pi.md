@@ -16,8 +16,8 @@ Status: planned. JSONL-file driver (same shape as Codex).
 | Store | `~/.pi/agent/sessions/<encoded-cwd>/<timestamp>_<session-id>.jsonl` (verified against real data; Pi groups session files under a sanitized per-cwd directory) |
 | Format | JSON lines; `type` in { session, model_change, thinking_level_change, message } |
 | Fidelity | FULL - user + assistant messages, tool results, id/parentId tree |
-| Pointer | Newest `~/.pi/agent/sessions/**/*.jsonl` whose `session` line cwd matches the repo and which is at/after launch (no hooks). The per-cwd directory name is a lossy sanitization, so we match on the authoritative `cwd` inside the `session` record, not the directory name |
-| Launch wiring | None required. Pi also offers live event capture (see open questions) as a future authoritative source |
+| Pointer | The file named by the session id: `**/<timestamp>_<id>.jsonl`, where `<id>` is the id the Director launched pi with. Resolved by `PiSessionLocator.Resolve(agentSessionId)`; null until pi writes the file (on the first message). After pi's `/new` (a new file under an id pi chose) `PiSessionRebinder` finds the file CREATED after the clear in the repo and relinks the session to it at the next turn end. (Was: newest file for the repo - issue #2670, see 4a) |
+| Launch wiring | `--session-id <id>` on every launch (`PiAgent`). pi 0.80.10: "use exact project session ID, creating it if missing" - the same flag resumes a reopened session. Pi also offers live event capture (see open questions) as a future authoritative source |
 
 ---
 
@@ -46,10 +46,23 @@ Each line is a JSON object with a `type`:
 ## 4. The plan
 
 ### 4a. Pointer - find the current Pi session file
-Pi has no hook that pushes the active session to us. Resolve on demand: scan `~/.pi`
-for `*.jsonl`, keep those whose `session` line `cwd` equals the Director session repo
-and whose timestamp is at/after the session launch, pick the newest, and cache the path
-on the session (re-scan only if it disappears). Same newest-for-cwd rule as Codex.
+The Director launches pi with `--session-id <id>` and pi names the session file after
+it, so the file is known from birth: `PiSessionLocator.Resolve(agentSessionId)` finds
+`**/<timestamp>_<id>.jsonl` (skipping pi's `_archived` folders) and caches the path per
+id (re-scan only if it disappears).
+
+This REPLACED a newest-for-cwd scan (issue #2670). pi writes a session's file only on
+its first message, so at launch the newest file for the repo was always the previous
+session's; the scan bound a fresh session to it and cached the answer for the session's
+life. The Cockpit showed, and the wingman narrated, a five-week-old review for a session
+that had not said a word. The launch-window guard Codex has was never added here.
+
+pi's `/new` (the Director's context clear) starts a new file under an id pi chose, and
+only when the next message is sent - so it cannot be learned at clear time.
+`Session.ClearContextAsync` stamps `ContextClearedUtc`; `PiSessionRebinder`, at the
+session's next turn end, finds the file in the repo whose `session` record was CREATED
+after the clear under another id (created-after, never written-after: a second Pi
+session in the same repo keeps writing its own file) and relinks the session to it.
 
 ### 4b. Reader - Pi JSONL to canonical
 Add `PiTranscriptReader.Read(path)` mirroring `ClaudeTranscriptReader` (FileShare.ReadWrite,
@@ -64,16 +77,16 @@ tolerate a truncated final line):
 | session, model_change, thinking_level_change | skipped |
 
 ### 4c. Wiring
-Extend `SessionHistoryReader` with a Pi branch (resolve path, read). No launch change.
+Extend `SessionHistoryReader` with a Pi branch (resolve path, read). Launch passes `--session-id`.
 
 ---
 
 ## 5. Implementation steps
-1. `PiSessionLocator` - newest-for-cwd resolution + per-session cache.
+1. `PiSessionLocator` - by-id resolution + per-id cache; `PiSessionRebinder` follows `/new`.
 2. `PiTranscriptReader.Read(path)` -> `ConversationHistory` (mapping in 4b).
 3. `SessionHistoryReader`: add the Pi branch.
 4. Tests: a fixture file (session + message user/assistant/toolResult + thinking +
-   truncated line) asserting the canonical mapping; a locator test (newest-for-cwd); a
+   truncated line) asserting the canonical mapping; locator tests (by id, not newest; created-after for /new); a
    real-file smoke (not committed).
 5. No UI change.
 

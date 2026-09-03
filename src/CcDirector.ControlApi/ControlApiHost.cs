@@ -142,6 +142,7 @@ public sealed class ControlApiHost : IAsyncDisposable
     private TerminalSessionRecorder? _sessionRecorder;
     private Core.Storage.TurnReviewLogger? _turnReviewLogger;
     private Core.Sessions.SessionRecordsWatcher? _recordsWatcher;
+    private Core.Pi.PiSessionRebinder? _piSessionRebinder;
     // Remove-the-network-port mission, phase 3: the two halves of the session-hook channel that
     // replaced the three Control API routes. Both started by StartSessionStateServices, because
     // neither touches the bound port and both must run even when it fails to bind - a Director whose
@@ -770,6 +771,12 @@ public sealed class ControlApiHost : IAsyncDisposable
         _recordsWatcher = new Core.Sessions.SessionRecordsWatcher(_sessionManager);
         _recordsWatcher.Start();
 
+        // A Pi session's transcript is named by the id the Director launched it with - until pi's /new
+        // starts a new file under an id of its own. On the same turn-end trigger, find that file and
+        // relink the session to it, so the turn push, the gauge and the model report follow (#2670).
+        _piSessionRebinder = new Core.Pi.PiSessionRebinder(_sessionManager);
+        _piSessionRebinder.Start();
+
         // The prompt record (issue #1551): on the same turn-end trigger, read each session's
         // conversation out of the agent's own transcript, join on where each prompt came from, and PUSH
         // it to the Gateway's log. The Director captures because it is the only thing that sees a prompt
@@ -1223,6 +1230,8 @@ public sealed class ControlApiHost : IAsyncDisposable
         _turnReviewLogger = null;
         _recordsWatcher?.Dispose();
         _recordsWatcher = null;
+        _piSessionRebinder?.Dispose();
+        _piSessionRebinder = null;
         _conversationIngestor?.Dispose();
         _conversationIngestor = null;
         _sessionRecorder?.Dispose();

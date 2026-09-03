@@ -19,9 +19,11 @@ namespace CcDirector.Core.Drivers;
 /// Therefore: <see cref="DriverCapabilities.Interrupt"/> is NOT declared - a naive
 /// Ctrl+C cascade would kill the session, and pi has no safe hard-interrupt distinct
 /// from quit. History is NOT declared - double-Esc opens a different feature.
-/// Transcripts exist (~/.pi/agent/sessions/&lt;cwd-slug&gt;/&lt;uuid&gt;.jsonl) but their format
-/// is unparsed in v1, so TranscriptRead stays undeclared. Launching remains with the
-/// Director's PiAgent (no session-id preassignment in pi).
+/// Transcripts exist (~/.pi/agent/sessions/&lt;cwd-slug&gt;/&lt;timestamp&gt;_&lt;id&gt;.jsonl) and the
+/// conversation reader parses them, but the widget/usage readers below are not implemented, so
+/// TranscriptRead stays undeclared. Launching remains with the Director's PiAgent, which passes
+/// <c>--session-id</c> so the id - and therefore the file - is known from birth (issue #2670);
+/// the records readers below resolve by that id.
 /// </summary>
 public sealed class PiDriver : IAgentDriver
 {
@@ -108,17 +110,17 @@ public sealed class PiDriver : IAgentDriver
     /// <see cref="DriverCapabilities.ContextUsage"/>). pi's session file carries per-message
     /// <c>usage.input</c> and the model id, but NOT the window - and since issue #1100 the window is no
     /// longer derived from that model id, so this reports used tokens with no denominator until pi is
-    /// actually asked. Located by repo path (pi has no Director-preassigned id); the launch args are not
-    /// used.</summary>
+    /// actually asked. Located by the session id the Director launched pi with; the working directory
+    /// and launch args are not used.</summary>
     public ContextUsageDto? ReadContextUsage(string agentSessionId, string workingDirectory, string? launchArgs) =>
-        Pi.PiContextUsage.ReadForRepo(workingDirectory);
+        Pi.PiContextUsage.ReadForSession(agentSessionId);
 
     /// <summary>The model this pi session is currently using (capability
     /// <see cref="DriverCapabilities.ModelReport"/>): the LAST assistant message's model in the
-    /// session file, so a mid-session model switch is reflected. Located by repo path (pi has no
-    /// Director-preassigned id).</summary>
+    /// session file, so a mid-session model switch is reflected. Located by the session id the
+    /// Director launched pi with.</summary>
     public string? ReadCurrentModel(string agentSessionId, string workingDirectory, string? launchArgs) =>
-        Pi.PiCurrentModel.ReadForRepo(workingDirectory);
+        Pi.PiCurrentModel.ReadForSession(agentSessionId);
 
     public List<(string AgentSessionId, DateTime LastWriteUtc)> ListTranscripts(string workingDirectory) =>
         throw new NotSupportedException("[PiDriver] pi transcript listing is not implemented (v1).");
