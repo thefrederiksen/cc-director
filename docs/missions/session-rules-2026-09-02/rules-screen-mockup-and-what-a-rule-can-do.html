@@ -1,0 +1,352 @@
+<title>The Rules screen, and what a rule can actually do</title>
+<style>
+  :root {
+    --bg:#0b1020; --surface:#141a2e; --surface2:#1b2238; --border:#28304a;
+    --text:#e6e9f2; --dim:#99a0b8; --accent:#3b82f6; --warn:#f59e0b;
+    --bad:#f14c4c; --good:#34d399; --code:#0a0f1e;
+    --needsyou-fyi-bg:#262017; --needsyou-fyi-text:#e8dcc8;
+  }
+  body { margin:0; padding:32px 24px 72px; background:var(--bg); color:var(--text);
+         font:15px/1.6 -apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif; }
+  .wrap { max-width:1100px; margin:0 auto; }
+  h1 { font-size:30px; line-height:1.22; margin:0 0 8px; letter-spacing:-0.01em; }
+  h2 { font-size:21px; margin:48px 0 8px; }
+  h3 { font-size:12px; margin:28px 0 8px; color:var(--dim); text-transform:uppercase; letter-spacing:0.08em; }
+  p, li { max-width:76ch; }
+  p { margin:0 0 14px; }
+  .lede { color:var(--dim); font-size:17px; }
+  hr { border:0; border-top:1px solid var(--border); margin:40px 0 0; }
+  .note { border-left:4px solid var(--accent); background:var(--surface2); border-radius:0 10px 10px 0; padding:16px 20px; margin:18px 0; }
+  .note.bad { border-left-color:var(--bad); }
+  .note.warn { border-left-color:var(--warn); }
+  .note p:last-child { margin-bottom:0; }
+  .k { font-weight:600; }
+  code { background:var(--code); border:1px solid var(--border); border-radius:4px; padding:1px 6px;
+         font-family:ui-monospace,Consolas,"Courier New",monospace; font-size:12.5px; }
+  table { border-collapse:collapse; width:100%; margin:14px 0 6px; font-size:13.5px; }
+  th,td { text-align:left; padding:9px 12px; border-bottom:1px solid var(--border); vertical-align:top; }
+  th { color:var(--dim); font-weight:600; font-size:11px; text-transform:uppercase; letter-spacing:0.07em; }
+  .yes { color:var(--good); font-weight:600; } .no { color:var(--bad); font-weight:600; }
+  ul { padding-left:20px; } li { margin-bottom:8px; }
+
+  /* ---- the mockup frame: a browser window with the Cockpit rail --------------------------------- */
+  .frame { margin:18px 0 8px; border:1px solid var(--border); border-radius:12px; overflow:hidden; background:var(--bg); }
+  .chrome { display:flex; align-items:center; gap:8px; padding:9px 14px; background:var(--surface); border-bottom:1px solid var(--border); font-size:12px; color:var(--dim); }
+  .dot { width:10px; height:10px; border-radius:50%; background:var(--border); display:inline-block; }
+  .url { margin-left:10px; flex:1; background:var(--bg); border:1px solid var(--border); border-radius:6px; padding:3px 10px; font-family:ui-monospace,Consolas,monospace; }
+  .app { display:grid; grid-template-columns:200px 1fr; min-height:720px; }
+  .rail { background:var(--surface); border-right:1px solid var(--border); padding:14px 10px; font-size:13px; }
+  .rail div { padding:7px 12px; border-radius:6px; color:var(--dim); }
+  .rail .on { background:var(--surface2); color:var(--text); font-weight:600; }
+  .rail .gap { height:10px; }
+  .main { padding:24px 28px; }
+  .eyebrow { font-size:11px; font-weight:600; letter-spacing:0.08em; text-transform:uppercase; color:var(--dim); margin:0 0 2px; }
+  .title { font-size:26px; font-weight:700; margin:0 0 4px; }
+  .sub { color:var(--dim); font-size:14px; margin:0 0 16px; max-width:70ch; }
+  .strip { display:flex; flex-wrap:wrap; gap:6px 10px; align-items:baseline; padding:10px 14px; background:var(--surface); border:1px solid var(--border); border-radius:8px; font-size:12px; color:var(--dim); margin:0 0 18px; }
+  .strip b { color:var(--text); font-weight:500; } .strip .live { color:var(--accent); font-weight:600; }
+  .strip .mono { font-family:ui-monospace,Consolas,monospace; }
+  .strip .tail { flex-basis:100%; }
+
+  .composer { padding:16px 18px; background:var(--surface); border:1px solid var(--border); border-radius:10px; margin:0 0 22px; }
+  .composer h4 { margin:0 0 12px; font-size:15px; }
+  .turn { display:flex; gap:10px; font-size:13px; line-height:1.5; margin:0 0 10px; }
+  .who { flex:0 0 84px; color:var(--dim); font-size:11px; font-weight:600; letter-spacing:0.06em; text-transform:uppercase; padding-top:2px; }
+  .turn.us .what { color:var(--dim); }
+  .term { margin:8px 0 12px 94px; padding:10px 12px; background:var(--code); border:1px solid var(--accent); border-radius:6px;
+          font-family:ui-monospace,Consolas,monospace; font-size:12px; line-height:1.45; color:var(--text); white-space:pre; overflow:auto; }
+  .termcap { margin:0 0 12px 94px; font-size:12px; color:var(--dim); }
+  .readback { margin:14px 0 12px; padding-top:14px; border-top:1px solid var(--border); font-size:15px; line-height:1.6; }
+  .detail { display:grid; grid-template-columns:190px 1fr; gap:8px 16px; font-size:13px; margin:0 0 12px; }
+  .detail dt { color:var(--dim); } .detail dd { margin:0; }
+  .chip { display:inline-block; margin:0 4px 4px 0; padding:1px 7px; background:var(--code); border:1px solid var(--border); border-radius:4px; font-family:ui-monospace,Consolas,monospace; font-size:12px; }
+  .dry { margin:0 0 12px; padding:10px 12px; background:var(--bg); border-left:3px solid var(--accent); border-radius:0 6px 6px 0; font-size:13px; color:var(--dim); }
+  .checked { margin:0 0 10px; font-size:12.5px; color:var(--accent); }
+  .btns { display:flex; gap:8px; }
+  .btn { padding:7px 14px; border-radius:6px; border:1px solid var(--border); background:var(--surface2); color:var(--text); font-size:13px; }
+  .btn.primary { background:var(--accent); border-color:var(--accent); color:#fff; font-weight:600; }
+  .btn.ghost { background:transparent; color:var(--dim); }
+  .box { padding:10px 12px; background:var(--bg); border:1px solid var(--border); border-radius:8px; font-size:14px; color:var(--dim); margin:0 0 10px; }
+
+  .card { display:flex; background:var(--surface); border:1px solid var(--border); border-radius:10px; overflow:hidden; margin:0 0 12px; }
+  .spine { flex:0 0 4px; background:var(--border); } .card.live .spine { background:var(--accent); }
+  .cbody { flex:1; padding:14px 16px; min-width:0; }
+  .chead { display:flex; justify-content:space-between; gap:12px; align-items:flex-start; }
+  .instr { font-weight:600; line-height:1.5; }
+  .pill { flex:0 0 auto; padding:2px 8px; border-radius:999px; font-size:11px; font-weight:600; white-space:nowrap; }
+  .pill.dry { background:var(--bg); color:var(--dim); border:0; margin:0; }
+  .pill.live { background:rgba(59,130,246,.18); color:var(--accent); }
+  .watch { margin:6px 0 10px; font-size:13px; color:var(--dim); }
+  .facts { display:flex; flex-wrap:wrap; gap:6px 18px; font-size:12px; }
+  .fl { color:var(--dim); font-size:11px; letter-spacing:0.04em; text-transform:uppercase; margin-right:4px; }
+  .cacts { display:flex; gap:8px; margin-top:12px; }
+  .firing { margin:12px 0 0; padding:10px 12px 10px 14px; background:var(--bg); border-left:3px solid var(--dim); border-radius:0 6px 6px 0; font-size:12px; line-height:1.55; }
+  .firing.act { border-left-color:var(--accent); }
+  .fh { display:flex; gap:10px; margin-bottom:4px; } .fd { font-weight:700; text-transform:uppercase; font-size:11px; letter-spacing:.06em; }
+  .fdim { color:var(--dim); }
+
+  .tag { display:inline-block; font-size:10.5px; font-weight:700; letter-spacing:.06em; text-transform:uppercase; padding:1px 7px; border-radius:4px; vertical-align:middle; margin-left:8px; }
+  .tag.built { background:rgba(52,211,153,.15); color:var(--good); }
+  .tag.notyet { background:rgba(245,158,11,.15); color:var(--warn); }
+
+  /* ---- the capability diagram --------------------------------------------------------------- */
+  svg { display:block; width:100%; height:auto; margin:10px 0 6px; }
+  svg text { font:12px -apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif; fill:var(--text); }
+  svg text.s { font-size:10.5px; fill:var(--dim); }
+  svg text.t { font-size:12.5px; font-weight:700; }
+  svg text.m { font-family:ui-monospace,Consolas,monospace; font-size:10.5px; fill:var(--dim); }
+  svg text.big { font-size:14px; font-weight:700; }
+  .bx { fill:var(--surface); stroke:var(--border); }
+  .bx-in { fill:#1c2b45; stroke:#3b5b8a; }
+  .bx-rule { fill:#14251f; stroke:#2f6b52; stroke-width:1.5; }
+  .bx-out { fill:#2a1d1f; stroke:var(--bad); stroke-width:1.5; }
+  .bx-bound { fill:none; stroke:var(--accent); stroke-width:1.5; stroke-dasharray:6 4; }
+  .fl2 { stroke:var(--border); stroke-width:1.5; fill:none; } .hd { fill:var(--border); }
+</style>
+
+<div class="wrap">
+
+<h1>The Rules screen, and what a rule can actually do</h1>
+<p class="lede">Two things in one page: a mockup of where the Rules screen is going, with what is built and
+what is not marked honestly; and a plain account of a rule's powers - which are much smaller than the
+word "rule" suggests, and bounded in a different place than you would guess.</p>
+
+<hr>
+
+<h2>1. The Rules screen</h2>
+<p>A mockup of the target. <span class="tag built">built</span> means it exists in the worktree today.
+<span class="tag notyet">not yet</span> means it is the design and nothing more.</p>
+
+<div class="frame">
+  <div class="chrome"><span class="dot"></span><span class="dot"></span><span class="dot"></span>
+    <span class="url">gateway.devthrottle.com/c/rules</span></div>
+  <div class="app">
+    <div class="rail">
+      <div>Sessions</div><div>Fleet Map</div><div>Assistant</div><div>History</div><div>Directors</div>
+      <div>Schedule</div><div>Workflows</div><div class="on">Rules</div><div>Skills</div><div>Dictionary</div>
+      <div>Voice Recorder</div><div>Transcription</div><div>Network</div>
+      <div class="gap"></div><div>Account</div><div>Phone</div><div>Your Throttle</div><div>Settings</div>
+    </div>
+    <div class="main">
+      <p class="eyebrow">Standing instructions</p>
+      <div class="title">Rules</div>
+      <p class="sub">Tell DevThrottle what to do when a session gets stuck, in ordinary words. It works out what
+        to watch for, shows you exactly what it would do, and does nothing at all until you say so.</p>
+
+      <div class="strip"><b>you</b> say it <span class="mono">-&gt;</span> <b>read what it would do</b>
+        <span class="mono">-&gt;</span> <b>dry run - types nothing</b> <span class="mono">-&gt;</span>
+        <span class="live">you make it live</span>
+        <span class="tail">a rule only ever looks at a session that has stopped, and only ever at its screen</span></div>
+
+      <div class="composer">
+        <h4>Make a rule by saying what you want <span class="tag built">built</span></h4>
+
+        <div class="turn"><span class="who">You</span><span class="what">When a session runs out of allowance and says
+          when it comes back, wait until then and tell it to continue.</span></div>
+
+        <div class="turn us"><span class="who">DevThrottle</span><span class="what">Which session is showing this right
+          now? I will read its screen so the words come from the real thing.
+          <span class="tag notyet">not yet</span></span></div>
+
+        <div class="turn"><span class="who">You</span><span class="what">The one called "conductor.build".</span></div>
+
+        <div class="turn us"><span class="who">DevThrottle</span><span class="what">Here is what it is showing.
+          <span class="tag notyet">not yet</span></span></div>
+<pre class="term">&gt; keep going with the refactor
+
+Claude usage limit reached. Your limit will reset at 11:50pm.
+
+&gt; </pre>
+        <p class="termcap">The agent fetched this itself - the same read the command line does with
+          <code>cc-devthrottle rule screen</code>. Every trigger word below was checked against this text.</p>
+
+        <p class="readback">When one of your sessions stops on a usage-limit notice that gives a reset time, I will
+          wait until that time and then tell it to continue. At most five times a day for any one session.</p>
+
+        <dl class="detail">
+          <dt>Your words</dt><dd class="instr">When a session runs out of allowance and says when it comes back, wait until then and tell it to continue.</dd>
+          <dt>What it watches for</dt><dd>The session has stopped on a usage-limit notice that gives a reset time.</dd>
+          <dt>Words on the screen that wake it</dt><dd><span class="chip">Claude usage limit reached</span><span class="chip">Your limit will reset at</span></dd>
+          <dt>Which sessions</dt><dd>every session</dd>
+          <dt>Ceilings</dt><dd>waits 10 minutes before acting on the same session again, at most 5 times a day</dd>
+        </dl>
+        <p class="checked">Every word above was checked against the screen. A rule that watched for something not on
+          it would have been refused rather than offered. <span class="tag built">built</span></p>
+        <div class="dry">Storing this does not turn it on. It goes in as a dry run: it watches, decides, and writes down
+          what it WOULD have done, and types nothing. You make it live afterwards.</div>
+        <div class="btns"><span class="btn primary">Store it as a dry run</span><span class="btn ghost">Throw it away</span></div>
+      </div>
+
+      <div class="card">
+        <div class="spine"></div>
+        <div class="cbody">
+          <div class="chead"><span class="instr">When the provider stops working, wait a while and then start the session back up.</span>
+            <span class="pill dry">Dry run - types nothing</span></div>
+          <p class="watch">The session has stopped on an error from the provider rather than on its own work.</p>
+          <div class="facts">
+            <span><span class="fl">wakes on</span><span class="chip">API Error</span><span class="chip">overloaded</span></span>
+            <span><span class="fl">acts on</span>every session</span>
+            <span><span class="fl">ceilings</span>15 minutes apart, 6 a day</span>
+          </div>
+          <div class="cacts"><span class="btn ghost">Hide what it has done</span><span class="btn primary">Make it live</span><span class="btn ghost">Delete</span></div>
+          <div class="firing"><div class="fh"><span class="fd">decline</span><span class="fdim">03/09/2026 04:12</span><span class="fdim">c95fc1ad</span></div>
+            the words are in a log the session is summarising, not in its own report of its own state.<br>
+            <span class="fdim">nothing was typed.</span></div>
+          <div class="firing act"><div class="fh"><span class="fd">act</span><span class="fdim">03/09/2026 03:50</span><span class="fdim">41eb7c07</span></div>
+            the session has stopped on a provider error and the instruction is about exactly this.<br>
+            <span class="fdim">would have typed</span> <code>continue</code> <span class="fdim">- dry run, so nothing was sent.</span></div>
+        </div>
+      </div>
+
+      <div class="card live">
+        <div class="spine"></div>
+        <div class="cbody">
+          <div class="chead"><span class="instr">If a session asks whether it can edit a file inside the repository it is already working in, just say yes.</span>
+            <span class="pill live">Live</span></div>
+          <p class="watch">The session has stopped on a permission prompt about a file inside its own repository.</p>
+          <div class="facts">
+            <span><span class="fl">wakes on</span><span class="chip">Do you want to</span><span class="chip">edit</span></span>
+            <span><span class="fl">acts on</span>repository D:\ReposFred\devthrottle</span>
+            <span><span class="fl">ceilings</span>5 seconds apart, 50 a day</span>
+            <span><span class="fl">made live by</span>soren@centerconsulting.com</span>
+          </div>
+          <div class="cacts"><span class="btn ghost">What it has done</span><span class="btn ghost">Delete</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<h3>What is and is not built on that screen</h3>
+<table>
+  <tr><th style="width:44%">Part</th><th style="width:12%">State</th><th>Note</th></tr>
+  <tr><td>The page, in the rail beside Workflows and Skills</td><td class="yes">built</td><td>Renders, tested, builds.</td></tr>
+  <tr><td>Say it in English, get the rule read back, store as dry run</td><td class="yes">built</td><td>Proven against the live model.</td></tr>
+  <tr><td>Trigger words checked against a real screen, invented ones refused</td><td class="yes">built</td><td>On the Gateway. The command line uses it (<code>rule add --session</code>). The page cannot reach it yet - see the next two rows.</td></tr>
+  <tr><td>The agent going and fetching a session's terminal itself</td><td class="no">not yet</td><td>This is the tool-use loop. Today the drafting is one question in, one answer out.</td></tr>
+  <tr><td>A conversation that asks you which session, shows the screen, then proposes</td><td class="no">not yet</td><td>Follows from the row above.</td></tr>
+  <tr><td>Make it live, with a confirmation</td><td class="yes">built</td><td>A person, every time. The command line deliberately has no promote.</td></tr>
+  <tr><td>The record: every firing, declines styled like acts</td><td class="yes">built</td><td></td></tr>
+  <tr><td>Pro gating</td><td class="no">not yet</td><td>Gate CREATING rules, not running them - see the note on the plan.</td></tr>
+</table>
+
+<hr>
+
+<h2>2. What a rule can actually do</h2>
+
+<div class="note">
+  <p><span class="k">Short answer to your question: no, a rule cannot run Python.</span> It cannot run
+  anything. There is no interpreter in the rules engine, no shell, no eval, and no column in the database
+  a code string could sit in. A rule does exactly one thing when it fires: <span class="k">it types a
+  piece of text into one idle session.</span> Everything else about it is deciding whether to.</p>
+</div>
+
+<svg viewBox="0 0 1060 470" role="img" aria-label="What a rule can do">
+  <defs><marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" class="hd"/></marker></defs>
+
+  <!-- inputs -->
+  <text class="t" x="14" y="26">WHAT IT CAN SEE</text>
+  <rect class="bx bx-in" x="10" y="38" width="220" height="150" rx="8"/>
+  <text class="t" x="24" y="60">Four inputs, and no more</text>
+  <text class="m" x="24" y="82">screen_text</text><text class="s" x="140" y="82">the terminal tail</text>
+  <text class="m" x="24" y="100">session_repository_path</text>
+  <text class="m" x="24" y="118">now</text><text class="s" x="140" y="118">the clock, UTC</text>
+  <text class="m" x="24" y="136">first_failure</text><text class="s" x="140" y="136">when trouble began</text>
+  <text class="s" x="24" y="162">A rule cannot read a file, the</text>
+  <text class="s" x="24" y="176">network, or another session.</text>
+
+  <path class="fl2" d="M230 113 H286" marker-end="url(#a)"/>
+
+  <!-- the rule -->
+  <text class="t" x="292" y="26">WHAT IT CAN DECIDE WITH</text>
+  <rect class="bx bx-rule" x="288" y="38" width="290" height="222" rx="8"/>
+  <text class="t" x="302" y="60">Five checks we wrote. Named, never written.</text>
+  <text class="m" x="302" y="84">matches_any(text, terms)</text><text class="s" x="490" y="84">yes / no</text>
+  <text class="m" x="302" y="102">is_path_inside(target, root)</text><text class="s" x="490" y="102">yes / no</text>
+  <text class="m" x="302" y="120">retry_delay_from(screen, now)</text><text class="s" x="490" y="120">seconds</text>
+  <text class="m" x="302" y="138">elapsed_since(first, now)</text><text class="s" x="490" y="138">seconds</text>
+  <text class="m" x="302" y="156">extract_first(screen, kind)</text><text class="s" x="490" y="156">a path or time</text>
+  <text class="s" x="302" y="182">A rule stores a NAME plus argument values,</text>
+  <text class="s" x="302" y="196">checked against the real method signature</text>
+  <text class="s" x="302" y="210">before it can be written. Not a program.</text>
+  <text class="s" x="302" y="224">Adding a sixth check is a code review and</text>
+  <text class="s" x="302" y="238">a release, not a setting.</text>
+
+  <path class="fl2" d="M578 113 H634" marker-end="url(#a)"/>
+
+  <!-- the action -->
+  <text class="t" x="640" y="26">WHAT IT CAN DO</text>
+  <rect class="bx bx-rule" x="636" y="38" width="190" height="150" rx="8"/>
+  <text class="t" x="650" y="60">One action.</text>
+  <text class="big" x="650" y="90">Type text into</text>
+  <text class="big" x="650" y="110">one idle session.</text>
+  <text class="s" x="650" y="136">That is the entire list.</text>
+  <text class="s" x="650" y="150">Not two things. Not a</text>
+  <text class="s" x="650" y="164">script. One keystroke</text>
+  <text class="s" x="650" y="178">with Enter after it.</text>
+
+  <path class="fl2" d="M826 113 H882" marker-end="url(#a)"/>
+
+  <!-- the session -->
+  <text class="t" x="888" y="26">WHERE IT LANDS</text>
+  <rect class="bx bx-out" x="884" y="38" width="166" height="150" rx="8"/>
+  <text class="t" x="898" y="60">A coding agent.</text>
+  <text class="s" x="898" y="82">Which can do anything:</text>
+  <text class="s" x="898" y="96">edit files, run commands,</text>
+  <text class="s" x="898" y="110">push, delete, deploy.</text>
+  <text class="s" x="898" y="134">THIS is the blast radius.</text>
+  <text class="s" x="898" y="148">Not the server. Not the</text>
+  <text class="s" x="898" y="162">Gateway. The session.</text>
+
+  <!-- the boundary -->
+  <rect class="bx-bound" x="10" y="292" width="1040" height="164" rx="10"/>
+  <text class="t" x="24" y="316" style="fill:#3b82f6">THE BOUNDS THAT ACTUALLY MATTER - because the action is small and its target is not</text>
+  <text x="24" y="344"><tspan class="t">Scope</tspan><tspan class="s">  which sessions it may touch: an agent, a repository, a machine, a mission, or all of them - said out loud, never assumed</tspan></text>
+  <text x="24" y="366"><tspan class="t">Ceilings</tspan><tspan class="s">  a cooldown per session and a cap per day, both required. An agent in a loop is the worst outcome, and the cap is what makes it finite</tspan></text>
+  <text x="24" y="388"><tspan class="t">Idle only</tspan><tspan class="s">  a working session is out of reach by construction, and the screen is read again immediately before the keystroke</tspan></text>
+  <text x="24" y="410"><tspan class="t">Dry run first</tspan><tspan class="s">  every rule starts by recording what it WOULD have done and typing nothing. Only a person moves it to live.</tspan></text>
+  <text x="24" y="432"><tspan class="t">The record</tspan><tspan class="s">  every firing, including every decline, written down: the screen, the decision, the reason, what was typed, what happened</tspan></text>
+</svg>
+
+<h3>What a rule cannot do - stated, not implied</h3>
+<table>
+  <tr><th style="width:38%">A rule cannot...</th><th>Because</th></tr>
+  <tr><td>run Python, a shell command, or any code</td><td>There is no interpreter. A rule holds the name of a check we shipped and its argument values. There is nothing to escape from.</td></tr>
+  <tr><td>read or write a file</td><td>None of the five checks touches a file. <code>is_path_inside</code> compares paths; it does not open them.</td></tr>
+  <tr><td>reach the network</td><td>No check makes a request. The only outbound thing a rule does is a keystroke down the tunnel to the Director.</td></tr>
+  <tr><td>start, stop, restart or kill a session</td><td>It can only type into a session that exists and is idle. A dead session is unreachable.</td></tr>
+  <tr><td>act on a session that is working</td><td>The only thing that wakes a rule is a session crossing from working to idle.</td></tr>
+  <tr><td>act at a particular time</td><td>There is no clock. A session parked since 11pm is never looked at again. This is the gap behind your 3am case.</td></tr>
+  <tr><td>do more than one thing</td><td>One keystroke per firing. No sequences. This is the gap behind the sign-in case.</td></tr>
+  <tr><td>change how a session is displayed</td><td>Every action ends in a keystroke. This is the gap behind "it turns red and does not need me".</td></tr>
+  <tr><td>promote itself, edit itself, or write another rule</td><td>Promotion needs evidence minted from a person's authenticated request. The evaluator has no such request and, by a structural test over the built assembly, no path to the store's promote at all.</td></tr>
+  <tr><td>act outside its scope or above its ceilings</td><td>Checked before any model is asked, on every pass.</td></tr>
+</table>
+
+<div class="note warn">
+  <p><span class="k">The honest reading of the picture.</span> A rule's own powers are tiny. But it types into a
+  coding agent, and a coding agent is unbounded - that is the settled ruling, and it is why the old
+  "allowed actions" list was never a safety boundary. So the question "what can a rule do" has a small
+  answer, and the question that matters is "<span class="k">which sessions, how often, and who said
+  yes</span>". Those three are where the safety lives, and they are all in the dashed box above.</p>
+</div>
+
+<div class="note">
+  <p><span class="k">On the temptation to add "a little bit of Python".</span> Every case you have named - the
+  limit, the outage, the sign-in, the colour - is <em>match a screen, do a named thing, maybe after a wait</em>.
+  None needs a language. The three that do not work today are missing a <span class="k">clock</span>, a
+  <span class="k">sequence</span>, and a <span class="k">non-typing action</span> - each of which is a new
+  reviewed step shipped in a release, exactly like the five checks. Deciding whether an arbitrary script is
+  safe is a far harder problem than any of those, and we would be taking it on to solve a problem we do not
+  have.</p>
+</div>
+
+<div class="note bad">
+  <p><span class="k">The one thing your API idea changes.</span> An agent holding a device key can call promote
+  today. So a coding agent set loose on the API could write a rule <em>and arm it</em> with nobody looking. The
+  command line deliberately ships without promote; the API still has it. The fix is agent credentials that can
+  do everything except promote - then "Claude Code, set up a rule" always lands in dry run, and you flip it
+  live yourself.</p>
+</div>
+
+</div>

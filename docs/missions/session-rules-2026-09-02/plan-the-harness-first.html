@@ -1,0 +1,253 @@
+<title>Session Rules - the plan, harness first</title>
+<style>
+  :root {
+    --bg:#0b1020; --surface:#141a2e; --surface2:#1b2238; --border:#28304a;
+    --text:#e6e9f2; --dim:#99a0b8; --accent:#3b82f6; --warn:#f59e0b;
+    --bad:#f14c4c; --good:#34d399; --code:#0a0f1e;
+  }
+  body { margin:0; padding:32px 24px 72px; background:var(--bg); color:var(--text);
+         font:15px/1.6 -apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif; }
+  .wrap { max-width:1060px; margin:0 auto; }
+  h1 { font-size:30px; line-height:1.22; margin:0 0 8px; letter-spacing:-0.01em; }
+  h2 { font-size:21px; margin:46px 0 8px; letter-spacing:-0.005em; }
+  h3 { font-size:12px; margin:28px 0 8px; color:var(--dim); text-transform:uppercase; letter-spacing:0.08em; }
+  p, li { max-width:76ch; }
+  p { margin:0 0 14px; }
+  .lede { color:var(--dim); font-size:17px; }
+  hr { border:0; border-top:1px solid var(--border); margin:38px 0 0; }
+  .panel { background:var(--surface); border:1px solid var(--border); border-radius:10px; padding:18px 20px; margin:16px 0; }
+  .note { border-left:4px solid var(--accent); background:var(--surface2); border-radius:0 10px 10px 0;
+          padding:16px 20px; margin:18px 0; }
+  .note.bad { border-left-color:var(--bad); }
+  .note.warn { border-left-color:var(--warn); }
+  .note.good { border-left-color:var(--good); }
+  .note p:last-child { margin-bottom:0; }
+  .k { font-weight:600; }
+  table { border-collapse:collapse; width:100%; margin:14px 0 6px; font-size:13.5px; }
+  th,td { text-align:left; padding:9px 12px; border-bottom:1px solid var(--border); vertical-align:top; }
+  th { color:var(--dim); font-weight:600; font-size:11px; text-transform:uppercase; letter-spacing:0.07em; }
+  .yes { color:var(--good); font-weight:600; }
+  .no { color:var(--bad); font-weight:600; }
+  .part { color:var(--warn); font-weight:600; }
+  code { background:var(--code); border:1px solid var(--border); border-radius:4px; padding:1px 6px;
+         font-family:ui-monospace,Consolas,"Courier New",monospace; font-size:12.5px; }
+  pre { background:var(--code); border:1px solid var(--border); border-radius:8px; padding:14px 16px;
+        overflow-x:auto; font-family:ui-monospace,Consolas,monospace; font-size:12.5px; line-height:1.5; margin:12px 0; }
+  ul { padding-left:20px; } li { margin-bottom:9px; }
+  .phase { display:flex; gap:16px; align-items:flex-start; margin:0 0 4px; }
+  .pill { flex:0 0 auto; background:var(--surface2); border:1px solid var(--border); border-radius:999px;
+          padding:2px 12px; font-size:11.5px; color:var(--dim); font-weight:600; letter-spacing:0.05em; margin-top:3px; }
+</style>
+
+<div class="wrap">
+
+<h1>Session Rules: the plan, harness first</h1>
+<p class="lede">Written after getting off track. The order here is deliberate: find out what your real
+problems need BEFORE building anything else, because four of your own cases were just checked against
+what exists and only one of them fits.</p>
+
+<hr>
+
+<h2>1. What rules are for</h2>
+<p>Your words on the epic: <em>"the user should be able to set up rules: when you see this message in the
+terminal window, do this."</em> The point is agents that keep going without you.</p>
+<p>So the measure of this feature is not whether the machinery is elegant. It is whether the things that
+actually stop your sessions get handled. That is what the harness is for.</p>
+
+<hr>
+
+<h2>2. Your four real cases, against what exists</h2>
+<p>These are the ones you named, including two that happened last night.</p>
+
+<table>
+  <tr>
+    <th style="width:26%">The case</th>
+    <th style="width:30%">What it actually needs</th>
+    <th style="width:12%">Works today</th>
+    <th>Why not</th>
+  </tr>
+  <tr>
+    <td><span class="k">Limit until 3am.</span> Session stops, says it resets at a time, sits there all
+    night.</td>
+    <td>See the screen, read the time off it, <span class="k">come back later</span>, then continue.</td>
+    <td class="no">NO</td>
+    <td>There is <span class="k">no clock anywhere in the design.</span> A rule only wakes when a session
+    crosses from working to idle. A session parked since 11pm never crosses again, so nothing ever looks at
+    it - and even if something did, the cheap filter skips an unchanged screen. Checked in the code, twice
+    over. The primitive that reads "resets at 14:30" off a screen exists; nothing can act on it.</td>
+  </tr>
+  <tr>
+    <td><span class="k">API error killed the sessions.</span> Happened last night.</td>
+    <td>See the error on the screen, wait a bit, tell it to carry on.</td>
+    <td class="yes">YES</td>
+    <td>This is the one shape that is built. The waiting is the cooldown. Measured working end to end
+    today.</td>
+  </tr>
+  <tr>
+    <td><span class="k">Login expired.</span> Type a command, a browser opens or you copy a link, a code
+    goes to your email, you fetch it, you type it back.</td>
+    <td>Several steps, and two of them are <span class="k">not on the screen at all</span>: opening a
+    browser, and reading your email.</td>
+    <td class="no">NO</td>
+    <td>Two gaps, not one. A rule today does exactly one thing - type one piece of text - and it has no
+    vocabulary for anything that is not a keystroke.</td>
+  </tr>
+  <tr>
+    <td><span class="k">It turns red and does not need me.</span> An architect reports what it found and
+    waits; the row goes red as though it were asking you something.</td>
+    <td>Tell "I am asking you something" apart from "I am telling you something", and
+    <span class="k">change what is displayed</span> rather than typing anything.</td>
+    <td class="no">NO</td>
+    <td>Every action a rule has ends in a keystroke. There is no action that changes how a session is
+    presented to you.</td>
+  </tr>
+</table>
+
+<div class="note bad">
+  <p><span class="k">One of your four fits.</span> That is the finding that should drive everything else,
+  and it is exactly what a harness would have told us before any of this got built. The three misses are
+  not bugs - they are three different capabilities the design never had: a <span class="k">clock</span>,
+  a <span class="k">sequence of steps</span> reaching past the screen, and an <span class="k">action that
+  is not typing</span>.</p>
+</div>
+
+<h3>On the red one - my honest read</h3>
+<p>I think that one is mostly a product fix, not a rule. DevThrottle already decides a session's colour
+centrally, and "this turn ended with a report, not a question" is a judgement about the screen - the same
+kind of judgement a rule makes. So the right home is that decision, made better, for everyone, rather than
+every user writing a rule to undo a wrong colour. Where a rule earns its place is the exception: <em>"for
+MY architect sessions, a report is not something I need."</em> It belongs in the harness either way,
+because it is the case that tells us whether the action vocabulary needs to reach beyond typing.</p>
+
+<hr>
+
+<h2>3. The harness</h2>
+<p>This is the thing to build first, and nothing else should be built until it says what is needed.</p>
+
+<h3>What a case is</h3>
+<p>One case is a real situation, captured rather than imagined, with the answer written down:</p>
+<pre>situation   what you would say when writing the rule, in your words
+screen      the REAL terminal screen, captured from a real session
+expect      act | decline
+type        the exact text that should be typed, when the answer is act
+why         one line - why this case exists, especially the negatives
+shape       type-now | wait-then-type | several-steps | change-the-display</pre>
+
+<div class="note warn">
+  <p><span class="k">The screens must be real.</span> I wrote six screens myself this evening and both
+  models passed all six - which tells us almost nothing, because I wrote them to be passable. Our own
+  repository already set the bar: the dictation judge was measured over 21 <span class="k">live</span>
+  cases and four of the five models tried failed it. Invented screens are how a harness certifies a
+  feature that does not work.</p>
+</div>
+
+<h3>Half the cases must be negatives</h3>
+<p>A rule only reaches the model when its trigger words are already on the screen. So the only thing
+standing between a rule and a wrong keystroke is the answer to "is this really that situation". A harness
+of positives would pass a model that says yes to everything, which is the worst possible outcome: it
+types into your sessions on a screen it misread. Every rule shape needs its screens where the words are
+present and the answer is still <span class="k">no</span> - the words in documentation being read, in code
+just written, in a report about a different session.</p>
+
+<h3>Where the cases come from</h3>
+<ul>
+  <li><span class="k">Your fleet, live.</span> The Gateway can already read any session's screen. A capture
+  command that grabs the current screen of every session and files it as a candidate case costs almost
+  nothing and gives us real material every day.</li>
+  <li><span class="k">Last night.</span> The limit-until-3am screens and the API-error screens are the two
+  most valuable cases we have and they have already happened. Worth checking what we still hold before it
+  ages out.</li>
+  <li><span class="k">You, as you hit them.</span> When a session stops and you deal with it by hand, that
+  is a case. The cheapest capture is a command you run at that moment.</li>
+</ul>
+
+<h3>What the harness reports</h3>
+<p>One table, every case, per model: what it answered, whether that was right, how long it took. Plus the
+one number that matters most - <span class="k">wrong answers on the negative cases</span>. And it must run
+against the real engine, not a copy of it, or it will certify something that is not what ships.</p>
+
+<hr>
+
+<h2>4. The plan</h2>
+
+<div class="panel">
+  <div class="phase"><span class="pill">STEP 1</span><div>
+    <p style="margin:0"><span class="k">Build the harness and fill it.</span> The case format, the runner,
+    the capture command, and every case we can get - your four, plus negatives for each, plus whatever the
+    fleet is showing right now. Nothing else changes. The output is a table that says which of your real
+    problems the engine can and cannot handle, measured rather than argued.</p>
+  </div></div>
+</div>
+
+<div class="panel">
+  <div class="phase"><span class="pill">STEP 2</span><div>
+    <p style="margin:0 0 10px"><span class="k">Fix the model choice, which the harness will have
+    settled.</span> Today's evaluating call asks a reasoning model to write six hundred characters of JSON
+    and times out about one time in three. The replacement is a yes/no question answered in
+    <span class="k">0.4 seconds</span> by the cheap model, with the text to type decided when you wrote the
+    rule and approved by you - which is safer as well as faster, because nothing is composed at 3am that
+    you have never seen.</p>
+    <p style="margin:0">This is small and it is the difference between a feature that works one time in
+    three and one that works.</p>
+  </div></div>
+</div>
+
+<div class="panel">
+  <div class="phase"><span class="pill">STEP 3</span><div>
+    <p style="margin:0 0 10px"><span class="k">The clock.</span> Your most common case. A rule needs to be
+    able to say "not now - come back at 3am", which means something has to wake a session that is not
+    doing anything. That is a scheduled re-look, and DevThrottle already runs schedules.</p>
+    <p style="margin:0">This is the single highest-value gap, because it is the one that had everything
+    sitting there all night.</p>
+  </div></div>
+</div>
+
+<div class="panel">
+  <div class="phase"><span class="pill">STEP 4</span><div>
+    <p style="margin:0 0 10px"><span class="k">Actions that are not one keystroke.</span> The login case
+    needs a sequence, and two of its steps reach off the screen - a browser, and your email.</p>
+    <p style="margin:0">One correction to what you said, and it makes this cheaper than it sounds: the
+    rules engine does <span class="k">not</span> have to move into the Director. It already works this
+    way - the Gateway decides and the Director acts, because that is how the typing gets done. What is
+    missing is not a home for the engine, it is <span class="k">vocabulary</span>: Director-side steps we
+    write and review, like "open this link" and "read the newest sign-in code out of the email". The
+    decision stays where it is. And these are our code, never the model's - exactly the ruling that is
+    already settled.</p>
+  </div></div>
+</div>
+
+<div class="panel">
+  <div class="phase"><span class="pill">STEP 5</span><div>
+    <p style="margin:0"><span class="k">The colour.</span> Decide whether "only tell me when it actually
+    needs me" is a product fix or a rule. My view is above: fix it centrally, and let a rule be the
+    exception. Worth doing after the harness has a few real red-but-did-not-need-you screens in it, because
+    that is the evidence for whether the distinction is even reliably readable.</p>
+  </div></div>
+</div>
+
+<hr>
+
+<h2>5. What I would like you to decide</h2>
+<ul>
+  <li><span class="k">Is this the right order?</span> Harness first, then the model fix, then the clock.
+  The clock is your most painful case, so there is an argument for it going second.</li>
+  <li><span class="k">How do we get real screens?</span> The fastest is a capture command you run when a
+  session stops on something. Would you use that, or should it capture automatically from the fleet?</li>
+  <li><span class="k">Anything still on disk from last night?</span> Those two incidents are the best cases
+  we will ever have and I do not want to reconstruct them from memory.</li>
+</ul>
+
+<hr>
+
+<h2>What is true right now</h2>
+<ul>
+  <li>Nothing is committed. Everything discussed is in a worktree.</li>
+  <li>Making a rule by talking works, and was proven against the live model.</li>
+  <li>Running a rule works for exactly one of your four cases, and fails about one time in three while it
+  does it.</li>
+  <li>A defect found on the way: three rules routes shipped without a cross-tenant verdict, and the test
+  that would have caught it had never been run. Fixed, with a probe that fails when the partition is
+  removed.</li>
+</ul>
+
+</div>
