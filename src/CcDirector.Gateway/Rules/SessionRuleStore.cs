@@ -96,9 +96,6 @@ public sealed class SessionRuleStore : IRuleReading
         // THE WORDS CARRY EVIDENCE OR THEY ARE NOT STORED (fix round E, ruling E1). Not "some evidence":
         // evidence for exactly these words, spent by this write.
         if (evidence is null)
-            evidence = RuleGroundingEvidence.Minted(new RuleScreenReading("probe", RuleSessionOrigin.None, string.Join("
-", words)), words);
-        if (evidence is null)
             throw new RuleRejectedException(
                 "a rule's trigger words are stored only with evidence that they were checked against the " +
                 "session's screen, and this call carried none. The words are read off a real screen by the " +
