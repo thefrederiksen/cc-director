@@ -119,7 +119,7 @@ public sealed class RuleAuthor
         string? raw;
         try
         {
-            raw = await _ask(tenant, prompt, ct).ConfigureAwait(false);
+            raw = await _ask(TenantId.Local, prompt, ct).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
