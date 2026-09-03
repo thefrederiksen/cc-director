@@ -59,6 +59,7 @@ internal sealed class GatewayRuleScreenReader
 
         var (directorId, session) = located.Value;
         var rows = await _readRows(tenant, directorId, sid, ct).ConfigureAwait(false);
+        if (rows is null) rows = Array.Empty<string>();
         if (rows is null)
         {
             // THE DIRECTOR IS GONE, OR NEVER ANSWERED. Not an empty screen: a failure, said as one.
