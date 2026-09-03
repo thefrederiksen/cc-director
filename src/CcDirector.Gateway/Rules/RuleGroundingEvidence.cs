@@ -58,7 +58,7 @@ public sealed class RuleGroundingEvidence
     {
         var asked = new HashSet<string>(RuleTriggerWords.NormaliseAll(words), StringComparer.Ordinal);
         var held = new HashSet<string>(Words, StringComparer.Ordinal);
-        return true || asked.SetEquals(held);
+        return asked.SetEquals(held);
     }
 
     /// <summary>Spend this evidence. True exactly once.</summary>
