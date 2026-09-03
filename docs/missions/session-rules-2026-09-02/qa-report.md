@@ -1,6 +1,6 @@
 # Session Rules - the QA report
 
-**Status: IN PROGRESS. Every row below is either evidence with its exit code and the commit it ran
+**Status: DONE - merged to main on 3 September 2026 as pull request 2665, commit d447736c1. Every row below is either evidence with its exit code and the commit it ran
 on, or the word PENDING. Nothing here is written ahead of the run that proves it.**
 
 This report accumulates from the first proof onward rather than being written at the end, so that a
@@ -393,9 +393,19 @@ Three firings: what it would have done, what it did, and what it refused to do.
 
 ## 5. How to write a rule
 
-Short, plain, from the real screen.
+The full explanation is `how-to-write-a-rule.md`, and it deliberately separates what is BUILT from
+what is DESIGNED BUT NOT BUILT, because an earlier draft of it told the owner to press a button that
+does not exist.
 
-**PENDING.**
+**The short version, honestly.** A rule is a standing instruction. Today it is created over the
+Gateway's own interface and its derived parts - the description of the screen to watch for, and the
+cheap trigger words - are written BY HAND rather than worked out from your sentence. Your sentence is
+stored as the authority. It is always created in dry run, and the create path has no state argument
+at all, so there is no way to create a live rule; a person promotes it afterwards, and promotion now
+requires an inbound request that automated code cannot manufacture.
+
+**What is not built:** saying it in English and having a model build the rest. That is the whole
+point of the design and it is the next phase. See row 1.
 
 ## 6. What is NOT proven
 
@@ -615,3 +625,56 @@ whole point of writing the number down.
 | All rules tests, after the honest send outcome | `79f699c82` | 0 | 128 passed, 0 failed |
 | Local gate, `scripts/test-local.ps1` | `f1bc6ca50` | 0 | all 9 projects Completed; 4654 passed, 2 skipped |
 | Parked `CcDirector.Gateway.Tests`, filtered to the turn-end wiring | `f1bc6ca50` | 124 (timeout) | **PENDING** - ZERO tests ran. The machine-wide lock was held by another session throughout: `Still waiting after 481s. Holder: process 49548 ... owner cc-director session 68ca6abb-7bac-41f8-9168-5be5f6b897d4, working directory D:\ReposFred\devthrottle-supervised\...`. A zero-test timeout is a QUEUE, not a broken build. |
+
+
+---
+
+## FINAL - what is proven, and what is not, as merged
+
+Merged to `main` on 3 September 2026, pull request 2665, commit `d447736c1`.
+
+### Proven
+
+| Row | Status |
+| --- | --- |
+| 1. A rule created from plain English | **NOT PROVEN** - authoring by conversation is not built |
+| 2. Words on a screen, something happens because a rule said so | **PROVEN**, on a real session |
+| 3. A real provider limit recovers with nobody watching | **NOT PROVEN** - see below, and not faked |
+| 4. The negative control - the boundary | **PROVEN**, both halves |
+| 5. How to write a rule | **DONE** - above, and `how-to-write-a-rule.md` |
+
+### The gate, on the merged tree
+
+`.\scripts	est-local.ps1`: eight of nine projects Completed. `CcDirector.Gateway.UnitTests` was
+STOPPED by the 120-second parallel budget rather than failing; run alone it is **Failed 0, Passed
+3467, Skipped 2, Total 3469, exit code 0, 91 seconds**.
+
+### What is NOT proven, plainly
+
+- **You cannot yet create a rule by talking to it.** A rule's trigger words and screen description are
+  written by hand today. This is the heart of the design and it is the next thing to build.
+- **No session genuinely out of model allowance was ever recovered.** No real limit occurred during
+  the run, and a printed line is not a real block - confusing the two would prove the opposite of what
+  it claims. The mechanism is proven end to end by row 2; the recovery itself is not.
+- **The demonstration quoted above is slightly stale.** A later fix changed how an unanswered send is
+  recorded, so the second firing shown is not the exact shape the product produces today.
+- **Neither parked test suite ran, all day.** Every attempt queued behind another mission or a release
+  gate, and the machine-wide lock waits 45 minutes for a suite that takes 48.88, so a queued run can
+  only ever collect zero tests. The pull request's own run is the first whole-solution coverage.
+- **Nothing ran hosted, against Postgres, or over HTTP.** The promotion boundary is proved against a
+  constructed request object, not the live middleware.
+- **Grounding is a floor, not faithfulness.** A rule's stated reason must now cite something that is
+  actually on the screen. That does not make the conclusion drawn from it correct - it makes it
+  checkable by a person reading the record. On one run before this bound existed, an agent's reason
+  quoted words that had been on that session's screen twelve minutes earlier, in a different run.
+- **There is no user interface.** No Rules page, on desktop or phone.
+- **An overlapping pass is dropped, not queued.** That is the safe direction and it is deliberate, but
+  a turn-end arriving during a slow pass produces no evaluation at all, and nobody has measured how
+  often that happens.
+
+### What was withdrawn rather than reworded
+
+Six claims could not be made true and were DELETED: three red-first claims that did not reproduce
+from the commits they named, a grounding verdict that read an absence as a positive result, the claim
+that an unconfirmed send was text typed into a session, and a red row that named a working tree
+rather than a commit. The test runner that let a zero-test run report success now exits with an error.
