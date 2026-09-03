@@ -194,3 +194,25 @@ at the first newline. Write the detail to
 `docs/missions/session-rules-2026-09-02/fix-round-d-report.md`, one section per ruling, saying for each
 whether it is closed and what proves it. Name that file in your one line. Do not open a pull request
 and do not merge; only the Architect lands work on main.
+
+---
+
+## RULING D11 - added after the guard fix, because the guard turned out to be the ONLY thing standing there
+
+The guard fix (`dd78fd878`, finding 1) closed correctly, but its report named a fourth thing it could
+not close and was right to: **`RulePromotionGrant` would accept a session key.** The route guard is
+therefore the single mechanism preventing an agent credential from arming a rule - and the owner named
+that exact transition as the one real exposure in the whole feature.
+
+One mechanism is not enough for the one thing that matters most, and this repository has a name for
+why: authentication is not authorization. The route list said "this credential may not come through
+this door" and nothing at the destination asked "who is this?". That is the shape the original blocker
+had - a decision made in one place that a second place never learned about.
+
+**Refuse promotion at the grant as well, on the credential itself, not on the route.** A session key
+that somehow reaches `RulePromotionGrant` is refused there with its own sentence. The two checks are
+deliberately redundant: the route guard is the boundary, and this is the thing that still holds when a
+future route change moves the boundary without anybody noticing.
+
+Test it directly - construct a promotion attempt carrying a session-key identity and assert the
+refusal - so it does not depend on the route guard being correct in order to pass.
