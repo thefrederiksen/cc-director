@@ -174,3 +174,48 @@ Scenario B (the provider outage) needs a cooldown-bounded wait and retry, which 
 already provide; it does not depend on the clock. Scenario C (the negative control) is largely proven
 already as row 4 of `qa-report.md`, but must be RE-RUN on the fast model, because that re-run is the
 stated gate on the owner's decision 1 - and it must be a LIVE rule, not a dry run.
+
+---
+
+## Inspection D came back FAIL. Fix round D is the state of the mission.
+
+An independent inspector from a different agent family returned **ten findings: one blocker, four
+high, five medium** (`inspection-d.md`). Accepted in full. **Pull requests 2671 and 2672 do NOT merge
+until fix round D is done.** The rulings are in `fix-round-d.md`, one per finding, and they are the
+Architect's - where a finding could be closed either by fixing code or by withdrawing a claim, the
+ruling says which.
+
+The blocker was the `SessionKeyGuard` gap the Architect had already found and seated; the inspector
+finding it independently is what makes it evidence rather than an opinion.
+
+**The one ruling that changes the architecture, D2.** Grounding - the headline safety claim - was
+optional, caller-asserted, checked against different text than the model was shown, and defeatable by
+whitespace. Rather than patch four holes, the draft route stops accepting a caller-supplied screen at
+all: it takes a SESSION ID and the Gateway reads that session's screen itself, and the same check runs
+again at the create route, which is the one write gate. That makes an ungrounded rule structurally
+impossible instead of merely refused, closes finding 3 with it, and **subsumes the screen-reading half
+of Phase 3** - Phase 3 becomes the conversation loop only.
+
+**Two things the inspection CLEARED,** and they are worth keeping because they are the owner's hardest
+rulings:
+
+- **No generated code runs anywhere.** No path parses, compiles or evaluates program text; an answer
+  names a registry entry and typed argument values, and no argument is interpreted as a pattern,
+  expression, format string or program.
+- **A draft cannot promote itself.** Draft writes nothing, create ignores state fields, the store
+  constructs a dry run.
+
+**Two numbers in fix round D are the Architect's, not the owner's, and the report must say so:** the
+ceiling bounds (cooldown at least 60 seconds and at most 24 hours; daily cap at least 1 and at most
+100), chosen so a live rule cannot type more than a hundred times a day. The owner can widen them. An
+invented bound presented as his decision is the defect this mission keeps naming.
+
+## Briefs now written and waiting, so a Manager can be seated without designing anything
+
+| Brief | Covers |
+| --- | --- |
+| `fix-round-d.md` | The ten findings. **Next up, and it blocks both pull requests** |
+| `phase-0-brief.md` | The harness. Names where real screens come from and why no screen store is to be built |
+| `phase-1-fast-model-brief.md` | The run-time call. **Establishes that this is a store change with a migration, not a model swap** |
+| `phase-2-clock-brief.md` | The clock. **Corrects the plan: not cron jobs, not snooze - a rule-owned wake swept in the shape of `CronEngine`** |
+| `demonstrations-brief.md` | The three scenarios and what each must not be allowed to fake |
