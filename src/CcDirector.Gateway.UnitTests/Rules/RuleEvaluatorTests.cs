@@ -77,8 +77,22 @@ public sealed class RuleEvaluatorTests
 
         public IReadOnlyList<SessionRule> Rules(TenantId tenant) => StoredRules;
 
-        public IReadOnlyList<SessionRuleFiring> FiringsFor(TenantId tenant, Guid ruleId) =>
-            StoredFirings.Where(f => f.RuleId == ruleId).ToList();
+        /// <summary>Run just before the firings are read, which is INSIDE the free checks and therefore
+        /// before the evaluator has recorded that it has looked at this screen. That is the exact window an
+        /// overlapping pass arrives in, so it is where a test has to hold one pass to make the overlap
+        /// deterministic rather than hoping for a race.</summary>
+        public Action? BeforeReadingFirings { get; set; }
+
+        /// <summary>Whether a firing this environment is told about becomes visible to the free checks, the
+        /// way a real store's does. Off by default so the tests written before it keep their exact shape;
+        /// on, it is what makes the cooldown and the daily cap real in a test rather than assumed.</summary>
+        public bool FiringsAreVisibleToTheFreeChecks { get; set; }
+
+        public IReadOnlyList<SessionRuleFiring> FiringsFor(TenantId tenant, Guid ruleId)
+        {
+            BeforeReadingFirings?.Invoke();
+            return StoredFirings.Where(f => f.RuleId == ruleId).ToList();
+        }
 
         /// <summary>The repository the session is working in. Settable so a test can give it a string that
         /// could not appear by accident and then look for it where it must not be.</summary>
@@ -105,11 +119,20 @@ public sealed class RuleEvaluatorTests
         public Task<RuleSendResult> TypeIntoSessionAsync(
             TenantId tenant, string directorId, string sessionId, string text, CancellationToken ct)
         {
-            Typed.Add(text);
+            lock (Typed) Typed.Add(text);
             return Task.FromResult(SendResult);
         }
 
-        public void RecordFiring(TenantId tenant, RuleFiringDraft draft) => Recorded.Add(draft);
+        public void RecordFiring(TenantId tenant, RuleFiringDraft draft)
+        {
+            lock (Recorded) Recorded.Add(draft);
+            if (!FiringsAreVisibleToTheFreeChecks) return;
+            lock (StoredFirings)
+                StoredFirings.Add(new SessionRuleFiring(
+                    Guid.NewGuid(), draft.RuleId, draft.SessionId, NowUtc, draft.ScreenText,
+                    draft.Understanding, draft.Decision, draft.Reason, draft.Runs, draft.TypedText,
+                    draft.Outcome, draft.Grounding));
+        }
     }
 
     private static SessionRule Rule(
@@ -627,6 +650,61 @@ public sealed class RuleEvaluatorTests
 
         Assert.Equal(RulePassOutcomes.Acted, pass.What);
         Assert.Equal("/usage-credits", Assert.Single(env.Typed));
+    }
+
+    // ---- two passes on one session ------------------------------------------------------------------
+
+    /// <summary>
+    /// TWO OVERLAPPING PASSES ON ONE SESSION MUST NOT BOTH ACT, and this is the shape that let them.
+    ///
+    /// Every turn-end signal starts its own pass, and the free checks read a rule's prior firings BEFORE the
+    /// agent call and before anything is typed. Two passes that overlap in that window both see no act yet,
+    /// and both go on to act - past the cooldown and past the daily cap, because both were counted against a
+    /// state that neither of them had written to yet. The independent inspection of landing B proved exactly
+    /// that with a synchronised probe: two evaluations, two sends, two firing records.
+    ///
+    /// A CEILING A RACE CAN WALK THROUGH IS NOT A CEILING, and an agent in a loop is the worst tail risk
+    /// this feature has. So the test holds the first pass open in the window the inspection used - inside the
+    /// firings read - runs a second pass to completion while it is held, and requires that exactly one send
+    /// and exactly one act reach the world.
+    /// </summary>
+    [Fact]
+    public async Task Two_passes_that_overlap_on_one_session_act_once_and_the_second_says_why()
+    {
+        var rule = Rule(state: RuleState.Live);
+        var env = EnvironmentWith(rule);
+        env.FiringsAreVisibleToTheFreeChecks = true;
+        env.AgentReply = ActReply(rule.Id);
+
+        // One evaluator, because production holds one: the Gateway arms a single evaluator and every
+        // turn-end signal calls it. Two evaluator objects would be a different question than the one asked.
+        var evaluator = new RuleEvaluator(env);
+
+        var firstPassIsInTheWindow = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var letTheFirstPassGo = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var readers = 0;
+        env.BeforeReadingFirings = () =>
+        {
+            // ONLY the first reader is held. A gate that held every reader would deadlock the fixed code as
+            // surely as it would hold the broken code, and a test that cannot finish proves nothing.
+            if (Interlocked.Increment(ref readers) != 1) return;
+            firstPassIsInTheWindow.SetResult();
+            letTheFirstPassGo.Task.Wait(TimeSpan.FromSeconds(30));
+        };
+
+        var first = Task.Run(() => evaluator.EvaluateAsync(Tenant, DirectorId, SessionId, CancellationToken.None));
+        await firstPassIsInTheWindow.Task.WaitAsync(TimeSpan.FromSeconds(30));
+
+        var second = await evaluator.EvaluateAsync(Tenant, DirectorId, SessionId, CancellationToken.None);
+
+        letTheFirstPassGo.SetResult();
+        var firstPass = await first.WaitAsync(TimeSpan.FromSeconds(30));
+
+        Assert.Equal(RulePassOutcomes.Acted, firstPass.What);
+        Assert.Equal(RulePassOutcomes.AlreadyEvaluating, second.What);
+        Assert.Equal("/usage-credits", Assert.Single(env.Typed));
+        Assert.Single(env.Recorded, r => r.Decision == RuleDecisions.Act);
+        Assert.Empty(second.Recorded);
     }
 
     private static string ScreenTextOf(RuleFiringDraft draft) =>

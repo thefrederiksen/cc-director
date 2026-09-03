@@ -31,6 +31,11 @@ public static class RulePassOutcomes
     /// <summary>The pass stopped before any rule was considered (working, or the screen did not change).</summary>
     public const string StoppedBeforeAnyRule = "stopped-before-any-rule";
 
+    /// <summary>A pass on this same session was already in flight, so this one did nothing. See the
+    /// serialisation comment on <see cref="RuleEvaluator"/>: two passes that overlap can both act past the
+    /// cooldown and past the daily cap, because both read the firing record before either wrote to it.</summary>
+    public const string AlreadyEvaluating = "already-evaluating";
+
     /// <summary>Every rule was considered and passed over, each with its reason.</summary>
     public const string NoCandidates = "no-candidates";
 
