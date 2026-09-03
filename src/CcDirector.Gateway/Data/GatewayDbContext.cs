@@ -50,20 +50,32 @@ public sealed class GatewayDbContext : DbContext
     /// </summary>
     internal Guid? PromotionInEffect { get; set; }
 
+    /// <summary>
+    /// True for exactly as long as a save that has been through <see cref="GuardRuleWrites"/> is issuing
+    /// its statements. <see cref="RuleTableWriteInterceptor"/> reads it to tell a gated write from a bulk
+    /// statement that never met the gate at all.
+    /// </summary>
+    internal bool SavingThroughTheGate { get; private set; }
+
     /// <inheritdoc />
     public override int SaveChanges(bool acceptAllChangesOnSuccess)
     {
         GuardRuleWrites();
-        return base.SaveChanges(acceptAllChangesOnSuccess);
+        SavingThroughTheGate = true;
+        try { return base.SaveChanges(acceptAllChangesOnSuccess); }
+        finally { SavingThroughTheGate = false; }
     }
 
     /// <inheritdoc />
-    public override Task<int> SaveChangesAsync(
+    public override async Task<int> SaveChangesAsync(
         bool acceptAllChangesOnSuccess, CancellationToken cancellationToken = default)
     {
         GuardRuleWrites();
-        return base.SaveChangesAsync(acceptAllChangesOnSuccess, cancellationToken);
+        SavingThroughTheGate = true;
+        try { return await base.SaveChangesAsync(acceptAllChangesOnSuccess, cancellationToken); }
+        finally { SavingThroughTheGate = false; }
     }
+
 
     /// <summary>
     /// THE WRITE GATE FOR SESSION RULES, AND IT IS HERE BECAUSE HERE IS WHERE IT CANNOT BE GONE ROUND.
@@ -102,8 +114,10 @@ public sealed class GatewayDbContext : DbContext
                     $"this rule says it belongs to '{rule.TenantId}', and this connection belongs to " +
                     $"'{ActiveTenant}'. A rule is written into the account that is writing it.");
 
-            var validation = Rules.RuleCallValidator.ValidateAll(rule.Calls, Rules.RulePrimitiveRegistry.Default);
-            if (!validation.IsValid) throw new Rules.RuleRejectedException(validation.Reason);
+            // EVERYTHING A RULE HAS TO BE, from the one place that says so. This used to check the call
+            // document alone, so a rule with no instruction, no screen description, no trigger words and
+            // no ceilings passed the gate while the store refused every one of them.
+            Rules.SessionRuleRecordRules.CheckRule(rule, Rules.RulePrimitiveRegistry.Default);
 
             if (entry.State == EntityState.Added && !string.Equals(rule.State, DryRunState, StringComparison.Ordinal))
                 throw new Rules.RuleRejectedException(
@@ -117,6 +131,31 @@ public sealed class GatewayDbContext : DbContext
                 throw new Rules.RuleRejectedException(
                     "a rule is moved out of dry run by a person, and this write carried no evidence that a " +
                     "person asked. Nothing that runs on its own can promote a rule.");
+        }
+
+        // THE RECORD IS GATED TOO, AND IT WAS NOT. The firing table had no gate at all, so an invented row
+        // saying nothing could be written straight through the context and read back later as evidence of
+        // something that never happened. The record is the product; a row nobody can trust is worse than no
+        // row, because a reader trusts it.
+        foreach (var entry in ChangeTracker.Entries<SessionRuleFiringEntity>())
+        {
+            if (entry.State != EntityState.Added && entry.State != EntityState.Modified) continue;
+            var firing = entry.Entity;
+
+            if (!string.Equals(firing.TenantId, ActiveTenant, StringComparison.Ordinal))
+                throw new Rules.RuleRejectedException(
+                    $"this firing says it belongs to '{firing.TenantId}', and this connection belongs to " +
+                    $"'{ActiveTenant}'. A record is written into the account it happened in.");
+
+            // The rule's stored state, read through this same scoped context, because "may this firing say
+            // it typed something" is a question about the rule and not about the row being written.
+            var state = SessionRules.AsNoTracking()
+                .Where(r => r.Id == firing.RuleId)
+                .Select(r => r.State)
+                .FirstOrDefault();
+
+            Rules.SessionRuleRecordRules.CheckFiring(
+                firing, Rules.RulePrimitiveRegistry.Default, state, DryRunState);
         }
     }
 
@@ -309,11 +348,16 @@ public sealed class GatewayDbContext : DbContext
 
     /// <summary>Standing instructions the account gave in English (<c>session_rules</c>, the Session Rules
     /// mission). A rule holds the sentence itself plus what a model derived from it - never code.</summary>
-    public DbSet<SessionRuleEntity> SessionRules => Set<SessionRuleEntity>();
+    /// <remarks>INTERNAL on purpose. A rule is written through the rule store, which is where a rule is
+    /// checked and where dry run is enforced; a DbSet other assemblies could reach is a second write
+    /// surface that no comment can make safe. Inside this assembly the gate above, the interceptor, and a
+    /// structural test over the built code are what stand in the way.</remarks>
+    internal DbSet<SessionRuleEntity> SessionRules => Set<SessionRuleEntity>();
 
     /// <summary>The record of every rule firing (<c>session_rule_firings</c>) - screen, understanding,
     /// decision, reason, which verified checks ran, what was typed, and what happened next.</summary>
-    public DbSet<SessionRuleFiringEntity> SessionRuleFirings => Set<SessionRuleFiringEntity>();
+    /// <remarks>INTERNAL, for the same reason as <see cref="SessionRules"/>: the record is the product.</remarks>
+    internal DbSet<SessionRuleFiringEntity> SessionRuleFirings => Set<SessionRuleFiringEntity>();
 
     /// <summary>Serializer options for the skill metadata column. One shared instance: constructing
     /// fresh options per call defeats the serializer's internal caching.</summary>
