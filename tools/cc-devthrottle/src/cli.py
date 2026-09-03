@@ -17,6 +17,7 @@ from . import mission_ops
 from . import schedule_ops
 from . import settings_ops
 from . import setup_ops
+from . import rule_ops
 from . import skill_ops
 from . import workflow_ops
 from .session_ops import (
@@ -74,6 +75,11 @@ workflow_app = typer.Typer(
     add_completion=False,
     no_args_is_help=True,
 )
+rule_app = typer.Typer(
+    help="Set up Session Rules - standing instructions that watch a session's screen and act on it.",
+    add_completion=False,
+    no_args_is_help=True,
+)
 skill_app = typer.Typer(
     help="Read and author fleet Skills (central capabilities held on the Gateway, fetched on use).",
     add_completion=False,
@@ -113,6 +119,7 @@ app.add_typer(message_app, name="message")
 app.add_typer(settings_app, name="settings")
 app.add_typer(schedule_app, name="schedule")
 app.add_typer(workflow_app, name="workflow")
+app.add_typer(rule_app, name="rule")
 app.add_typer(skill_app, name="skill")
 app.add_typer(setup_app, name="setup")
 app.add_typer(email_app, name="email")
@@ -531,6 +538,52 @@ _ACTIONS = [
         "command": "cc-devthrottle schedule endpoint",
         "mutatesState": False,
         "args": [],
+    },
+    {
+        "id": "rule-list",
+        "description": "List this account's Session Rules - standing instructions that watch a session's screen and act on it.",
+        "command": "cc-devthrottle rule list",
+        "mutatesState": False,
+        "args": [],
+    },
+    {
+        "id": "rule-show",
+        "description": "Show one rule and every time it has fired, including the times it decided NOT to act.",
+        "command": "cc-devthrottle rule show <id>",
+        "mutatesState": False,
+        "args": [{"name": "id", "required": True}],
+    },
+    {
+        "id": "rule-screen",
+        "description": "Print a session's terminal as it is right now - the screen a rule would be written against. Nothing stores terminal output, so this is the only way to see it.",
+        "command": "cc-devthrottle rule screen <session>",
+        "mutatesState": False,
+        "args": [{"name": "session", "required": True}, {"name": "lines", "required": False}],
+    },
+    {
+        "id": "rule-draft",
+        "description": "Work out a rule from a plain-English sentence and print it WITHOUT storing it. Pass --session to read that session's screen first, which is what stops the trigger words being a guess.",
+        "command": 'cc-devthrottle rule draft "<what you want>" [--session <session>]',
+        "mutatesState": False,
+        "args": [{"name": "said", "required": True}, {"name": "session", "required": False}],
+    },
+    {
+        "id": "rule-add",
+        "description": "Set up a Session Rule from a plain-English sentence. ALWAYS stored in dry run - it watches, records what it would have done, and types nothing until a person makes it live in the Cockpit. Pass --session to read that session's screen first; without it the words the rule watches for are guessed and the rule may never fire. A rule written against a session is for THAT SESSION'S AGENT only, by default; pass --all-agents to make it a rule for every agent.",
+        "command": 'cc-devthrottle rule add "<what you want>" --session <session> [--all-agents]',
+        "mutatesState": True,
+        "args": [
+            {"name": "said", "required": True},
+            {"name": "session", "required": False},
+            {"name": "all-agents", "required": False},
+        ],
+    },
+    {
+        "id": "rule-delete",
+        "description": "Delete a Session Rule. Its firing record is kept.",
+        "command": "cc-devthrottle rule delete <id>",
+        "mutatesState": True,
+        "args": [{"name": "id", "required": True}],
     },
     {
         "id": "skill-list",
@@ -1548,6 +1601,86 @@ def skill_main(
 ) -> None:
     """Read and author fleet Skills (central capabilities held on the Gateway, fetched on use)."""
     skill_ops.set_gateway_override(gateway)
+
+
+# ---- Session Rules -------------------------------------------------------------------------------
+#
+# A rule is a standing instruction: when a session stops with something on its screen that looks like
+# the thing you described, do what you asked. These commands exist so an AGENT can set one up - point a
+# coding agent at a session, tell it the problem, and let it do the authoring.
+#
+# `rule add` reads the named session's terminal first, and the Gateway refuses any trigger word that is
+# not on that screen. Written blind, the words are a guess at what a screen says - and a rule watching
+# for a word that never appears never fires while looking perfectly correct in the list.
+#
+# There is no `promote` here on purpose: everything below stores a rule that watches and types nothing.
+# See the note at the top of rule_ops.py.
+
+
+@rule_app.command("list")
+def rule_list(
+    json_output: bool = typer.Option(False, "--json", help="Print as JSON."),
+) -> None:
+    """List this account's standing instructions."""
+    rule_ops.list_rules(json_output)
+
+
+@rule_app.command("show")
+def rule_show(
+    rule_id: str = typer.Argument(..., help="The rule's id."),
+    json_output: bool = typer.Option(False, "--json", help="Print as JSON."),
+) -> None:
+    """Show one rule and everything it has ever done - a decline is a firing too."""
+    rule_ops.show_rule(rule_id, json_output)
+
+
+@rule_app.command("screen")
+def rule_screen(
+    target: str = typer.Argument(..., help="Session number, id prefix, or name."),
+    lines: int = typer.Option(60, "--lines", help="How many lines of the screen to read."),
+) -> None:
+    """Print a session's terminal RIGHT NOW - the screen a rule would be written against."""
+    rule_ops.show_screen(target, lines)
+
+
+@rule_app.command("draft")
+def rule_draft(
+    said: str = typer.Argument(..., help="What you want the rule to do, in plain English."),
+    session: str = typer.Option(None, "--session", help="Read this session's screen first (strongly advised)."),
+    lines: int = typer.Option(60, "--lines", help="How many lines of the screen to read."),
+    json_output: bool = typer.Option(False, "--json", help="Print as JSON."),
+    all_agents: bool = typer.Option(
+        False,
+        "--all-agents",
+        help="This rule is for EVERY agent (the star). Without it, a rule written against a session is for that session's agent only.",
+    ),
+) -> None:
+    """Work out a rule and print it. STORES NOTHING."""
+    rule_ops.draft_rule(said, session, lines, json_output, all_agents)
+
+
+@rule_app.command("add")
+def rule_add(
+    said: str = typer.Argument(..., help="What you want the rule to do, in plain English."),
+    session: str = typer.Option(None, "--session", help="Read this session's screen first (strongly advised)."),
+    lines: int = typer.Option(60, "--lines", help="How many lines of the screen to read."),
+    json_output: bool = typer.Option(False, "--json", help="Print as JSON."),
+    all_agents: bool = typer.Option(
+        False,
+        "--all-agents",
+        help="This rule is for EVERY agent (the star). Without it, a rule written against a session is for that session's agent only.",
+    ),
+) -> None:
+    """Work out a rule and store it. ALWAYS stored in dry run - it watches and types nothing."""
+    rule_ops.add_rule(said, session, lines, json_output, all_agents)
+
+
+@rule_app.command("delete")
+def rule_delete(
+    rule_id: str = typer.Argument(..., help="The rule's id."),
+) -> None:
+    """Delete a rule. Its firings are kept - the record outlives the rule."""
+    rule_ops.delete_rule(rule_id)
 
 
 @skill_app.command("list")
