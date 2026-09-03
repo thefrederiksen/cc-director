@@ -273,4 +273,102 @@ public sealed class RuleAgentContractTests
         Assert.Null(reading.Reply);
         Assert.Contains("the_users_password", reading.Refusal);
     }
+
+    // ---- a malformed check collection is a refusal, never "no checks" -------------------------------
+
+    /// <summary>
+    /// A MALFORMED CHECK COLLECTION MUST NOT SILENTLY BECOME NO CHECKS.
+    ///
+    /// The reader took the checks only when the property was an ARRAY. A missing property, an object, a
+    /// number - each of those quietly produced an empty list, and the act went ahead as though the agent
+    /// had asked for no checks at all. The checks are the safety half of the reply: path containment,
+    /// freshness, whether the failure is even still on the screen. A check that disappears takes its
+    /// refusal with it, and the shape that swallowed it is an absence being read as a clean result.
+    ///
+    /// An EMPTY ARRAY stays legal and means what it says - the agent asked for no checks - so the reply
+    /// can still tell "I want none" from "I said nothing".
+    /// </summary>
+    [Theory]
+    [InlineData("{ }", "an object")]
+    [InlineData("7", "a number")]
+    [InlineData("\"matches_any\"", "a string")]
+    [InlineData("null", "null")]
+    public void A_checks_collection_that_is_not_an_array_is_refused(string checks, string what)
+    {
+        var rule = Rule();
+        var raw = $$"""
+        {
+          "rule_id": "{{rule.Id}}", "understanding": "u", "decision": "act",
+          "reason": "the screen says 'reached your Fable 5 limit'.", "type": "/usage-credits",
+          "checks": {{checks}}
+        }
+        """;
+
+        var reading = RuleAgentContract.Read(raw, new[] { rule }, Registry);
+
+        Assert.Null(reading.Reply);
+        Assert.Contains("checks", reading.Refusal, StringComparison.OrdinalIgnoreCase);
+        Assert.False(string.IsNullOrWhiteSpace(reading.Refusal), "a refusal for " + what + " has to say why.");
+    }
+
+    [Fact]
+    public void A_reply_with_no_checks_property_at_all_is_refused()
+    {
+        var rule = Rule();
+        var raw = $$"""
+        {
+          "rule_id": "{{rule.Id}}", "understanding": "u", "decision": "act",
+          "reason": "the screen says 'reached your Fable 5 limit'.", "type": "/usage-credits"
+        }
+        """;
+
+        var reading = RuleAgentContract.Read(raw, new[] { rule }, Registry);
+
+        Assert.Null(reading.Reply);
+        Assert.Contains("checks", reading.Refusal, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void An_empty_checks_array_is_accepted_and_means_no_checks_were_asked_for()
+    {
+        // THE PRESENCE. A reader that refused every checks value would pass every assertion above while
+        // making a reply with nothing to check impossible - which is a legitimate reply.
+        var rule = Rule();
+        var raw = $$"""
+        {
+          "rule_id": "{{rule.Id}}", "understanding": "u", "decision": "act",
+          "reason": "the screen says 'reached your Fable 5 limit'.", "type": "/usage-credits",
+          "checks": []
+        }
+        """;
+
+        var reading = RuleAgentContract.Read(raw, new[] { rule }, Registry);
+
+        Assert.Null(reading.Refusal);
+        Assert.NotNull(reading.Reply);
+        Assert.Empty(reading.Reply!.Checks);
+    }
+
+    // ---- an act with no reason is not an answer -----------------------------------------------------
+
+    [Fact]
+    public void An_act_with_a_blank_reason_is_refused_at_the_reply_boundary()
+    {
+        // The record cannot be written without a reason - the store refuses it - so an act whose reason is
+        // blank is an act that CANNOT BE RECORDED. Letting it through the reply boundary means the send
+        // happens and the record that was supposed to account for it is then rejected. The boundary is
+        // where this belongs: nothing downstream can put the reason back.
+        var rule = Rule();
+        var raw = $$"""
+        {
+          "rule_id": "{{rule.Id}}", "understanding": "u", "decision": "act", "reason": "   ",
+          "type": "/usage-credits", "checks": []
+        }
+        """;
+
+        var reading = RuleAgentContract.Read(raw, new[] { rule }, Registry);
+
+        Assert.Null(reading.Reply);
+        Assert.Contains("reason", reading.Refusal, StringComparison.OrdinalIgnoreCase);
+    }
 }

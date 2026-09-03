@@ -58,8 +58,8 @@ public static class RulePassOutcomes
     /// <summary>The rule is live, the text was typed, and the route confirmed it started a turn.</summary>
     public const string Acted = "acted";
 
-    /// <summary>The text was typed and the route would not confirm it started a turn. NOT a failure:
-    /// see <see cref="RuleSendResult.NotConfirmed"/>.</summary>
+    /// <summary>The send left this Gateway and nothing confirmed what became of it. The record names the
+    /// text that was sent and does NOT claim it landed - see <see cref="RuleSendResult.Unknown"/>.</summary>
     public const string SendUnconfirmed = "send-unconfirmed";
 
     /// <summary>Nothing was typed, because the keystroke never left this Gateway.</summary>
@@ -77,11 +77,11 @@ public static class RuleSendOutcomes
     /// <summary>It went out and the route confirmed a turn started.</summary>
     public const string Confirmed = "confirmed";
 
-    /// <summary>It went out and the route would not confirm a turn started. NOT a failure. The prompt
-    /// route answers this for a session whose turn is over in milliseconds - a plain shell, or an
-    /// agent answering a picker - while the keystroke has in fact landed. Recorded as unconfirmed,
-    /// with the screen named as the evidence, and never as a keystroke that did not happen.</summary>
-    public const string NotConfirmed = "not-confirmed";
+    /// <summary>It left this Gateway and NOBODY ANSWERED FOR IT. A timeout, a dropped tunnel, or a
+    /// Director that answered a failure are all this: the command went out and what became of it is not
+    /// known. It is never read as a keystroke that landed and never as one that did not - the record says
+    /// what was sent and says plainly that nothing confirmed it.</summary>
+    public const string Unknown = "unknown";
 
     /// <summary>It never left this Gateway - the machine is not connected. Nothing was typed.</summary>
     public const string NotSent = "not-sent";
@@ -93,9 +93,9 @@ public sealed record RuleSendResult(string What, string Detail)
     /// <summary>It went out and the route confirmed a turn started.</summary>
     public static RuleSendResult Confirmed() => new(RuleSendOutcomes.Confirmed, "");
 
-    /// <summary>It went out and nobody would confirm it. <paramref name="detail"/> is what the route
-    /// said, verbatim, so the record carries the route's own words rather than a paraphrase.</summary>
-    public static RuleSendResult NotConfirmed(string detail) => new(RuleSendOutcomes.NotConfirmed, detail);
+    /// <summary>It left this Gateway and nobody answered for it. <paramref name="detail"/> is what the
+    /// route said, verbatim, so the record carries the route's own words rather than a paraphrase.</summary>
+    public static RuleSendResult Unknown(string detail) => new(RuleSendOutcomes.Unknown, detail);
 
     /// <summary>It never left this Gateway. <paramref name="detail"/> says why.</summary>
     public static RuleSendResult NotSent(string detail) => new(RuleSendOutcomes.NotSent, detail);

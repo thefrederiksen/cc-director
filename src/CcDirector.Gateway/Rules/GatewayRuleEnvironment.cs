@@ -165,7 +165,7 @@ internal sealed class GatewayRuleEnvironment : IRuleEnvironment
         if (ok) return RuleSendResult.Confirmed();
 
         FileLog.Write($"[GatewayRuleEnvironment] typing UNCONFIRMED sid={sessionId}: {error}");
-        return RuleSendResult.NotConfirmed(Shorten(error));
+        return RuleSendResult.Unknown(Shorten(error));
     }
 
     /// <summary>The route's own words, kept short enough to read on a record.</summary>

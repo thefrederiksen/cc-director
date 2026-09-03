@@ -191,6 +191,9 @@ public sealed class RuleEvaluatorTests
     private const string TheWordsAreThere =
         "{ \"name\": \"matches_any\", \"arguments\": { \"text\": \"<screen_text>\", \"terms\": [\"reached your\"] } }";
 
+    /// <summary>An ACT reply. Its reason QUOTES THE SCREEN, because an act whose reason cites nothing the
+    /// screen contains is refused - see the grounding tests below. The default reason used to cite nothing,
+    /// which is what let every act test here pass while the bound did not exist.</summary>
     private static string ActReply(Guid ruleId, string type = "/usage-credits", string? checks = null)
     {
         var theChecks = checks ?? TheWordsAreThere;
@@ -199,7 +202,7 @@ public sealed class RuleEvaluatorTests
           "rule_id": "{{ruleId}}",
           "understanding": "The session itself is blocked on its model allowance and cannot run a turn.",
           "decision": "act",
-          "reason": "The notice is the session's own state, not a discussion of one.",
+          "reason": "The screen says 'reached your Fable 5 limit', which is the session's own state and not a discussion of one.",
           "checks": [ {{theChecks}} ],
           "type": "{{type}}"
         }
@@ -502,21 +505,27 @@ public sealed class RuleEvaluatorTests
     }
 
     /// <summary>
-    /// THE 502 TRAP, and it is a defect this feature already produced once on a real session. The
-    /// prompt route answers "never started a turn ... parked in the composer unsubmitted" for a
-    /// session whose turn is over in milliseconds - a shell - while the keystroke has in fact landed.
-    /// Reading that as "the send did not land" put a sentence into the firing record that the
-    /// session's own screen disproved. An unconfirmed send is therefore recorded as UNCONFIRMED,
-    /// with the text kept as typed and the screen named as the evidence - never as a send that did
-    /// not happen.
+    /// A SEND NOBODY ANSWERED FOR IS NOT A SEND THAT LANDED, AND IT IS NOT ONE THAT DID NOT.
+    ///
+    /// Two defects meet on this line and pull in opposite directions, so the record has to refuse both. The
+    /// prompt route answers "never started a turn ... parked in the composer unsubmitted" for a session
+    /// whose turn is over in milliseconds - a shell - while the keystroke has in fact landed; reading that
+    /// as "the send did not land" put a sentence into a real firing record that the session's own screen
+    /// disproved. But the same answer also comes back when the Director refused the command outright, when
+    /// the tunnel dropped, and when nothing answered at all - and in those the text did NOT land. Writing
+    /// "typed into the session" for all of them is the first lie wearing the other coat.
+    ///
+    /// So an unanswered send records: what was SENT, in the outcome, in full; and NO typed text, because
+    /// typed text is this product's word for "this reached the session" and nothing here confirmed that.
+    /// The session's screen is named as the only evidence either way.
     /// </summary>
     [Fact]
-    public async Task A_send_the_route_could_not_confirm_is_recorded_as_unconfirmed_not_as_nothing_typed()
+    public async Task A_send_nobody_answered_for_names_the_text_it_sent_and_does_not_claim_it_landed()
     {
         var rule = Rule(state: RuleState.Live);
         var env = EnvironmentWith(rule);
         env.AgentReply = ActReply(rule.Id);
-        env.SendResult = RuleSendResult.NotConfirmed(
+        env.SendResult = RuleSendResult.Unknown(
             "never started a turn within 8 beats: the agent produced under 2048 bytes.");
 
         var pass = await Run(env);
@@ -524,11 +533,18 @@ public sealed class RuleEvaluatorTests
         Assert.Equal(RulePassOutcomes.SendUnconfirmed, pass.What);
         Assert.Equal("/usage-credits", Assert.Single(env.Typed));
         var firing = Assert.Single(env.Recorded);
-        Assert.Equal("/usage-credits", firing.TypedText);
-        Assert.Contains("did not confirm", firing.Outcome);
+
+        // The claim that must not be made: typed text is the product's word for "it reached the session".
+        Assert.Equal("", firing.TypedText);
+
+        // And the presence that must be there, so nothing is lost by refusing the claim: the record still
+        // says exactly what was put on the wire, and says the screen is the evidence.
+        Assert.Contains("/usage-credits", firing.Outcome);
+        Assert.Contains("nothing confirmed", firing.Outcome);
         Assert.Contains("screen", firing.Outcome);
         Assert.DoesNotContain("did not land", firing.Outcome);
         Assert.DoesNotContain("never reached", firing.Outcome);
+        Assert.DoesNotContain("typed into the session", firing.Outcome);
     }
 
     // ---- ruling A11: what decides WHETHER a rule applies is the screen ------------------------------
@@ -676,6 +692,63 @@ public sealed class RuleEvaluatorTests
 
         Assert.Equal(RulePassOutcomes.Acted, pass.What);
         Assert.Equal("/usage-credits", Assert.Single(env.Typed));
+    }
+
+    // ---- an act must cite the screen ----------------------------------------------------------------
+
+    /// <summary>
+    /// AN ACT WHOSE REASON CITES NOTHING FROM THE SCREEN IS REFUSED, and this is the half of ruling A12 that
+    /// was missing.
+    ///
+    /// The grounding check refused a reason that quoted words the screen does not contain. It did not refuse
+    /// a reason that quoted NOTHING - it answered "there was nothing to check" and called that grounded. So
+    /// an agent could avoid the whole check by writing a plausible sentence with no quotation in it, and act
+    /// on evidence that nobody can go back and verify. An absence was being read as positive grounding,
+    /// which is the exact shape this mission's own standard forbids.
+    ///
+    /// A DECLINE stays permissive - declining is the direction that does nothing - but its record says
+    /// plainly that nothing was cited, so a decline that cited nothing cannot be mistaken for one whose
+    /// citation was checked and held.
+    /// </summary>
+    [Fact]
+    public async Task An_act_whose_reason_cites_nothing_from_the_screen_is_refused()
+    {
+        var rule = Rule(state: RuleState.Live);
+        var env = EnvironmentWith(rule);
+        env.AgentReply = $$"""
+        {
+          "rule_id": "{{rule.Id}}",
+          "understanding": "The session is blocked on its model allowance.",
+          "decision": "act",
+          "reason": "This session has plainly run out of its allowance and the instruction covers it exactly.",
+          "checks": [ ],
+          "type": "/usage-credits"
+        }
+        """;
+
+        var pass = await Run(env);
+
+        Assert.Equal(RulePassOutcomes.Ungrounded, pass.What);
+        Assert.Empty(env.Typed);
+        var firing = Assert.Single(env.Recorded);
+        Assert.Equal(RuleDecisions.Refused, firing.Decision);
+        Assert.Contains("cite", firing.Grounding, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task A_decline_that_cites_nothing_is_still_recorded_and_the_record_says_it_cited_nothing()
+    {
+        var rule = Rule(state: RuleState.Live);
+        var env = EnvironmentWith(rule);
+        env.AgentReply = DeclineReply(rule.Id, "the screen is only talking about a limit, not reporting one.");
+
+        var pass = await Run(env);
+
+        Assert.Equal(RulePassOutcomes.Declined, pass.What);
+        Assert.Empty(env.Typed);
+        var firing = Assert.Single(env.Recorded);
+        Assert.Equal(RuleDecisions.Decline, firing.Decision);
+        Assert.Contains("cite", firing.Grounding, StringComparison.OrdinalIgnoreCase);
     }
 
     // ---- still idle, immediately before the keystroke -----------------------------------------------
