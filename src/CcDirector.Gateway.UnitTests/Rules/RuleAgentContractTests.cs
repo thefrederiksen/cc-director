@@ -248,7 +248,7 @@ public sealed class RuleAgentContractTests
     {
         var rule = Rule();
         var raw = $$"""
-        { "rule_id": "{{rule.Id}}", "understanding": "u", "decision": "act", "reason": "r", "type": "" }
+        { "rule_id": "{{rule.Id}}", "understanding": "u", "decision": "act", "reason": "r", "checks": [], "type": "" }
         """;
 
         var reading = RuleAgentContract.Read(raw, new[] { rule }, Registry);

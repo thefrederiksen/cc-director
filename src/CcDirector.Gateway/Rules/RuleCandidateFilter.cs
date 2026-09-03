@@ -160,6 +160,16 @@ public static class RuleCandidateFilter
         return new RuleCandidates(chosen, skipped, null);
     }
 
+    /// <summary>
+    /// Why this rule's scope does not cover this session, or null when it does. Each part is a filter:
+    /// nothing stored means "any".
+    ///
+    /// Internal rather than private because the evaluator asks it again immediately before the keystroke:
+    /// the facts are re-read across the model call, and a scope answered once at the start of a pass is an
+    /// answer about a moment that has passed. One implementation, asked twice - never a second copy.
+    /// </summary>
+    internal static string? WhyOutOfScope(RuleScope scope, RuleSessionFacts facts) => OutOfScope(scope, facts);
+
     /// <summary>Why this rule's scope does not cover this session, or null when it does. Each part is a
     /// filter: nothing stored means "any".</summary>
     private static string? OutOfScope(RuleScope scope, RuleSessionFacts facts)

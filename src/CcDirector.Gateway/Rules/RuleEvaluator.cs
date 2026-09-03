@@ -295,14 +295,18 @@ public sealed class RuleEvaluator
             return new RulePass(RulePassOutcomes.Declined, reply.Reason, new[] { declined });
         }
 
-        if (!grounding.IsGrounded)
+        if (!grounding.CanCarryAnAct)
         {
-            // AN ACT ON EVIDENCE THAT WAS NOT THERE IS REFUSED. Recorded as a refusal with what was quoted
-            // and where it was not, so the reader sees the mismatch rather than an act that never happened.
+            // AN ACT ON EVIDENCE THAT WAS NOT THERE IS REFUSED, AND SO IS AN ACT ON NO EVIDENCE AT ALL.
+            // Recorded as a refusal carrying the grounding statement, so the reader sees which of the two it
+            // was rather than an act that never happened.
             var ungrounded = Record(tenant, new RuleFiringDraft(
                 chosen.Id, sessionId, screen, reply.Understanding, RuleDecisions.Refused, reply.Reason,
                 checks.Runs, "",
-                "nothing was typed: the reason for acting quotes text this screen does not contain.",
+                grounding.HasCitation
+                    ? "nothing was typed: the reason for acting cites text this screen does not contain."
+                    : "nothing was typed: the reason for acting cites nothing from this screen, so there is " +
+                      "nothing anybody could check it against.",
                 grounding.Statement));
             FileLog.Write($"[RuleEvaluator] sid={sessionId}: act REFUSED, {grounding.Statement}");
             return new RulePass(RulePassOutcomes.Ungrounded, grounding.Statement, new[] { ungrounded });
@@ -322,6 +326,26 @@ public sealed class RuleEvaluator
             return Abandon(tenant, chosen, sessionId, screen, reply, checks.Runs,
                 "the screen changed between the decision and the keystroke, so the decision was about a " +
                 "screen that is no longer there and nothing was typed.");
+
+        // AND THE SESSION ITSELF IS RE-READ, NOT ONLY ITS SCREEN. "Idle sessions only" is a primary bound
+        // and it was read once, before the model call - the longest gap in the pass. A new owner turn makes
+        // a session Working before any of its output appears, so the visible rows can be identical while the
+        // session is no longer idle, and the stale decision would type straight into somebody else's turn.
+        // Screen equality is not proof of idleness.
+        var factsNow = _env.ReadSessionFacts(tenant, sessionId);
+        if (factsNow is null)
+            return Abandon(tenant, chosen, sessionId, screen, reply, checks.Runs,
+                "the session left the roster between the decision and the keystroke, so nothing was typed.");
+
+        if (string.Equals(factsNow.ActivityState, RuleCandidateFilter.WorkingState, StringComparison.OrdinalIgnoreCase))
+            return Abandon(tenant, chosen, sessionId, screen, reply, checks.Runs,
+                "the session started working between the decision and the keystroke - its screen had not " +
+                "caught up yet - so nothing was typed. A rule only ever acts on an idle session.");
+
+        var scopeNow = RuleCandidateFilter.WhyOutOfScope(chosen.Scope, factsNow);
+        if (scopeNow is not null)
+            return Abandon(tenant, chosen, sessionId, screen, reply, checks.Runs,
+                "the session no longer matches what this rule watches, so nothing was typed: " + scopeNow);
 
         if (chosen.State == RuleState.DryRun)
         {
@@ -348,15 +372,20 @@ public sealed class RuleEvaluator
             return new RulePass(RulePassOutcomes.NotSent, sent.Detail, new[] { notSent });
         }
 
+        // TYPED TEXT IS THIS PRODUCT'S WORD FOR "IT REACHED THE SESSION", so it is written only when
+        // something said so. An unanswered send names what went on the wire, in the outcome, and claims
+        // nothing about what became of it - the route answers the same way for a shell whose turn was over
+        // in milliseconds (the text DID land) as for a Director that refused the command outright (it did
+        // not), and a record that picks one of those is wrong half the time in whichever direction it picks.
         var confirmed = sent.What == RuleSendOutcomes.Confirmed;
         var acted = Record(tenant, new RuleFiringDraft(
             chosen.Id, sessionId, screen, reply.Understanding, RuleDecisions.Act, reply.Reason,
-            checks.Runs, reply.TextToType,
+            checks.Runs, confirmed ? reply.TextToType : "",
             confirmed
                 ? "typed into the session: " + reply.TextToType
-                : "typed into the session: " + reply.TextToType +
-                  " - but the prompt route did not confirm it started a turn (" + sent.Detail +
-                  "). The session's screen is the only evidence of whether the keystroke landed.",
+                : "sent to the machine running this session: " + reply.TextToType +
+                  " - and nothing confirmed what became of it (" + sent.Detail +
+                  "). The session's screen is the only evidence of whether it landed.",
             grounding.Statement));
 
         return new RulePass(

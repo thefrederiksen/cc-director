@@ -41,8 +41,32 @@ public sealed class RulesTypeNothingGuardTests
 {
     /// <summary>THE SEAM THAT TYPES: the prompt verb, which puts text into a session's composer and presses
     /// Enter. Naming the METHOD rather than its class matters - the same class also READS the screen, and a
-    /// guard that could not tell a read from a keystroke would refuse the read as well.</summary>
-    private const string TypingSeam = "CcDirector.Gateway.Api.SessionVerbClient::PostPromptAsync";
+    /// guard that could not tell a read from a keystroke would refuse the read as well.
+    ///
+    /// It names <c>SendPromptAsync</c> rather than the older <c>PostPromptAsync</c> because the send moved:
+    /// the tuple-returning method now delegates to this one, which is the single place a prompt actually
+    /// leaves the Gateway. Guarding the wrapper would have missed a caller that used the new method
+    /// directly - and this feature is now exactly such a caller, because it needs the three outcomes the
+    /// wrapper's boolean cannot carry.</summary>
+    private const string TypingSeam = "CcDirector.Gateway.Api.SessionVerbClient::SendPromptAsync";
+
+    /// <summary>The older tuple-returning method, which is now a WRAPPER over the seam: it calls it and
+    /// flattens the three outcomes into one boolean for the callers that only need "did it work".</summary>
+    private const string TheWrapperOverTheSeam = "CcDirector.Gateway.Api.SessionVerbClient::PostPromptAsync";
+
+    /// <summary>
+    /// BOTH WAYS INTO THE KEYSTROKE, because reaching either of them is typing and a guard that watched
+    /// only one would be blind to the other.
+    ///
+    /// The wrapper has to be named separately rather than found by following calls, and the reason is a
+    /// real limit of this scanner worth writing down: an ASYNC method's body lives in a compiler-generated
+    /// state machine, and nothing in the metadata CALLS that state machine by name - the builder starts it
+    /// through a generic method in another assembly. So there is no edge from an async wrapper to its own
+    /// body, and a backward walk from the seam stops dead at any async wrapper in the chain. The walk is
+    /// still worth having for ordinary chains; it simply cannot cross that one boundary, and pretending
+    /// otherwise would make every clean result below it meaningless.
+    /// </summary>
+    private static readonly string[] TypingSeams = { TypingSeam, TheWrapperOverTheSeam };
 
     /// <summary>The lower-level router the prompt verb goes through. Nothing in this feature reaches it
     /// directly - the feature types through the verb client like every other caller.</summary>
@@ -121,7 +145,11 @@ public sealed class RulesTypeNothingGuardTests
     /// <summary>Every method whose OWN body references <paramref name="seam"/>, among the types this
     /// filter selects. One hop only - this is the scanner as it was, kept because the transitive one is
     /// measured against it.</summary>
-    private static List<string> MethodsReaching(ModuleDefinition module, string seam, Func<TypeDefinition, bool> include)
+    private static List<string> MethodsReaching(ModuleDefinition module, string seam, Func<TypeDefinition, bool> include) =>
+        MethodsReaching(module, new[] { seam }, include);
+
+    /// <summary>Every method whose OWN body references ANY of <paramref name="seams"/>.</summary>
+    private static List<string> MethodsReaching(ModuleDefinition module, string[] seams, Func<TypeDefinition, bool> include)
     {
         var found = new List<string>();
         foreach (var type in AllTypes(module))
@@ -130,14 +158,14 @@ public sealed class RulesTypeNothingGuardTests
             foreach (var method in type.Methods)
             {
                 if (!method.HasBody) continue;
-                if (Mentions(method, seam)) found.Add(Outermost(type).FullName + "." + method.Name);
+                if (Mentions(method, seams)) found.Add(Outermost(type).FullName + "." + method.Name);
             }
         }
         return found;
     }
 
-    /// <summary>Whether a method's own body names the seam.</summary>
-    private static bool Mentions(MethodDefinition method, string seam)
+    /// <summary>Whether a method's own body names any of the seams.</summary>
+    private static bool Mentions(MethodDefinition method, string[] seams)
     {
         foreach (var instruction in method.Body.Instructions)
         {
@@ -148,7 +176,9 @@ public sealed class RulesTypeNothingGuardTests
                 TypeReference t => t.FullName,
                 _ => null,
             };
-            if (reference is not null && reference.StartsWith(seam, StringComparison.Ordinal)) return true;
+            if (reference is null) continue;
+            foreach (var seam in seams)
+                if (reference.StartsWith(seam, StringComparison.Ordinal)) return true;
         }
         return false;
     }
@@ -164,14 +194,19 @@ public sealed class RulesTypeNothingGuardTests
     /// its implementations. Both limits are stated on the class, and neither is silent.
     /// </summary>
     private static List<string> MethodsReachingThroughCalls(
-        ModuleDefinition module, string seam, Func<TypeDefinition, bool> include)
+        ModuleDefinition module, string seam, Func<TypeDefinition, bool> include) =>
+        MethodsReachingThroughCalls(module, new[] { seam }, include);
+
+    /// <summary>As above, for a set of seams: reaching ANY of them counts.</summary>
+    private static List<string> MethodsReachingThroughCalls(
+        ModuleDefinition module, string[] seams, Func<TypeDefinition, bool> include)
     {
         var graph = Graph.Value;
         var reached = new HashSet<string>(StringComparer.Ordinal);
 
         foreach (var type in AllTypes(module))
             foreach (var method in type.Methods)
-                if (method.HasBody && Mentions(method, seam))
+                if (method.HasBody && Mentions(method, seams))
                     reached.Add(method.FullName);
 
         var queue = new Queue<string>(reached);
@@ -276,8 +311,12 @@ public sealed class RulesTypeNothingGuardTests
     {
         // THE INSTRUMENT. If this comes back empty the scanner is broken, and every guard below it would
         // certify a run that never looked at anything.
+        //
+        // It follows CALLS, because the known typist reaches the seam through the tuple-returning wrapper
+        // over it rather than by calling the seam itself. A one-hop read here would find nothing and would
+        // be reporting the scanner broken when it is not.
         var module = GatewayModule();
-        var typists = MethodsReaching(module, TypingSeam,
+        var typists = MethodsReachingThroughCalls(module, TypingSeams,
             t => Outermost(t).FullName.StartsWith(KnownTypist, StringComparison.Ordinal));
 
         Assert.True(typists.Count > 0,
@@ -342,26 +381,39 @@ public sealed class RulesTypeNothingGuardTests
             ". They are the same, so the traversal is not traversing.");
     }
 
-    [Fact]
-    public void Nothing_reaches_the_typing_seam_except_by_calling_it_and_that_is_recorded_not_assumed()
+    /// <summary>The types allowed to CALL the send seam directly. Two, named, and no more: the verb client
+    /// itself - whose older tuple-returning method is now a wrapper over the seam - and this feature's
+    /// production wiring, which calls the seam directly because it needs the three outcomes the wrapper's
+    /// boolean cannot carry. Every other caller in the Gateway goes through the wrapper.</summary>
+    private static readonly string[] AllowedDirectCallersOfTheSeam =
     {
-        // The fact that made the instrument above need a different seam, asserted rather than left as a
-        // remark: today every method that reaches the prompt verb calls it itself. The day that stops
-        // being true this test fails, and whoever reads it will find out from here rather than from a
-        // guard quietly measuring a longer list.
-        var module = GatewayModule();
-        var oneHop = MethodsReaching(module, TypingSeam, _ => true).Distinct(StringComparer.Ordinal).Count();
-        var throughCalls = MethodsReachingThroughCalls(module, TypingSeam, _ => true).Count;
+        "CcDirector.Gateway.Api.SessionVerbClient",
+        "CcDirector.Gateway.Rules.GatewayRuleEnvironment",
+    };
 
-        Assert.True(oneHop > 0, "nothing at all reaches " + TypingSeam + ", so the scanner is broken.");
-        Assert.Equal(oneHop, throughCalls);
+    [Fact]
+    public void The_send_seam_has_exactly_two_direct_callers_and_both_are_named()
+    {
+        // This test used to say that every method reaching the prompt verb called it itself, and that the
+        // day that stopped being true it would fail and whoever read it would find out here. That day is
+        // this one: the send moved down one level so the three outcomes of a send could be kept apart, and
+        // the older method is now a wrapper over it.
+        //
+        // So the fact is restated rather than loosened. A guard that merely permitted indirection would
+        // permit any number of new routes to the keystroke to appear unnoticed, which is the opposite of
+        // what it is for. The DIRECT callers of the seam are named, and a third one fails this test.
+        var module = GatewayModule();
+        var callers = TypesOf(MethodsReaching(module, TypingSeam, _ => true).Distinct(StringComparer.Ordinal));
+
+        Assert.True(callers.Count > 0, "nothing at all reaches " + TypingSeam + ", so the scanner is broken.");
+        Assert.Equal(AllowedDirectCallersOfTheSeam.OrderBy(n => n, StringComparer.Ordinal).ToList(), callers);
     }
 
     [Fact]
     public void Exactly_one_type_in_the_whole_feature_can_type_and_it_is_the_named_one()
     {
         var module = GatewayModule();
-        var typists = TypesOf(MethodsReachingThroughCalls(module, TypingSeam, IsFeatureType));
+        var typists = TypesOf(MethodsReachingThroughCalls(module, TypingSeams, IsFeatureType));
 
         // A PRESENCE first: the one thing that is supposed to be able to type must actually be there. An
         // empty list would otherwise pass the "nothing else can type" half while proving that the feature
@@ -374,7 +426,7 @@ public sealed class RulesTypeNothingGuardTests
     public void The_evaluator_reaches_the_send_only_through_its_environment_seam()
     {
         var module = GatewayModule();
-        var offenders = MethodsReachingThroughCalls(module, TypingSeam,
+        var offenders = MethodsReachingThroughCalls(module, TypingSeams,
             t => Outermost(t).FullName.StartsWith(TheEvaluator, StringComparison.Ordinal));
 
         // Said exactly: the evaluator DOES reach the send, through IRuleEnvironment, and that is the

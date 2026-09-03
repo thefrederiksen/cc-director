@@ -62,16 +62,48 @@ public sealed class RuleReasonGroundingTests
     }
 
     [Fact]
-    public void A_reason_that_quotes_nothing_says_so_rather_than_saying_nothing()
+    public void A_reason_that_cites_nothing_cannot_carry_an_act_and_the_record_says_so()
     {
-        // THE PRESENCE. "Nothing was quoted, so there was nothing to check" is a different fact from "the
-        // check never ran", and a statement that was blank in both cases could not tell them apart.
+        // THE HALF THAT WAS MISSING. This used to answer "there was nothing to check" and call that
+        // grounded, so an agent could avoid the bound entirely by citing nothing and act on evidence nobody
+        // can go back and verify - an ABSENCE read as a positive result.
+        //
+        // The two halves are kept apart rather than merged. Nothing this reason said was CONTRADICTED, so
+        // it is not a mismatch and a decline built on it is recorded as it happened. But it cited nothing,
+        // so it cannot carry an act. And the statement says which, because "nothing was cited" is a
+        // different fact from "the check never ran", and a record that was blank in both could not tell
+        // them apart.
         var verdict = RuleReasonGrounding.Check(
             "the session is stopped on an allowance notice and the instruction covers it.", TheScreen);
 
         Assert.True(verdict.IsGrounded);
+        Assert.False(verdict.HasCitation);
+        Assert.False(verdict.CanCarryAnAct);
         Assert.NotEqual("", verdict.Statement);
-        Assert.Contains("quoted", verdict.Statement, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("cites nothing", verdict.Statement, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void A_reason_that_cites_the_screen_faithfully_can_carry_an_act()
+    {
+        // THE PRESENCE. A rule that refused every act would pass every assertion above while making the
+        // feature incapable of ever doing anything.
+        var verdict = RuleReasonGrounding.Check(
+            "the screen says 'Claude usage limit reached', which is the notice the instruction is about.",
+            TheScreen);
+
+        Assert.True(verdict.HasCitation);
+        Assert.True(verdict.CanCarryAnAct);
+    }
+
+    [Fact]
+    public void A_reason_that_cites_something_the_screen_does_not_contain_cannot_carry_an_act()
+    {
+        var verdict = RuleReasonGrounding.Check(
+            "the screen says 'THE SCREEN HAS MOVED ON WHILE THE RULE WAS THINKING'.", TheScreen);
+
+        Assert.True(verdict.HasCitation);
+        Assert.False(verdict.CanCarryAnAct);
     }
 
     [Fact]
@@ -101,6 +133,11 @@ public sealed class RuleReasonGroundingTests
         var verdict = RuleReasonGrounding.Check("the decision is 'act' because the notice is present.", TheScreen);
 
         Assert.True(verdict.IsGrounded, verdict.Statement);
+
+        // And because it is not read as a claim about the screen, it is not read as a CITATION either - so
+        // a three-letter quotation cannot be what lets an act through.
+        Assert.False(verdict.HasCitation);
+        Assert.False(verdict.CanCarryAnAct);
     }
 
     [Fact]

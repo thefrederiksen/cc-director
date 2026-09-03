@@ -8,7 +8,21 @@ namespace CcDirector.Gateway.Rules;
 /// including that there was nothing to check, so that a run in which the check NEVER RAN cannot look
 /// identical to a run in which it ran and found nothing wrong.
 /// </summary>
-public sealed record RuleGrounding(bool IsGrounded, string Statement, IReadOnlyList<string> NotOnTheScreen);
+public sealed record RuleGrounding(
+    bool IsGrounded, string Statement, IReadOnlyList<string> NotOnTheScreen, bool HasCitation)
+{
+    /// <summary>
+    /// Whether this reason may carry an ACT. It must CITE something - a passage long enough to be a claim
+    /// about the screen - and everything it cites must be on the screen.
+    ///
+    /// The two halves are separate on purpose. <see cref="IsGrounded"/> answers "is anything it said about
+    /// the screen wrong", which is the right question for a DECLINE: declining does nothing, so an
+    /// unfaithful decline is recorded as it happened with the mismatch noted. Acting is the direction that
+    /// touches the world, and for that "nothing it said was wrong" is not enough, because a reason that
+    /// says nothing checkable is never wrong.
+    /// </summary>
+    public bool CanCarryAnAct => HasCitation && IsGrounded;
+}
 
 /// <summary>
 /// AN ACT'S REASON MUST BE GROUNDED IN THE SCREEN IT WAS GIVEN (Architect ruling A12).
@@ -24,11 +38,20 @@ public sealed record RuleGrounding(bool IsGrounded, string Statement, IReadOnlyL
 /// occurred - but recorded with the mismatch NOTED, so the unfaithfulness is visible rather than smoothed
 /// over.
 ///
+/// AND AN ACT MUST CITE SOMETHING AT ALL. The first version of this refused a reason that quoted words the
+/// screen does not contain, and called a reason that quoted NOTHING grounded - "there was nothing to
+/// check". An agent could then avoid the whole bound by writing a plausible sentence with no quotation in
+/// it, and act on evidence nobody can go back and verify. That is an ABSENCE being read as a positive
+/// result, which is the exact shape this mission's own standard forbids. So an act now needs a citation
+/// present AND correct; see <see cref="RuleGrounding.CanCarryAnAct"/>. A decline needs neither, and its
+/// record says which it had.
+///
 /// WHAT IT CHECKS, AND WHAT IT DOES NOT. It checks QUOTED passages: text the reason puts in quotation marks
 /// is a claim about what the screen says, and that claim is checkable. It does not check paraphrase, and it
 /// cannot - a reason that says the screen "looks like a limit notice" is a judgement, and judging the
 /// judgement is what the agent was asked for in the first place. So this is a floor, not a proof of
-/// faithfulness, and the report says so.
+/// faithfulness, and the report says so. In particular a citation that IS on the screen does not make the
+/// conclusion drawn from it correct; it makes the conclusion checkable by a person reading the record.
 /// </summary>
 public static class RuleReasonGrounding
 {
@@ -41,7 +64,8 @@ public static class RuleReasonGrounding
     /// agent's - a refusal, or an abandonment. There is nothing to check, and saying so is not the same as
     /// saying nothing.</summary>
     public const string NotTheAgentsReason =
-        "grounding: not applicable - this reason is the Gateway's own, not the agent's.";
+        "grounding: not applicable - this reason is the Gateway's own, not the agent's, so there is nothing " +
+        "of the agent's to cite or to check.";
 
     /// <summary>Check a stated reason against the screen it was given.</summary>
     public static RuleGrounding Check(string? reason, string? screenText)
@@ -50,8 +74,10 @@ public static class RuleReasonGrounding
         if (quoted.Count == 0)
             return new RuleGrounding(
                 true,
-                "grounding: the reason quoted nothing from the screen, so there was nothing to check.",
-                Array.Empty<string>());
+                "grounding: the reason cites nothing from the screen, so there is nothing on it that can be " +
+                "checked. Nothing it said was contradicted; nothing it said was verifiable either.",
+                Array.Empty<string>(),
+                HasCitation: false);
 
         var screen = Flatten(screenText);
         var missing = quoted.Where(p => !screen.Contains(Flatten(p), StringComparison.Ordinal)).ToList();
@@ -59,14 +85,16 @@ public static class RuleReasonGrounding
         if (missing.Count == 0)
             return new RuleGrounding(
                 true,
-                $"grounding: {quoted.Count} quoted passage(s) checked against this screen, all found on it.",
-                Array.Empty<string>());
+                $"grounding: {quoted.Count} passage(s) cited from this screen, all found on it.",
+                Array.Empty<string>(),
+                HasCitation: true);
 
         return new RuleGrounding(
             false,
-            "grounding: the reason quotes text this screen does not contain: " +
+            "grounding: the reason cites text this screen does not contain: " +
             string.Join("; ", missing.Select(m => "'" + m.Trim() + "'")) + ".",
-            missing);
+            missing,
+            HasCitation: true);
     }
 
     /// <summary>The quoted passages in a piece of text, long enough to be a claim about the screen.</summary>

@@ -16,6 +16,79 @@ public static class RuleCallJson
     private static readonly string InputSource = RuleWireNames.ToWireName(nameof(RuleArgumentSource.Input));
     private static readonly string LiteralSource = RuleWireNames.ToWireName(nameof(RuleArgumentSource.Literal));
 
+    /// <summary>
+    /// THE CHECKS OFF A DOCUMENT, STRICTLY - the one reader both the agent's reply and the rule-writing
+    /// route use, so a check written as JSON means one thing in this feature and not two.
+    ///
+    /// Returns null and sets <paramref name="problem"/> when the collection is not a collection of checks.
+    /// It used to be read only when the property was an ARRAY, and every other shape - a missing property,
+    /// an object, a number - quietly became an empty list; the rule-writing route additionally dropped any
+    /// array member that was not an object. So a malformed safety check DISAPPEARED and the act went ahead
+    /// as though none had been asked for. Path containment, freshness and failure detection are exactly the
+    /// checks that shape would swallow.
+    ///
+    /// An EMPTY ARRAY is legal and means what it says: no checks were asked for. That is the difference the
+    /// strictness preserves - "I want none" is a statement, and "I said nothing" is not.
+    /// </summary>
+    /// <param name="root">The document the checks hang off.</param>
+    /// <param name="property">The property holding them.</param>
+    /// <param name="required">Whether the property must be there at all. It must whenever something will
+    /// ACT on the strength of it - an act that goes ahead with a swallowed check is the whole defect - and
+    /// need not when nothing will follow either way, which is a decline. A MALFORMED collection is refused
+    /// in both cases: that one is never harmless, because it means somebody meant to say something.</param>
+    /// <param name="problem">Why they could not be read, in plain English, or null when they could.</param>
+    public static IReadOnlyList<RulePrimitiveCall>? ReadChecks(
+        JsonElement root, string property, bool required, out string? problem)
+    {
+        problem = null;
+
+        if (root.ValueKind != JsonValueKind.Object || !root.TryGetProperty(property, out var array))
+        {
+            if (!required) return Array.Empty<RulePrimitiveCall>();
+            problem =
+                $"'{property}' has to be given, as a list. An empty list means no checks were asked for; " +
+                "leaving it out means nobody said, and a check that goes missing takes its refusal with it.";
+            return null;
+        }
+
+        if (array.ValueKind != JsonValueKind.Array)
+        {
+            problem =
+                $"'{property}' has to be a list of checks, and this one is {Shape(array)}. A check that is " +
+                "not read is a check that did not run, and nothing downstream can tell that from a reply " +
+                "that asked for none.";
+            return null;
+        }
+
+        var calls = new List<RulePrimitiveCall>();
+        var position = 0;
+        foreach (var entry in array.EnumerateArray())
+        {
+            position++;
+            if (entry.ValueKind != JsonValueKind.Object)
+            {
+                problem =
+                    $"check {position} in '{property}' is {Shape(entry)}, not a check. Every entry has to be " +
+                    "a check with a name and its arguments.";
+                return null;
+            }
+            calls.Add(ReadCall(entry));
+        }
+        return calls;
+    }
+
+    /// <summary>What a JSON value is, in words a person reads.</summary>
+    private static string Shape(JsonElement value) => value.ValueKind switch
+    {
+        JsonValueKind.Object => "an object",
+        JsonValueKind.Array => "a list",
+        JsonValueKind.String => "a piece of text",
+        JsonValueKind.Number => "a number",
+        JsonValueKind.True or JsonValueKind.False => "a yes-or-no value",
+        JsonValueKind.Null => "null",
+        _ => "not a value this reader knows",
+    };
+
     /// <summary>One check, written as <c>{ "name": "...", "arguments": { "parameter": value } }</c>.</summary>
     public static RulePrimitiveCall ReadCall(JsonElement entry)
     {
