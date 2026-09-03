@@ -63,6 +63,13 @@ public sealed class RuleEvaluatorTests
         private int _screenReads;
 
         public string ActivityState { get; set; } = "WaitingForInput";
+
+        /// <summary>The activity states the session reports, in the order they are asked for; the last one
+        /// repeats once the list runs out. Empty means <see cref="ActivityState"/> every time. This is how a
+        /// test makes the session START WORKING during the agent call - the gap the evaluator's decision is
+        /// made across - while leaving the visible rows exactly as they were.</summary>
+        public List<string> ActivityStatesInOrder { get; } = new();
+        private int _factReads;
         public string? AgentReply { get; set; }
 
         public int ScreenReads => _screenReads;
@@ -77,15 +84,48 @@ public sealed class RuleEvaluatorTests
 
         public IReadOnlyList<SessionRule> Rules(TenantId tenant) => StoredRules;
 
-        public IReadOnlyList<SessionRuleFiring> FiringsFor(TenantId tenant, Guid ruleId) =>
-            StoredFirings.Where(f => f.RuleId == ruleId).ToList();
+        /// <summary>Run with the firings ALREADY READ and about to be handed back, which is INSIDE the free
+        /// checks and therefore before the evaluator has recorded that it has looked at this screen. That is
+        /// the exact window an overlapping pass arrives in - one pass holding a snapshot of the record that
+        /// another pass is about to write to - so it is where a test has to hold a pass to make the overlap
+        /// deterministic rather than hoping for a race. Holding it BEFORE the read instead would let the
+        /// held pass see the other pass's act when it resumed, and the cooldown would hide the defect.</summary>
+        public Action? WhileHoldingTheFiringsSnapshot { get; set; }
+
+        /// <summary>Whether a firing this environment is told about becomes visible to the free checks, the
+        /// way a real store's does. Off by default so the tests written before it keep their exact shape;
+        /// on, it is what makes the cooldown and the daily cap real in a test rather than assumed.</summary>
+        public bool FiringsAreVisibleToTheFreeChecks { get; set; }
+
+        public IReadOnlyList<SessionRuleFiring> FiringsFor(TenantId tenant, Guid ruleId)
+        {
+            List<SessionRuleFiring> snapshot;
+            lock (StoredFirings) snapshot = StoredFirings.Where(f => f.RuleId == ruleId).ToList();
+            WhileHoldingTheFiringsSnapshot?.Invoke();
+            return snapshot;
+        }
 
         /// <summary>The repository the session is working in. Settable so a test can give it a string that
         /// could not appear by accident and then look for it where it must not be.</summary>
         public string RepositoryPath { get; set; } = @"D:\ReposFred\scratch";
 
-        public RuleSessionFacts? ReadSessionFacts(TenantId tenant, string sessionId) =>
-            new(sessionId, "RawCli", RepositoryPath, "SOREN_NORTH", "Session Rules", ActivityState);
+        /// <summary>How many times the session's facts were asked for. A re-read immediately before the
+        /// keystroke is a PRESENCE, and this is what counts it.</summary>
+        public int FactReads => _factReads;
+
+        /// <summary>Set to make the session vanish from the roster after this many fact reads.</summary>
+        public int? SessionVanishesAfterFactRead { get; set; }
+
+        public RuleSessionFacts? ReadSessionFacts(TenantId tenant, string sessionId)
+        {
+            var index = _factReads;
+            _factReads++;
+            if (SessionVanishesAfterFactRead is { } vanishAfter && index >= vanishAfter) return null;
+            var state = ActivityStatesInOrder.Count == 0
+                ? ActivityState
+                : ActivityStatesInOrder[Math.Min(index, ActivityStatesInOrder.Count - 1)];
+            return new(sessionId, "RawCli", RepositoryPath, "SOREN_NORTH", "Session Rules", state);
+        }
 
         public Task<IReadOnlyList<string>?> ReadScreenRowsAsync(
             TenantId tenant, string directorId, string sessionId, CancellationToken ct)
@@ -102,14 +142,68 @@ public sealed class RuleEvaluatorTests
             return Task.FromResult(AgentReply);
         }
 
+        /// <summary>Read at the moment the send seam is reached, so a test can assert that the record
+        /// already existed BEFORE the keystroke rather than inferring it from the order of a list.</summary>
+        public Func<int>? RecordedWhenTyping { get; set; }
+
+        /// <summary>How many firings had been written when the send seam was reached.</summary>
+        public int RecordsWhenTheSendHappened { get; private set; } = -1;
+
         public Task<RuleSendResult> TypeIntoSessionAsync(
             TenantId tenant, string directorId, string sessionId, string text, CancellationToken ct)
         {
-            Typed.Add(text);
+            if (RecordedWhenTyping is not null) RecordsWhenTheSendHappened = RecordedWhenTyping();
+            lock (Typed) Typed.Add(text);
             return Task.FromResult(SendResult);
         }
 
-        public void RecordFiring(TenantId tenant, RuleFiringDraft draft) => Recorded.Add(draft);
+        /// <summary>Set to make the store refuse to write a firing with this decision - what a real store
+        /// does for a rule deleted mid-pass, a record it will not accept, or a database that is down.</summary>
+        public string? RefuseToRecordDecision { get; set; }
+
+        /// <summary>What each written firing was completed with afterwards, by id.</summary>
+        public Dictionary<Guid, (string TypedText, string Outcome)> Completed { get; } = new();
+
+        public Guid RecordFiring(TenantId tenant, RuleFiringDraft draft)
+        {
+            if (string.Equals(RefuseToRecordDecision, draft.Decision, StringComparison.Ordinal))
+                throw new RuleRejectedException(
+                    "this record was refused by the store, which is what a rule deleted during the model " +
+                    "call looks like from here.");
+
+            var id = Guid.NewGuid();
+            lock (Recorded)
+            {
+                _rowOf[id] = Recorded.Count;
+                Recorded.Add(draft);
+            }
+            lock (WrittenIds) WrittenIds.Add(id);
+            if (!FiringsAreVisibleToTheFreeChecks) return id;
+            lock (StoredFirings)
+                StoredFirings.Add(new SessionRuleFiring(
+                    id, draft.RuleId, draft.SessionId, NowUtc, draft.ScreenText,
+                    draft.Understanding, draft.Decision, draft.Reason, draft.Runs, draft.TypedText,
+                    draft.Outcome, draft.Grounding));
+            return id;
+        }
+
+        /// <summary>The ids handed out, in order.</summary>
+        public List<Guid> WrittenIds { get; } = new();
+
+        /// <summary>Where each written firing sits in <see cref="Recorded"/>, so completing one UPDATES the
+        /// row rather than adding a second - which is what a real store does, and what makes
+        /// <see cref="Recorded"/> the record a reader would actually find.</summary>
+        private readonly Dictionary<Guid, int> _rowOf = new();
+
+        public void CompleteFiring(TenantId tenant, Guid firingId, string typedText, string outcome)
+        {
+            lock (Completed) Completed[firingId] = (typedText, outcome);
+            lock (Recorded)
+            {
+                if (!_rowOf.TryGetValue(firingId, out var row)) return;
+                Recorded[row] = Recorded[row] with { TypedText = typedText, Outcome = outcome };
+            }
+        }
     }
 
     private static SessionRule Rule(
@@ -142,6 +236,9 @@ public sealed class RuleEvaluatorTests
     private const string TheWordsAreThere =
         "{ \"name\": \"matches_any\", \"arguments\": { \"text\": \"<screen_text>\", \"terms\": [\"reached your\"] } }";
 
+    /// <summary>An ACT reply. Its reason QUOTES THE SCREEN, because an act whose reason cites nothing the
+    /// screen contains is refused - see the grounding tests below. The default reason used to cite nothing,
+    /// which is what let every act test here pass while the bound did not exist.</summary>
     private static string ActReply(Guid ruleId, string type = "/usage-credits", string? checks = null)
     {
         var theChecks = checks ?? TheWordsAreThere;
@@ -150,7 +247,7 @@ public sealed class RuleEvaluatorTests
           "rule_id": "{{ruleId}}",
           "understanding": "The session itself is blocked on its model allowance and cannot run a turn.",
           "decision": "act",
-          "reason": "The notice is the session's own state, not a discussion of one.",
+          "reason": "The screen says 'reached your Fable 5 limit', which is the session's own state and not a discussion of one.",
           "checks": [ {{theChecks}} ],
           "type": "{{type}}"
         }
@@ -453,21 +550,27 @@ public sealed class RuleEvaluatorTests
     }
 
     /// <summary>
-    /// THE 502 TRAP, and it is a defect this feature already produced once on a real session. The
-    /// prompt route answers "never started a turn ... parked in the composer unsubmitted" for a
-    /// session whose turn is over in milliseconds - a shell - while the keystroke has in fact landed.
-    /// Reading that as "the send did not land" put a sentence into the firing record that the
-    /// session's own screen disproved. An unconfirmed send is therefore recorded as UNCONFIRMED,
-    /// with the text kept as typed and the screen named as the evidence - never as a send that did
-    /// not happen.
+    /// A SEND NOBODY ANSWERED FOR IS NOT A SEND THAT LANDED, AND IT IS NOT ONE THAT DID NOT.
+    ///
+    /// Two defects meet on this line and pull in opposite directions, so the record has to refuse both. The
+    /// prompt route answers "never started a turn ... parked in the composer unsubmitted" for a session
+    /// whose turn is over in milliseconds - a shell - while the keystroke has in fact landed; reading that
+    /// as "the send did not land" put a sentence into a real firing record that the session's own screen
+    /// disproved. But the same answer also comes back when the Director refused the command outright, when
+    /// the tunnel dropped, and when nothing answered at all - and in those the text did NOT land. Writing
+    /// "typed into the session" for all of them is the first lie wearing the other coat.
+    ///
+    /// So an unanswered send records: what was SENT, in the outcome, in full; and NO typed text, because
+    /// typed text is this product's word for "this reached the session" and nothing here confirmed that.
+    /// The session's screen is named as the only evidence either way.
     /// </summary>
     [Fact]
-    public async Task A_send_the_route_could_not_confirm_is_recorded_as_unconfirmed_not_as_nothing_typed()
+    public async Task A_send_nobody_answered_for_names_the_text_it_sent_and_does_not_claim_it_landed()
     {
         var rule = Rule(state: RuleState.Live);
         var env = EnvironmentWith(rule);
         env.AgentReply = ActReply(rule.Id);
-        env.SendResult = RuleSendResult.NotConfirmed(
+        env.SendResult = RuleSendResult.Unknown(
             "never started a turn within 8 beats: the agent produced under 2048 bytes.");
 
         var pass = await Run(env);
@@ -475,11 +578,18 @@ public sealed class RuleEvaluatorTests
         Assert.Equal(RulePassOutcomes.SendUnconfirmed, pass.What);
         Assert.Equal("/usage-credits", Assert.Single(env.Typed));
         var firing = Assert.Single(env.Recorded);
-        Assert.Equal("/usage-credits", firing.TypedText);
-        Assert.Contains("did not confirm", firing.Outcome);
+
+        // The claim that must not be made: typed text is the product's word for "it reached the session".
+        Assert.Equal("", firing.TypedText);
+
+        // And the presence that must be there, so nothing is lost by refusing the claim: the record still
+        // says exactly what was put on the wire, and says the screen is the evidence.
+        Assert.Contains("/usage-credits", firing.Outcome);
+        Assert.Contains("nothing confirmed", firing.Outcome);
         Assert.Contains("screen", firing.Outcome);
         Assert.DoesNotContain("did not land", firing.Outcome);
         Assert.DoesNotContain("never reached", firing.Outcome);
+        Assert.DoesNotContain("typed into the session", firing.Outcome);
     }
 
     // ---- ruling A11: what decides WHETHER a rule applies is the screen ------------------------------
@@ -627,6 +737,225 @@ public sealed class RuleEvaluatorTests
 
         Assert.Equal(RulePassOutcomes.Acted, pass.What);
         Assert.Equal("/usage-credits", Assert.Single(env.Typed));
+    }
+
+    // ---- an act must cite the screen ----------------------------------------------------------------
+
+    /// <summary>
+    /// AN ACT WHOSE REASON CITES NOTHING FROM THE SCREEN IS REFUSED, and this is the half of ruling A12 that
+    /// was missing.
+    ///
+    /// The grounding check refused a reason that quoted words the screen does not contain. It did not refuse
+    /// a reason that quoted NOTHING - it answered "there was nothing to check" and called that grounded. So
+    /// an agent could avoid the whole check by writing a plausible sentence with no quotation in it, and act
+    /// on evidence that nobody can go back and verify. An absence was being read as positive grounding,
+    /// which is the exact shape this mission's own standard forbids.
+    ///
+    /// A DECLINE stays permissive - declining is the direction that does nothing - but its record says
+    /// plainly that nothing was cited, so a decline that cited nothing cannot be mistaken for one whose
+    /// citation was checked and held.
+    /// </summary>
+    [Fact]
+    public async Task An_act_whose_reason_cites_nothing_from_the_screen_is_refused()
+    {
+        var rule = Rule(state: RuleState.Live);
+        var env = EnvironmentWith(rule);
+        env.AgentReply = $$"""
+        {
+          "rule_id": "{{rule.Id}}",
+          "understanding": "The session is blocked on its model allowance.",
+          "decision": "act",
+          "reason": "This session has plainly run out of its allowance and the instruction covers it exactly.",
+          "checks": [ ],
+          "type": "/usage-credits"
+        }
+        """;
+
+        var pass = await Run(env);
+
+        Assert.Equal(RulePassOutcomes.Ungrounded, pass.What);
+        Assert.Empty(env.Typed);
+        var firing = Assert.Single(env.Recorded);
+        Assert.Equal(RuleDecisions.Refused, firing.Decision);
+        Assert.Contains("cite", firing.Grounding, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task A_decline_that_cites_nothing_is_still_recorded_and_the_record_says_it_cited_nothing()
+    {
+        var rule = Rule(state: RuleState.Live);
+        var env = EnvironmentWith(rule);
+        env.AgentReply = DeclineReply(rule.Id, "the screen is only talking about a limit, not reporting one.");
+
+        var pass = await Run(env);
+
+        Assert.Equal(RulePassOutcomes.Declined, pass.What);
+        Assert.Empty(env.Typed);
+        var firing = Assert.Single(env.Recorded);
+        Assert.Equal(RuleDecisions.Decline, firing.Decision);
+        Assert.Contains("cite", firing.Grounding, StringComparison.OrdinalIgnoreCase);
+    }
+
+    // ---- the record exists before the keystroke ------------------------------------------------------
+
+    /// <summary>
+    /// AN ACTION THE PRODUCT CANNOT ACCOUNT FOR IS AN ACTION NOBODY CAN SUPERVISE.
+    ///
+    /// The evaluator typed first and recorded afterwards. Everything that can make the record fail - a rule
+    /// deleted during the model call, a record the store will not accept, a database that is down - then
+    /// happened AFTER something had already been done to somebody's session, and the only trace was a log
+    /// line. The record is the product; it has to exist before the side effect and be reconciled after it.
+    ///
+    /// So the store's refusal is a REASON NOT TO ACT, not a detail discovered too late. Here the store
+    /// refuses the act's record, and nothing may be typed.
+    /// </summary>
+    [Fact]
+    public async Task An_act_whose_record_the_store_refuses_is_not_carried_out()
+    {
+        var rule = Rule(state: RuleState.Live);
+        var env = EnvironmentWith(rule);
+        env.AgentReply = ActReply(rule.Id);
+        env.RefuseToRecordDecision = RuleDecisions.Act;
+
+        var pass = await Run(env);
+
+        Assert.Equal(RulePassOutcomes.NotRecorded, pass.What);
+        Assert.Empty(env.Typed);
+    }
+
+    [Fact]
+    public async Task The_record_of_an_act_is_written_before_the_keystroke_and_completed_after_it()
+    {
+        // THE PRESENCE, and it is what makes the test above mean something: a pass that simply refused to
+        // act would satisfy "nothing was typed" while proving nothing about the ordering. Here the act goes
+        // through, and the record must have been WRITTEN before the send and COMPLETED afterwards - two
+        // observable events on one row, in that order.
+        var rule = Rule(state: RuleState.Live);
+        var env = EnvironmentWith(rule);
+        env.AgentReply = ActReply(rule.Id);
+        env.RecordedWhenTyping = () => env.WrittenIds.Count;
+
+        var pass = await Run(env);
+
+        Assert.Equal(RulePassOutcomes.Acted, pass.What);
+        Assert.Equal("/usage-credits", Assert.Single(env.Typed));
+
+        // Written first: by the time the send seam was reached, the record already existed.
+        Assert.Equal(1, env.RecordsWhenTheSendHappened);
+
+        // Completed after: the same row, told what became of the keystroke.
+        var id = Assert.Single(env.WrittenIds);
+        Assert.True(env.Completed.ContainsKey(id),
+            "the firing was written before the keystroke and never completed afterwards, so the record " +
+            "still says only that a keystroke was about to go.");
+        Assert.Contains("/usage-credits", env.Completed[id].Outcome);
+        Assert.Equal("/usage-credits", env.Completed[id].TypedText);
+    }
+
+    // ---- still idle, immediately before the keystroke -----------------------------------------------
+
+    /// <summary>
+    /// THE SESSION MUST STILL BE IDLE WHEN THE KEYSTROKE GOES, NOT MERELY WHEN THE DECISION WAS MADE.
+    ///
+    /// "Idle sessions only" is a primary bound, and it was read ONCE, before the agent call. Between that
+    /// read and the keystroke there is a model call - the longest gap in the whole pass - and the only thing
+    /// re-read across it was the terminal screen. A new owner turn makes the session Working before any of
+    /// its output appears, so the visible rows are briefly identical and the stale decision types anyway,
+    /// straight into a turn somebody else just started.
+    ///
+    /// Screen equality is not proof that a session is still idle. This holds the screen still and changes
+    /// only the thing that actually says whether the session is working.
+    /// </summary>
+    [Fact]
+    public async Task A_session_that_started_working_during_the_agent_call_is_abandoned_though_the_screen_is_unchanged()
+    {
+        var rule = Rule(state: RuleState.Live);
+        var env = EnvironmentWith(rule);
+        env.AgentReply = ActReply(rule.Id);
+        // Idle when the pass starts; working by the time the keystroke would go. The screen never changes.
+        env.ActivityStatesInOrder.Add("WaitingForInput");
+        env.ActivityStatesInOrder.Add(RuleCandidateFilter.WorkingState);
+
+        var pass = await Run(env);
+
+        Assert.Equal(RulePassOutcomes.Abandoned, pass.What);
+        Assert.Contains("working", pass.Detail, StringComparison.OrdinalIgnoreCase);
+        Assert.Empty(env.Typed);
+        var firing = Assert.Single(pass.Recorded);
+        Assert.Equal(RuleDecisions.Abandoned, firing.Decision);
+        Assert.True(env.FactReads >= 2,
+            "the session's facts were read " + env.FactReads + " time(s). A bound that is checked before a " +
+            "model call and never again is a bound about a moment that has passed.");
+    }
+
+    [Fact]
+    public async Task A_session_that_left_the_roster_during_the_agent_call_is_abandoned()
+    {
+        var rule = Rule(state: RuleState.Live);
+        var env = EnvironmentWith(rule);
+        env.AgentReply = ActReply(rule.Id);
+        env.SessionVanishesAfterFactRead = 1;
+
+        var pass = await Run(env);
+
+        Assert.Equal(RulePassOutcomes.Abandoned, pass.What);
+        Assert.Empty(env.Typed);
+        Assert.Single(pass.Recorded);
+    }
+
+    // ---- two passes on one session ------------------------------------------------------------------
+
+    /// <summary>
+    /// TWO OVERLAPPING PASSES ON ONE SESSION MUST NOT BOTH ACT, and this is the shape that let them.
+    ///
+    /// Every turn-end signal starts its own pass, and the free checks read a rule's prior firings BEFORE the
+    /// agent call and before anything is typed. Two passes that overlap in that window both see no act yet,
+    /// and both go on to act - past the cooldown and past the daily cap, because both were counted against a
+    /// state that neither of them had written to yet. The independent inspection of landing B proved exactly
+    /// that with a synchronised probe: two evaluations, two sends, two firing records.
+    ///
+    /// A CEILING A RACE CAN WALK THROUGH IS NOT A CEILING, and an agent in a loop is the worst tail risk
+    /// this feature has. So the test holds the first pass open in the window the inspection used - inside the
+    /// firings read - runs a second pass to completion while it is held, and requires that exactly one send
+    /// and exactly one act reach the world.
+    /// </summary>
+    [Fact]
+    public async Task Two_passes_that_overlap_on_one_session_act_once_and_the_second_says_why()
+    {
+        var rule = Rule(state: RuleState.Live);
+        var env = EnvironmentWith(rule);
+        env.FiringsAreVisibleToTheFreeChecks = true;
+        env.AgentReply = ActReply(rule.Id);
+
+        // One evaluator, because production holds one: the Gateway arms a single evaluator and every
+        // turn-end signal calls it. Two evaluator objects would be a different question than the one asked.
+        var evaluator = new RuleEvaluator(env);
+
+        var firstPassIsInTheWindow = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var letTheFirstPassGo = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var readers = 0;
+        env.WhileHoldingTheFiringsSnapshot = () =>
+        {
+            // ONLY the first reader is held. A gate that held every reader would deadlock the fixed code as
+            // surely as it would hold the broken code, and a test that cannot finish proves nothing.
+            if (Interlocked.Increment(ref readers) != 1) return;
+            firstPassIsInTheWindow.SetResult();
+            letTheFirstPassGo.Task.Wait(TimeSpan.FromSeconds(30));
+        };
+
+        var first = Task.Run(() => evaluator.EvaluateAsync(Tenant, DirectorId, SessionId, CancellationToken.None));
+        await firstPassIsInTheWindow.Task.WaitAsync(TimeSpan.FromSeconds(30));
+
+        var second = await evaluator.EvaluateAsync(Tenant, DirectorId, SessionId, CancellationToken.None);
+
+        letTheFirstPassGo.SetResult();
+        var firstPass = await first.WaitAsync(TimeSpan.FromSeconds(30));
+
+        Assert.Equal(RulePassOutcomes.Acted, firstPass.What);
+        Assert.Equal(RulePassOutcomes.AlreadyEvaluating, second.What);
+        Assert.Equal("/usage-credits", Assert.Single(env.Typed));
+        Assert.Single(env.Recorded, r => r.Decision == RuleDecisions.Act);
+        Assert.Empty(second.Recorded);
     }
 
     private static string ScreenTextOf(RuleFiringDraft draft) =>

@@ -25,7 +25,8 @@ public interface IRuleReading
     IReadOnlyList<SessionRuleFiring> FiringsFor(Guid ruleId);
 
     /// <summary>Write one firing down. The record is the product, so this is the one write the evaluation
-    /// path may do.</summary>
+    /// path may do. It is written BEFORE the keystroke and completed after - see
+    /// <see cref="CompleteFiring"/>.</summary>
     /// <exception cref="RuleRejectedException">There is no such rule, or the record is not a record of
     /// anything - the reason says which.</exception>
     SessionRuleFiring RecordFiring(
@@ -40,4 +41,17 @@ public interface IRuleReading
         string outcome,
         string grounding,
         DateTime nowUtc);
+
+    /// <summary>
+    /// Say what became of a firing that was written down BEFORE its keystroke went out. The record exists
+    /// first and is reconciled afterwards, so there is no moment in which something has happened to a
+    /// person's session and nothing durable says so.
+    /// </summary>
+    /// <param name="firingId">The firing written before the send.</param>
+    /// <param name="typedText">What actually reached the session - empty unless something confirmed it.</param>
+    /// <param name="outcome">What happened, in the words a person reads.</param>
+    /// <param name="nowUtc">Now.</param>
+    /// <exception cref="RuleRejectedException">There is no such firing, the outcome says nothing, or a
+    /// dry-run rule's firing was told it typed something.</exception>
+    SessionRuleFiring CompleteFiring(Guid firingId, string typedText, string outcome, DateTime nowUtc);
 }

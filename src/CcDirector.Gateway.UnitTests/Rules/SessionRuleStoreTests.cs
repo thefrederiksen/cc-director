@@ -28,7 +28,8 @@ public sealed class SessionRuleStoreTests : IDisposable
     /// <summary>A grant as the promote route mints one, for a caller the request pipeline named.</summary>
     private static RulePromotionGrant GrantFor(Guid ruleId) =>
         RulePromotionGrant.FromAuthenticatedRequest(
-            ruleId, "device-9f2c", "I have read this rule's dry-run record and I am making it live.", Now);
+            ruleId, AnInboundRequest.FromDevice(),
+            "I have read this rule's dry-run record and I am making it live.", Now);
 
     /// <summary>What the grounding check found, as every firing has to carry (Architect ruling A12).</summary>
     private const string Grounding = "grounding: nothing was quoted, so there was nothing to check.";

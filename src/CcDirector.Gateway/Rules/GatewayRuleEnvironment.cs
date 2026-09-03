@@ -75,6 +75,7 @@ internal sealed class GatewayRuleEnvironment : IRuleEnvironment
     /// <inheritdoc />
     public DateTime NowUtc => _nowUtc();
 
+
     /// <inheritdoc />
     public IReadOnlyList<SessionRule> Rules(TenantId tenant)
     {
@@ -142,13 +143,20 @@ internal sealed class GatewayRuleEnvironment : IRuleEnvironment
 
     /// <inheritdoc />
     /// <remarks>
-    /// THE ROUTE NOT CONFIRMING A SEND IS NOT THE ROUTE REFUSING IT. The prompt verb answers
-    /// "never started a turn ... parked in the composer unsubmitted" for any session whose turn is over
-    /// in milliseconds - a plain shell, or an agent answering a picker - while the keystroke has in
-    /// fact landed. Reading that as a failed send put a sentence into a firing record on 2 September
-    /// 2026 that the session's own screen disproved. So the two are answered separately here: a
-    /// Director that is not connected means nothing was typed, and a send nobody would confirm means
-    /// the screen is the evidence.
+    /// THREE ANSWERS, BECAUSE TWO OF THEM WERE ONE AND THE RECORD WAS WRONG IN BOTH DIRECTIONS.
+    ///
+    /// The prompt verb answers "never started a turn ... parked in the composer unsubmitted" for any
+    /// session whose turn is over in milliseconds - a plain shell, or an agent answering a picker - while
+    /// the keystroke has in fact landed. Reading that as a failed send put a sentence into a firing record
+    /// on 2 September 2026 that the session's own screen disproved. But the SAME false answer comes back
+    /// when the Director refused the command, when the tunnel dropped, and when nothing answered at all,
+    /// and in those the text did not land; calling all of them "typed" is the first mistake wearing the
+    /// other coat. The layer below used to collapse an absent tunnel result and a remote refusal into one
+    /// boolean, so this wiring could not have told them apart even if it had wanted to.
+    ///
+    /// So: no route, or a command that never left this Gateway, means NOTHING WAS TYPED. A Director that
+    /// answered Ok is confirmed. Anything else is UNKNOWN, and the record says what was sent and that
+    /// nothing confirmed it, which is the only true thing there is to say.
     /// </remarks>
     public async Task<RuleSendResult> TypeIntoSessionAsync(
         TenantId tenant, string directorId, string sessionId, string text, CancellationToken ct)
@@ -161,11 +169,21 @@ internal sealed class GatewayRuleEnvironment : IRuleEnvironment
         }
 
         var request = new PromptRequest { Text = text, AppendEnter = true, WaitForIdle = false };
-        var (ok, _, error) = await route.PostPromptAsync(sessionId, request, ct).ConfigureAwait(false);
-        if (ok) return RuleSendResult.Confirmed();
+        var sent = await route.SendPromptAsync(sessionId, request, ct).ConfigureAwait(false);
 
-        FileLog.Write($"[GatewayRuleEnvironment] typing UNCONFIRMED sid={sessionId}: {error}");
-        return RuleSendResult.NotConfirmed(Shorten(error));
+        switch (sent.Kind)
+        {
+            case SessionVerbClient.PromptSendKind.Accepted:
+                return RuleSendResult.Confirmed();
+
+            case SessionVerbClient.PromptSendKind.NeverLeftTheGateway:
+                FileLog.Write($"[GatewayRuleEnvironment] NOT typed sid={sessionId}: {sent.Detail}");
+                return RuleSendResult.NotSent(Shorten(sent.Detail));
+
+            default:
+                FileLog.Write($"[GatewayRuleEnvironment] typing UNANSWERED sid={sessionId}: {sent.Detail}");
+                return RuleSendResult.Unknown(Shorten(sent.Detail));
+        }
     }
 
     /// <summary>The route's own words, kept short enough to read on a record.</summary>
@@ -176,10 +194,10 @@ internal sealed class GatewayRuleEnvironment : IRuleEnvironment
     }
 
     /// <inheritdoc />
-    public void RecordFiring(TenantId tenant, RuleFiringDraft draft)
+    public Guid RecordFiring(TenantId tenant, RuleFiringDraft draft)
     {
         using var scope = _enterTenantScope?.Invoke(tenant);
-        _store.RecordFiring(
+        return _store.RecordFiring(
             draft.RuleId,
             draft.SessionId,
             draft.ScreenText,
@@ -190,6 +208,13 @@ internal sealed class GatewayRuleEnvironment : IRuleEnvironment
             draft.TypedText,
             draft.Outcome,
             draft.Grounding,
-            _nowUtc());
+            _nowUtc()).Id;
+    }
+
+    /// <inheritdoc />
+    public void CompleteFiring(TenantId tenant, Guid firingId, string typedText, string outcome)
+    {
+        using var scope = _enterTenantScope?.Invoke(tenant);
+        _store.CompleteFiring(firingId, typedText, outcome, _nowUtc());
     }
 }

@@ -64,6 +64,9 @@ public sealed class RulesWriteGateTests : IDisposable
         UpdatedUtc = Now,
     };
 
+    /// <summary>What the grounding check found, as every firing has to carry (Architect ruling A12).</summary>
+    private const string Grounding = "grounding: nothing was cited, so there was nothing to check.";
+
     // ---- finding 2: the route round the validator ---------------------------------------------------
 
     [Fact]
@@ -272,5 +275,240 @@ public sealed class RulesWriteGateTests : IDisposable
             new[] { "limit" }, GoodCalls(), RuleScope.AllSessions, 300, 5, Now);
 
         Assert.Equal(RuleScope.AllSessions, store.Get(rule.Id)!.Scope);
+    }
+
+    // ---- the routes that still went round it ---------------------------------------------------------
+
+    /// <summary>
+    /// BULK SQL DOES NOT PASS THROUGH SaveChanges, SO THE GATE NEVER SAW IT.
+    ///
+    /// The gate above runs from SaveChanges and reads the change tracker. An ORM bulk update issues its SQL
+    /// immediately and tracks nothing, so it could move a rule from dry run to live without ever meeting
+    /// the gate - the one transition the whole feature exists to put a person in front of. The independent
+    /// inspection of landing B did exactly this and read the rule back as live.
+    /// </summary>
+    [Fact]
+    public void A_bulk_update_cannot_move_a_rule_out_of_dry_run()
+    {
+        var store = new SessionRuleStore(Db);
+        var rule = store.Create(
+            "When I run out of allowance, switch me to Opus.",
+            "A session stopped on a provider allowance notice.",
+            new[] { "limit" },
+            GoodCalls(),
+            RuleScope.AllSessions,
+            cooldownSeconds: 300,
+            dailyCap: 5,
+            Now);
+
+        using (var ctx = Db.CreateContext())
+        {
+            Assert.ThrowsAny<Exception>(() =>
+                ctx.SessionRules.Where(r => r.Id == rule.Id).ExecuteUpdate(set => set.SetProperty(r => r.State, Live)));
+        }
+
+        // The row is where it was. A refusal that half-promoted would be worse than none.
+        Assert.Equal(RuleState.DryRun, new SessionRuleStore(Db).Get(rule.Id)!.State);
+    }
+
+    [Fact]
+    public void A_bulk_delete_cannot_erase_the_record_of_what_a_rule_did()
+    {
+        // The firings are the product. Deleting them in bulk goes round the store exactly as the update
+        // above goes round the gate, and a record that can be quietly removed is not evidence of anything.
+        var store = new SessionRuleStore(Db);
+        var rule = store.Create(
+            "When I run out of allowance, switch me to Opus.",
+            "A session stopped on a provider allowance notice.",
+            new[] { "limit" },
+            GoodCalls(),
+            RuleScope.AllSessions,
+            cooldownSeconds: 300,
+            dailyCap: 5,
+            Now);
+
+        store.RecordFiring(
+            rule.Id, "sid-1", "screen", "u", RuleDecisions.Decline, "the screen is not what this is about",
+            Array.Empty<RulePrimitiveRun>(), "", "declined - nothing was typed.", Grounding, Now);
+
+        using (var ctx = Db.CreateContext())
+        {
+            Assert.ThrowsAny<Exception>(() =>
+                ctx.SessionRuleFirings.Where(f => f.RuleId == rule.Id).ExecuteDelete());
+        }
+
+        Assert.Single(new SessionRuleStore(Db).FiringsFor(rule.Id));
+    }
+
+    /// <summary>
+    /// A FIRING WRITTEN STRAIGHT THROUGH THE CONTEXT MEETS THE SAME RULES AS ONE WRITTEN THROUGH THE STORE.
+    ///
+    /// The gate read rule writes only. The firing table - the record, which IS the product - was not
+    /// guarded at all, so an invented row saying nothing could be added directly and read back later as
+    /// evidence of something that never happened.
+    /// </summary>
+    [Fact]
+    public void A_firing_written_straight_through_the_context_cannot_be_a_record_of_nothing()
+    {
+        var store = new SessionRuleStore(Db);
+        var rule = store.Create(
+            "When I run out of allowance, switch me to Opus.",
+            "A session stopped on a provider allowance notice.",
+            new[] { "limit" },
+            GoodCalls(),
+            RuleScope.AllSessions,
+            cooldownSeconds: 300,
+            dailyCap: 5,
+            Now);
+
+        using var ctx = Db.CreateContext();
+        ctx.SessionRuleFirings.Add(new SessionRuleFiringEntity
+        {
+            TenantId = TenantId.Local.Value,
+            RuleId = rule.Id,
+            SessionId = "",
+            OccurredUtc = Now,
+            Decision = "",
+            Reason = "",
+            Outcome = "",
+            Grounding = "",
+        });
+
+        Assert.Throws<RuleRejectedException>(() => ctx.SaveChanges());
+    }
+
+    [Fact]
+    public void A_firing_written_straight_through_the_context_cannot_name_a_check_that_does_not_exist()
+    {
+        var store = new SessionRuleStore(Db);
+        var rule = store.Create(
+            "When I run out of allowance, switch me to Opus.",
+            "A session stopped on a provider allowance notice.",
+            new[] { "limit" },
+            GoodCalls(),
+            RuleScope.AllSessions,
+            cooldownSeconds: 300,
+            dailyCap: 5,
+            Now);
+
+        using var ctx = Db.CreateContext();
+        ctx.SessionRuleFirings.Add(new SessionRuleFiringEntity
+        {
+            TenantId = TenantId.Local.Value,
+            RuleId = rule.Id,
+            SessionId = "sid-1",
+            OccurredUtc = Now,
+            Decision = RuleDecisions.Decline,
+            Reason = "it does not apply",
+            Outcome = "declined - nothing was typed.",
+            Grounding = Grounding,
+            PrimitiveRuns = new List<RulePrimitiveRunEntity>
+            {
+                new() { Name = "run_shell", Arguments = "command=whoami", Answer = "soren" },
+            },
+        });
+
+        var ex = Assert.Throws<RuleRejectedException>(() => ctx.SaveChanges());
+        Assert.Contains("run_shell", ex.Reason);
+    }
+
+    [Fact]
+    public void A_dry_run_rules_firing_cannot_claim_to_have_typed_however_it_is_written()
+    {
+        var store = new SessionRuleStore(Db);
+        var rule = store.Create(
+            "When I run out of allowance, switch me to Opus.",
+            "A session stopped on a provider allowance notice.",
+            new[] { "limit" },
+            GoodCalls(),
+            RuleScope.AllSessions,
+            cooldownSeconds: 300,
+            dailyCap: 5,
+            Now);
+
+        using var ctx = Db.CreateContext();
+        ctx.SessionRuleFirings.Add(new SessionRuleFiringEntity
+        {
+            TenantId = TenantId.Local.Value,
+            RuleId = rule.Id,
+            SessionId = "sid-1",
+            OccurredUtc = Now,
+            Decision = RuleDecisions.Act,
+            Reason = "the screen says 'usage limit'",
+            Outcome = "typed into the session: /model opus",
+            Grounding = Grounding,
+            TypedText = "/model opus",
+        });
+
+        Assert.Throws<RuleRejectedException>(() => ctx.SaveChanges());
+    }
+
+    [Fact]
+    public void A_well_formed_firing_written_straight_through_the_context_is_accepted()
+    {
+        // THE PRESENCE. Every refusal above would pass just as happily on a gate that refused every firing,
+        // which would make the record impossible to write at all.
+        var store = new SessionRuleStore(Db);
+        var rule = store.Create(
+            "When I run out of allowance, switch me to Opus.",
+            "A session stopped on a provider allowance notice.",
+            new[] { "limit" },
+            GoodCalls(),
+            RuleScope.AllSessions,
+            cooldownSeconds: 300,
+            dailyCap: 5,
+            Now);
+
+        using (var ctx = Db.CreateContext())
+        {
+            ctx.SessionRuleFirings.Add(new SessionRuleFiringEntity
+            {
+                TenantId = TenantId.Local.Value,
+                RuleId = rule.Id,
+                SessionId = "sid-1",
+                OccurredUtc = Now,
+                Decision = RuleDecisions.Decline,
+                Reason = "the screen is only talking about a limit",
+                Outcome = "declined - nothing was typed.",
+                Grounding = Grounding,
+            });
+            ctx.SaveChanges();
+        }
+
+        Assert.Single(new SessionRuleStore(Db).FiringsFor(rule.Id));
+    }
+
+    // ---- the parts of a rule the gate did not look at ------------------------------------------------
+
+    /// <summary>
+    /// THE GATE CHECKED FOUR THINGS AND THE RECORD HAS MORE THAN FOUR PARTS. It looked at the tenant, the
+    /// call document, the initial dry-run state and the promotion marker - so a rule with no instruction,
+    /// no screen description, no trigger words, no cooldown and no daily cap passed straight through it,
+    /// while the store refused every one of those. Two boundaries disagreeing about what a rule is means
+    /// one of them is not a boundary.
+    /// </summary>
+    [Theory]
+    [InlineData("instruction")]
+    [InlineData("screen description")]
+    [InlineData("trigger words")]
+    [InlineData("cooldown")]
+    [InlineData("daily cap")]
+    public void A_rule_written_straight_through_the_context_still_has_to_be_a_rule(string missing)
+    {
+        var entity = Straight(TenantId.Local.Value, DryRun, GoodCalls());
+        switch (missing)
+        {
+            case "instruction": entity.Instruction = "  "; break;
+            case "screen description": entity.ScreenDescription = ""; break;
+            case "trigger words": entity.TriggerWords = new List<string>(); break;
+            case "cooldown": entity.CooldownSeconds = 0; break;
+            case "daily cap": entity.DailyCap = 0; break;
+        }
+
+        using var ctx = Db.CreateContext();
+        ctx.SessionRules.Add(entity);
+
+        var ex = Assert.Throws<RuleRejectedException>(() => ctx.SaveChanges());
+        Assert.NotEqual("", ex.Reason);
     }
 }

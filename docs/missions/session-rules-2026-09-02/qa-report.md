@@ -558,12 +558,37 @@ The live dry-run firing in row 2 is the same property observed on a real session
   decision for the owner, and it was deliberately not made here.
 - **`CcDirector.Gateway.Tests` did not run** - it is parked and host-bound.
 
+Added by FIX ROUND B, because both belong in this list:
+
+- **The send-outcome red is WITHDRAWN, not reworded.** Its row named `(working tree)`, so it cannot be
+  checked out and nobody can reproduce it. There is no number to soften: the claim is gone. The behaviour
+  it was evidence for was replaced in fix round B by a stricter one, with its own committed red.
+- **The second firing record quoted in "A DEFECT this run found" is the build of 2 September and the
+  product no longer words it that way.** That record says `typed: /usage-credits` and
+  `typed into the session ... but the prompt route did not confirm it started a turn`. The independent
+  inspection of landing B was right that this still claims too much: the prompt route answers exactly the
+  same way when the Director refused the command outright, and in that case nothing was typed at all. So a
+  send nobody answered for now records NO typed text, names what was sent in the outcome, and says plainly
+  that nothing confirmed it. The demonstration above is left as it happened - it is what the run produced -
+  and this line is here so nobody reads it as the shape the product produces today.
+
 ---
 
 ## Runs
 
 Every number carries its exit code and the commit it ran on. A run is only evidence for the tree it
 ran on.
+
+**THE COMMAND, WHICH THE TABLE BELOW ASSUMED AND DID NOT SAY.** Every filtered row was produced by
+
+    .\scripts\test-local.ps1 -Filter "<filter>"
+
+run from the repository root, with the filter named in the row's own description (`FullyQualifiedName~Rules`
+for the rows that say "rules tests", `FullyQualifiedName~RuleCallValidatorTests` for the validator rows,
+`FullyQualifiedName~SessionRuleStoreTests` for the store rows, and so on); the unfiltered rows say "local
+gate" and were produced by `.\scripts\test-local.ps1` with no filter. Fix round B added the command
+because a number whose command is not written down cannot be rerun by the person reading it, which is the
+whole point of writing the number down.
 
 | What ran | Commit | Exit code | Result |
 | --- | --- | --- | --- |
@@ -581,12 +606,12 @@ ran on.
 | `has-pending-model-changes`, SQLite | `48eeb1e83` | 0 | no changes since the last migration |
 | `has-pending-model-changes`, Postgres | `48eeb1e83` | 0 | no changes since the last migration |
 | Parked `CcDirector.Gateway.Tests` | | | **PENDING** - machine-wide lock held; see phase 1 report |
-| Phase 2 tests, first run against unwritten code | `62133c497` | 1 | 47 failed, 55 passed (the 55 are phase 1's, so the instrument was reading something) |
+| Phase 2 tests, first run against unwritten code | `62133c497` | 1 | 47 failed, 78 passed, total 125 (the 78 are phase 1's, so the instrument was reading something). CORRECTED by fix round B on a rerun: this row said 55 passed and that number does not reproduce. |
 | Phase 2 rules tests, after the evaluator | `558f2698a` | 0 | 102 passed, 0 failed |
 | Tightened types-nothing guard, against the unwritten wiring | `a7bf10b2f` | 1 | 1 failed, 3 passed - `Collection: []`, the named typist absent |
 | All rules tests, after the production wiring | `18fb72a7c` | 0 | 127 passed, 0 failed |
 | Gateway unit suite, after the endpoints and host wiring | `73273a457` | 0 | 3360 passed, 0 failed, 2 skipped |
-| Send-outcome tests, old wording on the new plumbing | (working tree) | 1 | 2 failed, 16 passed |
+| Send-outcome tests, old wording on the new plumbing | **WITHDRAWN** | | The red was watched in an UNCOMMITTED working tree, so it cannot be checked out and cannot be reproduced. Fix round B deleted the claim rather than restating it; see "What is not proven". |
 | All rules tests, after the honest send outcome | `79f699c82` | 0 | 128 passed, 0 failed |
 | Local gate, `scripts/test-local.ps1` | `f1bc6ca50` | 0 | all 9 projects Completed; 4654 passed, 2 skipped |
 | Parked `CcDirector.Gateway.Tests`, filtered to the turn-end wiring | `f1bc6ca50` | 124 (timeout) | **PENDING** - ZERO tests ran. The machine-wide lock was held by another session throughout: `Still waiting after 481s. Holder: process 49548 ... owner cc-director session 68ca6abb-7bac-41f8-9168-5be5f6b897d4, working directory D:\ReposFred\devthrottle-supervised\...`. A zero-test timeout is a QUEUE, not a broken build. |

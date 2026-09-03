@@ -53,7 +53,8 @@ public sealed class RulePromotionBoundaryTests : IDisposable
     /// <summary>A grant as the endpoint mints one, for a caller the request pipeline named.</summary>
     private static RulePromotionGrant GrantFor(Guid ruleId) =>
         RulePromotionGrant.FromAuthenticatedRequest(
-            ruleId, "device-9f2c", "I have read this rule's dry-run record and I am making it live.", Now);
+            ruleId, AnInboundRequest.FromDevice(),
+            "I have read this rule's dry-run record and I am making it live.", Now);
 
     [Fact]
     public void A_promotion_carrying_no_grant_is_refused_because_a_person_has_to_have_asked()
@@ -69,25 +70,60 @@ public sealed class RulePromotionBoundaryTests : IDisposable
     }
 
     [Fact]
-    public void A_caller_the_request_pipeline_could_not_name_cannot_mint_a_grant_at_all()
+    public void Code_with_no_inbound_request_cannot_mint_a_grant_at_all()
     {
-        // This is the automated caller: it has no inbound request, so there is nobody for the pipeline to
-        // have authenticated, and there is therefore nothing it can hand Promote.
-        var ex = Assert.Throws<RuleRejectedException>(() => RulePromotionGrant.FromAuthenticatedRequest(
-            Guid.NewGuid(), callerIdentity: null, acknowledgement: "make it live", Now));
-        Assert.NotEqual("", ex.Reason);
+        // THE AUTOMATED CALLER. It has no request, so there is nobody for the pipeline to have
+        // authenticated - and it can no longer make up an identity, because the mint does not accept one.
+        var nothing = Assert.Throws<RuleRejectedException>(() => RulePromotionGrant.FromAuthenticatedRequest(
+            Guid.NewGuid(), http: null, acknowledgement: "make it live", Now));
+        Assert.NotEqual("", nothing.Reason);
+    }
 
-        var blank = Assert.Throws<RuleRejectedException>(() => RulePromotionGrant.FromAuthenticatedRequest(
-            Guid.NewGuid(), callerIdentity: "   ", acknowledgement: "make it live", Now));
-        Assert.NotEqual("", blank.Reason);
+    [Fact]
+    public void A_request_the_pipeline_could_not_name_cannot_mint_a_grant()
+    {
+        // A REAL REQUEST that nothing authenticated. Having a request is not the bound; having one the
+        // pipeline resolved a caller from is.
+        var ex = Assert.Throws<RuleRejectedException>(() => RulePromotionGrant.FromAuthenticatedRequest(
+            Guid.NewGuid(), AnInboundRequest.FromNobody(), "make it live", Now));
+        Assert.NotEqual("", ex.Reason);
     }
 
     [Fact]
     public void A_promotion_with_nothing_said_cannot_mint_a_grant_so_an_empty_post_promotes_nothing()
     {
         var ex = Assert.Throws<RuleRejectedException>(() => RulePromotionGrant.FromAuthenticatedRequest(
-            Guid.NewGuid(), "device-9f2c", acknowledgement: "", Now));
+            Guid.NewGuid(), AnInboundRequest.FromDevice(), acknowledgement: "", Now));
         Assert.NotEqual("", ex.Reason);
+    }
+
+    [Fact]
+    public void The_actor_on_a_grant_is_read_from_the_request_and_not_from_the_caller()
+    {
+        // THE PRESENCE that makes the refusals above mean something: a request the pipeline DID name mints
+        // a grant, and the name on it is the one the pipeline resolved - a signed-in person here, rather
+        // than a device - so a live rule can always say who made it live.
+        var grant = RulePromotionGrant.FromAuthenticatedRequest(
+            Guid.NewGuid(), AnInboundRequest.FromSignedInPerson("soren@centerconsulting.com"),
+            "I have read this rule's dry-run record and I am making it live.", Now);
+
+        Assert.Equal("soren@centerconsulting.com", grant.Actor);
+    }
+
+    [Fact]
+    public void A_grant_is_spent_by_the_promotion_it_was_obtained_for_and_cannot_be_used_again()
+    {
+        var store = NewStore();
+        var first = CreateTheRule(store);
+        var second = CreateTheRule(store);
+
+        var grant = GrantFor(first.Id);
+        Assert.Equal(RuleState.Live, store.Promote(first.Id, grant, Now).State);
+
+        // The same evidence, presented a second time. A person agreed once, to one rule.
+        var again = Assert.Throws<RuleRejectedException>(() => store.Promote(first.Id, grant, Now));
+        Assert.Contains("already been used", again.Reason, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(RuleState.DryRun, store.Get(second.Id)!.State);
     }
 
     [Fact]

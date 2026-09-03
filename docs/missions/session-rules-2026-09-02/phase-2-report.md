@@ -32,14 +32,34 @@ what was written, what red was watched before each green, and what the run found
 Every feature was written as a test that was run against unwritten code and WATCHED FAILING, with the
 red recorded before the code existed.
 
+Every row names a COMMIT and the EXACT COMMAND, so the red can be reproduced by checking the commit out
+and running the line. A row that cannot do that has been deleted rather than reworded - see the note under
+the table.
+
 | What | Red | Green |
 | --- | --- | --- |
-| The free checks, the one agent call and the evaluator | `62133c497` - **Failed: 47, Passed: 55, exit code 1** | `558f2698a` - **Passed: 102, Failed: 0, exit code 0** |
+| The free checks, the one agent call and the evaluator | `62133c497` - **Failed: 47, Passed: 78, total 125, exit code 1** | `558f2698a` - **Passed: 102, Failed: 0, exit code 0** |
 | The tightened types-nothing guard, against the unwritten production wiring | `a7bf10b2f` - **Failed: 1, Passed: 3, exit code 1** | `18fb72a7c` - **Passed: 127, Failed: 0, exit code 0** |
 | The Gateway unit suite, after the endpoints and the host wiring | | `73273a457` - **Passed: 3360, Failed: 0, Skipped: 2, exit code 0** |
-| The honest send outcome (the defect the live run found) | old wording restored on the new plumbing - **Failed: 2, Passed: 16, exit code 1** | `79f699c82` - **Passed: 128, Failed: 0, exit code 0** |
+| The honest send outcome (the defect the live run found) | **WITHDRAWN** - the red was watched in an uncommitted working tree and cannot be reproduced. See the note below and "What is not proven". | `79f699c82` - **Passed: 128, Failed: 0, exit code 0** |
 
-The 55 passes in the first red are deliberate: they are the phase 1 tests the same filter catches, so
+The command for every row above is `.\scripts\test-local.ps1 -Filter "<the filter named here>"`, run from
+the repository root: `FullyQualifiedName~Rules` for the first row, `FullyQualifiedName~RulesTypeNothingGuardTests`
+for the second, and `FullyQualifiedName~Rules` for the last.
+
+**A CORRECTION, MADE BY FIX ROUND B ON A RERUN RATHER THAN BY REWORDING.** The first row said
+**Passed: 55**. It does not reproduce. Rerun at `62133c497` with
+`.\scripts\test-local.ps1 -Filter "FullyQualifiedName~Rules"`, the run reports **Failed: 47, Passed: 78,
+total 125, exit code 1** - the failure count and the exit code are right and the passed count was not.
+The number above is now the observed one. The independent inspection of landing B found the discrepancy
+and reported the same 78.
+
+**AND A ROW WAS DELETED.** The fourth row's red - the honest send outcome - named `(working tree)` rather
+than a commit, so it cannot be checked out and cannot be reproduced by anybody. It is not restated in
+softer words: the claim is withdrawn, and it is listed in "What is not proven". The behaviour it was
+evidence for has since been replaced, with its own committed red, by fix round B.
+
+The 78 passes in the first red are deliberate: they are the phase 1 tests the same filter catches, so
 the instrument was reading something rather than an empty set. The 3 passes in the guard's red are
 the same thing - the scanner does find the typing seam where it really is, and the rules namespace is
 not empty.

@@ -72,40 +72,12 @@ public sealed class SessionRuleStore : IRuleReading
         FileLog.Write($"[SessionRuleStore] Create: instruction length={instruction?.Length ?? 0}");
 
         var sentence = (instruction ?? "").Trim();
-        if (sentence.Length == 0)
-            throw new RuleRejectedException(
-                "a rule is the sentence you said, so it cannot be empty - the instruction is the authority.");
-
         var description = (screenDescription ?? "").Trim();
-        if (description.Length == 0)
-            throw new RuleRejectedException(
-                "a rule has to say, in plain words, what it is watching for on the screen.");
-
         var words = (triggerWords ?? Array.Empty<string>())
             .Select(w => (w ?? "").Trim())
             .Where(w => w.Length > 0)
             .ToList();
-        if (words.Count == 0)
-            throw new RuleRejectedException(
-                "a rule needs at least one word to watch for, or it would cost a model call on every " +
-                "screen. The words are worked out from the instruction, not chosen by hand.");
-
-        if (cooldownSeconds <= 0)
-            throw new RuleRejectedException(
-                "a rule has to say how long to wait before acting on the same session again. " +
-                "The ceiling is what makes a rule in a loop finite.");
-        if (dailyCap <= 0)
-            throw new RuleRejectedException(
-                "a rule has to say how many times a day it may act on one session. " +
-                "The ceiling is what makes a rule in a loop finite.");
-
         var theCalls = (calls ?? Array.Empty<RulePrimitiveCall>()).ToList();
-        var validation = RuleCallValidator.ValidateAll(theCalls, _registry);
-        if (!validation.IsValid)
-        {
-            FileLog.Write($"[SessionRuleStore] Create REFUSED: {validation.Reason}");
-            throw new RuleRejectedException(validation.Reason);
-        }
 
         // A MISSING SCOPE IS NOT "EVERY SESSION". Scope is a real safety bound, and turning an omission
         // into the WIDEST possible value is a fail-open: the contract could not tell "the account chose
@@ -139,6 +111,20 @@ public sealed class SessionRuleStore : IRuleReading
                 CreatedUtc = created,
                 UpdatedUtc = created,
             };
+            // CHECKED BEFORE IT IS ADDED, from the one place that says what a rule is. The write gate in
+            // the context checks the same thing on the way out, so a caller that went round this store
+            // meets the same rules - but refusing here means nothing is ever attached to the context, and
+            // the reason reads as a refusal about the call rather than about a row.
+            try
+            {
+                SessionRuleRecordRules.CheckRule(entity, _registry);
+            }
+            catch (RuleRejectedException ex)
+            {
+                FileLog.Write($"[SessionRuleStore] Create REFUSED: {ex.Reason}");
+                throw;
+            }
+
             ctx.SessionRules.Add(entity);
             ctx.SaveChanges();
             FileLog.Write($"[SessionRuleStore] Create: stored rule {entity.Id} in dry run");
@@ -188,6 +174,13 @@ public sealed class SessionRuleStore : IRuleReading
             throw new RuleRejectedException(
                 $"this evidence was given for the rule {grant.RuleId}, not for {id}. A person agrees to " +
                 "one rule going live, not to whichever rule is asked for next.");
+
+        // SPENT HERE, ONCE. A person agreed to one rule going live on one occasion; evidence that could be
+        // presented twice is evidence that could be captured and replayed.
+        if (!grant.TryConsume())
+            throw new RuleRejectedException(
+                "this evidence has already been used to promote a rule. A person agrees once, to one rule, " +
+                "and the same agreement cannot be presented again.");
 
         lock (_gate)
         {
@@ -248,80 +241,99 @@ public sealed class SessionRuleStore : IRuleReading
         DateTime nowUtc)
     {
         var typed = typedText ?? "";
-
-        // THE RECORD IS THE PRODUCT (owner ruling 14), so a record of nothing is refused rather than
-        // written with its missing parts turned into empty strings. A decline with no reason, an outcome
-        // nobody stated, a check the product does not ship, an answer that is blank - each of those was a
-        // legal write before, and every one of them produces a row that cannot establish what happened.
-        RequireSomething(sessionId, "which session this fired on");
-        RequireSomething(reason, "why it decided that - a decline with no reason is not a record of anything");
-        RequireSomething(outcome, "what happened next");
-        RequireSomething(grounding,
-            "what checking the stated reason against this screen found. A firing that cannot say is a " +
-            "firing where that check may never have run");
-
-        var theDecision = (decision ?? "").Trim();
-        if (!KnownDecisions.Contains(theDecision, StringComparer.Ordinal))
-            throw new RuleRejectedException(
-                $"'{theDecision}' is not a decision this build knows. A firing records one of: " +
-                string.Join(", ", KnownDecisions) + ".");
-
         var runs = (primitiveRuns ?? Array.Empty<RulePrimitiveRun>()).ToList();
-        foreach (var run in runs)
-        {
-            if (run is null)
-                throw new RuleRejectedException("a firing cannot record a check that is nothing at all.");
-            if (_registry.Find(run.Name) is null)
-                throw new RuleRejectedException(
-                    $"this firing says the check '{run.Name}' ran, and there is no such check. The record " +
-                    "names what we ship: " + string.Join(", ", _registry.Primitives.Select(p => p.Name)) + ".");
-            if (string.IsNullOrWhiteSpace(run.Answer))
-                throw new RuleRejectedException(
-                    $"this firing says the check '{run.Name}' ran and does not say what it answered. A " +
-                    "check with no answer changed no decision, so recording it as evidence would be a " +
-                    "claim nobody can read.");
-        }
 
         lock (_gate)
         {
             using var ctx = _db.CreateContext();
-            var rule = ctx.SessionRules.AsNoTracking().FirstOrDefault(r => r.Id == ruleId)
-                ?? throw new RuleRejectedException($"there is no rule with the id {ruleId}.");
-
-            if (typed.Length > 0 && string.Equals(rule.State, DryRunValue, StringComparison.Ordinal))
-            {
-                var refusal =
-                    "this rule is in dry run, so it types nothing - a firing cannot record it having " +
-                    "typed '" + typed + "'. Promote the rule first.";
-                FileLog.Write($"[SessionRuleStore] RecordFiring REFUSED: rule {ruleId} is in dry run");
-                throw new RuleRejectedException(refusal);
-            }
+            var state = ctx.SessionRules.AsNoTracking()
+                .Where(r => r.Id == ruleId)
+                .Select(r => r.State)
+                .FirstOrDefault();
 
             var entity = new SessionRuleFiringEntity
             {
                 TenantId = ctx.ActiveTenant!,
                 RuleId = ruleId,
-                SessionId = sessionId.Trim(),
+                SessionId = (sessionId ?? "").Trim(),
                 OccurredUtc = nowUtc.ToUniversalTime(),
                 // The screen and the understanding are the two parts that CAN legitimately be empty: a
                 // terminal really can be blank, and a reply that was refused really did give no
-                // understanding. Every other part of the record is required above.
+                // understanding. Every other part of the record is required by the shared rules below.
                 ScreenText = screenText ?? "",
                 Understanding = understanding ?? "",
-                Decision = theDecision,
-                Reason = reason.Trim(),
+                Decision = (decision ?? "").Trim(),
+                Reason = (reason ?? "").Trim(),
                 PrimitiveRuns = runs
-                    .Select(r => new RulePrimitiveRunEntity { Name = r.Name, Arguments = r.Arguments, Answer = r.Answer })
+                    .Select(r => r is null
+                        ? null!
+                        : new RulePrimitiveRunEntity { Name = r.Name, Arguments = r.Arguments, Answer = r.Answer })
                     .ToList(),
                 TypedText = typed,
-                Outcome = outcome.Trim(),
-                Grounding = grounding.Trim(),
+                Outcome = (outcome ?? "").Trim(),
+                Grounding = (grounding ?? "").Trim(),
             };
+
+            // THE RECORD IS THE PRODUCT (owner ruling 14), so a record of nothing is refused rather than
+            // written with its missing parts turned into empty strings - from the one place that says what
+            // a firing is, which the write gate in the context asks as well.
+            try
+            {
+                SessionRuleRecordRules.CheckFiring(entity, _registry, state, DryRunValue);
+            }
+            catch (RuleRejectedException ex)
+            {
+                FileLog.Write($"[SessionRuleStore] RecordFiring REFUSED: {ex.Reason}");
+                throw;
+            }
+
             ctx.SessionRuleFirings.Add(entity);
             ctx.SaveChanges();
             FileLog.Write(
                 $"[SessionRuleStore] RecordFiring: rule={ruleId} session={entity.SessionId} " +
                 $"decision={entity.Decision} typed={(typed.Length > 0 ? "yes" : "no")}");
+            return ToRecord(entity);
+        }
+    }
+
+    /// <summary>
+    /// Say what became of a firing that was written down BEFORE its keystroke went out.
+    ///
+    /// THE RECORD IS WRITTEN FIRST AND RECONCILED AFTER, and that ordering is the point of this method
+    /// existing at all. The evaluator used to type and then record, so a store refusal, a database error,
+    /// or a rule deleted during the model call each produced an action against somebody's session that
+    /// nothing durable accounted for. The record is the product; an action nobody can reconstruct is an
+    /// action nobody can supervise.
+    ///
+    /// It changes only what became of the send - never the screen, the decision or the reason, which were
+    /// settled before the keystroke and must read the same afterwards.
+    /// </summary>
+    /// <exception cref="RuleRejectedException">There is no such firing, the outcome says nothing, or the
+    /// rule is in dry run and this says it typed something.</exception>
+    public SessionRuleFiring CompleteFiring(Guid firingId, string typedText, string outcome, DateTime nowUtc)
+    {
+        var typed = typedText ?? "";
+        RequireSomething(outcome, "what happened next");
+
+        lock (_gate)
+        {
+            using var ctx = _db.CreateContext();
+            var entity = ctx.SessionRuleFirings.FirstOrDefault(f => f.Id == firingId)
+                ?? throw new RuleRejectedException(
+                    $"there is no firing with the id {firingId}, so there is nothing to say happened.");
+
+            var rule = ctx.SessionRules.AsNoTracking().FirstOrDefault(r => r.Id == entity.RuleId);
+            if (rule is not null && typed.Length > 0
+                && string.Equals(rule.State, DryRunValue, StringComparison.Ordinal))
+                throw new RuleRejectedException(
+                    "this rule is in dry run, so it types nothing - a firing cannot be completed as having " +
+                    "typed '" + typed + "'.");
+
+            entity.TypedText = typed;
+            entity.Outcome = outcome.Trim();
+            ctx.SaveChanges();
+            FileLog.Write(
+                $"[SessionRuleStore] CompleteFiring: firing={firingId} typed={(typed.Length > 0 ? "yes" : "no")}");
             return ToRecord(entity);
         }
     }
@@ -340,14 +352,6 @@ public sealed class SessionRuleStore : IRuleReading
                 .ToList();
         }
     }
-
-    /// <summary>The decisions a firing may record - the closed set the evaluator uses, so a record can be
-    /// read rather than interpreted. Built from the constants themselves, not typed out a second
-    /// time.</summary>
-    private static readonly IReadOnlyList<string> KnownDecisions = new[]
-    {
-        RuleDecisions.Act, RuleDecisions.Decline, RuleDecisions.Abandoned, RuleDecisions.Refused,
-    };
 
     /// <summary>Refuse a required part of the record that is missing, saying what it was for.</summary>
     private static void RequireSomething(string? value, string what)

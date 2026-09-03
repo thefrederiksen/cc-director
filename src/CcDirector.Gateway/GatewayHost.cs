@@ -791,7 +791,7 @@ public sealed class GatewayHost : IAsyncDisposable
     // The rule evaluator (Session Rules mission, phase 2). Hangs off the SAME Working -> idle boundary the
     // supervisor does, so a working session is out of its reach by construction rather than by a rule
     // somebody has to remember.
-    private Rules.RuleEvaluator? _ruleEvaluator;
+    private Rules.RuleTurnEndLauncher? _ruleLauncher;
     private Wingman.WingmanVoiceService? _voiceService;
     // Voice mode is a standing intent, not a one-time action: a tenant that is in voice mode wants EVERY one
     // of its sessions narrating, including the ones that do not exist yet. This timer is how that intent
@@ -2492,7 +2492,9 @@ public sealed class GatewayHost : IAsyncDisposable
         // The rule evaluator (Session Rules mission, phase 2). It hangs off the SAME turn-end boundary, so
         // a working session cannot be reached by a rule at all - the only thing that wakes it is a session
         // crossing into idle.
-        _ruleEvaluator ??= new Rules.RuleEvaluator(BuildRuleEnvironment());
+        _ruleLauncher ??= new Rules.RuleTurnEndLauncher(
+            new Rules.RuleEvaluator(BuildRuleEnvironment()),
+            enterTenantScope: tenant => _tenantBoundary.EnterScope(tenant));
         FileLog.Write("[GatewayHost] StartAsync: rule evaluator armed (standing instructions, dry run unless promoted)");
 
         _turnEndWatcher = new TurnEndWatcher(
@@ -2545,40 +2547,10 @@ public sealed class GatewayHost : IAsyncDisposable
                 }
 
                 // Session Rules (mission phase 2): evaluate this idle transition against the account's
-                // standing instructions. Runs for EVERY session, and is isolated so a rule fault never
-                // breaks the voice refresh below. Fire-and-forget on purpose - the turn-end handler must
-                // not wait on a screen read, a model call and a keystroke - and the tenant scope is entered
-                // here so the background work inherits it through the async-local, exactly as the
-                // supervisor above does. Without it the pass would run with no tenant in scope and the
-                // rule read would be denied: the evaluator would wake up and silently do nothing.
-                try
-                {
-                    if (_ruleEvaluator is { } rules)
-                    {
-                        using (_tenantBoundary.EnterScope(tenant))
-                        {
-                            var sid = signal.SessionId;
-                            var did = signal.DirectorId;
-                            _ = Task.Run(async () =>
-                            {
-                                try
-                                {
-                                    var pass = await rules.EvaluateAsync(tenant, did, sid, CancellationToken.None)
-                                        .ConfigureAwait(false);
-                                    FileLog.Write($"[GatewayHost] turn-end rules: sid={sid} outcome={pass.What}");
-                                }
-                                catch (Exception ex)
-                                {
-                                    FileLog.Write($"[GatewayHost] turn-end rules FAILED: sid={sid}: {ex.Message}");
-                                }
-                            });
-                        }
-                    }
-                }
-                catch (Exception ex)
-                {
-                    FileLog.Write($"[GatewayHost] turn-end rules could not start: sid={signal.SessionId}: {ex.Message}");
-                }
+                // standing instructions. The launch is a piece of that FEATURE and lives with it - see
+                // RuleTurnEndLauncher, which holds the tenant scope, the fire-and-forget and the isolation,
+                // and which the feature's own guards can therefore see. It never throws.
+                _ruleLauncher?.OnTurnEnd(tenant, signal.DirectorId, signal.SessionId);
 
                 // Voice sessions (issue #531): the turn just finished on its own, so re-make the
                 // spoken summary + audio in the background. It is then "voice ready" in the session

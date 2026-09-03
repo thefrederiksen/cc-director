@@ -308,7 +308,7 @@ public sealed class GatewayDatabase : IDisposable
                 try
                 {
                     var services = new ServiceCollection();
-                    services.AddPooledDbContextFactory<GatewayDbContext>(o => o.UseNpgsql(_boundedConn!, npg =>
+                    services.AddPooledDbContextFactory<GatewayDbContext>(o => o.WithGatewayInterceptors().UseNpgsql(_boundedConn!, npg =>
                     {
                         npg.MigrationsAssembly("CcDirector.Gateway.Migrations.Postgres");
                         npg.MigrationsHistoryTable("__EFMigrationsHistory", "gateway");
@@ -403,7 +403,7 @@ public sealed class GatewayDatabase : IDisposable
             }.ToString();
 
             var services = new ServiceCollection();
-            services.AddPooledDbContextFactory<GatewayDbContext>(o => o.UseSqlite(connectionString));
+            services.AddPooledDbContextFactory<GatewayDbContext>(o => o.WithGatewayInterceptors().UseSqlite(connectionString));
             _provider = services.BuildServiceProvider();
             _factory = _provider.GetRequiredService<IDbContextFactory<GatewayDbContext>>();
 

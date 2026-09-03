@@ -169,22 +169,24 @@ public static class RuleAgentContract
                     $"the agent answered '{Shorten(decision)}', and the only answers there are are " +
                     $"'{RuleDecisions.Act}' and '{RuleDecisions.Decline}'.");
 
-            var checks = new List<RulePrimitiveCall>();
-            if (root.TryGetProperty("checks", out var checkArray) && checkArray.ValueKind == JsonValueKind.Array)
-            {
-                foreach (var entry in checkArray.EnumerateArray())
-                {
-                    if (entry.ValueKind != JsonValueKind.Object)
-                        return RuleAgentReading.Refused(
-                            "the agent asked for a check that is not a check at all: " + Shorten(entry.ToString()));
-                    checks.Add(RuleCallJson.ReadCall(entry));
-                }
-            }
+            var checks = RuleCallJson.ReadChecks(root, "checks", required: decision == RuleDecisions.Act, out var checksProblem);
+            if (checks is null)
+                return RuleAgentReading.Refused("the agent's answer does not say what it wants checked: " + checksProblem);
 
             var validation = RuleCallValidator.ValidateAll(checks, registry);
             if (!validation.IsValid)
                 return RuleAgentReading.Refused(
                     "the agent asked for a check that cannot be run: " + validation.Reason);
+
+            // AN ACT WITH NO REASON CANNOT BE RECORDED, so it is not an answer. The store refuses a firing
+            // with a blank reason - the record is the product - and by the time that refusal arrives the
+            // send has already happened. This is the only boundary that can still refuse it, because
+            // nothing downstream can put the reason back.
+            var statedReason = (RuleCallJson.Text(root, "reason") ?? "").Trim();
+            if (decision == RuleDecisions.Act && statedReason.Length == 0)
+                return RuleAgentReading.Refused(
+                    "the agent decided to act and gave no reason for it. The reason is what the firing " +
+                    "record is made of, so an act with none is an act nobody could account for afterwards.");
 
             var textToType = (RuleCallJson.Text(root, "type") ?? "").Trim();
             if (decision == RuleDecisions.Act && textToType.Length == 0)
@@ -196,7 +198,7 @@ public static class RuleAgentContract
                 ruleId,
                 (RuleCallJson.Text(root, "understanding") ?? "").Trim(),
                 decision,
-                (RuleCallJson.Text(root, "reason") ?? "").Trim(),
+                statedReason,
                 checks,
                 decision == RuleDecisions.Act ? textToType : ""));
         }

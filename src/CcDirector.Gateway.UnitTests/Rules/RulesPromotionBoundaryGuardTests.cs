@@ -1,3 +1,4 @@
+using CcDirector.Gateway.Rules;
 using Mono.Cecil;
 using Xunit;
 
@@ -21,44 +22,27 @@ public sealed class RulesPromotionBoundaryGuardTests
     private const string TheStore = "CcDirector.Gateway.Rules.SessionRuleStore";
     private const string TheGrant = "CcDirector.Gateway.Rules.RulePromotionGrant";
 
+    /// <summary>The one way to obtain the evidence that a person asked.</summary>
+    private const string TheMint = "CcDirector.Gateway.Rules.RulePromotionGrant::FromAuthenticatedRequest";
+
+    /// <summary>The one method that moves a rule out of dry run.</summary>
+    private const string ThePromoteCall = "CcDirector.Gateway.Rules.SessionRuleStore::Promote";
+
+    /// <summary>The ONLY production type allowed to reach either. It is the route a person's request
+    /// arrives on, and it is named here so a second one is a failing test rather than a quiet edit.</summary>
+    private const string ThePromoteEndpoint = "CcDirector.Gateway.Api.SessionRuleEndpoints";
+
     /// <summary>The assembly, read ONCE for the whole test process and held. Reading it per test is what
     /// pushed this project past the local gate's two-minute ceiling, and a suite that gets stopped is
     /// neither a pass nor a failure.</summary>
-    private static readonly Lazy<ModuleDefinition> Module = new(() =>
-    {
-        var path = Path.Combine(AppContext.BaseDirectory, "CcDirector.Gateway.dll");
-        Assert.True(File.Exists(path), "the Gateway assembly is not beside the tests at " + path);
-        return ModuleDefinition.ReadModule(path);
-    }, isThreadSafe: true);
+    private static ModuleDefinition GatewayModule() => TheBuiltGatewayAssembly.Module;
 
-    private static ModuleDefinition GatewayModule() => Module.Value;
-
-    private static TypeDefinition Outermost(TypeDefinition type)
-    {
-        var current = type;
-        while (current.DeclaringType is not null) current = current.DeclaringType;
-        return current;
-    }
+    private static TypeDefinition Outermost(TypeDefinition type) => TheBuiltGatewayAssembly.Outermost(type);
 
     private static string NamespaceOf(TypeDefinition type) => Outermost(type).Namespace ?? "";
 
-    private static IEnumerable<TypeDefinition> AllTypes(ModuleDefinition module)
-    {
-        foreach (var type in module.Types)
-        {
-            yield return type;
-            foreach (var nested in Nested(type)) yield return nested;
-        }
-
-        static IEnumerable<TypeDefinition> Nested(TypeDefinition type)
-        {
-            foreach (var nested in type.NestedTypes)
-            {
-                yield return nested;
-                foreach (var deeper in Nested(nested)) yield return deeper;
-            }
-        }
-    }
+    private static IEnumerable<TypeDefinition> AllTypes(ModuleDefinition module) =>
+        TheBuiltGatewayAssembly.AllTypes();
 
     /// <summary>Every place a type is named in another type's SHAPE - a field, a property, a method's
     /// parameters or its return - answered as "TypeFullName (where)".</summary>
@@ -97,6 +81,111 @@ public sealed class RulesPromotionBoundaryGuardTests
         if (reference is GenericInstanceType generic)
             return generic.GenericArguments.Any(a => Names(a, wanted));
         return false;
+    }
+
+    /// <summary>Every type whose OWN method bodies reference <paramref name="member"/>. A SHAPE scan - the
+    /// one above - answers who HOLDS a type; this answers who CALLS a member, which is the question a
+    /// capability has to survive: a caller can reach a static factory without holding anything.</summary>
+    private static List<string> BodiesMentioning(ModuleDefinition module, string member)
+    {
+        var found = new List<string>();
+        foreach (var type in AllTypes(module))
+        {
+            foreach (var method in type.Methods)
+            {
+                if (!method.HasBody) continue;
+                foreach (var instruction in method.Body.Instructions)
+                {
+                    if (instruction.Operand is not MethodReference called) continue;
+                    var name = (called.DeclaringType?.FullName ?? "") + "::" + called.Name;
+                    if (!name.StartsWith(member, StringComparison.Ordinal)) continue;
+                    found.Add(Outermost(type).FullName);
+                    break;
+                }
+            }
+        }
+        return found.Distinct(StringComparer.Ordinal).OrderBy(n => n, StringComparer.Ordinal).ToList();
+    }
+
+    /// <summary>
+    /// THE STRUCTURAL NEGATIVE, and it is the assertion the inspection asked for by name. Showing that a
+    /// direct call to the mint works proves that a person CAN promote; it says nothing about whether
+    /// anything else can. This says what else can: nothing, except the one route a person's request
+    /// arrives on.
+    ///
+    /// The grant's own type is excluded because the factory lives on it, and the promote endpoint is the
+    /// answer rather than an exception - if a second name ever appears in this list, some other piece of
+    /// Gateway code has acquired the ability to move a rule out of dry run, and that is exactly the thing
+    /// dry run exists to prevent.
+    /// </summary>
+    [Fact]
+    public void The_only_production_code_that_can_obtain_a_promotion_grant_is_the_promote_endpoint()
+    {
+        var module = GatewayModule();
+        var minters = BodiesMentioning(module, TheMint)
+            .Where(t => !t.StartsWith(TheGrant, StringComparison.Ordinal))
+            .ToList();
+
+        // THE INSTRUMENT first. If the endpoint is not in this list the scanner is reading nothing, and
+        // "no other minter was found" would certify a sweep that never looked.
+        Assert.Contains(ThePromoteEndpoint, minters);
+        Assert.Equal(new[] { ThePromoteEndpoint }, minters);
+    }
+
+    [Fact]
+    public void The_only_production_code_that_can_call_promote_is_the_promote_endpoint()
+    {
+        var module = GatewayModule();
+        var callers = BodiesMentioning(module, ThePromoteCall)
+            .Where(t => !t.StartsWith(TheStore, StringComparison.Ordinal))
+            .ToList();
+
+        Assert.Contains(ThePromoteEndpoint, callers);
+        Assert.Equal(new[] { ThePromoteEndpoint }, callers);
+    }
+
+    [Fact]
+    public void A_promotion_grant_cannot_be_constructed_by_anything_but_itself()
+    {
+        // The factory is the only door, so the constructor must not be a second one. A public constructor
+        // would make every assertion above decorative: a caller that could not reach the factory would
+        // simply build the evidence itself.
+        var module = GatewayModule();
+        var builders = BodiesMentioning(module, TheGrant + "::.ctor")
+            .Where(t => !t.StartsWith(TheGrant, StringComparison.Ordinal))
+            .ToList();
+
+        Assert.True(builders.Count == 0,
+            "these construct a promotion grant directly rather than obtaining one from an authenticated " +
+            "request: " + string.Join(", ", builders));
+    }
+
+    /// <summary>
+    /// THE EVIDENCE MUST BE SOMETHING AN AUTOMATED CALLER CANNOT WRITE DOWN.
+    ///
+    /// The first version of this bound took a caller identity and an acknowledgement as STRINGS and proved
+    /// only that neither was blank. Any Gateway code could therefore invent both and promote a rule, and
+    /// the comment saying nothing automated could promote was simply untrue. So the mint is no longer
+    /// public, and it takes THE REQUEST ITSELF rather than a description of one: the identity is read from
+    /// what the pipeline authenticated, and code with no inbound request has nothing to hand it.
+    /// </summary>
+    [Fact]
+    public void The_mint_takes_the_request_itself_and_is_not_part_of_the_public_surface()
+    {
+        var mints = typeof(RulePromotionGrant)
+            .GetMethods(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic
+                        | System.Reflection.BindingFlags.Static)
+            .Where(m => m.Name == "FromAuthenticatedRequest")
+            .ToList();
+
+        var mint = Assert.Single(mints);
+        Assert.False(mint.IsPublic,
+            "the mint is public, so any caller anywhere can reach it. A capability that is available to " +
+            "everything is not a capability.");
+        Assert.Contains(mint.GetParameters(),
+            p => p.ParameterType == typeof(Microsoft.AspNetCore.Http.HttpContext));
+        Assert.DoesNotContain(mint.GetParameters(),
+            p => p.ParameterType == typeof(string) && (p.Name ?? "").Contains("Identity", StringComparison.OrdinalIgnoreCase));
     }
 
     [Fact]
