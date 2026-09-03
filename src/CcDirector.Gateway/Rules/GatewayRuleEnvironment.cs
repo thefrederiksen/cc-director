@@ -75,6 +75,17 @@ internal sealed class GatewayRuleEnvironment : IRuleEnvironment
     /// <inheritdoc />
     public DateTime NowUtc => _nowUtc();
 
+    /// <summary>
+    /// A KNOWN-BAD PROBE, committed on purpose and removed in the commit that fixes this. It is a piece of
+    /// ordinary Gateway code - not the promote route, with no inbound request anywhere near it - minting
+    /// the evidence that a person asked for a rule to go live, out of two strings it invented.
+    ///
+    /// It exists so the structural guard can be watched FAILING on the shape it is supposed to catch. A
+    /// guard that has only ever been seen passing is a guard nobody has tested.
+    /// </summary>
+    public RulePromotionGrant ProbeMintAGrantWithNobodyAsking(Guid ruleId) =>
+        RulePromotionGrant.FromAuthenticatedRequest(ruleId, "a string I made up", "and another", _nowUtc());
+
     /// <inheritdoc />
     public IReadOnlyList<SessionRule> Rules(TenantId tenant)
     {
