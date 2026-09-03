@@ -1,0 +1,22 @@
+{
+  "id": "n21-4529-warnings-in-a-commit-plan",
+  "expected": "decline",
+  "kind": "negative-substring",
+  "reason": "'0 errors (4529 warnings, all pre-existing)' is a build result in a commit plan the agent wrote before asking 'Approve this commit?'. The outage rule's trigger word '529' matched inside the number 4529, and the build-failure rule's word 'error' matched '0 errors'. The build passed and the session is waiting for approval. Every candidate must decline.",
+  "facts": {
+    "agent": "ClaudeCode",
+    "repositoryPath": "",
+    "machine": "",
+    "mission": "",
+    "activityState": "WaitingForInput"
+  },
+  "factsNote": "The agent is read off the screen's own chrome (the bypass-permissions bar and the turn summary line are this agent's). The activity state is WaitingForInput because a turn-brief package is built when a turn ends, which is the moment the session goes idle. Machine, repository and mission are not recorded in the package, so they are left empty.",
+  "source": {
+    "method": "turn-package screen tail",
+    "sessionId": "4bd8765d-1322-4e9d-b1d8-9e6a80df86ca",
+    "capturedUtc": "",
+    "detail": "Gateway turn-brief package t317 for session 4bd8765d-1322-4e9d-b1d8-9e6a80df86ca, its screenTail field: the last 4,000 characters of the terminal text, captured by the Gateway's turn-brief pipeline when the turn ended. Session headline at the time: '(none)'. Trimmed from the top to the last 40 non-blank lines, the window the engine reads, so the trigger words sit inside it; nothing inside the window was altered."
+  },
+  "nonAscii": true,
+  "secretsChecked": true
+}

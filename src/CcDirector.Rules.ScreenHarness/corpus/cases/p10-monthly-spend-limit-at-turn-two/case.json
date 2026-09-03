@@ -1,0 +1,23 @@
+{
+  "id": "p10-monthly-spend-limit-at-turn-two",
+  "expected": "act",
+  "expectedRuleId": "7c1f0b2e-4d8a-4a6b-9f3e-2a5c1d7e9b01",
+  "kind": "positive",
+  "reason": "A freshly started session read its input file and immediately stopped on 'You've hit your monthly spend limit./usage-credits to adjust your monthly spend limit.' ('Crunched for 0s'). The only thing this session has done is hit its allowance, and the banner above ('Included in your plan limits until Jun 22') does not change that. The allowance rule applies.",
+  "facts": {
+    "agent": "ClaudeCode",
+    "repositoryPath": "",
+    "machine": "",
+    "mission": "",
+    "activityState": "WaitingForInput"
+  },
+  "factsNote": "The agent is read off the screen's own chrome (the bypass-permissions bar and the turn summary line are this agent's). The activity state is WaitingForInput because a turn-brief package is built when a turn ends, which is the moment the session goes idle. Machine, repository and mission are not recorded in the package, so they are left empty.",
+  "source": {
+    "method": "turn-package screen tail",
+    "sessionId": "558c4295-f47e-40de-8f94-6c09c1613818",
+    "capturedUtc": "2026-06-11T09:18:52.9565091Z",
+    "detail": "Gateway turn-brief package t2 for session 558c4295-f47e-40de-8f94-6c09c1613818, its screenTail field: the last 4,000 characters of the terminal text, captured by the Gateway's turn-brief pipeline when the turn ended. Session headline at the time: '(none)'."
+  },
+  "nonAscii": true,
+  "secretsChecked": true
+}

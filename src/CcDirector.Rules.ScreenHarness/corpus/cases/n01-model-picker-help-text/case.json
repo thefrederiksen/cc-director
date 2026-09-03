@@ -1,0 +1,22 @@
+{
+  "id": "n01-model-picker-help-text",
+  "expected": "decline",
+  "kind": "negative-documentation",
+  "reason": "The words 'Uses your limits ~2x faster than Opus' and 'Draws from usage credits' are option descriptions in the /model picker the person just used, and the turn ended with 'Set model to Fable 5 and saved as your default'. They describe products, not this session's state; nothing has stopped and no allowance is used up. Every candidate rule must decline.",
+  "facts": {
+    "agent": "ClaudeCode",
+    "repositoryPath": "",
+    "machine": "",
+    "mission": "",
+    "activityState": "WaitingForInput"
+  },
+  "factsNote": "The agent is read off the screen's own chrome (the bypass-permissions bar and the turn summary line are this agent's). The activity state is WaitingForInput because a turn-brief package is built when a turn ends, which is the moment the session goes idle. Machine, repository and mission are not recorded in the package, so they are left empty.",
+  "source": {
+    "method": "turn-package screen tail",
+    "sessionId": "214c4665-953b-4ee1-a1c2-16919739703f",
+    "capturedUtc": "2026-06-11T15:18:17.9161486Z",
+    "detail": "Gateway turn-brief package t2 for session 214c4665-953b-4ee1-a1c2-16919739703f, its screenTail field: the last 4,000 characters of the terminal text, captured by the Gateway's turn-brief pipeline when the turn ended. Session headline at the time: 'Model switched to Fable 5'."
+  },
+  "nonAscii": true,
+  "secretsChecked": true
+}

@@ -1,0 +1,23 @@
+{
+  "id": "p08-monthly-spend-limit-mid-bug-group",
+  "expected": "act",
+  "expectedRuleId": "7c1f0b2e-4d8a-4a6b-9f3e-2a5c1d7e9b01",
+  "kind": "positive",
+  "reason": "The agent stopped on its own 'You've hit your monthly spend limit.' after 22 minutes of work, with its task list open and nothing further. This is the session's own allowance state, not a mention of one, so the allowance rule applies.",
+  "facts": {
+    "agent": "ClaudeCode",
+    "repositoryPath": "",
+    "machine": "",
+    "mission": "",
+    "activityState": "WaitingForInput"
+  },
+  "factsNote": "The agent is read off the screen's own chrome (the bypass-permissions bar and the turn summary line are this agent's). The activity state is WaitingForInput because a turn-brief package is built when a turn ends, which is the moment the session goes idle. Machine, repository and mission are not recorded in the package, so they are left empty.",
+  "source": {
+    "method": "turn-package screen tail",
+    "sessionId": "88d3de29-d47f-472e-a2c9-0f8033607390",
+    "capturedUtc": "2026-06-06T21:22:37.5820956Z",
+    "detail": "Gateway turn-brief package t543 for session 88d3de29-d47f-472e-a2c9-0f8033607390, its screenTail field: the last 4,000 characters of the terminal text, captured by the Gateway's turn-brief pipeline when the turn ended. Session headline at the time: 'Picking next bug group'."
+  },
+  "nonAscii": true,
+  "secretsChecked": true
+}

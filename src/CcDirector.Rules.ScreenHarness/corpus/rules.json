@@ -1,0 +1,45 @@
+[
+  {
+    "id": "7c1f0b2e-4d8a-4a6b-9f3e-2a5c1d7e9b01",
+    "instruction": "When one of my sessions stops because it has used up its usage allowance, wait until the time the notice says it resets and then type continue so it picks the work back up.",
+    "screenDescription": "The session has stopped on a notice from its own agent saying its usage allowance, session limit or spend limit is used up, usually with a time at which it resets.",
+    "triggerWords": [
+      "limit",
+      "usage credits",
+      "usage-credits",
+      "allowance",
+      "out of credits"
+    ],
+    "calls": [],
+    "cooldownSeconds": 60,
+    "dailyCap": 5
+  },
+  {
+    "id": "3e9a6d4c-7b21-4f58-8c0d-5e1f2a3b4c02",
+    "instruction": "When a session has stopped because its model provider returned an error such as overloaded or a connection failure, wait a minute and type continue, and give up for the day if it keeps failing.",
+    "screenDescription": "The session has stopped on an error notice from its model provider - an overloaded, server-side, connection or timeout error - rather than on finished work of its own.",
+    "triggerWords": [
+      "API Error",
+      "overloaded",
+      "529",
+      "connection error",
+      "timed out",
+      "rate limit"
+    ],
+    "calls": [],
+    "cooldownSeconds": 60,
+    "dailyCap": 5
+  },
+  {
+    "id": "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c03",
+    "instruction": "If a build failed because of a compiler error, type the command that shows me the first error.",
+    "screenDescription": "A session whose last build ended with a compiler error, so the screen shows the build failing rather than finishing.",
+    "triggerWords": [
+      "failed",
+      "error"
+    ],
+    "calls": [],
+    "cooldownSeconds": 60,
+    "dailyCap": 5
+  }
+]

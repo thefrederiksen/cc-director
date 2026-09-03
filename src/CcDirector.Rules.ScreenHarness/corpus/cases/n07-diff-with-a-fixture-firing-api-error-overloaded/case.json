@@ -1,0 +1,22 @@
+{
+  "id": "n07-diff-with-a-fixture-firing-api-error-overloaded",
+  "expected": "decline",
+  "kind": "negative-code",
+  "reason": "'screenText: \"API Error: overloaded\"' and 'decision: \"act\"' are lines of a test fixture in a diff the session is showing - a fake firing record for a page test. The outage rule's trigger words are on the screen as data in code. Nothing has stopped and the provider is fine. Decline.",
+  "facts": {
+    "agent": "ClaudeCode",
+    "repositoryPath": "D:/ReposFred/devthrottle-rules-fixd",
+    "machine": "SOREN_NORTH",
+    "mission": "",
+    "activityState": "WaitingForInput"
+  },
+  "factsNote": "Agent, machine and repository come from the roster row returned by cc-devthrottle session list --json at capture. The activity state is WaitingForInput because the window ends at the end of the turn in which this passage was written, where the turn summary line shows the session stopped.",
+  "source": {
+    "method": "gateway buffer route",
+    "sessionId": "a3f1cb5d-2941-4356-a94e-46e17dda3b5c",
+    "capturedUtc": "2026-09-03T16:41:26.008923Z",
+    "detail": "GET /sessions/{id}/buffer on the hosted Gateway with this session's own key, 2026-09-03; session 'Session Rules - Fix Round D Manager' (ClaudeCode, D:/ReposFred/devthrottle-rules-fixd). lines 918-962 of the cleaned scrollback, the diff hunk with the mocked firing. Line numbers count from the start of the 402,365-character cleaned scrollback the route returned."
+  },
+  "nonAscii": true,
+  "secretsChecked": true
+}

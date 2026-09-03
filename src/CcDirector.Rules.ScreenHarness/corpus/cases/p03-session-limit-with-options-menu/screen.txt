@@ -1,0 +1,41 @@
+bating…Incubating…9✶1* ✢Incubating…Incubating…·60Incubating…Incubating…Incubating…Incubating…✢Incubating…●Incubating…1*2(ctrl+b to run in background)
+
+*Incubating… (6m 32s · ↓26.1k tokens)
+
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────❯ 
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────⏵⏵bypasspermissionson ·1shell ·esctointerrupt·↓tomanage
+ (3s)✶✻Incubating…✽Incubating…2 Incubating…Incubating…Incubating…Incubating…✻Incubating…3✶Incubating…●*34✢Incubating…4·Incubating…Incubating…Incubating… Incubating…Incubating…✢Incubating…5Incubating…*●Wait
+*Incubating… (6m 34s · ↓26.5k tokens)
+
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────❯ 
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────  ⏵⏵ bypass permissions on · 1 shell · esc to interrupt · ↓ to manage
+
+●=== verifyepisode1frontmatter===published:2026-06-07
+    updated: 2026-06-08… +11 lines (ctrl+o to expand)
+  ⎿  Shell cwd was reset to D:\ReposFred\websites                                                                                                  
+
+* Incubating… (6m 34s · ↓ 26.5k tokens)                                                                                                            
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ 
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ bypass permissions on · 1 shell · esc to interrupt · ↓ to manage
+✶Incubating↑…✻6✽  ⎿  You've hit your session limit · resets 10:20am (America/Toronto)
+
+✻Worked for 6m 34s · 1 shell still running
+
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────❯ 
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────⏵⏵bypasspermissionson ·1shell ·←foragents·↓tomanage
+
+❯ /rate-limit-options                                                                                                                              
+
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────  What do you want to do?                                                                                                                          
+
+  ❯ 1. Stop and wait for limit to reset  2. Add funds to continue with usage credits3.SwitchtoTeamplan
+
+  Enter to confirm · Esc to cancel
+  ⎿  You've hit your session limit · resets 10:20am (America/Toronto)
+     /usage-credits to finish what you’re working on.                                                                                              ✻ Churned for 6m 34s · 1 shell still running                                                                                                                                                                                                                                                        ❯ /rate-limit-options                                                                                                                              
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────What do you want to do?❯ 1. Stop and wait for limit to reset2.Addfundstocontinuewithusagecredits
+    3. Switch to Team plan
+
+  Enter to confirm · Esc to cancel

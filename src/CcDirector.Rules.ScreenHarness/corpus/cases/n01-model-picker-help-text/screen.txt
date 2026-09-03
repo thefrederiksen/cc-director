@@ -1,0 +1,42 @@
+llyand per-repo. Create, review, edit, and list skills. Triggers
+on "/skill-manager", "create skill", "eview skill", "list skills", "edit skill", "skill management". (user)writeDraft emails, LikedInposts, comments, and messages in Soren's voice. All communications are queued for human
+review before sending. Triggers on "/write", "draft email", "write email", "draft post", "write message". (user)paywright-cliBrowserautomation via Playwright CLI. Use for ALL browser taks whereth targetsehas NO bot/human
+dection. Faster,90k feweoken, upports parallel agents. Falls back to cc-browser ONLY for bot-protected s…oodelSet the AImodel for Claude Code (currently Sonnet 4.6)obiehow QRcode to download the Claude mobile appove-sessionRelocte a live sssion toanoher cc-director slot or Director - approval-gated handover, the seed identifies
+itself as a move session, the TARGET keeps the source's original name, the source is renamed "[MOVED]" so the u…claude-api Referencfor theClad API / AnthropicSDK — model ids,pricing, params, streaming, toole, MCP,agents,aching, token counting, modelmigration. TRIGGER — read BEFORE opening the target file; don't skp because it "lop        un a prompt orlah command on arecuring interval (e.g. /loop5m /foo). Omitthe interval to let the modlself-pace.remote-envChoosthe faultenvironment for cloud agentsreote-controlontrol thssesson from your phone or claude.a/code
+/memory                       Ope a memoy file in your editorupdatenfigUse this skill to confiure the Claude Code harnessvi ettings.jon. Automated behaviors ("from now on when X",each time X","whenver X", "efore/after X")require hooks configured in settings.json - the harness executes …advisor Let Claude conult a strongr model atkey moments
+/support-agent                The Suppot Agent inthe CenConDevelpment Method for cc-director. The dle question-answringseat - answers       
+questions abut the cc-director codebase and aout whatthe Product, Developer, and QA agents are doing,and own…
+/cdMove ths session toa nw worng directoryeffortSet effort level for model usage
+/fast                         Togglefast mod (Opus4.8)sttus        Sh Claude Code status includingversion,model, accunt,API connctivity, and tool sttuses
+/upgrade                      Upgrade toMx forhigher rate limits and more Opus❯ /model                                                                                                                                           
+
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────  Select model
+  SwtchbetweenClaudemodels. Your pick becomes the default fornew sssions. For other/previous model names, specify with --model.
+1. Default(recommended)Opus 4.8 with 1M context ·Best for everyday, complex tasks
+    2. FableFable 5 ·Mst capable for your hardest and longest-running tasks · Uses your lits ~2× fastrthanOpus❯3. Sonnet✔Sonnet 4.6 · Efficient for routine tasks
+    4.Sonnet (1M context)    Sonet 4.6 with1M context · Drawsfrom usae crdits· $3/$15 per Mtok5. HaikuHaiku 4.5 · Fastest for quick answers
+
+  ● High effort(default)←/→ to adjust
+
+  Use /fast toturnonFastmode (Opu4.8).
+  Enter tosetasdefault·sto use this sesion only · Esc to cancel
+
+
+
+
+
+
+
+❯Fable Fabl 5 · Claude MaxFable 5 ishere! Our newest model for complex, long-runing work  ⎿  SetmodeltoFable 5andsavedasyourdefaultfornewsessions
+                                                                                                                                                   ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────❯ 
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agns● high · /effort
+
+
+
+
+
+
+
+
+
+

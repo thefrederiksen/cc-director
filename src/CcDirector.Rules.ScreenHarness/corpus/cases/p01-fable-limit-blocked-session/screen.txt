@@ -1,0 +1,40 @@
+ ⎿ Tip:Forafast,cheapcodereview,try/code-reviewlow.Itrunsthebuilt-inskillatitslightesteffortlevel.
+
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ 
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · esc to interrupt · ← 1 agent✔ Update installed · Restart to update  
+/rc  
+Puttering…running stop hook · 1m 14s · ↓1.7k tokens)*Puttering…8✶✻✻Worked for 1m 14s ·done11:55 PM
+
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────❯ 
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← 1 agent✔ Update installed · Restart to update  /rc
+
+new task? /clear to save 791.9k tokens/rcMessage[messagefromPlanmobilesessionpicker(SOREN_NORTH),id10ee6d27]Thecurrentmain-branchinstructionsrequirethede
+  deploy-hosted-gate
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────⏵⏵ bypass permissions on (shift+tab to cycle)✔ Update installed · Restart to updatenew task? /clear to save 791.9k tokens/rc
+wayskillforeveryGateway,Cockpit,ormobiledeployment,butcc-devthrottleskillgetdeploy-hosted-gatewayreports
+  that no s
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────⏵⏵ bypass permissions on (shift+tab to cycle)✔ Update installed · Restart to updatenew task? /clear to save 791.9k tokens/rc
+uchskillexistsandnolocalcopyispresent.Doyouknowthecurrentsupportedskillidentifieroritsauthoritativelocation?
+  Please reply wi
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────⏵⏵ bypass permissions on (shift+tab to cycle)✔ Update installed · Restart to updatenew task? /clear to save 791.9k tokens/rc
+ththeexactpathoridentifieronlyifverified.❯ Message [message from Plan mobile session picker (SOREN_NORTH), id 10ee6d27] The current main-branch instructions require the                  deploy-hosted-gateway skill for every Gateway, Cockpit, or mobile deployment, but cc-devthrottle skill get deploy-hosted-gateway reports       that no such skill exists and no local copy is present. Do you know the current supported skill identifier or its authoritative location?      Please reply with the exact path or identifier only if verified.                                                                             
+✽ Meandering…
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────❯      
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · esc to interrupt · ← 1 agent✔ Update installed · Restart to update  
+/rc  
+✻  ⎿  1 skill available
+
+✻Meandering… 
+
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────❯ 
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────⏵⏵ bypass permissions on (shift+tab to cycle) · esc to interrupt · ← 1 agent✔ Update installed · Restart to update/rc
+✶*✢·…g✢n*i…✶rg✻✽endi✻nr✶*aeed✢·Mna✢e*M✶✻✽  ⎿  You've reached your Fable 5 limit. Run /usage-credits to continue or switch models with /model.
+
+✻Baked for 4s · done 5:44 AM
+
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────❯ 
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────⏵⏵ bypass permissions on (shift+tab to cycle) · ← 1 agent✔ Update installed · Restart to update/rc
+

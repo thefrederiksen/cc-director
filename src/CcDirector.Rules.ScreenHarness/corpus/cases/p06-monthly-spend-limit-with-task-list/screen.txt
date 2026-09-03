@@ -1,0 +1,59 @@
+ROJECTS---"; az devops project list --query "value[].name" -o tsv 2>&1 | head -20)
+  ⎿  [defaults]
+     organization = https://dev.azure.com/mindzie
+     project = mindzie
+     … +14 lines (ctrl+o to expand)
+
+● Bash(git show origin/main:src/CcDirector.Gateway/Running/WorkListRunner.cs | grep -nE "gh |gh\"|github|source|Source" | head -30; echo
+      "===STORE-MODEL==="; git show…)
+  ⎿  11:///   2. DRAINS the list in <c>GET /lists/{name}</c> order, ONE github item in flight at a time:
+     12:///      for each <c>source = github</c> item it starts one implementation session seeded with
+     16:///   3. Applies the documented SOURCE-GATING rule for non-github items (skip; see below).
+     … +37 lines (ctrl+o to expand)
+
+● Bash(cat > /tmp/sharpen-300.md << 'EOF'
+      ## Product sharpening (Definition of Ready) - settles design decisions before flow:ready-dev…)
+  ⎿  https://github.com/thefrederiksen/cc-director/issues/300#issuecomment-4678890487
+     https://github.com/thefrederiksen/cc-director/issues/300
+     https://github.com/thefrederiksen/cc-director/issues/300
+     … +6 lines (ctrl+o to expand)
+
+● Claim verified (oldest CLAIM is mine). Bounce counter = 0. Step 1: DEV phase for #300:
+
+● Agent(DEV phase issue #300)
+  ⎿  Done (58 tool uses · 0 tokens · 13m 56s)
+  (ctrl+o to expand)
+  ⎿  You've hit your monthly spend limit.
+     /usage-credits to adjust your monthly spend limit.
+
+✻ Brewed for 57m 31s
+
+  4 tasks (1 done, 1 in progress, 2 open)
+  ✔ Drive #299 (same-machine parallelism isolation) to flow:done via implementation-loop
+  ◼ Drive #300 (source adapters: devops/jira refs) to flow:done via implementation-loop
+  ◻ Drive #301 (list persistence across Gateway restart) to flow:done via implementation-loop
+  ◻ Post closing summary on epic #297 and final leave-clean sweep
+
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ 
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · ctrl+t to hide tasks · ← for agents
+You've used 100% of your session limit · resets 8am (America/Toronto) · /upgrade to keep using Claude Code  
+
+Checking for updatescontinue❯ continue                                                                                                                                         
+✽Driving #300 through the implementation loop…
+  ⎿  ✔ Drive #299 (same-machine parallelism isolation) to flow:done via implementation-loop  ◼ Drive #300 (source adapters: devops/jira refs) to flow:done via implementation-loop◻Drive#301(listpersistenceacrossGatewayrestart)toflow:doneviaimplementation-loop
+     ◻ Post closing summary on epic #297 and final leave-clean sweep
+❯ 
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────⏵⏵bypasspermissionson (shift+tabtocycle)·esctointerrupt·ctrl+ttohidetasks
+Dri  ⎿  You've hit your monthly spend limit.
+    /usage-credits to adjust your monthly spend limit.
+
+✻Cogitated for 0s4 tasks (1 done, 1 in progress, 2 open)✔ Drive #299 (same-machine parallelism isolation) to flow:done via implementation-loop
+  ◼ Drive #300 (source adapters: devops/jira refs) to flow:done via implementation-loop
+  ◻Drive#301(listpersistenceacrossGatewayrestart)toflow:doneviaimplementation-loop
+  ◻ Post closing summary on epic #297 and final leave-clean sweep
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ 
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · ctrl+t to hide tasks · ← for agents

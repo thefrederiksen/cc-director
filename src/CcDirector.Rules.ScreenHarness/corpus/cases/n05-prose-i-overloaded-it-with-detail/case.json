@@ -1,0 +1,22 @@
+{
+  "id": "n05-prose-i-overloaded-it-with-detail",
+  "expected": "decline",
+  "kind": "negative-documentation",
+  "reason": "'I overloaded it with extra detail' is the agent apologising for a wordy explanation. 'overloaded' is one of the outage rule's trigger words and here it is a verb in the agent's own sentence; the provider is not overloaded and the session finished its turn normally. Decline.",
+  "facts": {
+    "agent": "ClaudeCode",
+    "repositoryPath": "",
+    "machine": "",
+    "mission": "",
+    "activityState": "WaitingForInput"
+  },
+  "factsNote": "The agent is read off the screen's own chrome (the bypass-permissions bar and the turn summary line are this agent's). The activity state is WaitingForInput because a turn-brief package is built when a turn ends, which is the moment the session goes idle. Machine, repository and mission are not recorded in the package, so they are left empty.",
+  "source": {
+    "method": "turn-package screen tail",
+    "sessionId": "180aee6b-13c6-4765-af6f-7459592caed4",
+    "capturedUtc": "",
+    "detail": "Gateway turn-brief package t100 for session 180aee6b-13c6-4765-af6f-7459592caed4, its screenTail field: the last 4,000 characters of the terminal text, captured by the Gateway's turn-brief pipeline when the turn ended. Session headline at the time: '(none)'."
+  },
+  "nonAscii": true,
+  "secretsChecked": true
+}

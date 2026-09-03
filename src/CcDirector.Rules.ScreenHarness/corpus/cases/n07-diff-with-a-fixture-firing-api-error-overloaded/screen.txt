@@ -1,0 +1,45 @@
+       3 
+    4 // THE INSTRUMENT MUST NOT FAIL OPEN (fix round D, ruling D8). A Gateway answer that is missing the
+       5 // field the client asked for is a broken instrument, not an empty result. Read as an empty list it     6 // becomes "It has not fired yet" on the page - an absence-shaped check reporting a positive fact when      7//thedataneverarrived.Theruleslistalreadyrefusedamissingfield;thefiringsreaddidnot.
+       8 // Both are pinned here, against a fake fetch, so the two readers cannot drift apart again.
+       9
+      10 const realFetch = globalThis.fetch;
+     … +33 lines (ctrl+o to expand)
+
+* Gallivanting… (13m 55s · ↓ 46.1k tokens)
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ 
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · esc to interrupt · ← 1 agent/rc  
+✢Gallivanting…Gallivanting…2·Gallivanting…Gallivanting…Gallivanting…63✢Gallivanting…Gallivanting…*✶4✻Gallivanting…✽Gallivanting…Gallivanting…Gallivanting…Gallivanting…7✻Gallivanting…Gallivanting…✶*✢Gallivanting…·Gallivanting…Gallivanting…Gallivanting…8Gallivanting…✢*✶✻✽59✻✶*✢·40s · ↓ 46.5k tokens)✢*✶✻✽…g16✻n✶*i…tg✢·nnai2✢vt*in✶la✻✽lv7ai3✻Gl✶l*✢a·G4✢*8✶✻✽5✻✶*✢·69✢*✶✻✽7✻✶…70*✢g·ni…8✢tg*nn✶✻ai✽vtin9✻la1✶lv Update(apps\cockpit\src\rules\RulesView.test.tsx)✶ Gallivanting… (14m 9s · ↓ 47.1k tokens)
+❯ 
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · esc to interrupt · ← 1 agent/rc  
+*●lli●
+  ⎿  Added45lines
+     253    }); 254  
+      255    /**
+   256 +   * THE PAGE MUST NOT FABRICATE THE ACKNOWLEDGEMENT (fix round D, ruling D5). The old page sent a    
+      257 +   * hard-coded sentence claiming the person had read the dry-run record, whether or not the record ha               +d      258 +   * ever been opened. Now the confirmation step SHOWS the dry-run record and the sentence that is sen
+          +t       
+      259 +   * describes what was actually shown - and this test asserts the value sent, not merely that a dialo       
+          +g       
+      260 +   * opened, because any non-blank constant survives the weaker check.       
+      261 +   */       
+      262 +  it("shows the dry-run record before making a rule live, and sends an acknowledgement that describes        
+          +it", async () => {       
+      263 +    getRules.mockResolvedValue([STORED]);       
+      264 +    getRuleFirings.mockResolvedValue([       
+      265 +      {       
+      266 +        id: "f1",       
+      267 +        ruleId: STORED.id,       
+      268 +        sessionId: "abc123",       
+      269 +        occurredUtc: "2026-09-03T09:30:00Z",       
+      270 +        screenText: "API Error: overloaded",       
+      271 +        understanding: "The session stopped on a provider error.",       
+      272 +        decision: "act",       
+      273 +        reason: "the screen shows the provider's own error and no work of the session's.",       
+      274 +        checksRun: [],       
+      275 +        typedText: "",       
+      276 +        outcome: "dry run: nothing was typed.",       

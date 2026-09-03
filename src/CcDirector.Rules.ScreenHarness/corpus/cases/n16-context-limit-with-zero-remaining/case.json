@@ -1,0 +1,22 @@
+{
+  "id": "n16-context-limit-with-zero-remaining",
+  "expected": "decline",
+  "kind": "negative-own-state-different-situation",
+  "reason": "'Context limit reached - /compact or /clear to continue' and 'Context low (0% remaining) - Run /compact to compact & continue' are the session's own notices, and the owner then typed a request for a status summary. The limit that was hit is the context window, which no waiting resets. The allowance rule must decline; the outage rule has nothing here at all.",
+  "facts": {
+    "agent": "ClaudeCode",
+    "repositoryPath": "",
+    "machine": "",
+    "mission": "",
+    "activityState": "WaitingForInput"
+  },
+  "factsNote": "The agent is read off the screen's own chrome (the bypass-permissions bar and the turn summary line are this agent's). The activity state is WaitingForInput because a turn-brief package is built when a turn ends, which is the moment the session goes idle. Machine, repository and mission are not recorded in the package, so they are left empty.",
+  "source": {
+    "method": "turn-package screen tail",
+    "sessionId": "c27269a8-cdaf-43f5-8fdc-71d888d24ac5",
+    "capturedUtc": "2026-06-08T05:30:44.6710617Z",
+    "detail": "Gateway turn-brief package t628 for session c27269a8-cdaf-43f5-8fdc-71d888d24ac5, its screenTail field: the last 4,000 characters of the terminal text, captured by the Gateway's turn-brief pipeline when the turn ended. Session headline at the time: 'Code Library overnight autonomous buildout'."
+  },
+  "nonAscii": true,
+  "secretsChecked": true
+}

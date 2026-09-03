@@ -1,0 +1,22 @@
+{
+  "id": "n17-weekly-limit-banner-turn-finished-normally",
+  "expected": "decline",
+  "kind": "negative-own-state-different-situation",
+  "reason": "The status bar says 'You've used 81% of your weekly limit - resets Jun 15' and a banner says 'Included in your plan limits until Jun 22'; the agent then answered its probe ('QA-327-ACK') and finished. Both are warnings about an allowance that is NOT used up. The allowance rule watches for a session stopped on a used-up allowance, and this one is working. Decline.",
+  "facts": {
+    "agent": "ClaudeCode",
+    "repositoryPath": "",
+    "machine": "",
+    "mission": "",
+    "activityState": "WaitingForInput"
+  },
+  "factsNote": "The agent is read off the screen's own chrome (the bypass-permissions bar and the turn summary line are this agent's). The activity state is WaitingForInput because a turn-brief package is built when a turn ends, which is the moment the session goes idle. Machine, repository and mission are not recorded in the package, so they are left empty.",
+  "source": {
+    "method": "turn-package screen tail",
+    "sessionId": "e6743d9e-2ab2-4356-a1e6-f6961c0e0cca",
+    "capturedUtc": "2026-06-11T13:44:30.8169493Z",
+    "detail": "Gateway turn-brief package t2 for session e6743d9e-2ab2-4356-a1e6-f6961c0e0cca, its screenTail field: the last 4,000 characters of the terminal text, captured by the Gateway's turn-brief pipeline when the turn ended. Session headline at the time: 'QA probe handshake'."
+  },
+  "nonAscii": true,
+  "secretsChecked": true
+}

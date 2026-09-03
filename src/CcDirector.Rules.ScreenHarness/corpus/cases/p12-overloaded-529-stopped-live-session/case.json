@@ -1,0 +1,23 @@
+{
+  "id": "p12-overloaded-529-stopped-live-session",
+  "expected": "act",
+  "expectedRuleId": "3e9a6d4c-7b21-4f58-8c0d-5e1f2a3b4c02",
+  "kind": "positive",
+  "reason": "After pushing a branch the agent's turn ended on its own notice 'API Error: 529 Overloaded. This is a server-side issue, usually temporary - try again in a moment. If it persists, check https://status.claude.com.' with 'Brewed for 6m 34s - done 9:30 AM'. The session is stopped on the provider's outage notice, not on finished work, which is what the outage rule watches for. (The owner did type continue a minute later, and it recovered - that keystroke is deliberately not in this window, because the screen the rule would have judged is the one before it.)",
+  "facts": {
+    "agent": "ClaudeCode",
+    "repositoryPath": "D:\\ReposFred\\devthrottle_internal",
+    "machine": "SOREN_NORTH",
+    "mission": "",
+    "activityState": "WaitingForInput"
+  },
+  "factsNote": "Agent, machine and repository come from the roster row returned by cc-devthrottle session list --json at capture. The activity state is not the roster's state at capture (the session had moved on since this moment); it is read off the screen itself, where the turn summary line and the empty composer show the session had stopped here.",
+  "source": {
+    "method": "gateway buffer route",
+    "sessionId": "41eb7c07-b873-4d8f-968f-b9171186b6be",
+    "capturedUtc": "2026-09-03T16:41:26.008923Z",
+    "detail": "GET /sessions/{id}/buffer on the hosted Gateway with this session's own key, 2026-09-03; session 'devthrottle_internal / Rob partnership' (ClaudeCode, D:\\ReposFred\\devthrottle_internal). lines 3041-3085 of the cleaned scrollback, the window ending at the turn summary line after the 529 notice and before the owner typed continue. Line numbers count from the start of the 356,467-character cleaned scrollback the route returned."
+  },
+  "nonAscii": true,
+  "secretsChecked": true
+}

@@ -1,0 +1,49 @@
+  https://sorenlaptop.taildb08ed.ts.net:7879 (tailnet only)
+  |-- / proxy http://localhost:7879
+
+  Healthz results:
+
+  ┌─────────────────────────────────┬─────┬──────────────────────────────────────────┐    
+  │            Endpoint             │ Sta │                   Body                   │    
+  │                                 │ tus │                                          │    
+  ├─────────────────────────────────┼─────┼──────────────────────────────────────────┤    
+  │ http://127.0.0.1:7879/healthz   │ 200 │ {"status":"ok","directors":1,"sessions": │    
+  │ (before fix)                    │     │ 1,"version":"0.6.8",...}│    
+  ├─────────────────────────────────┼─────┼──────────────────────────────────────────┤    
+  │ https://sorenlaptop.taildb08ed. │ 200 │ same body — serve loop proven end-to-end │    
+  │ ts.net:7879/healthz (after fix) │     │                                          │    
+  └─────────────────────────────────┴─────┴──────────────────────────────────────────┘    
+
+  Director version: 0.6.8 — from healthz JSON "version":"0.6.8" and log line
+  [UpdaterState] Save: stagedVersion=0.6.8 (matches diagnosis: predates the #197
+  self-serve provisioner, so it never asserted the mapping itself)
+
+  Log file:
+  C:\Users\soren\AppData\Local\cc-director\logs\director\director-2026-06-06-635436.log   
+
+  Key log lines:
+  - 16:37:49 [GatewayClient] Start: gateway=http://soren-north.taildb08ed.ts.net:7878,    
+  directorId=a0d9f4a3-..., port=7879
+  - 16:37:49 [GatewayClient] POST /directors/register:
+  endpoint=https://sorenlaptop.taildb08ed.ts.net:7879 -> Registered: status=201
+  - Pre-fix symptom visible in log: repeated Heartbeat returned 410 Gone, re-registering  
+  cycles (16:41, 16:44, 16:46, 16:49, 16:53) — the gateway kept evicting this Director    
+  because its reverse probe to :7879 timed out
+  - Last 410 at 16:53:19 (gateway draining its pre-fix eviction); no further 410s in the  
+  ~100s observed since. No EndpointVerifier lines in this log (v0.6.8 predates that       
+  component).
+
+  Hard rules honored: no processes killed or restarted, no firewall changes, no taskkill. 
+  Exactly one tailscale command run.
+
+  One note: v0.6.8 lacks the #197 self-serve provisioner, so if tailscale serve reset is  
+  ever run on this machine the mapping will vanish again until the Director is updated to 
+  a release containing 457d00b.
+
+✻ Sautéed for 32s
+
+──────────────────────────────────────────────────────────────────────────────────────────
+❯  
+──────────────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents
+verify from the gateway side that soren-north can now reach this director

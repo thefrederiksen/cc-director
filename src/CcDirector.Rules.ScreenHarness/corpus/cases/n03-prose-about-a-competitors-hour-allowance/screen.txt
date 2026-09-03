@@ -1,0 +1,45 @@
+  review surface or a git changes tree with ambitions, and which of our tiers are genuinely buyable versus announced.   
+
+  When they land I'll write the single document — Conductor's case, ours, and the honest comparison — rather than       
+  another instalment of commentary.
+
+✶ Incubating… (1m 6s · ↓ 4.2k tokens)
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ 
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · esc to interrupt · ← 1 agent · ↓ to manage/rc  
+
+  ● main
+  ◯ general-purpose  DevThrottle buying case evidence                                             28s · ↓ 83.9k tokens  
+  ◯ general-purpose  Conductor buying case                                                        10s · ↓ 72.3k tokens  
+runningstop hook · 1m 6s · ↓4.2k tokens)*91✢Incubating…37·Incubating…✻Waiting for 2 background agents to finish❯ ← 1agent · ↓ tomanage4030234wait for both, then write the one document13Counting statses in fature-inventory.md249395357246578934086847982099720s · ↓ 111691840271324823142s · ↓ 106352746576847983081063Reaing 01-cloud.md sandbox spec91305502136372443589146576857984074289912391m 024013Reading Download.jsxand Compare.jsx     2430356465731718685127938505791621m 1021385324645756467610784018991m 14520260analysis.md company section1322433544675779580687981m 10691173025089813241035946persons_climbers.py cards  572068128792820913402413249535746806577687988613309914502301312423546357468795840691 2m 02713224835546954557conductor/02-product.md iff section406879185079122m 10283139244783554657768987998 2m 0991502027001324135462257368479482m 10455916302137248635468957686010matrix.md comparison rows967978202913402413248085935646577688798309189150291371202423514639357468579840691407912 3m 02132243354635747868579List.clade/skills for terminology        850691503m 10213724351384657689798 3m 070091120213224Writ14conductor-buying-case.md   35346574687983m 105913026132473584657968798201091Grepping WingmanEnabed indvthrttle source4021132243581346572468798305989165021379248354695768207990084019128 4m 0221324933546434457687958516927ChckSkillsView.tsxad gaeway skills endpoints74m 1132483546957683079818 4m 0991702022133241354465752687968684m 10779130281392435840469757168798820291201014023132Reading alpha gat in MaiWindow.xaml.cs244355465765687983089150249913501255036471586469257408192386 5m 031442536547758686975071178189285m 103914256036Grepping ratecrdodels.jsx471586927 5m 081399226420314525364767584869775m 1089913029132470355846195726879360820911440221352433564467557Countstatuses in feature-inventory.md687798883099195028070131242352463573468679484079158 6m 02136802413574628573687995850909176m 10218139024235146325768437948 6m 059152026613724735846899576820080079186m 101913302241335243544657576886799782010914028113922410353464571568279683091385024913245203524665736874795840891679 7m 02813920243514657238689793408509147m 1021313243544659057668heckcc-playwrght ship flag in egistry.json1798 7m 07912028413245935Verifying ASCII purity in 14-conductor-buying-case.md4665057768179887m 102913023913249004355461✻ Roosting… (8m 12s)
+❯ 
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────  ⏵⏵ bypass permissions on (shift+tab to cycle) · /tasks to see subagents · esc to interrupt · ← 1 agent · ↓ to manage
+/rc
+
+ ●main
+  ◯ general-purpose  Checking cc-playwright ship flag in registry.json                        7m 34s · ↓ 225.5k tokens  
+✶●Agent "Conductorbuyingcase"finished · 7m 17s✶ Roosting…
+❯ 
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────⏵⏵ bypass permissions on (shift+tab to cycle) · /tasks to see subagents · esc to interrupt · ← 1 agent · ↓ to manage
+        /rc
+
+ ●main
+  ◯ general-purpose  Checking cc-playwright ship flag in registry.json                        7m 34s · ↓ 225.5k tokens  
+56*✢·✢*6✶✻✽(1s · thinking)thinking✻thinking✶2thinking7*7✢thinking·thinkingthinkingthinkingthinking✢…thinking*g3thinking8✶n✻thinking✽i…thinkingthinking8tgthinkingthinking✻snthinking✶oi4thinking9*✢otthinking·Rsthinkingthinkingothinkingthinking✢othinking*R5thinking40✶✻↓ 25 tokens · thought for 4s)50✽88113 tokens · thought for 4s)38963✻88✶62251*50✢75300·243257✢6981*752✶7)✻8412✽2045✻8609✶8313*49✢626·7…970✢g8998*n95044✶5✻i…819✽tg28sn34✻oi9515✶ot10s · ↓ 52 tokens)*5✢Rs687·o85o79✢R901616*25✶32✻42✽57608✻72237✶6*7✢90·7089113✢2358*2✶32✻5✽894154✻66✶47092*3✢5·…99808g146✢n84*52050i…1●Conductor's case is in, and it'smoredisciplinedthananythingIgaveyouearlier—includingadirectdissentfromme.
+
+  Their ranked buying reasons,withattentionroutingatnumberone—notworktrees,notthediffviewer.Fourdistinct
+  agent states, one keystroke to the next thing needing you, a triaged sidebar. It ranks first because the demand       research already established that the ceiling on running many agents is human review throughput, and this is the onlyfeatureaimedsquarelyatit.Replicationdifficulty:moderate—ahookgetsyouabeep,notanorderedqueue.       Secondisreview-as-instruction.Thirdisthetest-environmentorchestration,where the researcher explicitly 
+  disagreed with my earlier claim that it's hard to copy: git ls-filespipedtorsynconafile watcher is an afternoon.What'sactuallyhardistrustingit—thegit-stateinterlocks.Easytoprototype,hardtotrust.That'sthecorrect
+  version of what I said, and your instinct was right.
+
+  Worktrees are ranked last and called trivial — four lines of shell — deliberately.
+
+  Their weakest point isn't Mac-only. It's that the paid tier doesn't make its own case: an unnumbered hour allowance,  
+  usage pricing pre-announced, a mobile app that hasn't shipped, a 23h50m hard cap, and five documented things you lose 
+  by upgrading. Mac-only is a bigger constraint but it's a coherent choice; the $50 wall is just badly placed.
+
+  And the enterprise story is worse than I'd assumed. Every cloud transcript is stored and SQL-queryable through their  
+  own endpoint, their strictest privacy mode cannot run in the cloud at all, there's one region, and there's no
+  self-hosting. That qualifies out most regulated buyers — while their careers page has zero sales roles to work the    

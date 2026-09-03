@@ -1,0 +1,23 @@
+{
+  "id": "p07-monthly-spend-limit-and-session-banner",
+  "expected": "act",
+  "expectedRuleId": "7c1f0b2e-4d8a-4a6b-9f3e-2a5c1d7e9b01",
+  "kind": "positive",
+  "reason": "Both of the session's own limit statements are on screen: the status bar 'You've used 100% of your session limit - resets 6pm' and the agent's notice 'You've hit your monthly spend limit.' ending the turn while four shells were still running. The session is stopped on an allowance notice with a stated reset time, so the allowance rule applies.",
+  "facts": {
+    "agent": "ClaudeCode",
+    "repositoryPath": "",
+    "machine": "",
+    "mission": "",
+    "activityState": "WaitingForInput"
+  },
+  "factsNote": "The agent is read off the screen's own chrome (the bypass-permissions bar and the turn summary line are this agent's). The activity state is WaitingForInput because a turn-brief package is built when a turn ends, which is the moment the session goes idle. Machine, repository and mission are not recorded in the package, so they are left empty.",
+  "source": {
+    "method": "turn-package screen tail",
+    "sessionId": "23a17225-8bbb-40f6-a541-cec5a742b824",
+    "capturedUtc": "2026-06-06T21:22:21.802114Z",
+    "detail": "Gateway turn-brief package t411 for session 23a17225-8bbb-40f6-a541-cec5a742b824, its screenTail field: the last 4,000 characters of the terminal text, captured by the Gateway's turn-brief pipeline when the turn ended. Session headline at the time: 'One-click interrupted session restore'."
+  },
+  "nonAscii": true,
+  "secretsChecked": true
+}

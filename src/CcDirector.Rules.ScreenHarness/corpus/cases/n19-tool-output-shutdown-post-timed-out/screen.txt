@@ -1,0 +1,52 @@
+  it to complete.
+
+✻ Cogitated for 15m 41s · 1 shell still running
+
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ 
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ bypass permissions on · 1 shell · ← for agents · ↓ to manage
+
+
+            "shutdown posted" } catch { Write-…)
+  ⎿  shutdown post: The operation has timed out.
+     gateway/cockpit still running? True
+     cockpit dll locked? True
+  ⎿  (timeout 40s)
+
+● The old gateway isn't responding to graceful /shutdown (timed out, still running) and its cockpit is holding the DLL. Since completing the       
+  install you asked for requires the gateway to stop (the installer itself does this), I'll stop the two install-owned processes by exact name —   
+  only cc-director-gateway and cc-director-cockpit, never a Director — then finish the install:
+
+● PowerShell(# Stop ONLY the gateway + cockpit (install-owned). Never touches cc-director / cc-director3 (Directors).
+            foreach ($n in @('cc-director-gateway','cc-director-coc…)
+  ⎿  stopping cc-director-gateway [37612]
+     gateway/cockpit running? True
+     === confirm Directors untouched (cc-director3 etc still alive) ===
+     … +7 lines (ctrl+o to expand)
+
+● PowerShell(Get-Process cc-director-gateway,cc-director-cockpit -EA SilentlyContinue | Select-Object Id,ProcessName,@{n='exited';e={$_.HasExited}}
+            | Format-Table -AutoSize…)
+  ⎿     Id ProcessName         exited
+        -- -----------         ------
+     37612 cc-director-gateway   True
+     … +4 lines (ctrl+o to expand)
+
+● Cockpit DLL is now unlocked (gateway 37612 exited). Re-running the install to extract the cockpit (0.6.17) and finish tools — then I'll
+  clean-relaunch:
+
+● PowerShell($cli = "$env:TEMP\ccd-setup-v0617\cc-director-setup-cli-win-x64.exe"
+            & $cli install --role gateway --manifest latest 2>&1 | Select-String -Pattern "director|gat…)
+  ⎿  Running in the background (↓ to manage)
+  ⎿  (timeout 8m)
+
+● Install running in the background (cockpit extraction + tools, ~3-4 min). When it finishes I'll clean-relaunch the gateway via Task Scheduler so 
+  it lands on 0.6.17 with proper parentage, then verify everything (versions, brain, the tray About box, and the Cockpit /about page). Waiting for 
+  it to complete.
+
+✻ Cogitated for 15m 41s · 1 shell still running
+
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ 
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ bypass permissions on · 1 shell · ← for agents · ↓ to manage

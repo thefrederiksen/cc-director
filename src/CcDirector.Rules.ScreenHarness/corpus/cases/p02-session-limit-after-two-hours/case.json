@@ -1,0 +1,23 @@
+{
+  "id": "p02-session-limit-after-two-hours",
+  "expected": "act",
+  "expectedRuleId": "7c1f0b2e-4d8a-4a6b-9f3e-2a5c1d7e9b01",
+  "kind": "positive",
+  "reason": "After nearly two hours of work the agent stopped on its own notice 'You've hit your session limit - resets 10:20am (America/Toronto)' followed by '/usage-credits to finish what you're working on', then 'Worked for 1h 59m 32s' and an empty composer. The session is stopped on an allowance notice that names a reset time - the allowance rule's own case, with the clock the owner asked for.",
+  "facts": {
+    "agent": "ClaudeCode",
+    "repositoryPath": "",
+    "machine": "",
+    "mission": "",
+    "activityState": "WaitingForInput"
+  },
+  "factsNote": "The agent is read off the screen's own chrome (the bypass-permissions bar and the turn summary line are this agent's). The activity state is WaitingForInput because a turn-brief package is built when a turn ends, which is the moment the session goes idle. Machine, repository and mission are not recorded in the package, so they are left empty.",
+  "source": {
+    "method": "turn-package screen tail",
+    "sessionId": "329c8057-0ba1-4f49-99f2-6e0cd0bb03a4",
+    "capturedUtc": "2026-06-08T12:59:18.3461315Z",
+    "detail": "Gateway turn-brief package t443 for session 329c8057-0ba1-4f49-99f2-6e0cd0bb03a4, its screenTail field: the last 4,000 characters of the terminal text, captured by the Gateway's turn-brief pipeline when the turn ended. Session headline at the time: 'Code Library autonomous buildout waves'."
+  },
+  "nonAscii": true,
+  "secretsChecked": true
+}

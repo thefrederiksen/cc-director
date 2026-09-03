@@ -1,0 +1,45 @@
+      56 +    private static RuleScreenReading Screen(string text, RuleSessionOrigin? origin = null) =>       
+      57 +        new("sid-1", origin ?? ClaudeOnNorth, text);       
+      58 +       
+      59      // ---- the question ------------------------------------------------------------------------------       
+      60
+      61      /// <summary>Every check the product ships is offered, by the name a rule stores it under. The ques       
+          tion
+     ...
+      64      [Fact]
+      65      public void The_question_offers_every_check_the_product_ships()
+      66      {
+      36 -        var prompt = RuleDraftContract.BuildDraftPrompt(OneTurn(TheSentence), Registry);       
+      67 +        var prompt = RuleDraftContract.BuildDraftPrompt(OneTurn(TheSentence), Registry, Screen(ANeutral       
+         +Screen));       
+      68
+      69Assert.NotEmpty(Registry.Primitives);
+      70foreach (var primitive in Registry.Primitives)
+     ...
+      76      [Fact]
+      77      public void The_question_offers_the_runtime_inputs_in_angle_brackets()
+      78      {
+      48 -        var prompt = RuleDraftContract.BuildDraftPrompt(OneTurn(TheSentence), Registry);       
+      79 +        var prompt = RuleDraftContract.BuildDraftPrompt(OneTurn(TheSentence), Registry, Screen(ANeutral       
+         +Screen));       
+      80
+      81Assert.NotEmpty(RuleInputs.Names);
+      82foreach (var name in RuleInputs.Names)
+     ...
+      93new RuleDraftTurn(RuleDraftSpeakers.Person, TheSentence),
+      94new RuleDraftTurn(RuleDraftSpeakers.DevThrottle, "Which sessions should this apply to?"),
+      95new RuleDraftTurn(RuleDraftSpeakers.Person, "All of them."),
+      65 -        }, Registry);       
+      96 +        }, Registry, Screen(ANeutralScreen));       
+      97
+      98Assert.Contains("they said: " + TheSentence, prompt, StringComparison.Ordinal);
+      99Assert.Contains("you asked: Which sessions should this apply to?", prompt, StringComparison.Ord       
+          inal);
+     ...
+      110      /// calmly reporting that it is out of allowance, and the two want different acts. So the question       
+      111      /// itself must name no kind of trouble as the expected one. Its only mention of allowance is what       
+           ever
+      112      /// the person said, which is why the sentence used here is deliberately an allowance one: the wor       
+           ds
+       82 -    /// must appear ONCE, in their turn, and nowhere in the framing.       
+      113 +    /// must appear ONCE, in their turn, and nowhere in the framing. The screen is a neutral one, so t       

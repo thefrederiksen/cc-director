@@ -1,0 +1,22 @@
+{
+  "id": "n19-tool-output-shutdown-post-timed-out",
+  "expected": "decline",
+  "kind": "negative-own-state-different-situation",
+  "reason": "'shutdown post: The operation has timed out.' is the output of a PowerShell command the agent ran against an old gateway process, and the agent is now waiting on its own install shell ('1 shell still running'). The outage rule's trigger word is the session's own tool output, but the thing that timed out is a local HTTP post, not the model provider, and the session is not stopped on a provider error. Decline.",
+  "facts": {
+    "agent": "ClaudeCode",
+    "repositoryPath": "",
+    "machine": "",
+    "mission": "",
+    "activityState": "WaitingForInput"
+  },
+  "factsNote": "The agent is read off the screen's own chrome (the bypass-permissions bar and the turn summary line are this agent's). The activity state is WaitingForInput because a turn-brief package is built when a turn ends, which is the moment the session goes idle. Machine, repository and mission are not recorded in the package, so they are left empty.",
+  "source": {
+    "method": "turn-package screen tail",
+    "sessionId": "bba187d0-0812-4907-9aeb-48433a877d6b",
+    "capturedUtc": "2026-06-09T01:02:02.4307657Z",
+    "detail": "Gateway turn-brief package t422 for session bba187d0-0812-4907-9aeb-48433a877d6b, its screenTail field: the last 4,000 characters of the terminal text, captured by the Gateway's turn-brief pipeline when the turn ended. Session headline at the time: 'Gateway clean-slate installer test'. Trimmed from the top to the last 40 non-blank lines, the window the engine reads, so the trigger words sit inside it; nothing inside the window was altered."
+  },
+  "nonAscii": true,
+  "secretsChecked": true
+}

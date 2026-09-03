@@ -1,0 +1,45 @@
+…●·Running live proof…Running live proof…Running live proof…Running live proof…1✢Running live proof… *Running live proof…9✶✻Running live proof…✽Running live proof…Running live proof…●Running live proof…Running live proof…2✻Running live proof…✶Running live proof…30* ✢Running live proof…PowerShell($proof = 'D:\RepsFred\cc-diretor-issue324\doc\cnconproof\issue-324'          Select-String -Path "C:Users\soren\AppData\Localc-directr\log\director\director-20…)Running…PowerShell(Get-Process-Namecc-director6-ErrorActionSilentlyContinue|Select-ObjectId,Path;Get-ScheduledTask-TaskName          'cc-dietor6lunch' -ErorAction SilenlyCo…)Running…PowerShell((Invoke-RestMethodhttp://localhost:7878/directors)|Where-Object{$_.pid-in56400,39020,58048,62220}|ConvertTo-Json          -Compress)Running…… +180 tool uses (ctrl+o to expand)
+    (ctrl+b to run in background)
+
+·Running live proof… (48m 12s · ↓83.0k tokens)
+  ⎿  Next: PR + proof commit + label swap to flow:ready-qa
+❯ 
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────  ⏵⏵ bypass permissions on (shift+tab to cycle) · esc to interrupt · ctrl+t to show tasks · ↓ to manage
+
+ ●main↑/↓toselect·Entertoview
+ ◯general-purposeDEVphaseissue#32446m30sRunning live proof…Running live proof…3●Running live proof…✢Running live proof…*Running live proof…1✶✻Running live proof… ✽Running live proof…Running live proof…Running live proof…4Running live proof…✻Running live proof…●✶Running live proof…2*✢Running live proof…·Running live proof…Running live proof…Running live proof…5Running live proof…3✢Running live proof…*Running live proof…4✶ ✻Running live proof…✽Running live proof…●
+
+✽Running live proof… (48m 15s · ↑83.0k tokens)
+  ⎿  Next: PR + proof commit + label swap to flow:ready-qa
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────❯ 
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────⏵⏵ bypass permissions on (shift+tab to cycle) · esc to interrupt · ctrl+t to show tasks
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+●
+  ⎿  Done(183tooluses·0tokens·46m34s)
+  (ctrl+o to expand)
+
+✽Running live proof… (48m 15s · ↑83.0k tokens)
+  ⎿  Next: PR + proof commit + label swap to flow:ready-qa                                                                                         
+❯ 
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────⏵⏵bypasspermissionson (shift+tabtocycle)·esctointerrupt·ctrl+ttoshowtasks6✻
+❯ /rate-limit-options                                                                                                                              
+
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────  What do you want to do?
+
+  ❯ 1. Stop and wait for limit to reset  2. Add funds to continue with usage credits3.SwitchtoTeamplanEntertoconfirm·Esctocancel  ⎿  You've hit your session limit · resets 9am (America/Toronto)
+     /usage-credits to finish what you’re working on.                                                                                              ✻ Crunched for 48m 16s                                                                                                                             
+❯ /rate-limit-options                                                                                                                              
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────What do you want to do?❯ 1. Stop and wait for limit to reset2.Addfundstocontinuewithusagecredits3.SwitchtoTeamplanEntertoconfirm·Esctocancel

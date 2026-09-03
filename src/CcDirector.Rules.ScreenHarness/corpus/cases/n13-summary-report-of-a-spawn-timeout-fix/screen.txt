@@ -1,0 +1,52 @@
+  │ M                           │ src/CcDirector.Core/Backends/ConPtyBackend.cs│
+  ├─────────────────────────────┼───────────────────────────────────────────────────────────────────┤
+  │ M                           │ src/CcDirector.Core/Backends/UnixPtyBackend.cs│
+  ├─────────────────────────────┼───────────────────────────────────────────────────────────────────┤
+  │ A                           │ src/CcDirector.Core/Input/AtReferenceSubmitVerifier.cs│
+  ├─────────────────────────────┼───────────────────────────────────────────────────────────────────┤
+  │ A                           │ src/CcDirector.Core.Tests/Input/AtReferenceSubmitVerifierTests.cs │
+  ├─────────────────────────────┼───────────────────────────────────────────────────────────────────┤
+  │ M                           │ src/CcDirector.Gateway/Api/GatewayEndpoints.cs│
+  └─────────────────────────────┴───────────────────────────────────────────────────────────────────┘
+
+  Excluded: the OpenCode agent-list hunk in ControlEndpoints.cs (another session's work) and all other sessions' working-tree files.
+
+  Code review: PASS — 0 blocking, PII clean, CenCon current, security profile within threshold; both findings fixed.
+
+  Proposed commit message:
+
+  fix(director,gateway): seed delivery hardening for restore + all PrePrompt sends (#212)
+
+  Three root-cause fixes the restore E2E forced out of hiding; the first
+  applies to every PrePrompt/handover seed, not just restore:
+
+  1. PrePrompt readiness gate (ControlEndpoints): ActivityState reads
+     WaitingForInput from t=0, so seeds were dispatched into a BOOTING
+     claude - typed text reached the composer, Enter keypresses were
+     dropped, the prompt parked unsubmitted. Now waits for the startup
+     burst to render and the TUI to settle before dispatching.
+
+  2. @-reference submit watchdog (AtReferenceSubmitVerifier, both PTY
+     backends): claude's path-autocomplete can eat the submitting Enter.
+     The watchdog judges by output rhythm - dead window -> nudge, settling
+     window -> wait, streaming -> done. Screen-parsing and one-shot growth
+     checks were tried and defeated live; the class doc records why.
+
+  3. Restore spawn timeout (GatewayEndpoints): the shared 2s Director
+     client timed out on claude.exe spawns, leaving orphan sessions
+     (created, never renamed or journal-cleaned). Dedicated 20s client,
+     same as the cross-director handover's spawn leg.
+
+  Live-proven restoring 4 real sessions lost to an abrupt Director kill:
+  every seed passed the gate, and the watchdog recovered two genuinely
+  eaten Enters ("submitted after 1 nudge(s)"). 5 new watchdog tests.
+
+  Approve this commit? Reply "yes" to commit and push.
+
+* Nesting… (2m 3s · ↓ 5.3k tokens · thought for 17s)
+
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ 
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ bypass permissions on · 1 shell · esc to interrupt · ↓ to manage
+runningstop hook · 2m 3s · ↓ 5.3k tokens · thought for 17s)✢Nesting…4·Nesting…4Nesting…Nesting…✻Cogitated for 2m 4 · 1 shellstillrunning❯ ← for agents · ↓to manageyes

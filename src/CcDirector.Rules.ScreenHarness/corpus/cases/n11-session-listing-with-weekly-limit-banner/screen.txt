@@ -1,0 +1,46 @@
+tation
+
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────❯ 
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────⏵⏵bypasspermissionson (shift+tabtocycle)·esctointerruptYou'veused93%ofyourweeklylimit·resetsJun13,3pm(America/Toronto)
+ (3s)Symbioting…Symbioting…1✻Symbioting… ✶Symbioting…*✢Symbioting…·Symbioting…Symbioting…●4Symbioting…✢Symbioting…2Symbioting…Wait
+✢Symbioting… (12s · ↑457 tokens)
+  ⎿  Tip: Use /voiceto enable push-to-talk dictation
+
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────❯ 
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────  ⏵⏵ bypass permissions on (shift+tab to cycle) · esc to interrupt    You've used 93% of your weekly limit · resets Jun 13, 3pm (America/Toronto)  
+
+mo●trading-live|Running|WaitingForInput|dir=d0a37e89|D:\ReposFred\trading-live|sid=dafca656-d79b-41b3-93be-33080e5529f0
+    cc-director ??              |Running|Working|dir=37cea6e2|D:\ReposFred\cc-director|sid=4d25106c-c675-43f7-aba6-b8f48277fdf8
+     … +7 lines (ctrl+o to expand)✢ Symbioting… (12s · ↑ 457 tokens)
+  ⎿  Tip: Use /voice to enable push-to-talk dictation
+
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ 
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · esc to interrupt    You've used 93% of your weekly limit · resets Jun 13, 3pm (America/Toronto)  
+*btii✶otngi…✻ng…✽3✻✶*✢Sym·Sbymiobtiiontig…✢n4g…*✶✻✽✻S5ym✶Sbyi*mbotii✢ontgin…·g…✢6*✶✻S✽ySmbyimobition✻tg7i…ng✶…*✢·✢8S*ym✶Sybimo✻btiointg✽i…ng…↓9 · thinking)✻95thinking✶520thinking45*70✢607thinking·32thinking57thinking82thinking720thinking✢2031thinking*9thinking53✶66✻70thinking✽2thinking3thinking80thinking2thinking1thought for 1s)✻4✶5*…96g807✢8●Found it.
+Session: cc-director ??
+  - Session ID: 4d25106c-c675-43f7-aba6-b8f48277fdf8
+  -Director:37cea6e2…(SOREN_NORTH—thismachine,localDirectoronport 7887)
+  - Repo: D:\ReposFred\cc-director- Status: Running, currently Working
+
+  Heads up: this is the session you're talking to me in right now — same Director, same repo, created earlier this evening. The ?? is just its     
+  literal name (looks like a placeholder name that never got set).
+
+  There are 4 other cc-director sessions on that same Director (android, wingman, desktop, plus this one), and an old Exited one on the SORENLAPTOP
+  director (C:\ReposFred\cc-director — note the C: drive, different machine).
+
+  Want me to do something with it — rename it to something real, or open/act on it?
+
+✢ Symbioting… (21s · ↓ 808 tokens · thought for 1s)
+  ⎿  Tip: Use /voice to enable push-to-talk dictation
+
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ 
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · esc to interrupt
+·Symbioting…running stop hook · 21s · ↓ 833 tokens · thought for 1s)Symbioting…58Symbioting…96✻Baked for 21s
+
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────❯ 
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents
+

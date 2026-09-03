@@ -1,0 +1,22 @@
+{
+  "id": "n14-log-report-of-a-probe-that-timed-out",
+  "expected": "decline",
+  "kind": "negative-report",
+  "reason": "'the gateway kept evicting this Director because its reverse probe to :7879 timed out' is a report the agent wrote from log lines while verifying a fix, and the turn ended normally ('Sauteed for 32s'). The outage rule's word is on the screen in a report about a network probe, not as this session's provider failing. Decline.",
+  "facts": {
+    "agent": "ClaudeCode",
+    "repositoryPath": "",
+    "machine": "",
+    "mission": "",
+    "activityState": "WaitingForInput"
+  },
+  "factsNote": "The agent is read off the screen's own chrome (the bypass-permissions bar and the turn summary line are this agent's). The activity state is WaitingForInput because a turn-brief package is built when a turn ends, which is the moment the session goes idle. Machine, repository and mission are not recorded in the package, so they are left empty.",
+  "source": {
+    "method": "turn-package screen tail",
+    "sessionId": "2b74a9b2-7d68-4a3e-b442-029db2b174f5",
+    "capturedUtc": "2026-06-06T20:56:55.1198542Z",
+    "detail": "Gateway turn-brief package t24 for session 2b74a9b2-7d68-4a3e-b442-029db2b174f5, its screenTail field: the last 4,000 characters of the terminal text, captured by the Gateway's turn-brief pipeline when the turn ended. Session headline at the time: 'Director tailscale serve mapping fix'. Trimmed from the top to the last 40 non-blank lines, the window the engine reads, so the trigger words sit inside it; nothing inside the window was altered."
+  },
+  "nonAscii": true,
+  "secretsChecked": true
+}

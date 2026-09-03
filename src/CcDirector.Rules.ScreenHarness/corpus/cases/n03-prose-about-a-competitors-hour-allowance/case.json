@@ -1,0 +1,22 @@
+{
+  "id": "n03-prose-about-a-competitors-hour-allowance",
+  "expected": "decline",
+  "kind": "negative-documentation",
+  "reason": "'an unnumbered hour allowance' is a phrase in a competitive analysis the agent is writing about another product's paid tier. The session's own state is a finished turn of prose. The allowance rule's trigger word is on the screen and the rule does not reach it - this is the negative control the mission is built around.",
+  "facts": {
+    "agent": "ClaudeCode",
+    "repositoryPath": "D:\\ReposFred\\devthrottle_internal",
+    "machine": "SOREN_NORTH",
+    "mission": "",
+    "activityState": "WaitingForInput"
+  },
+  "factsNote": "Agent, machine and repository come from the roster row returned by cc-devthrottle session list --json at capture. The activity state is WaitingForInput because the window ends at the end of the turn in which this passage was written, where the turn summary line shows the session stopped.",
+  "source": {
+    "method": "gateway buffer route",
+    "sessionId": "c95fc1ad-d556-441d-a0bb-d2b12c52937d",
+    "capturedUtc": "2026-09-03T16:41:26.008923Z",
+    "detail": "GET /sessions/{id}/buffer on the hosted Gateway with this session's own key, 2026-09-03; session 'devthrottle_internal / conductor.build' (ClaudeCode, D:\\ReposFred\\devthrottle_internal). lines 651-695 of the cleaned scrollback, the passage where the competitor analysis names an hour allowance. Line numbers count from the start of the 390,540-character cleaned scrollback the route returned."
+  },
+  "nonAscii": true,
+  "secretsChecked": true
+}

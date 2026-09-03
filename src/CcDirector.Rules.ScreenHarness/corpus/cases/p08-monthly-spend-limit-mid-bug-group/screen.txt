@@ -1,0 +1,58 @@
+thinking✢itthinking*bithinking✶✻al1thinking3✽iithinkingthinkingthinkinglbthinkingthinking✻eathinkingthinking✶ri* l✢thinking4·yethinkingthinkingorthinkingthinkingthinking✢l thinking2*thinkingpy✶✻eothinking5✽dlthinkingthinking pthinkingthinkingthinking✻4ethinking3thinking✶2d*6 ✢thinking6thinking·744thinkingthinking#2thinkingthinking✢ 6thinkingthought for 7s)*g75✶n#✻7✽i xgin✻✶Fi*✢x8·iF✢6)*✶✻9✽✻✶*7✢10s · ↓ 51.7k tokens)·✢*✶✻81✽✻✶*…✢9·y2t✢i…*ly●Update(_Agents\NightlyErrorParsy\batch_review_errors.py)
+
+*Fixing #7624 deploy reliability… (22m 12s · ↓ 51.9k tokens)
+  ⎿  ◼ Group 5: #7624 deploy leaves App_Offline.htm◼ Group 3: #7627/#7628/#7629 API integrity batch◻Group4:#7633/#7634LLMoutputguardrails
+     ◻ Group 6: #7630/#7631 navigation polish
+❯ 
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · esc to interrupt · ctrl+t to hide tasks
+✶lit↑●
+  ⎿  Added12lines,removed8lines
+     424              marker = f"[BATCH REVIEWED] Status: {status}"
+      425  426 # Bug #7633: PREFIX the marker - never replace the original message 427 -        # (replacing destroyed the searchable original text). The NOT LIKE guards 428 -        # keep the update idempotent across re-runs. 429 -        query = """
+      427 +        # (replacing destroyed the searchable original text). Status/task_number       
+   428 +        # still update unconditionally; only the prefix is guarded so re-runs can
+      429 +        # never stack markers.           430 +        cursor.execute(""" 431 UPDATEtbl_global_log
+      432SET action = %s,
+      432 -task_number = %s,       
+      433 -short_text = LEFT(CONCAT(%s, ' | ', short_text), 4000)       
+      433 +task_number = %s       
+      434WHERE Id = %s
+      435 +        """, (status, task_number, error_id))       
+      436 +       
+      437 +        cursor.execute("""       
+      438 +UPDATE tbl_global_log       
+      439 +SET short_text = LEFT(CONCAT(%s, ' | ', short_text), 4000)       
+      440 +WHERE Id = %s       
+      441AND short_text NOT LIKE '[AUTO]%%'
+      442AND short_text NOT LIKE '[BATCH REVIEWED]%%'
+      443AND short_text NOT LIKE '[REVIEWED]%%'
+      438 -        """       
+      439 -       
+      440 -        cursor.execute(query, (status, task_number, marker, error_id))       
+      444 +        """, (marker, error_id))       
+      445conn.commit()
+      446
+      447cursor.close()
+
+✶ Fixing #7624 deploy reliability… (22m 12s · ↑ 51.9k tokens)
+  ⎿  ◼ Group 5: #7624 deploy leaves App_Offline.htm
+     ◼ Group 3: #7627/#7628/#7629 API integrity batch
+     ◻ Group 4: #7633/#7634 LLM output guardrails
+     ◻ Group 6: #7630/#7631 navigation polish
+
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ 
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · esc to interrupt · ctrl+t to hide tasks
+✻Fix320✽Fiinxig n#g7 #62✻746 12d✶4 epdl*eoply ✢orye l42  ⎿  You've hit your monthly spend limit.
+    /usage-credits to adjust your monthly spend limit.
+
+✻Churned for 22m 14s4 tasks (0 done, 2 in progress, 2 open)◼ Group 5: #7624 deploy leaves App_Offline.htm
+  ◼ Group 3: #7627/#7628/#7629 API integrity batch
+  ◻Group4:#7633/#7634LLMoutputguardrails
+  ◻ Group 6: #7630/#7631 navigation polish
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ 
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · ctrl+t to hide tasks · ← for agents

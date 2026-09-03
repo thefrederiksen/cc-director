@@ -1,0 +1,50 @@
+nd #2, I'll lay out the concrete edits (still on the ai-library/landing-redesign branch, or a
+  fresh one if you'd rather keep the podcast rework separate).
+
+✻ Baked for 1m 39s · 1 shell still running
+
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ 
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ bypass permissions on · 1 shell · ← for agents · ↓ to manage
+Sorry,thisgotalittleconfusing.WhatdidIaskforandwhatareyoutryingtogiveme?❯ Sorry, this got a little confusing. What did I ask for and what are you trying to give me?                                                       
+
+✢ Pollinating…
+  ⎿  Tip: Continue your session in Claude Code Desktop with /desktop
+
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ 
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ bypass permissions on · 1 shell · esc to interrupt · ↓ to manage
+nat·Po✢Polin*linati✶atngi…✻ng…✽✻✶*✢Pol·Plolinlaitniatng✢i…ng…*✶✻✽✻Po✶lPl*olinla✢itniatng·i…ng…✢*✶✻✽PolPlolinla✻itniatng✶i…n*g…✢·nat(6s · ↓13 tokens · thinking)25thinking38thinking50✢it63thinking75*88thinkingla100 tokens · thinking)✶1325✻ln3850thinking63✽oi775thinking88thinking200Pl13thinking25thinking38thinking✻l50thinking6375thinking✶o88300*13P25✢38thinking50●Fair — let me strip it down.
+What you asked for:Youlookedattheseriespageandsaidit'sconfusing.Twospecificgripes:
+  1. The three boxes at the top (Read it / Listen it / Watch it) look like buttons but don't click anywhere — get rid of them, just show the       
+  episodes.
+  2. When you open an episode, it offers "Listen to podcast" — but the podcast should be its own separate thing, not bolted onto each episode. You also noticed you can read an article but can't listen to that article.
+
+  What I was trying to give you: Confirmation that I understood, plus a before/after sketch — but I overloaded it with extra detail and turned a   
+  simple cleanup into a design essay. That's on me.
+
+  The simple version of what I'd do:
+  - Series page: delete the three dead boxes at the top. Change each episode's "Read episode" link to "Go to the episode."
+  - Episode page: remove "Listen to podcast" from the format options.
+
+  That's it — that's your actual request.
+
+  The one thing I still need from you, because I can't guess it: when you remove the podcast from the episode, where should the podcast go instead?
+  Its own page? A nav link? Or just park it for now and we'll place it later?
+
+  Want me to go ahead with the two cleanups above and we sort out the podcast's new home separately?
+
+✢ Pollinating… (7s · ↓ 350 tokens · thinking)
+  ⎿  Tip: Continue your session in Claude Code Desktop with /desktop
+
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ 
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ bypass permissions on · 1 shell · esc to interrupt · ↓ to manage
+63Pollinating…running stop hook7s · ↓ 375 tokens · thinking)Pollinating…88thinking·8400Pollinating…13thinkingPollinating…25thinking38thought for 1s)Pollinating…44✻Sautéed for 8s · 1 shell still running
+
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────❯ 
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────  ⏵⏵ bypass permissions on · 1 shell · ← for agents · ↓ to manage
+

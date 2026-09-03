@@ -1,0 +1,48 @@
+test the desktop version, field bug reports
+  2. Install cc-director + gateway on a Windows machine so it can ship — resolve the Tailscale question
+  3. Kuveut / CubitTerk — answer their questions, scope BPMN-on-a-dashboard, review their other requests
+
+  ---
+  Two things I want to leave on your radar as you work, not decide here:
+
+  - Two open P1 agent bugs gate the AI release and are still in New/Committed (not yet in QA): #7610 (AI Insight produces no output after 20+      
+  minutes), #7616 (revisiting a job shows empty inputs and silently spawns a duplicate), plus #7495 (chat renders raw markdown). These are the     
+  substance of your "final push." A lot of the other agent/BPMN work (#7619, #7620, #7638, #7635, #7632) is already sitting in QA. Pipeline's green
+  as of this morning, no open PRs.
+  - The Analyst-in-a-Box broad-release call and the Tailscale-in-a-packaged-install call are both recorded as open decisions on today's page, so   
+  they don't get lost.
+
+  One light flag per our usual rule: it's a morning and this is all dev/release work rather than marketing — but it's release day and you've set   
+  the agenda, so I'm not pushing back on that today.
+
+  Want me to pull the full text of #7610 and #7616 so you can see exactly what's failing before the final push, or are you already on top of those?
+
+✻ Cogitated for 3m 2s
+
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ 
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents                                             new task? /clear to save 113.3k tokens  
+
+killthissession❯ kill this session                                                                                                                                
+
+✽ Determining…
+  ⎿  Tip: Name your conversations with /renam to find them easily in /resume later───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ 
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · esc to interrupt
+Det✻Detmin*min·✢*✶Det✻Deetrmei✽rnmiinngi…ng…✻✶*✢(2s · ↓1 tokens)·3…✢g5913 tokens)*n56✶7i…8✻23✽ng8314in456mi7✻841✶4rn5*6751●The standup is complete and saved—weekplan,today'spage,andthecorrectedportfoliorecordareallondisk.Nothingisleftrunningthat
+  needs cleanup.  I can't close the session myself from here. To kill it, use Ctrl+C twice (or /exit) in the terminal, or close the slot from CC Director.
+
+* Determining… (4s · ↓ 51 tokens)
+  ⎿  Tip: Name your conversations with /renam tofind them asily in /resume later
+
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ 
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · esc to interrupt
+✢ei462Determining…running stop hook · 4s · ↓73 tokens)You've used 86% of your weekly limit · resets Jun 13, 3pm (America/Toronto)8·Determining…82Determining…5Determining…589✻Cooked for 5s
+
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────❯ 
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents        You've used 86% of your weekly limit · resets Jun 13, 3pm (America/Toronto)  
+

@@ -1,0 +1,22 @@
+{
+  "id": "n18-weekly-limit-banner-after-standup",
+  "expected": "decline",
+  "kind": "negative-own-state-different-situation",
+  "reason": "'You've used 86% of your weekly limit - resets Jun 13' is a status-bar warning while the agent finished its standup normally and explained it cannot close its own session. Fourteen percent of the allowance remains and nothing has stopped for want of it. Decline.",
+  "facts": {
+    "agent": "ClaudeCode",
+    "repositoryPath": "",
+    "machine": "",
+    "mission": "",
+    "activityState": "WaitingForInput"
+  },
+  "factsNote": "The agent is read off the screen's own chrome (the bypass-permissions bar and the turn summary line are this agent's). The activity state is WaitingForInput because a turn-brief package is built when a turn ends, which is the moment the session goes idle. Machine, repository and mission are not recorded in the package, so they are left empty.",
+  "source": {
+    "method": "turn-package screen tail",
+    "sessionId": "2c64225c-88ea-4b3a-bf1f-f6b4f8aecafc",
+    "capturedUtc": "2026-06-08T22:20:46.2024549Z",
+    "detail": "Gateway turn-brief package t35 for session 2c64225c-88ea-4b3a-bf1f-f6b4f8aecafc, its screenTail field: the last 4,000 characters of the terminal text, captured by the Gateway's turn-brief pipeline when the turn ended. Session headline at the time: 'Monday standup and weekly planning'."
+  },
+  "nonAscii": true,
+  "secretsChecked": true
+}

@@ -1,0 +1,23 @@
+{
+  "id": "p06-monthly-spend-limit-with-task-list",
+  "expected": "act",
+  "expectedRuleId": "7c1f0b2e-4d8a-4a6b-9f3e-2a5c1d7e9b01",
+  "kind": "positive",
+  "reason": "The agent's own notice 'You've hit your monthly spend limit.' with '/usage-credits to adjust your monthly spend limit.' ends the turn ('Cogitated for 0s'), with the task list still open and the composer empty. A monthly spend limit is an allowance that is used up, which is what the allowance rule watches for; no reset time is stated, so the wait is bounded by the rule's ceilings.",
+  "facts": {
+    "agent": "ClaudeCode",
+    "repositoryPath": "",
+    "machine": "",
+    "mission": "",
+    "activityState": "WaitingForInput"
+  },
+  "factsNote": "The agent is read off the screen's own chrome (the bypass-permissions bar and the turn summary line are this agent's). The activity state is WaitingForInput because a turn-brief package is built when a turn ends, which is the moment the session goes idle. Machine, repository and mission are not recorded in the package, so they are left empty.",
+  "source": {
+    "method": "turn-package screen tail",
+    "sessionId": "063125d4-44de-4df5-a94b-bf7770245983",
+    "capturedUtc": "2026-06-11T09:19:26.5744084Z",
+    "detail": "Gateway turn-brief package t62 for session 063125d4-44de-4df5-a94b-bf7770245983, its screenTail field: the last 4,000 characters of the terminal text, captured by the Gateway's turn-brief pipeline when the turn ended. Session headline at the time: '(none)'."
+  },
+  "nonAscii": true,
+  "secretsChecked": true
+}

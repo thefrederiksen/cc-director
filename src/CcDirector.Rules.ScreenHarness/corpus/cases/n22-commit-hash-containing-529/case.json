@@ -1,0 +1,22 @@
+{
+  "id": "n22-commit-hash-containing-529",
+  "expected": "decline",
+  "kind": "negative-substring",
+  "reason": "'c20f529' is a commit hash in the agent's summary of pushed work, and the outage rule's trigger word '529' is a substring of it; 'failed silently-ish' in the same summary matches the build-failure rule's word 'failed' while describing a commit-message hiccup that was already fixed. The session finished its turn and is waiting. Decline.",
+  "facts": {
+    "agent": "ClaudeCode",
+    "repositoryPath": "",
+    "machine": "",
+    "mission": "",
+    "activityState": "WaitingForInput"
+  },
+  "factsNote": "The agent is read off the screen's own chrome (the bypass-permissions bar and the turn summary line are this agent's). The activity state is WaitingForInput because a turn-brief package is built when a turn ends, which is the moment the session goes idle. Machine, repository and mission are not recorded in the package, so they are left empty.",
+  "source": {
+    "method": "turn-package screen tail",
+    "sessionId": "674dbf6a-5ad5-4773-a510-bd62691c95b6",
+    "capturedUtc": "2026-06-06T23:34:09.8804499Z",
+    "detail": "Gateway turn-brief package t166 for session 674dbf6a-5ad5-4773-a510-bd62691c95b6, its screenTail field: the last 4,000 characters of the terminal text, captured by the Gateway's turn-brief pipeline when the turn ended. Session headline at the time: 'Issue #16 redesign PRs'."
+  },
+  "nonAscii": true,
+  "secretsChecked": true
+}

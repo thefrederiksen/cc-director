@@ -1,0 +1,48 @@
+"width:20px;height:20px")+'<div style="font-weight:600">New mod       
+        -el</div><div style="font-size:11px">Blank canvas or AI draft</div></div>'+
+      1293          shown.map(modelCard).join("")+'</div>';    1294      } 1295      return projHead(p,"models",
+
+✻ Actualizing… (2m 55s · ↑ 8.1k tokens)
+  ⎿  Tip: Control this session from the Claude mobile app (https://claude.com/download#mobile) · run /remote-control
+
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ 
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · esc to interrupt                                                        Now using usage credits  
+Context low (2% remaining) · /model sonnet[1m]  
+liizng✶i…n*g…✢2·✢6*✶Act✻Auctalui✽azliizngi…ng…✻7✶↓*✢·8●Change 5c — Add AI badgeto the 3 AI launchoptionsinthewizard:
+
+·Actualizing… (2m 58s · ↓8.2k tokens)
+  ⎿  Tip: Control this session from the Claude mobile app (https://claude.com/download#mobile) · run /remote-control
+❯ 
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────⏵⏵bypasspermissionson (shift+tabtocycle)·esctointerruptNowusingusagecredits
+Context low (2% remaining) · /model sonnet[1m]  
+✢*✶✻✽✻9✶*✢…·gn3✢i…30s · ↓ 8.3k tokens)*zg✶✻in✽liazui✻1✶tl*✢ca·Aut✢c2*A✶✻4✽✻3✶*✢·✢4*✶✻✽5✻5✶*✢·…✢g6*n✶✻i…6✽zgin✻li7●Update(mindzieBpmnStudio\prototype\studio-v10.html)
+
+✻Actualizing… (3m 7s · ↓8.6k tokens)
+  ⎿  Tip: Control this session from the Claude mobile app (https://claude.com/download#mobile) · run /remote-control
+❯ 
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────⏵⏵bypasspermissionson (shift+tabtocycle)·esctointerruptNowusingusagecredits
+Context low (2% remaining) · /model sonnet[1m]  
+ liz✶●
+  ⎿  Added3lines,removed1line
+     1358    /* ===================================================== CREATE LAUNCHER */
+      1359    function launchRow(o){ 1360      var act = o.act || "wizPick";
+      1361 +    var isAi = (o.k==="Describe"||o.k==="Image"||o.k==="SOP");       
+   1362 +    var aiBadge = isAi? '<span class="tag ai" style="margin-left:8px;font-size:9px;padding:2px 8px">'+ic("ai","width:10px;height
+           +:10px")+'AI</span>' : "";           1363      return '<div class="ai-row'+(o.hero?" hero":"")+'" data-act="'+act+'"'+(o.act?"":' data-arg="'+o.k+'"')+'>'+ 1364        (o.hero?'<span class="starthere">Start here</span>':"")+ 1365 '<divclass="ai-thumb">'+launchThumb(o.k)+'</div>'+
+      1364 -      '<div style="flex:1;min-width:0"><div class="ai-rt">'+esc(o.title)+'</div><div class="ai-rd">'+esc(o.desc)+'</div></div>'+       
+      1366 +      '<div style="flex:1;min-width:0"><div class="ai-rt">'+esc(o.title)+aiBadge+'</div><div class="ai-rd">'+esc(o.desc)+'</div>       
+           +</div>'+       
+      1367        '<div class="ai-side">'+(o.accept?'<div class="ai-fmt">'+esc(o.accept)+'</div>':"")+
+      1368        '<div class="ai-meta">'+esc(o.side)+'</div><div class="ai-go">'+esc(o.action)+ic("chev")+'</div></div></div>';
+      1369    }
+  ⎿  Context limit reached · /compact or /clear to continue · /model sonnet[1m]
+
+✻ Crunched for 3m 7s
+
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ 
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents                                                            Now using usage credits  
+Context low (1% remaining) · /model sonnet[1m]  

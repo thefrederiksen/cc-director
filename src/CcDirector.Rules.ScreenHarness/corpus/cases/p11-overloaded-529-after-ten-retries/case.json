@@ -1,0 +1,23 @@
+{
+  "id": "p11-overloaded-529-after-ten-retries",
+  "expected": "act",
+  "expectedRuleId": "3e9a6d4c-7b21-4f58-8c0d-5e1f2a3b4c02",
+  "kind": "positive",
+  "reason": "The agent retried ten times ('Retrying in 39s - attempt 10/10', '529 Overloaded') and then stopped on its own notice 'API Error: 529 Overloaded. This is a server-side issue, usually temporary - try again in a moment.' followed by 'Sauteed for 3m 20s' and an empty composer. That is a session stopped on its provider's outage notice, the outage rule's own case.",
+  "facts": {
+    "agent": "ClaudeCode",
+    "repositoryPath": "",
+    "machine": "",
+    "mission": "",
+    "activityState": "WaitingForInput"
+  },
+  "factsNote": "The agent is read off the screen's own chrome (the bypass-permissions bar and the turn summary line are this agent's). The activity state is WaitingForInput because a turn-brief package is built when a turn ends, which is the moment the session goes idle. Machine, repository and mission are not recorded in the package, so they are left empty.",
+  "source": {
+    "method": "turn-package screen tail",
+    "sessionId": "214c4665-953b-4ee1-a1c2-16919739703f",
+    "capturedUtc": "2026-06-11T16:51:00.1583746Z",
+    "detail": "Gateway turn-brief package t26 for session 214c4665-953b-4ee1-a1c2-16919739703f, its screenTail field: the last 4,000 characters of the terminal text, captured by the Gateway's turn-brief pipeline when the turn ended. Session headline at the time: 'Proving issue #330 live'."
+  },
+  "nonAscii": true,
+  "secretsChecked": true
+}

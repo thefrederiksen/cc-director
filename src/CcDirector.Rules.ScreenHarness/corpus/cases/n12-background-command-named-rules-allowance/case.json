@@ -1,0 +1,22 @@
+{
+  "id": "n12-background-command-named-rules-allowance",
+  "expected": "decline",
+  "kind": "negative-report",
+  "reason": "'Background command \"Find SessionKeyGuard and rules allowance\" completed (exit code 0)' is a report line about a shell command the agent ran, named by the agent itself; 'allowance' is in the command's name. The session went on working. Decline.",
+  "facts": {
+    "agent": "ClaudeCode",
+    "repositoryPath": "D:\\ReposFred\\devthrottle",
+    "machine": "SOREN_NORTH",
+    "mission": "",
+    "activityState": "WaitingForInput"
+  },
+  "factsNote": "Agent, machine and repository come from the roster row returned by cc-devthrottle session list --json at capture. The activity state is WaitingForInput because the window ends at the end of the turn in which this passage was written, where the turn summary line shows the session stopped.",
+  "source": {
+    "method": "gateway buffer route",
+    "sessionId": "f1451482-5f93-4a7d-a1e0-d7bc733935b9",
+    "capturedUtc": "2026-09-03T16:41:26.008923Z",
+    "detail": "GET /sessions/{id}/buffer on the hosted Gateway with this session's own key, 2026-09-03; session 'DevThrottle Session Rules Architect' (ClaudeCode, D:\\ReposFred\\devthrottle). lines 1054-1098 of the cleaned scrollback, around the completed background command line. Line numbers count from the start of the 390,810-character cleaned scrollback the route returned."
+  },
+  "nonAscii": true,
+  "secretsChecked": true
+}

@@ -1,0 +1,23 @@
+{
+  "id": "p01-fable-limit-blocked-session",
+  "expected": "act",
+  "expectedRuleId": "7c1f0b2e-4d8a-4a6b-9f3e-2a5c1d7e9b01",
+  "kind": "positive",
+  "reason": "The session's own agent printed 'You've reached your Fable 5 limit. Run /usage-credits to continue or switch models with /model.' and the turn ended on it ('Baked for 4s - done 5:44 AM'), with the composer empty. That is the exact situation the allowance rule describes: the session is stopped on its provider's allowance notice and nothing else on the screen is a report, a document or code. The notice states no reset time, so the wait is bounded by the rule's own ceilings rather than a stated clock.",
+  "facts": {
+    "agent": "ClaudeCode",
+    "repositoryPath": "",
+    "machine": "",
+    "mission": "",
+    "activityState": "WaitingForInput"
+  },
+  "factsNote": "The agent is read off the screen's own chrome. The activity state is WaitingForInput because the turn summary line ('Baked for 4s - done 5:44 AM') and the empty composer show the session stopped on the notice. Machine and repository were not recorded with the fixture.",
+  "source": {
+    "method": "fixture copied from another mission",
+    "sessionId": "session 101 of the terminal-rules mission (the fixture names it; the roster id was not recorded)",
+    "capturedUtc": "2026-09-02",
+    "detail": "docs/missions/terminal-rules-2026-09-02/fixtures/blocked-session-101-screen-tail.txt on origin/mission/terminal-rules, commit 6ce122d1 (2026-09-02), copied byte for byte. That mission captured it from a genuinely blocked session; it is the one screen in this corpus that was captured by another mission."
+  },
+  "nonAscii": true,
+  "secretsChecked": true
+}

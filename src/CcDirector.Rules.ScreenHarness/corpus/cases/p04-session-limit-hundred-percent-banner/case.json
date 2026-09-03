@@ -1,0 +1,23 @@
+{
+  "id": "p04-session-limit-hundred-percent-banner",
+  "expected": "act",
+  "expectedRuleId": "7c1f0b2e-4d8a-4a6b-9f3e-2a5c1d7e9b01",
+  "kind": "positive",
+  "reason": "The status bar reads 'You've used 100% of your session limit - resets 10:20am' and the agent's own notice 'You've hit your session limit' ends the turn ('Baked for 2m 6s') with the rate-limit options selector drawn. Two of the session's own statements say the allowance is used up and name the reset time. The screen is garbled by redraws, as real captures are, and the facts are still legible.",
+  "facts": {
+    "agent": "ClaudeCode",
+    "repositoryPath": "",
+    "machine": "",
+    "mission": "",
+    "activityState": "WaitingForInput"
+  },
+  "factsNote": "The agent is read off the screen's own chrome (the bypass-permissions bar and the turn summary line are this agent's). The activity state is WaitingForInput because a turn-brief package is built when a turn ends, which is the moment the session goes idle. Machine, repository and mission are not recorded in the package, so they are left empty.",
+  "source": {
+    "method": "turn-package screen tail",
+    "sessionId": "4bd8765d-1322-4e9d-b1d8-9e6a80df86ca",
+    "capturedUtc": "2026-06-08T13:01:45.4002609Z",
+    "detail": "Gateway turn-brief package t245 for session 4bd8765d-1322-4e9d-b1d8-9e6a80df86ca, its screenTail field: the last 4,000 characters of the terminal text, captured by the Gateway's turn-brief pipeline when the turn ended. Session headline at the time: 'Replacing server-side Visio export'."
+  },
+  "nonAscii": true,
+  "secretsChecked": true
+}

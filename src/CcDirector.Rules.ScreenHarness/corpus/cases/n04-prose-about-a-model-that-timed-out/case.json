@@ -1,0 +1,22 @@
+{
+  "id": "n04-prose-about-a-model-that-timed-out",
+  "expected": "decline",
+  "kind": "negative-documentation",
+  "reason": "'it timed out entirely on the rename task' is a sentence in the agent's recommendation about a model on a price card - a benchmark result it is describing, not an error this session hit. The outage rule's trigger words are present in prose the session wrote. Decline.",
+  "facts": {
+    "agent": "ClaudeCode",
+    "repositoryPath": "D:\\ReposFred\\devthrottle_internal",
+    "machine": "SOREN_NORTH",
+    "mission": "",
+    "activityState": "WaitingForInput"
+  },
+  "factsNote": "Agent, machine and repository come from the roster row returned by cc-devthrottle session list --json at capture. The activity state is WaitingForInput because the window ends at the end of the turn in which this passage was written, where the turn summary line shows the session stopped.",
+  "source": {
+    "method": "gateway buffer route",
+    "sessionId": "fc78a529-c0ca-4a36-b262-e6e9ea7ab781",
+    "capturedUtc": "2026-09-03T16:41:26.008923Z",
+    "detail": "GET /sessions/{id}/buffer on the hosted Gateway with this session's own key, 2026-09-03; session 'devthrottle_internal - PI' (ClaudeCode, D:\\ReposFred\\devthrottle_internal). lines 3399-3443 of the cleaned scrollback, the recommendation paragraph. Line numbers count from the start of the 400,505-character cleaned scrollback the route returned."
+  },
+  "nonAscii": true,
+  "secretsChecked": true
+}

@@ -1,0 +1,22 @@
+{
+  "id": "n11-session-listing-with-weekly-limit-banner",
+  "expected": "decline",
+  "kind": "negative-report",
+  "reason": "The screen shows a listing of other sessions on the fleet (names, states such as WaitingForInput, directors, ids) that the agent found, plus the status bar 'You've used 93% of your weekly limit - resets Jun 13'. The listing is a report about other sessions and the banner is a warning that no allowance has run out; the session finished its turn with a question. Neither is a stop on a used-up allowance. Decline.",
+  "facts": {
+    "agent": "ClaudeCode",
+    "repositoryPath": "",
+    "machine": "",
+    "mission": "",
+    "activityState": "WaitingForInput"
+  },
+  "factsNote": "The agent is read off the screen's own chrome (the bypass-permissions bar and the turn summary line are this agent's). The activity state is WaitingForInput because a turn-brief package is built when a turn ends, which is the moment the session goes idle. Machine, repository and mission are not recorded in the package, so they are left empty.",
+  "source": {
+    "method": "turn-package screen tail",
+    "sessionId": "4d25106c-c675-43f7-aba6-b8f48277fdf8",
+    "capturedUtc": "2026-06-09T10:25:14.2429483Z",
+    "detail": "Gateway turn-brief package t81 for session 4d25106c-c675-43f7-aba6-b8f48277fdf8, its screenTail field: the last 4,000 characters of the terminal text, captured by the Gateway's turn-brief pipeline when the turn ended. Session headline at the time: 'Locate cc-director ?? session'."
+  },
+  "nonAscii": true,
+  "secretsChecked": true
+}

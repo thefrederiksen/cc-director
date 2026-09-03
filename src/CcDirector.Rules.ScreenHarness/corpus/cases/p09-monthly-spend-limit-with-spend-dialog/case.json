@@ -1,0 +1,23 @@
+{
+  "id": "p09-monthly-spend-limit-with-spend-dialog",
+  "expected": "act",
+  "expectedRuleId": "7c1f0b2e-4d8a-4a6b-9f3e-2a5c1d7e9b01",
+  "kind": "positive",
+  "reason": "The agent hit its monthly spend limit ('You've hit your monthly spend limit.' after 'Baked for 2m 22s') and the person then opened the usage-credits dialog, which is drawn with 'Usage credit balance', 'Wait for limit to reset' and 'Resets 1pm (America/Toronto)'. The session is stopped on its allowance and a reset time is on the screen; the allowance rule applies even though the screen is heavily overdrawn.",
+  "facts": {
+    "agent": "ClaudeCode",
+    "repositoryPath": "",
+    "machine": "",
+    "mission": "",
+    "activityState": "WaitingForInput"
+  },
+  "factsNote": "The agent is read off the screen's own chrome (the bypass-permissions bar and the turn summary line are this agent's). The activity state is WaitingForInput because a turn-brief package is built when a turn ends, which is the moment the session goes idle. Machine, repository and mission are not recorded in the package, so they are left empty.",
+  "source": {
+    "method": "turn-package screen tail",
+    "sessionId": "d7120ba3-dcea-45f9-b6ef-65e6769cfff1",
+    "capturedUtc": "2026-06-11T16:42:46.7821991Z",
+    "detail": "Gateway turn-brief package t267 for session d7120ba3-dcea-45f9-b6ef-65e6769cfff1, its screenTail field: the last 4,000 characters of the terminal text, captured by the Gateway's turn-brief pipeline when the turn ended. Session headline at the time: 'BPMN Studio rebuild research plan'."
+  },
+  "nonAscii": true,
+  "secretsChecked": true
+}

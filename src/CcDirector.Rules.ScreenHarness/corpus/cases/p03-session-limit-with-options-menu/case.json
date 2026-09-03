@@ -1,0 +1,23 @@
+{
+  "id": "p03-session-limit-with-options-menu",
+  "expected": "act",
+  "expectedRuleId": "7c1f0b2e-4d8a-4a6b-9f3e-2a5c1d7e9b01",
+  "kind": "positive",
+  "reason": "The agent stopped on 'You've hit your session limit - resets 10:20am' and the person then opened /rate-limit-options, so a selector ('1. Stop and wait for limit to reset  2. Add funds ... 3. Switch to Team plan') is drawn on the screen. The situation is still the one the allowance rule describes - the session is out of its allowance and a reset time is stated - so the rule applies. That a menu is open matters to how the keystroke is delivered, not to whether the instruction reaches this screen.",
+  "facts": {
+    "agent": "ClaudeCode",
+    "repositoryPath": "",
+    "machine": "",
+    "mission": "",
+    "activityState": "WaitingForInput"
+  },
+  "factsNote": "The agent is read off the screen's own chrome (the bypass-permissions bar and the turn summary line are this agent's). The activity state is WaitingForInput because a turn-brief package is built when a turn ends, which is the moment the session goes idle. Machine, repository and mission are not recorded in the package, so they are left empty.",
+  "source": {
+    "method": "turn-package screen tail",
+    "sessionId": "180aee6b-13c6-4765-af6f-7459592caed4",
+    "capturedUtc": "2026-06-08T12:58:05.2256141Z",
+    "detail": "Gateway turn-brief package t270 for session 180aee6b-13c6-4765-af6f-7459592caed4, its screenTail field: the last 4,000 characters of the terminal text, captured by the Gateway's turn-brief pipeline when the turn ended. Session headline at the time: 'AI Library landing page redesign'."
+  },
+  "nonAscii": true,
+  "secretsChecked": true
+}

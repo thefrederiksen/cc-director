@@ -1,0 +1,22 @@
+{
+  "id": "n02-prose-about-rate-limiting-as-a-name",
+  "expected": "decline",
+  "kind": "negative-documentation",
+  "reason": "'rate limiting' appears in the agent's own prose about naming a product ('in tech, throttling usually means limiting something (rate limiting, CPU throttling)'), and the turn ended normally on that prose ('Cogitated for 1m 53s'). The words are being discussed, not reported; the provider is fine. Decline.",
+  "facts": {
+    "agent": "ClaudeCode",
+    "repositoryPath": "",
+    "machine": "",
+    "mission": "",
+    "activityState": "WaitingForInput"
+  },
+  "factsNote": "The agent is read off the screen's own chrome (the bypass-permissions bar and the turn summary line are this agent's). The activity state is WaitingForInput because a turn-brief package is built when a turn ends, which is the moment the session goes idle. Machine, repository and mission are not recorded in the package, so they are left empty.",
+  "source": {
+    "method": "turn-package screen tail",
+    "sessionId": "ec3694db-3749-43af-99d7-64b4f823cf5d",
+    "capturedUtc": "2026-06-11T18:12:35.6209964Z",
+    "detail": "Gateway turn-brief package t79 for session ec3694db-3749-43af-99d7-64b4f823cf5d, its screenTail field: the last 4,000 characters of the terminal text, captured by the Gateway's turn-brief pipeline when the turn ended. Session headline at the time: 'Naming the Cockpit product'."
+  },
+  "nonAscii": true,
+  "secretsChecked": true
+}

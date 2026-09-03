@@ -1,0 +1,79 @@
+   │ ⎿  Done
+   ├ W29 cluster 5 notebooks envs · 4 tool uses · 36.7k tokens
+   │ ⎿  Done
+   ├ W29 cluster 6 data engineering · 9 tool uses · 45.6k tokens
+   │ ⎿  Done
+   ├ W29 cluster 7 MLOps · 7 tool uses · 44.2k tokens
+   │ ⎿  Done
+   ├ W29 cluster 8 LLM tooling · 0 tool uses
+   │ ⎿  Done
+   ├ W29 cluster 9 numerical concepts · 0 tool uses
+   │ ⎿  Done
+   └ W29 cluster 10 data viz · 0 tool uses
+     ⎿  Done
+  ⎿  You've hit your session limit · resets 10:20am (America/Toronto)
+     /usage-credits to finish what you’re working on.                                                                                              
+
+✻ Worked for 1h 59m 32s                                                                                                                            
+
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────❯ 
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents                                             new task? /clear to save 677.9k tokens  
+
+
+
+
+
+        44532a6..888c22c  main -> main
+
+● W28 merged — 1,501 entries, past 1,500. Last two waves. Continuing to W29 - AI/ML as software & tooling (the software/library angle; the science 
+  stays in the AI Library).
+
+● Bash(git checkout -b code-library/wave-29-mltooling main -q && git branch --show-current && find CenterConsulting/src/content/codekb -name '*.md'
+      | wc -l)
+  ⎿  code-library/wave-29-mltooling
+     1501
+
+● 10 agents finished (ctrl+o to expand)
+   ├ W29 cluster 1 numerical Python · 4 tool uses · 37.4k tokens
+   │ ⎿  Done
+   ├ W29 cluster 2 classic ML libs · 9 tool uses · 44.6k tokens
+   │ ⎿  Done
+   ├ W29 cluster 3 DL frameworks · 9 tool uses · 42.2k tokens
+   │ ⎿  Done
+   ├ W29 cluster 4 GPU compute · 6 tool uses · 45.4k tokens
+   │ ⎿  Done
+   ├ W29 cluster 5 notebooks envs · 4 tool uses · 36.7k tokens
+   │ ⎿  Done
+   ├ W29 cluster 6 data engineering · 9 tool uses · 45.6k tokens
+   │ ⎿  Done
+   ├ W29 cluster 7 MLOps · 7 tool uses · 44.2k tokens
+   │ ⎿  Done
+   ├ W29 cluster 8 LLM tooling · 0 tool uses
+   │ ⎿  Done
+   ├ W29 cluster 9 numerical concepts · 0 tool uses
+   │ ⎿  Done
+   └ W29 cluster 10 data viz · 0 tool uses
+     ⎿  Done
+  ⎿  You've hit your session limit · resets 10:20am (America/Toronto)
+     /usage-credits to finish what you’re working on.
+
+✻ Worked for 1h 59m 32s
+
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ 
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents                                             new task? /clear to save 677.9k tokens  
+Checking for updatesnewtask?/clear tosave677.9ktokens
+new task? /clear to save 677.9k tokens
+
+Checking for updatesnewtask?/clear tosave677.9ktokensnew task? /clear to save 677.9k tokens
+
+Checking for updatesnewtask?/clear tosave677.9ktokensnew task? /clear to save 677.9k tokens
+
+Checking for updatesnewtask?/clear tosave677.9ktokensnew task? /clear to save 677.9k tokens
+
+Checking for updatesnewtask?/clear tosave677.9ktokensnew task? /clear to save 677.9k tokens
+
+Checking for updatesnewtask?/clear tosave677.9ktokensnew task? /clear to save 677.9k tokens
+
