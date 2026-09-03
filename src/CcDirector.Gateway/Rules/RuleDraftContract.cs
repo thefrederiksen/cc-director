@@ -344,7 +344,7 @@ public static class RuleDraftContract
                 return RuleDraftReading.Refused(
                     "the session this rule is about does not say which agent it runs, so there is no fact " +
                     "to scope the rule to and the model is never allowed to choose that. Nothing was drafted.");
-            scope = scope with { Agent = allAgents ? null : origin.Agent };
+            scope = scope with { Agent = allAgents ? null : "ClaudeCode" };
 
             // A PROPOSAL NOBODY CAN READ IS NOT A PROPOSAL. The read-back is the whole point of this step:
             // it is what the person confirms. A rule offered without one would be asking somebody to agree
