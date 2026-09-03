@@ -60,6 +60,7 @@ public sealed class HostedInferenceBrain : IAgentBrain
     private readonly string _model;
     private readonly TimeSpan _callTimeout;
     private readonly Action<string> _log;
+    private readonly double? _temperature;
 
     /// <param name="baseUrl">The provider-compatible <c>/v1</c> base URL.</param>
     /// <param name="apiKey">The credential to present as the Bearer token. Must be non-empty.</param>
@@ -75,8 +76,14 @@ public sealed class HostedInferenceBrain : IAgentBrain
     /// <param name="log">Log sink; <see cref="FileLog.Write"/> when null.</param>
     /// <param name="callTimeout">Per-call deadline (tests pass a tiny value to prove the fast-fail without
     /// a real wait); <see cref="DefaultCallTimeout"/> when null.</param>
-    public HostedInferenceBrain(string baseUrl, string apiKey, Core.Configuration.IncludedModelId model, HttpClient? http = null, Action<string>? log = null, TimeSpan? callTimeout = null)
+    /// <param name="temperature">The sampling temperature to ask the provider for, or null to send none and
+    /// take the provider's default. The rules engine passes zero (Session Rules mission, phase 1): the same
+    /// screen was measured getting a different verdict on consecutive runs with the default, and a rule's
+    /// judgement that changes from one idle transition to the next is a product defect, not a testing
+    /// nuisance. Whether the hosted endpoint honours it is measured by the screen harness, not assumed.</param>
+    public HostedInferenceBrain(string baseUrl, string apiKey, Core.Configuration.IncludedModelId model, HttpClient? http = null, Action<string>? log = null, TimeSpan? callTimeout = null, double? temperature = null)
     {
+        _temperature = temperature;
         if (string.IsNullOrWhiteSpace(baseUrl)) throw new ArgumentException("baseUrl is required", nameof(baseUrl));
         ArgumentNullException.ThrowIfNull(model);
         _http = http ?? SharedHttp;
@@ -102,12 +109,15 @@ public sealed class HostedInferenceBrain : IAgentBrain
                 "[HostedInferenceBrain] No DevThrottle account key is configured. Sign in to DevThrottle " +
                 "so the wingman can reach the model.");
 
-        var payload = JsonSerializer.Serialize(new
+        var body = new Dictionary<string, object?>
         {
-            model = _model,
-            messages = new[] { new { role = "user", content = prompt } },
-            stream = false,
-        });
+            ["model"] = _model,
+            ["messages"] = new[] { new { role = "user", content = prompt } },
+            ["stream"] = false,
+        };
+        // Sent only when a caller asked for one, so every other wingman call is exactly what it was.
+        if (_temperature is not null) body["temperature"] = _temperature.Value;
+        var payload = JsonSerializer.Serialize(body);
 
         var sw = Stopwatch.StartNew();
         using var req = new HttpRequestMessage(HttpMethod.Post, _chatUrl);

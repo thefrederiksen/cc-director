@@ -1,7 +1,7 @@
 using CcDirector.Rules.ScreenHarness;
 
 // THE SCREEN HARNESS. Usage:
-//   dotnet run --project src/CcDirector.Rules.ScreenHarness -- [--models wingman,wingman-fast] [--corpus <dir>] [--out <dir>] [--case <id>[,<id>...]]
+//   dotnet run --project src/CcDirector.Rules.ScreenHarness -- [--models wingman,wingman-fast] [--corpus <dir>] [--out <dir>] [--case <id>[,<id>...]] [--runs N]
 //   dotnet run --project src/CcDirector.Rules.ScreenHarness -- --merge <parent dir of batch runs>
 // It calls a live model and is run by hand; it is not part of the local gate.
 
@@ -10,6 +10,7 @@ string? corpus = null;
 string? output = null;
 List<string>? onlyCases = null;
 string? merge = null;
+var runs = HarnessRun.DefaultRuns;
 
 for (var i = 0; i < args.Length; i++)
 {
@@ -40,10 +41,17 @@ for (var i = 0; i < args.Length; i++)
         case "--merge":
             merge = Path.GetFullPath(Value("--merge"));
             break;
+        case "--runs":
+            if (!int.TryParse(Value("--runs"), out runs) || runs < 1)
+            {
+                Console.Error.WriteLine("usage error: --runs needs a whole number of at least 1");
+                return 2;
+            }
+            break;
         case "--help":
         case "-h":
             Console.WriteLine("usage: dotnet run --project src/CcDirector.Rules.ScreenHarness -- " +
-                              "[--models wingman,wingman-fast] [--corpus <dir>] [--out <dir>] [--case <id>[,<id>...]] | --merge <parent dir>");
+                              "[--models wingman,wingman-fast] [--corpus <dir>] [--out <dir>] [--case <id>[,<id>...]] [--runs N] | --merge <parent dir>");
             return 0;
         default:
             Console.Error.WriteLine("usage error: unknown argument '" + args[i] + "'. Try --help.");
@@ -61,7 +69,8 @@ var options = new HarnessOptions(
     ModelNames: modelNames,
     CorpusDirectory: corpus ?? RepositoryRoot.DefaultCorpus(),
     OutputDirectory: output ?? RepositoryRoot.DefaultOutput(),
-    OnlyCases: onlyCases);
+    OnlyCases: onlyCases,
+    Runs: runs);
 
 try
 {

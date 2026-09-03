@@ -2381,13 +2381,21 @@ public sealed class GatewayHost : IAsyncDisposable
         => _tenantSettingsResolver.WingmanModel(tenant, Core.Configuration.TranscriptionModeConfig.Get(), role).Value;
 
     private Task<CcDirector.AgentBrain.IAgentBrain> WingmanBrainAsync(TenantId tenant, Core.Configuration.WingmanModelRole role, CancellationToken ct)
+        => WingmanBrainAsync(tenant, role, temperature: null);
+
+    /// <summary>The rules engine's brain: the same resolution as every other wingman call, asked at the
+    /// judgement temperature (Session Rules mission, phase 1) so one screen gets one verdict.</summary>
+    private Task<CcDirector.AgentBrain.IAgentBrain> RuleBrainAsync(TenantId tenant, Core.Configuration.WingmanModelRole role, CancellationToken ct)
+        => WingmanBrainAsync(tenant, role, Rules.RuleAgentContract.JudgementTemperature);
+
+    private Task<CcDirector.AgentBrain.IAgentBrain> WingmanBrainAsync(TenantId tenant, Core.Configuration.WingmanModelRole role, double? temperature)
     {
         var mode = Core.Configuration.TranscriptionModeConfig.Get();
         var ep = Core.Configuration.TranscriptionEndpointResolver.ResolveWingman(mode);
         var key = _keyVault.Get(ep.KeyName) ?? "";
         var model = _tenantSettingsResolver.WingmanModel(tenant, mode, role);
         CcDirector.AgentBrain.IAgentBrain brain =
-            new Wingman.HostedInferenceBrain(ep.BaseUrl, key, model, log: FileLog.Write);
+            new Wingman.HostedInferenceBrain(ep.BaseUrl, key, model, log: FileLog.Write, temperature: temperature);
         return Task.FromResult(brain);
     }
 
@@ -2415,7 +2423,7 @@ public sealed class GatewayHost : IAsyncDisposable
                 return new Api.SessionVerbClient(director, sendCommand);
             },
             session: (tenant, sessionId) => PushedSessions.TryLocate(tenant, sessionId, _streamStaleAfter)?.Session,
-            brainProvider: WingmanBrainAsync,
+            brainProvider: RuleBrainAsync,
             enterTenantScope: tenant => _tenantBoundary.EnterScope(tenant));
 
     /// <summary>

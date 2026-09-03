@@ -139,7 +139,9 @@ public sealed class ScreenHarnessJudgementTests
 
         var summary = HarnessRun.Summarise("m", rows);
 
-        Assert.Equal(6, summary.Cases);
+        // Six answers to two cases (the rows above share two case ids), counted as answers.
+        Assert.Equal(2, summary.Cases);
+        Assert.Equal(6, summary.Answers);
         Assert.Equal(2, summary.WrongOnNegatives);
         Assert.Equal(1, summary.WrongOnNegativesThatReachedAct);
         Assert.Equal(1, summary.WrongOnNegativesStoppedByGrounding);
@@ -182,5 +184,53 @@ public sealed class ScreenHarnessJudgementTests
         Assert.Equal(IncludedModelId.Wingman, HarnessRun.ModelNamed("wingman"));
         Assert.Equal(IncludedModelId.WingmanFast, HarnessRun.ModelNamed("wingman-fast"));
         Assert.Throws<ArgumentException>(() => HarnessRun.ModelNamed("some-catalog-model"));
+    }
+
+    /// <summary>
+    /// SEVERAL RUNS PER CASE, JUDGED ON THE WORST (Architect ruling, phase 1). One pass of twenty negatives
+    /// coming out clean is luck; the gate counts every answer of every run, a case is judged on its worst
+    /// run, and a case whose answers differ across runs is a FLIP, reported as its own number.
+    /// </summary>
+    [Fact]
+    public void The_summary_counts_every_run_judges_a_case_on_its_worst_and_reports_the_flips()
+    {
+        var negative = Case(CaseExpectations.Decline, CaseKinds.NegativeReport);
+        var positive = Case(CaseExpectations.Act, CaseKinds.Positive, TheRule);
+
+        var rows = new[]
+        {
+            HarnessRun.Judge("m", negative, Pass(RulePassOutcomes.Declined, Draft(TheRule, RuleDecisions.Decline)), Environment(negative), run: 1),
+            HarnessRun.Judge("m", negative, Pass(RulePassOutcomes.DryRun, Draft(TheRule, RuleDecisions.Act)), Environment(negative), run: 2),
+            HarnessRun.Judge("m", negative, Pass(RulePassOutcomes.Declined, Draft(TheRule, RuleDecisions.Decline)), Environment(negative), run: 3),
+            HarnessRun.Judge("m", positive, Pass(RulePassOutcomes.DryRun, Draft(TheRule, RuleDecisions.Act)), Environment(positive), run: 1),
+            HarnessRun.Judge("m", positive, Pass(RulePassOutcomes.DryRun, Draft(TheRule, RuleDecisions.Act)), Environment(positive), run: 2),
+            HarnessRun.Judge("m", positive, Pass(RulePassOutcomes.DryRun, Draft(TheRule, RuleDecisions.Act)), Environment(positive), run: 3),
+        };
+
+        var summary = HarnessRun.Summarise("m", rows);
+
+        Assert.Equal(2, summary.Cases);
+        Assert.Equal(3, summary.Runs);
+        Assert.Equal(6, summary.Answers);
+        // The one act on the negative counts, however many declines surround it.
+        Assert.Equal(1, summary.WrongOnNegatives);
+        Assert.Equal(1, summary.WrongOnNegativesThatReachedAct);
+        Assert.Equal(1, summary.NegativeCasesWrongInAnyRun);
+        Assert.Equal(0, summary.WrongOnPositives);
+        Assert.Equal(1, summary.Flips);
+        Assert.Equal(new[] { negative.Id }, summary.FlippedCases);
+
+        var worst = HarnessRun.Worst(rows.Where(r => r.CaseId == negative.Id));
+        Assert.Equal(CaseAnswers.Act, worst.Answer);
+        Assert.Equal(2, worst.Run);
+        Assert.Equal("decline x2, act x1", HarnessRun.AnswersAcrossRuns(rows.Where(r => r.CaseId == negative.Id)));
+
+        var report = HarnessRun.RenderReport(new[] { summary }, rows);
+        Assert.Contains("WRONG ANSWERS ON NEGATIVES: 1", report);
+        Assert.Contains("FLIPS: 1 of 2", report);
+        Assert.Contains("| " + negative.Id + " | ", report);
+        Assert.Contains("decline x2, act x1", report);
+        // One row per case, not one per run.
+        Assert.Equal(1, report.Split("| " + positive.Id + " | ").Length - 1);
     }
 }

@@ -70,6 +70,11 @@ public sealed class CaseRuleEnvironment : IRuleEnvironment
     /// <summary>How many times the model was asked. The evaluator asks once per pass.</summary>
     public int ModelCalls { get; private set; }
 
+    /// <summary>What the model said, verbatim, or null when it was never asked or threw. Kept so a refusal
+    /// in the report can be argued with: "the agent gave no reason" is a fact about the reply, and the
+    /// reply is the evidence.</summary>
+    public string? RawReply { get; private set; }
+
     /// <inheritdoc />
     public DateTime NowUtc => DateTime.UtcNow;
 
@@ -94,11 +99,15 @@ public sealed class CaseRuleEnvironment : IRuleEnvironment
         var sw = Stopwatch.StartNew();
         try
         {
+            // AT THE PRODUCTION TEMPERATURE. The harness measures what the Gateway does, and the Gateway
+            // asks this question at RuleAgentContract.JudgementTemperature.
             using var brain = new HostedInferenceBrain(
-                TranscriptionEndpointResolver.DevThrottleBaseUrl, _apiKey, _model, log: _log);
+                TranscriptionEndpointResolver.DevThrottleBaseUrl, _apiKey, _model, log: _log,
+                temperature: RuleAgentContract.JudgementTemperature);
             var result = await brain.AskAsync(prompt, ct).ConfigureAwait(false);
             sw.Stop();
             ModelCallTime = sw.Elapsed;
+            RawReply = result?.Text;
             return result?.Text;
         }
         catch (Exception ex)

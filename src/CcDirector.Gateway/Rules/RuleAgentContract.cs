@@ -66,6 +66,16 @@ public sealed record RuleAgentReading(RuleAgentReply? Reply, string? Refusal)
 /// </summary>
 public static class RuleAgentContract
 {
+    /// <summary>
+    /// THE SAMPLING TEMPERATURE THE RUN-TIME QUESTION IS ASKED AT: zero. Measured on 3 September 2026 with
+    /// the provider's default, the fast model answered the same negative screen "decline" on one run and
+    /// "act" on the next, and a rule whose verdict on one screen is a dice roll would type on the idle
+    /// transition it happened to land on. A judgement about a fixed screen should be the same judgement
+    /// every time. Whether the hosted endpoint honours the setting is measured by the screen harness, which
+    /// runs every case several times and reports the flip rate; it is not assumed here.
+    /// </summary>
+    public const double JudgementTemperature = 0.0;
+
     /// <summary>How many lines of the screen tail the question carries. The excerpt itself is produced by
     /// <see cref="RuleScreenExcerpt.Of"/> - the one function the authoring path uses too - so this is the
     /// same number as <see cref="RuleScreenExcerpt.Lines"/> and is kept for the callers that name it.</summary>
@@ -126,12 +136,22 @@ public static class RuleAgentContract
         sb.AppendLine("--- end of screen ---");
         sb.AppendLine();
 
-        sb.AppendLine("Answer with JSON and nothing else, in exactly this shape:");
+        sb.AppendLine("Act only when the screen plainly shows the session itself in the situation the instruction");
+        sb.AppendLine("names. If it could be read either way, decline.");
+        sb.AppendLine();
+        sb.AppendLine("Answer with JSON and nothing else, in exactly this shape. Every field is filled in:");
         sb.AppendLine("{");
         sb.AppendLine("  \"rule_id\": \"the id of the ONE instruction you are answering about\",");
         sb.AppendLine($"  \"decision\": \"{RuleDecisions.Act}\" or \"{RuleDecisions.Decline}\",");
-        sb.AppendLine($"  \"quote\": \"when the decision is {RuleDecisions.Act}: ONE line copied from the screen above, exactly as it appears there, that shows the session is in this situation. Copy it character for character - do not shorten it, tidy it or paraphrase it. When the decision is {RuleDecisions.Decline}, leave this empty.\",");
-        sb.AppendLine("  \"reason\": \"why, in one sentence\"");
+        sb.AppendLine("  \"reason\": \"why, in one sentence - never empty\",");
+        // WORDS, NOT GLYPHS. A real terminal line often starts with spinner glyphs and redraw fragments,
+        // and a model asked to reproduce the whole line mangles them - measured on the first smoke run of
+        // this contract, where the fast model turned the prefix into different glyphs and the notice's own
+        // first words into a token that was never on the screen. The words are what a person checks.
+        // THE REASON COMES BEFORE THE QUOTE: on the second smoke run the same model filled the quote and
+        // left the reason empty on every act, and a decision with no reason is refused because the record
+        // is made of it. Asked for in this order, it writes both.
+        sb.AppendLine($"  \"quote\": \"when the decision is {RuleDecisions.Act}: the words on ONE line of the screen above that show the session is in this situation, copied from the screen exactly as they appear - at least ten characters, character for character. Leave out any drawing, spinner or box characters around the words; do not shorten, tidy or paraphrase the words themselves. When the decision is {RuleDecisions.Decline}, an empty string.\"");
         sb.AppendLine("}");
         return sb.ToString();
     }

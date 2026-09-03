@@ -139,4 +139,41 @@ public sealed class RuleReasonGroundingTests
         Assert.Contains("not applicable", RuleReasonGrounding.NotTheAgentsReason, StringComparison.Ordinal);
         Assert.Contains("nothing of the agent's", RuleReasonGrounding.NotTheAgentsReason, StringComparison.Ordinal);
     }
+
+    /// <summary>
+    /// THE REAL LINE, GLYPHS AND ALL. This is the p01 corpus line as the terminal held it: spinner glyphs
+    /// and redraw fragments, then the notice. On the first smoke run of the phase 1 contract the fast
+    /// model was asked to copy the whole line and mangled the prefix - and the notice's first words - so
+    /// the contract asks for the words only. There is NO glyph normaliser on either side: the quote is
+    /// trimmed and looked for on the exact excerpt the question carried, with the same comparison a
+    /// trigger word gets. A faithful words-only quote passes because it is a substring of the line; an
+    /// invented one still fails. If a faithful quote ever fails here, the comparison is NOT to be loosened
+    /// - a looser comparison is how a false act gets in - it is to be reported (Architect ruling, phase 1).
+    /// </summary>
+    private const string TheRealGlyphLadenLine =
+        "\u2736*\u2722\u00b7\u2026g\u2722n*i\u2026\u2736rg\u273b\u273dendi\u273bnr\u2736*aeed\u2722\u00b7Mna\u2722e*M\u2736\u273b\u273d  \u23bf \u00a0" +
+        "You've reached your Fable 5 limit. Run /usage-credits to continue or switch models with /model.";
+
+    [Fact]
+    public void A_faithful_words_only_quote_of_a_glyph_laden_real_line_is_on_the_screen()
+    {
+        var excerpt = RuleScreenExcerpt.Of("> carry on\n\n" + TheRealGlyphLadenLine + "\n\n>");
+        Assert.Contains("\u2736", excerpt, StringComparison.Ordinal);
+
+        var grounding = RuleReasonGrounding.CheckQuote(
+            "You've reached your Fable 5 limit. Run /usage-credits to continue or switch models with /model.", excerpt);
+
+        Assert.True(grounding.CanCarryAnAct, grounding.Statement);
+    }
+
+    [Fact]
+    public void An_invented_quote_against_the_same_glyph_laden_line_still_fails()
+    {
+        var excerpt = RuleScreenExcerpt.Of("> carry on\n\n" + TheRealGlyphLadenLine + "\n\n>");
+
+        var grounding = RuleReasonGrounding.CheckQuote("GETGLOBAL limit. Run /usage-credits to continue", excerpt);
+
+        Assert.False(grounding.CanCarryAnAct);
+        Assert.False(grounding.IsGrounded);
+    }
 }

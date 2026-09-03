@@ -53,7 +53,8 @@ public static class CaseAnswers
     };
 }
 
-/// <summary>One row of the report: one case on one model.</summary>
+/// <summary>One row of the report: one case on one model, on one run. <see cref="Run"/> is 1-based; a
+/// results file written before the harness ran cases more than once reads back as run 1.</summary>
 public sealed record CaseResult(
     string Model,
     string CaseId,
@@ -68,9 +69,17 @@ public sealed record CaseResult(
     string? FiringRuleId,
     bool TimedOut,
     string? Failure,
-    IReadOnlyList<RuleFiringDraft> Firings);
+    IReadOnlyList<RuleFiringDraft> Firings,
+    string? RawReply = null,
+    int Run = 1);
 
-/// <summary>The numbers the phase is judged on, per model.</summary>
+/// <summary>
+/// The numbers the phase is judged on, per model. Every count is over ALL RUNS of every case - a case run
+/// three times contributes three answers - so a negative that was answered with an act on one run in three
+/// counts as one wrong answer, never as a case that "usually" declines. The per-case numbers say how many
+/// CASES were wrong on at least one run, and <see cref="Flips"/> says how many cases did not give the same
+/// answer on every run. A judgement that flips is a property of the feature, reported as its own number.
+/// </summary>
 public sealed record ModelSummary(
     string Model,
     int Cases,
@@ -84,14 +93,22 @@ public sealed record ModelSummary(
     int Right,
     int Wrong,
     double? MedianSeconds,
-    double? MaximumSeconds);
+    double? MaximumSeconds,
+    int Runs = 1,
+    int Answers = 0,
+    int NegativeCasesWrongInAnyRun = 0,
+    int PositiveCasesWrongInAnyRun = 0,
+    int Flips = 0,
+    IReadOnlyList<string>? FlippedCases = null);
 
-/// <summary>What one run was asked to do.</summary>
+/// <summary>What one run was asked to do. <see cref="Runs"/> is how many times every case is asked, so
+/// the report can show the WORST answer per case and the flip rate rather than one lucky pass.</summary>
 public sealed record HarnessOptions(
     IReadOnlyList<string> ModelNames,
     string CorpusDirectory,
     string OutputDirectory,
-    IReadOnlyList<string>? OnlyCases);
+    IReadOnlyList<string>? OnlyCases,
+    int Runs = HarnessRun.DefaultRuns);
 
 /// <summary>
 /// THE RUN: every case through the real <see cref="RuleEvaluator"/> on every model named, cases one at a
@@ -111,6 +128,11 @@ public static class HarnessRun
 
     /// <summary>Every model name the runner accepts, in the default order.</summary>
     public static readonly string[] DefaultModels = { "wingman", "wingman-fast" };
+
+    /// <summary>How many times every case is asked unless told otherwise. Three, because a negative that
+    /// declines once is luck and a negative that declines three times in a row is a measurement - and the
+    /// gate is the worst of them, never the best or the mean (Architect ruling, phase 1).</summary>
+    public const int DefaultRuns = 3;
 
     /// <summary>Run it. Returns the exit code: 0 only when no case was "not asked" and no negative was
     /// answered with an act, in either form, on any model.</summary>
@@ -149,8 +171,10 @@ public static class HarnessRun
                 "directory that is not the Gateway's, then run again.");
 
         Directory.CreateDirectory(options.OutputDirectory);
-        console.WriteLine("screen harness: " + cases.Count + " case(s), " + rules.Count + " rule(s), models: " +
-                          string.Join(", ", models.Select(m => m.Name)));
+        if (options.Runs < 1)
+            throw new ArgumentException("--runs has to be at least 1; every case is asked that many times.", nameof(options));
+        console.WriteLine("screen harness: " + cases.Count + " case(s) x " + options.Runs + " run(s), " + rules.Count +
+                          " rule(s), models: " + string.Join(", ", models.Select(m => m.Name)));
         console.WriteLine("corpus: " + options.CorpusDirectory);
         console.WriteLine("output: " + options.OutputDirectory);
 
@@ -160,7 +184,7 @@ public static class HarnessRun
             lock (lockObject) console.WriteLine(line);
         }
 
-        var perModel = await Task.WhenAll(models.Select(m => RunModelAsync(m.Name, m.Id, rules, cases, key, Log, ct)))
+        var perModel = await Task.WhenAll(models.Select(m => RunModelAsync(m.Name, m.Id, rules, cases, key, options.Runs, Log, ct)))
             .ConfigureAwait(false);
 
         var rows = perModel.SelectMany(r => r).ToList();
@@ -216,11 +240,11 @@ public static class HarnessRun
             console.WriteLine("merged " + batch.Rows.Count + " row(s) from " + file);
         }
 
-        var duplicate = rows.GroupBy(r => (r.Model, r.CaseId)).FirstOrDefault(g => g.Count() > 1);
+        var duplicate = rows.GroupBy(r => (r.Model, r.CaseId, r.Run)).FirstOrDefault(g => g.Count() > 1);
         if (duplicate is not null)
             throw new InvalidOperationException(
-                "case '" + duplicate.Key.CaseId + "' on model '" + duplicate.Key.Model + "' appears in more than one batch; " +
-                "a merged report must count every case once.");
+                "case '" + duplicate.Key.CaseId + "' run " + duplicate.Key.Run + " on model '" + duplicate.Key.Model +
+                "' appears in more than one batch; a merged report must count every answer once.");
 
         var models = rows.Select(r => r.Model).Distinct().ToList();
         var summaries = models.Select(m => Summarise(m, rows.Where(r => r.Model == m).ToList())).ToList();
@@ -248,35 +272,41 @@ public static class HarnessRun
         IReadOnlyList<SessionRule> rules,
         IReadOnlyList<ScreenCase> cases,
         string key,
+        int runs,
         Action<string> log,
         CancellationToken ct)
     {
         var results = new List<CaseResult>();
-        foreach (var screenCase in cases)
+        // RUNS OUTER, CASES INNER: the second answer to a case comes after every other case has been asked
+        // once, so two answers to one screen are never back to back on a warm path.
+        for (var run = 1; run <= runs; run++)
         {
-            ct.ThrowIfCancellationRequested();
+            foreach (var screenCase in cases)
+            {
+                ct.ThrowIfCancellationRequested();
 
-            // A FRESH EVALUATOR AND A FRESH ENVIRONMENT PER CASE, with the case id as the session id, so
-            // nothing the evaluator remembers about one screen can reach the next.
-            var environment = new CaseRuleEnvironment(rules, screenCase, model, key, log);
-            var evaluator = new RuleEvaluator(environment);
+                // A FRESH EVALUATOR AND A FRESH ENVIRONMENT PER CASE AND PER RUN, with the case id as the
+                // session id, so nothing the evaluator remembers about one screen can reach the next.
+                var environment = new CaseRuleEnvironment(rules, screenCase, model, key, log);
+                var evaluator = new RuleEvaluator(environment);
 
-            var pass = await evaluator.EvaluateAsync(TenantId.Local, "screen-harness", screenCase.Id, ct)
-                .ConfigureAwait(false);
+                var pass = await evaluator.EvaluateAsync(TenantId.Local, "screen-harness", screenCase.Id, ct)
+                    .ConfigureAwait(false);
 
-            var result = Judge(modelName, screenCase, pass, environment);
-            results.Add(result);
-            log("[" + modelName + "] " + result.CaseId + " (" + result.Kind + "): expected " + result.Expected +
-                ", answered " + result.Answer + " - " + (result.Right ? "RIGHT" : "WRONG") +
-                (result.Seconds is null ? "" : " in " + result.Seconds.Value.ToString("F1", CultureInfo.InvariantCulture) + "s") +
-                " [" + result.Outcome + "]");
+                var result = Judge(modelName, screenCase, pass, environment, run);
+                results.Add(result);
+                log("[" + modelName + "] run " + run + " " + result.CaseId + " (" + result.Kind + "): expected " + result.Expected +
+                    ", answered " + result.Answer + " - " + (result.Right ? "RIGHT" : "WRONG") +
+                    (result.Seconds is null ? "" : " in " + result.Seconds.Value.ToString("F1", CultureInfo.InvariantCulture) + "s") +
+                    " [" + result.Outcome + "]");
+            }
         }
         return results;
     }
 
     /// <summary>Read the verdict off the pass and the environment: what was answered, and whether that is
     /// what the case says is right.</summary>
-    public static CaseResult Judge(string modelName, ScreenCase screenCase, RulePass pass, CaseRuleEnvironment environment)
+    public static CaseResult Judge(string modelName, ScreenCase screenCase, RulePass pass, CaseRuleEnvironment environment, int run = 1)
     {
         var answer = CaseAnswers.For(pass, environment);
         var firings = environment.Firings.Select(f => f.Draft).ToList();
@@ -308,32 +338,69 @@ public static class HarnessRun
             FiringRuleId: firingRuleId,
             TimedOut: failure is TimeoutException,
             Failure: failure is null ? null : failure.GetType().Name + ": " + failure.Message,
-            Firings: firings);
+            Firings: firings,
+            RawReply: environment.RawReply,
+            Run: run);
     }
 
-    /// <summary>The numbers for one model.</summary>
+    /// <summary>The numbers for one model, over every answer of every run. See <see cref="ModelSummary"/>.</summary>
     public static ModelSummary Summarise(string modelName, IReadOnlyList<CaseResult> rows)
     {
         var negatives = rows.Where(r => r.Expected == CaseExpectations.Decline).ToList();
         var positives = rows.Where(r => r.Expected == CaseExpectations.Act).ToList();
         var wrongNegatives = negatives.Where(r => CaseAnswers.IsAnAct(r.Answer)).ToList();
         var times = rows.Where(r => r.Seconds is not null).Select(r => r.Seconds!.Value).OrderBy(s => s).ToList();
+        var byCase = rows.GroupBy(r => r.CaseId, StringComparer.Ordinal).ToList();
+        var flipped = byCase
+            .Where(g => g.Select(r => r.Answer).Distinct(StringComparer.Ordinal).Count() > 1)
+            .Select(g => g.Key)
+            .OrderBy(id => id, StringComparer.Ordinal)
+            .ToList();
 
         return new ModelSummary(
             Model: modelName,
-            Cases: rows.Count,
+            Cases: byCase.Count,
             WrongOnNegatives: wrongNegatives.Count,
             WrongOnNegativesThatReachedAct: wrongNegatives.Count(r => r.Answer == CaseAnswers.Act),
             WrongOnNegativesStoppedByGrounding: wrongNegatives.Count(r => r.Answer == CaseAnswers.ActUngrounded),
             Timeouts: rows.Count(r => r.TimedOut),
             OtherNoAnswers: rows.Count(r => r.Answer == CaseAnswers.NoAnswer && !r.TimedOut),
             WrongOnPositives: positives.Count(r => !r.Right),
-            NotAsked: rows.Where(r => r.Answer == CaseAnswers.NotAsked).Select(r => r.CaseId).ToList(),
+            NotAsked: rows.Where(r => r.Answer == CaseAnswers.NotAsked).Select(r => r.CaseId).Distinct(StringComparer.Ordinal).ToList(),
             Right: rows.Count(r => r.Right),
             Wrong: rows.Count(r => !r.Right),
             MedianSeconds: Median(times),
-            MaximumSeconds: times.Count == 0 ? null : times[^1]);
+            MaximumSeconds: times.Count == 0 ? null : times[^1],
+            Runs: rows.Count == 0 ? 0 : rows.Max(r => r.Run),
+            Answers: rows.Count,
+            NegativeCasesWrongInAnyRun: wrongNegatives.Select(r => r.CaseId).Distinct(StringComparer.Ordinal).Count(),
+            PositiveCasesWrongInAnyRun: positives.Where(r => !r.Right).Select(r => r.CaseId).Distinct(StringComparer.Ordinal).Count(),
+            Flips: flipped.Count,
+            FlippedCases: flipped);
     }
+
+    /// <summary>
+    /// The WORST answer a case got across its runs - the one the case is judged on. On a negative an act
+    /// in either form is worst, because that is the failure the phase is gated on; otherwise any wrong
+    /// answer outranks a right one; among equals the earliest run stands.
+    /// </summary>
+    public static CaseResult Worst(IEnumerable<CaseResult> runsOfOneCase)
+    {
+        var ordered = runsOfOneCase.OrderBy(r => r.Run).ToList();
+        if (ordered.Count == 0) throw new ArgumentException("a case has to have been run at least once", nameof(runsOfOneCase));
+        return ordered
+            .OrderByDescending(r => r.Expected == CaseExpectations.Decline && CaseAnswers.IsAnAct(r.Answer) ? 2 : r.Right ? 0 : 1)
+            .ThenBy(r => r.Run)
+            .First();
+    }
+
+    /// <summary>The answers a case got, counted: "decline x2, act x1".</summary>
+    public static string AnswersAcrossRuns(IEnumerable<CaseResult> runsOfOneCase) =>
+        string.Join(", ", runsOfOneCase
+            .GroupBy(r => r.Answer, StringComparer.Ordinal)
+            .OrderByDescending(g => g.Count())
+            .ThenBy(g => g.Key, StringComparer.Ordinal)
+            .Select(g => g.Key + " x" + g.Count()));
 
     private static double? Median(List<double> sorted)
     {
@@ -350,14 +417,20 @@ public static class HarnessRun
         {
             sb.AppendLine("## " + s.Model + " - the numbers");
             sb.AppendLine();
-            sb.AppendLine("- WRONG ANSWERS ON NEGATIVES: " + s.WrongOnNegatives + " (the number the phase is judged on)");
+            sb.AppendLine("Every count is over all " + s.Answers + " answers (" + s.Cases + " cases x " + s.Runs + " runs).");
+            sb.AppendLine();
+            sb.AppendLine("- WRONG ANSWERS ON NEGATIVES: " + s.WrongOnNegatives + " (the number the phase is judged on; " +
+                          s.NegativeCasesWrongInAnyRun + " negative case(s) wrong on at least one run)");
             sb.AppendLine("  - of those, reached act (would have typed): " + s.WrongOnNegativesThatReachedAct);
             sb.AppendLine("  - of those, act (ungrounded) - the grounding check stopped it: " + s.WrongOnNegativesStoppedByGrounding);
+            sb.AppendLine("- FLIPS: " + s.Flips + " of " + s.Cases + " cases did not give the same answer on every run" +
+                          (s.Flips == 0 ? "" : " - " + string.Join(", ", s.FlippedCases ?? Array.Empty<string>())));
             sb.AppendLine("- timeouts: " + s.Timeouts + "; other no-answers: " + s.OtherNoAnswers);
-            sb.AppendLine("- wrong answers on positives: " + s.WrongOnPositives);
+            sb.AppendLine("- wrong answers on positives: " + s.WrongOnPositives + " (" + s.PositiveCasesWrongInAnyRun +
+                          " positive case(s) wrong on at least one run)");
             sb.AppendLine("- cases not asked (a corpus defect): " + s.NotAsked.Count +
                           (s.NotAsked.Count == 0 ? "" : " - " + string.Join(", ", s.NotAsked)));
-            sb.AppendLine("- right: " + s.Right + "; wrong: " + s.Wrong + "; cases: " + s.Cases);
+            sb.AppendLine("- right: " + s.Right + "; wrong: " + s.Wrong + "; answers: " + s.Answers);
             sb.AppendLine("- model call time: median " + Seconds(s.MedianSeconds) + ", maximum " + Seconds(s.MaximumSeconds));
             sb.AppendLine();
         }
@@ -371,7 +444,8 @@ public static class HarnessRun
         sb.AppendLine("# Screen harness report");
         sb.AppendLine();
         sb.AppendLine("Run at " + DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture) +
-                      " UTC. Every case went through the real RuleEvaluator; the answer is read off the recorded firing.");
+                      " UTC. Every case went through the real RuleEvaluator on every run; the answer is read off the " +
+                      "recorded firing. A case's row shows its WORST run and every answer it gave.");
         sb.AppendLine();
         sb.Append(RenderSummaries(summaries));
 
@@ -379,13 +453,16 @@ public static class HarnessRun
         {
             sb.AppendLine("## " + s.Model + " - per case");
             sb.AppendLine();
-            sb.AppendLine("| case | kind | expected | answer | right | seconds | outcome |");
-            sb.AppendLine("| --- | --- | --- | --- | --- | --- | --- |");
-            foreach (var r in rows.Where(r => r.Model == s.Model))
+            sb.AppendLine("| case | kind | expected | worst answer | right on every run | answers across runs | seconds (median) | outcome of the worst run |");
+            sb.AppendLine("| --- | --- | --- | --- | --- | --- | --- | --- |");
+            foreach (var group in rows.Where(r => r.Model == s.Model).GroupBy(r => r.CaseId, StringComparer.Ordinal))
             {
+                var r = Worst(group);
+                var seconds = group.Where(x => x.Seconds is not null).Select(x => x.Seconds!.Value).OrderBy(x => x).ToList();
                 sb.AppendLine("| " + Cell(r.CaseId) + " | " + Cell(r.Kind) + " | " + Cell(r.Expected) + " | " +
-                              Cell(r.Answer) + " | " + (r.Right ? "right" : "WRONG") + " | " +
-                              (r.Seconds is null ? "" : r.Seconds.Value.ToString("F1", CultureInfo.InvariantCulture)) +
+                              Cell(r.Answer) + " | " + (group.All(x => x.Right) ? "right" : "WRONG") + " | " +
+                              Cell(AnswersAcrossRuns(group)) + " | " +
+                              (Median(seconds) is { } median ? median.ToString("F1", CultureInfo.InvariantCulture) : "") +
                               " | " + Cell(r.Outcome + ": " + Shorten(r.Failure ?? r.Detail)) + " |");
             }
             sb.AppendLine();
