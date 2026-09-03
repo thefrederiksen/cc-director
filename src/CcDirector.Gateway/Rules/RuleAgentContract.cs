@@ -51,10 +51,17 @@ public static class RuleAgentContract
     /// that exist, and the exact shape of the answer.
     /// </summary>
     /// <exception cref="ArgumentNullException">The registry is null.</exception>
+    /// <param name="facts">The session being judged, when known. ONLY the agent is taken from it: a screen
+    /// means something relative to the agent that printed it, so the judge is told which one. The machine,
+    /// the repository and the clock are NOT put in the question - ruling A11 says the screen is the only
+    /// input to the decision, and <c>RuleEvaluatorTests</c> asserts the machine name stays out. The agent
+    /// does not decide WHETHER the instruction applies (scope already removed every other agent's session
+    /// before this was asked); it decides how the screen is read.</param>
     public static string BuildPrompt(
         IReadOnlyList<SessionRule> candidates,
         IReadOnlyList<string> screenRows,
-        RulePrimitiveRegistry registry)
+        RulePrimitiveRegistry registry,
+        RuleSessionFacts? facts = null)
     {
         if (registry is null) throw new ArgumentNullException(nameof(registry));
 
@@ -79,6 +86,12 @@ public static class RuleAgentContract
         }
         sb.AppendLine("--- end of instructions ---");
         sb.AppendLine();
+
+        if (facts is not null && !string.IsNullOrWhiteSpace(facts.Agent))
+        {
+            sb.AppendLine($"The session is running the agent {facts.Agent}. Read the screen as that agent's screen.");
+            sb.AppendLine();
+        }
 
         sb.AppendLine("--- the session's screen ---");
         foreach (var line in Tail(screenRows, ScreenTailLines)) sb.AppendLine(line);

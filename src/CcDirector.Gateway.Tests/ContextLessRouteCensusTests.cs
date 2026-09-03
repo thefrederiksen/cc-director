@@ -64,6 +64,22 @@ public sealed class ContextLessRouteCensusTests
     ///   /gateway/workflow-runs/{id}                workflow_runs
     ///   /gateway/skills/{id} and its family        skills, skill_versions, skill_files,
     ///                                              skill_tenant_overrides
+    ///   /gateway/rules/{id:guid} (+ /firings)      session_rules, session_rule_firings
+    ///
+    /// The rules family was added by the Session Rules mission and reached this census LATE - it shipped
+    /// while this suite was parked, so these three rows were missing and this test was red on main with
+    /// nobody watching. Its verdict is the same seam as the skills and workflow families: both tables
+    /// derive from GatewayMintedKeyEntity (tenant-scoped, and the key is Gateway-minted so no caller can
+    /// present a rule id) and both carry the entity global query filter. GET and DELETE
+    /// /gateway/rules/{id} are EXECUTED cross-tenant by
+    /// CensusRouteTenancyProbeTests.SessionRules_AreNotReachableAcrossTenantsEvenHoldingTheOtherTenantsRuleId.
+    /// GET /gateway/rules/{id}/firings is NOT executed cross-tenant and that is stated rather than
+    /// implied: no route can write a firing (only the evaluator does), so both tenants read an empty list
+    /// and two empty lists prove nothing. Its verdict is a code read - same store, same filter.
+    ///
+    /// POST /gateway/rules/draft and POST /gateway/rules/{id}/promote are deliberately NOT in this census:
+    /// draft takes no path parameter, and promote takes the HttpContext (it mints the promotion grant from
+    /// the authenticated request), so neither is context-less.
     ///
     /// Hosted deny (the legacy same-machine discovery plane - not a tenant surface at all; refused on
     /// hosted, gated on the process-level hosted flag and proven by
@@ -74,6 +90,7 @@ public sealed class ContextLessRouteCensusTests
     {
         "DELETE /cron/jobs/{id}",
         "DELETE /directors/{id}/registration",
+        "DELETE /gateway/rules/{id:guid}",
         "DELETE /gateway/skills/{id}",
         "DELETE /gateway/workflows/{id}",
         "DELETE /lists/{name}/consumer",
@@ -81,6 +98,8 @@ public sealed class ContextLessRouteCensusTests
         "GET /cron/jobs/{id}",
         "GET /cron/jobs/{id}/runs",
         "GET /gateway/governance/session-spend/{sessionId}",
+        "GET /gateway/rules/{id:guid}",
+        "GET /gateway/rules/{id:guid}/firings",
         "GET /gateway/skills/{id}",
         "GET /gateway/skills/{id}/body",
         "GET /gateway/skills/{id}/files/{**filePath}",

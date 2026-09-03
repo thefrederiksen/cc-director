@@ -263,7 +263,7 @@ public sealed class RuleEvaluator
 
         FileLog.Write($"[RuleEvaluator] sid={sessionId}: {candidates.Chosen.Count} rule(s) worth asking about");
 
-        var prompt = RuleAgentContract.BuildPrompt(candidates.Chosen, rows, _registry);
+        var prompt = RuleAgentContract.BuildPrompt(candidates.Chosen, rows, _registry, facts);
         var raw = await _env.AskAgentAsync(tenant, prompt, ct).ConfigureAwait(false);
         var reading = RuleAgentContract.Read(raw, candidates.Chosen, _registry);
 

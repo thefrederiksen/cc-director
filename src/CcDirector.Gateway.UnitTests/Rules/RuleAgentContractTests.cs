@@ -44,6 +44,34 @@ public sealed class RuleAgentContractTests
 
     // ---- the prompt --------------------------------------------------------------------------------
 
+    /// <summary>
+    /// THE JUDGE IS TOLD WHICH AGENT'S SCREEN IT IS READING. The same trouble prints different words on
+    /// different agents, so a yes/no about "is this that situation" is a question about one agent's
+    /// screen, and the judge is told which one rather than left to infer it from the wording.
+    /// </summary>
+    [Fact]
+    public void The_question_says_which_agent_the_session_runs()
+    {
+        var facts = new RuleSessionFacts("sid", "ClaudeCode", @"D:\repo", "SOREN_NORTH", "", "WaitingForInput");
+
+        var prompt = RuleAgentContract.BuildPrompt(new[] { Rule() }, Screen, Registry, facts);
+
+        Assert.Contains("running the agent ClaudeCode", prompt, StringComparison.Ordinal);
+        // The machine is deliberately NOT in the question - ruling A11, the screen is the only input to the
+        // decision, and RuleEvaluatorTests asserts the same from the evaluator's side.
+        Assert.DoesNotContain("SOREN_NORTH", prompt, StringComparison.Ordinal);
+    }
+
+    /// <summary>Without facts - the older callers - the question is unchanged, so nothing that used to
+    /// pass now says "running the agent" about nothing.</summary>
+    [Fact]
+    public void Without_session_facts_the_question_names_no_agent()
+    {
+        var prompt = RuleAgentContract.BuildPrompt(new[] { Rule() }, Screen, Registry);
+
+        Assert.DoesNotContain("running the agent", prompt, StringComparison.Ordinal);
+    }
+
     [Fact]
     public void The_prompt_carries_every_candidate_rules_id_and_the_sentence_the_account_said()
     {

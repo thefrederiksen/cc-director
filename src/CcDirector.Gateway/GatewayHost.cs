@@ -1,4 +1,4 @@
-﻿using System.Diagnostics;
+using System.Diagnostics;
 using System.Net;
 using System.Text.Json;
 using CcDirector.Core;
@@ -3428,7 +3428,22 @@ public sealed class GatewayHost : IAsyncDisposable
         // The standing instructions an account gives about its sessions, and the record of every firing
         // (Session Rules mission). A device-authed client route under the "/gateway/..." prefix, gated by
         // the host-wide token middleware like every other client data endpoint.
-        Api.SessionRuleEndpoints.Map(_app, _sessionRules);
+        // The authoring conversation asks the SAME model in the SAME role the evaluator asks, and is
+        // wired to the brain DIRECTLY rather than through the evaluator's AskAgentAsync. That looks like
+        // duplication and is not: the evaluator's seam swallows every failure into "no answer", which is
+        // right for an unattended pass nobody is waiting on, and wrong here - a person IS waiting, and
+        // being told "the model gave no answer" after sixty seconds of silence hides the one fact they
+        // need, which is that it ran out of time and trying again usually works. RuleAuthor classifies
+        // the failure, so it has to be able to see it.
+        var ruleAuthor = new Rules.RuleAuthor(
+            async (tenant, prompt, ct) =>
+            {
+                using var brain = await WingmanBrainAsync(tenant, Core.Configuration.WingmanModelRole.Thinking, ct)
+                    .ConfigureAwait(false);
+                var answer = await brain.AskAsync(prompt, ct).ConfigureAwait(false);
+                return answer?.Text;
+            });
+        Api.SessionRuleEndpoints.Map(_app, _sessionRules, ruleAuthor, () => _tenantContext.Current);
 
         // Workflow runs (phase 4, issue #1771): the outcome spine's REST surface. One row per
         // execution of a workflow, pinned to the exact published version that governed it.
