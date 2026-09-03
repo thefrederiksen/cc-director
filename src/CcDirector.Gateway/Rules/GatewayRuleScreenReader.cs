@@ -48,7 +48,7 @@ internal sealed class GatewayRuleScreenReader
     public async Task<RuleScreenResult> ReadAsync(TenantId tenant, string sessionId, CancellationToken ct)
     {
         var sid = (sessionId ?? "").Trim();
-        var located = _locate(new TenantId("tenant-a-reader"), sid);
+        var located = _locate(tenant, sid);
         if (located is null)
         {
             FileLog.Write($"[GatewayRuleScreenReader] session {sid} is not on this tenant's roster");
