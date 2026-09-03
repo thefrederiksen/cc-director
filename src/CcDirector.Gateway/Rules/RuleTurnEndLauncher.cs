@@ -44,13 +44,6 @@ internal sealed class RuleTurnEndLauncher
         _enterTenantScope = enterTenantScope;
     }
 
-    /// <summary>A KNOWN-BAD PROBE, committed on purpose and removed in the commit that widens the guard.
-    /// The launch is a feature piece, and until now it lived inside the Gateway host and was outside the
-    /// guard that proves only one type in this feature can type into a session.</summary>
-    internal static Task<Api.SessionVerbClient.PromptSendOutcome> ProbeTypeFromTheLauncher(
-        Api.SessionVerbClient route, string sid) =>
-        route.SendPromptAsync(sid, new Contracts.PromptRequest { Text = "/probe", AppendEnter = true });
-
     /// <summary>
     /// A session has just crossed into idle. Start one pass over this account's standing instructions.
     /// Never throws: a rule fault must not break whatever else hangs off the same boundary.

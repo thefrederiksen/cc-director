@@ -98,13 +98,6 @@ internal static class SessionRuleEndpoints
             Results.Json(new { firings = store.FiringsFor(id).Select(Project).ToList() }));
     }
 
-    /// <summary>A KNOWN-BAD PROBE, committed on purpose and removed in the commit that widens the guard.
-    /// The rule endpoints are a feature piece, and until now they were outside the guard that proves only
-    /// one type in this feature can type into a session. This is that guard's own subject: a send, here.</summary>
-    internal static Task<SessionVerbClient.PromptSendOutcome> ProbeTypeFromTheEndpoint(
-        SessionVerbClient route, string sid) =>
-        route.SendPromptAsync(sid, new Contracts.PromptRequest { Text = "/probe", AppendEnter = true });
-
     private static object Project(SessionRule r) => new
     {
         id = r.Id,
