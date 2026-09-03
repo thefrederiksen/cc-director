@@ -305,6 +305,16 @@ conclusion SUCCESS
 Pull request 2661 carries this run. It is titled DO NOT MERGE and its body says it exists for
 continuous-integration verification and must not be merged until inspection 02 has passed.
 
+**The green is on `e63879af0`, and commits after it are DOCUMENTATION ONLY.** A run is evidence only for
+the tree it ran on, so that is stated as something checkable rather than asserted:
+
+```
+git diff --name-only e63879af0..HEAD | grep -v "^docs/" | wc -l   ->  0
+```
+
+Three documentation files changed; no source file did. A further run on the documentation commit was
+started automatically and is not needed for the verdict.
+
 **An earlier run on `4fa21fd02` shows as CANCELLED, and that is not a failure.** A pull request keeps one
 run per branch and a newer commit supersedes the older one - `ci.yml` documents that concurrency
 deliberately. The push that added the staleness guard superseded it, and the run above is the successor.
