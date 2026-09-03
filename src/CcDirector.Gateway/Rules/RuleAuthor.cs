@@ -262,6 +262,7 @@ public sealed class RuleAuthor
         {
             Instruction = proposal.Instruction,
             ScreenDescription = proposal.ScreenDescription,
+            TextToType = proposal.TextToType,
             TriggerWords = proposal.TriggerWords.ToList(),
             Calls = proposal.Calls.ToList(),
             ScopeAgent = proposal.Scope.Agent,

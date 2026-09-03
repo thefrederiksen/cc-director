@@ -49,6 +49,7 @@ public sealed class SessionRuleStoreTests : IDisposable
     private SessionRule CreateTheRule(SessionRuleStore store) => store.Create(
         TheSentence,
         "A session stopped on a provider allowance notice, waiting for a person.",
+        "/model opus",
         new[] { "limit", "usage-credits", "out of credits", "allowance", "/model" },
         GoodCalls(),
         RuleScope.AllSessions,
@@ -98,7 +99,7 @@ public sealed class SessionRuleStoreTests : IDisposable
     {
         var store = NewStore();
         var scope = new RuleScope("claude", "D:\\ReposFred\\devthrottle", "SOREN_NORTH", "Session Rules");
-        var created = store.Create(TheSentence, "a screen", new[] { "limit" }, GoodCalls(), scope, 60, 3, Now);
+        var created = store.Create(TheSentence, "a screen", "/model opus", new[] { "limit" }, GoodCalls(), scope, 60, 3, Now);
 
         var read = new SessionRuleStore(_h.Open()).Get(created.Id);
         Assert.Equal(scope, read!.Scope);
@@ -108,9 +109,9 @@ public sealed class SessionRuleStoreTests : IDisposable
     public void All_returns_the_rules_newest_first()
     {
         var store = NewStore();
-        var first = store.Create(TheSentence, "a screen", new[] { "limit" }, GoodCalls(),
+        var first = store.Create(TheSentence, "a screen", "/model opus", new[] { "limit" }, GoodCalls(),
             RuleScope.AllSessions, 60, 3, Now);
-        var second = store.Create("Another instruction entirely.", "another screen", new[] { "permission" },
+        var second = store.Create("Another instruction entirely.", "another screen", "/compact", new[] { "permission" },
             GoodCalls(), RuleScope.AllSessions, 60, 3, Now.AddMinutes(5));
 
         var all = store.All();
@@ -125,7 +126,7 @@ public sealed class SessionRuleStoreTests : IDisposable
         var mine = new SessionRuleStore(_h.Open(new FixedTenantContext(new TenantId("tenant-a"))));
         var theirs = new SessionRuleStore(_h.Open(new FixedTenantContext(new TenantId("tenant-b"))));
 
-        var created = mine.Create(TheSentence, "a screen", new[] { "limit" }, GoodCalls(),
+        var created = mine.Create(TheSentence, "a screen", "/model opus", new[] { "limit" }, GoodCalls(),
             RuleScope.AllSessions, 60, 3, Now);
 
         Assert.NotNull(mine.Get(created.Id));
@@ -142,7 +143,7 @@ public sealed class SessionRuleStoreTests : IDisposable
         var badCall = RulePrimitiveCall.To("run_python", RuleArgument.Literal("code", "import os"));
 
         var ex = Assert.Throws<RuleRejectedException>(() => store.Create(
-            TheSentence, "a screen", new[] { "limit" }, new[] { badCall },
+            TheSentence, "a screen", "/model opus", new[] { "limit" }, new[] { badCall },
             RuleScope.AllSessions, 60, 3, Now));
 
         Assert.Contains("run_python", ex.Reason, StringComparison.Ordinal);
@@ -161,7 +162,7 @@ public sealed class SessionRuleStoreTests : IDisposable
             RuleArgument.Literal("target", "D:\\ReposFred\\devthrottle\\src\\file.cs"));
 
         var ex = Assert.Throws<RuleRejectedException>(() => store.Create(
-            TheSentence, "a screen", new[] { "limit" }, new[] { badCall },
+            TheSentence, "a screen", "/model opus", new[] { "limit" }, new[] { badCall },
             RuleScope.AllSessions, 60, 3, Now));
 
         Assert.Contains("is_path_inside", ex.Reason, StringComparison.Ordinal);
@@ -177,7 +178,7 @@ public sealed class SessionRuleStoreTests : IDisposable
     {
         var store = NewStore();
         var ex = Assert.Throws<RuleRejectedException>(() => store.Create(
-            instruction, screen, new[] { "limit" }, GoodCalls(), RuleScope.AllSessions, cooldown, cap, Now));
+            instruction, screen, "/model opus", new[] { "limit" }, GoodCalls(), RuleScope.AllSessions, cooldown, cap, Now));
         Assert.NotEqual("", ex.Reason);
     }
 
@@ -186,7 +187,7 @@ public sealed class SessionRuleStoreTests : IDisposable
     {
         var store = NewStore();
         var ex = Assert.Throws<RuleRejectedException>(() => store.Create(
-            TheSentence, "a screen", Array.Empty<string>(), GoodCalls(),
+            TheSentence, "a screen", "/model opus", Array.Empty<string>(), GoodCalls(),
             RuleScope.AllSessions, 60, 3, Now));
         Assert.NotEqual("", ex.Reason);
     }
@@ -200,7 +201,7 @@ public sealed class SessionRuleStoreTests : IDisposable
     {
         var store = NewStore();
         var ex = Assert.Throws<RuleRejectedException>(() => store.Create(
-            TheSentence, "a screen", new[] { "limit" }, GoodCalls(),
+            TheSentence, "a screen", "/model opus", new[] { "limit" }, GoodCalls(),
             RuleScope.AllSessions, cooldown, cap, Now));
         Assert.NotEqual("", ex.Reason);
     }
@@ -238,7 +239,7 @@ public sealed class SessionRuleStoreTests : IDisposable
     {
         var store = NewStore();
         var ex = Assert.Throws<RuleRejectedException>(() => store.Create(
-            TheSentence, "a screen", new[] { "limit" }, GoodCalls(),
+            TheSentence, "a screen", "/model opus", new[] { "limit" }, GoodCalls(),
             RuleScope.AllSessions, cooldown, cap, Now));
 
         var outOfBounds = cooldown is < 60 or > 86400 ? cooldown : cap;
@@ -253,7 +254,7 @@ public sealed class SessionRuleStoreTests : IDisposable
     {
         var store = NewStore();
         var rule = store.Create(
-            TheSentence, "a screen", new[] { "limit" }, GoodCalls(),
+            TheSentence, "a screen", "/model opus", new[] { "limit" }, GoodCalls(),
             RuleScope.AllSessions, cooldown, cap, Now);
 
         Assert.Equal(cooldown, rule.CooldownSeconds);
@@ -407,5 +408,39 @@ public sealed class SessionRuleStoreTests : IDisposable
         Assert.Null(store.Get(rule.Id));
         Assert.Single(store.FiringsFor(rule.Id));
         Assert.False(store.Delete(rule.Id));
+    }
+
+
+    // ---- phase 1: the text a rule types is decided when it is written, never at run time ------------
+
+    /// <summary>
+    /// A RULE SAYS EXACTLY WHAT IT TYPES, OR IT IS NOT STORED. The run-time call is a yes/no question and
+    /// types this text byte for byte; there is no path that composes one. So a rule with no text would be
+    /// a rule that could never act, sitting in the list looking correct - refused here, in words.
+    /// </summary>
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    [InlineData("\r\n")]
+    public void A_rule_that_does_not_say_what_it_types_is_refused_because_nothing_composes_it_at_run_time(string text)
+    {
+        var store = NewStore();
+        var ex = Assert.Throws<RuleRejectedException>(() => store.Create(
+            TheSentence, "a screen", text, new[] { "limit" }, GoodCalls(),
+            RuleScope.AllSessions, 60, 3, Now));
+        Assert.Contains("type", ex.Reason, StringComparison.OrdinalIgnoreCase);
+        Assert.Empty(store.All());
+    }
+
+    [Fact]
+    public void The_text_a_rule_types_is_stored_as_written_and_read_back_the_same()
+    {
+        var store = NewStore();
+        var rule = store.Create(
+            TheSentence, "a screen", "  /model opus  ", new[] { "limit" }, GoodCalls(),
+            RuleScope.AllSessions, 60, 3, Now);
+
+        Assert.Equal("/model opus", rule.TextToType);
+        Assert.Equal("/model opus", store.Get(rule.Id)!.TextToType);
     }
 }

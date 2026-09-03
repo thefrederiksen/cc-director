@@ -74,6 +74,7 @@ public sealed class RuleAuthorTests : IDisposable
     {
       "answer": "propose",
       "screen_description": "The session has stopped on a notice that the account is out of allowance.",
+      "type": "continue",
       "trigger_words": ["usage limit", "out of credits"],
       "checks": [ { "name": "matches_any", "arguments": { "text": "<screen_text>", "terms": ["usage limit"] } } ],
       "scope": "all-sessions",
@@ -347,6 +348,7 @@ public sealed class RuleAuthorTests : IDisposable
         return new SessionRuleStore(_h.Open()).Create(
             RuleCallJson.Text(body, "instruction") ?? "",
             RuleCallJson.Text(body, "screenDescription") ?? "",
+            RuleCallJson.Text(body, "textToType") ?? "",
             words,
             SessionRuleWire.Calls(body),
             scope,
@@ -365,6 +367,7 @@ public sealed class RuleAuthorTests : IDisposable
 
         Assert.Equal(TheAllowanceSentence, stored.Instruction);
         Assert.Equal("The session has stopped on a notice that the account is out of allowance.", stored.ScreenDescription);
+        Assert.Equal("continue", stored.TextToType);
         Assert.Equal(new[] { "usage limit", "out of credits" }, stored.TriggerWords);
         // The model said every session; the rule is for the session's agent, pinned by the Gateway.
         Assert.Equal(new RuleScope("ClaudeCode", null, null, null), stored.Scope);
@@ -540,6 +543,7 @@ public sealed class RuleAuthorTests : IDisposable
         {
           "answer": "propose",
           "screen_description": "The session has stopped on an error from the provider's own interface rather than on any work of its own.",
+          "type": "continue",
           "trigger_words": ["API Error", "overloaded", "connection error", "internal server error"],
           "checks": [],
           "scope": "all-sessions",

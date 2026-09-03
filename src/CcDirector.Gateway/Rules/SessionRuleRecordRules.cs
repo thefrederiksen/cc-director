@@ -47,6 +47,18 @@ internal static class SessionRuleRecordRules
             throw new RuleRejectedException(
                 "a rule has to say, in plain words, what it is watching for on the screen.");
 
+        // THE TEXT IT TYPES IS DECIDED HERE, NEVER AT RUN TIME (phase 1). The run-time call is a yes/no
+        // question; it composes nothing. A rule without this text is one that could never act, and a rule
+        // that sits in the list looking correct and never types is the trust failure this feature exists
+        // to avoid. The wording names the way out, because the rules stored before this column existed
+        // meet exactly this refusal when a person tries to promote one.
+        if (string.IsNullOrWhiteSpace(rule.TextToType))
+            throw new RuleRejectedException(
+                "a rule has to say exactly what it types when it acts. Nothing composes that text at run " +
+                "time - the text is decided when the rule is written and shown to you to confirm. A rule " +
+                "written before rules carried this has to be re-authored: draft it again against a " +
+                "session's screen and confirm the text it will type.");
+
         if (rule.TriggerWords is null || !rule.TriggerWords.Any(w => !string.IsNullOrWhiteSpace(w)))
             throw new RuleRejectedException(
                 "a rule needs at least one word to watch for, or it would cost a model call on every " +

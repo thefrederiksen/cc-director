@@ -26,6 +26,7 @@ public sealed class SessionRuleWireTests
         Guid.NewGuid(),
         "When I run out of allowance, switch me to Opus.",
         "A session stopped on a provider allowance notice.",
+        "/model opus",
         new[] { "limit" },
         Array.Empty<RulePrimitiveCall>(),
         RuleScope.AllSessions,
@@ -210,5 +211,37 @@ public sealed class SessionRuleWireTests
 
         var call = Assert.Single(SessionRuleWire.Calls(Body(json)));
         Assert.Equal("matches_any", call.Name);
+    }
+
+
+    // ---- phase 1: the text the rule types is shown, because it is what a person confirms ---------------
+
+    /// <summary>The most consequential thing a rule does is the keystroke, so the served rule says exactly
+    /// what it will type. A rule delivered without it is a rule the account approved without seeing.</summary>
+    [Fact]
+    public void A_served_rule_carries_the_text_it_types()
+    {
+        var wire = AsWire(SessionRuleWire.Project(ALiveRule("device-9f2c")));
+
+        Assert.True(wire.TryGetProperty("textToType", out var text),
+            "the served rule does not say what it types, so nobody reading it can see the keystroke it " +
+            "was approved to make.");
+        Assert.Equal("/model opus", text.GetString());
+    }
+
+    /// <summary>The drafted rule's write body carries the text, so posting the proposal back unchanged
+    /// stores exactly the text the person read - and the write route has something to store.</summary>
+    [Fact]
+    public void A_drafted_rules_write_body_carries_the_text_it_types()
+    {
+        var proposal = new RuleProposal(
+            "When I run out of allowance, switch me to Opus.", "sid-1", false, "the screen",
+            "A session stopped on a provider allowance notice.", "/model opus",
+            new[] { "limit" }, Array.Empty<RulePrimitiveCall>(), RuleScope.AllSessions, 300, 5,
+            "I will switch the session to Opus.");
+
+        var wire = AsWire(SessionRuleWire.Project(proposal));
+
+        Assert.Equal("/model opus", wire.GetProperty("rule").GetProperty("textToType").GetString());
     }
 }

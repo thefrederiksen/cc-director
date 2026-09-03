@@ -61,12 +61,16 @@ public sealed record RuleSessionOrigin(string Agent, string Machine)
 /// body so the write route can hold the agent scope to the same choice.</param>
 /// <param name="ExampleScreen">The EXACT excerpt the model was shown and every trigger word was checked
 /// against - <see cref="RuleScreenReading.Excerpt"/>, not a second reading of the screen.</param>
+/// <param name="TextToType">The exact text the rule will type when it acts (phase 1). Decided HERE, shown
+/// to the person as its own line of the read-back, stored with the rule, and typed byte for byte at run
+/// time. The run-time call is never asked to compose it.</param>
 public sealed record RuleProposal(
     string Instruction,
     string SessionId,
     bool AllAgents,
     string ExampleScreen,
     string ScreenDescription,
+    string TextToType,
     IReadOnlyList<string> TriggerWords,
     IReadOnlyList<RulePrimitiveCall> Calls,
     RuleScope Scope,
@@ -159,9 +163,10 @@ public static class RuleDraftContract
         sb.AppendLine();
         sb.AppendLine("A standing instruction works like this. When one of their sessions stops and goes idle, the");
         sb.AppendLine("tail of its terminal screen is read. If any of the instruction's trigger words is on that");
-        sb.AppendLine("screen, a model is asked whether the instruction reaches this screen, and if it does, the");
-        sb.AppendLine("model composes text and it is typed into the session. So the trigger words are a cheap");
-        sb.AppendLine("first filter and not the decision: they decide what is worth looking at closely.");
+        sb.AppendLine("screen, a model is asked ONE question - is this screen that situation - and if it is, the");
+        sb.AppendLine("text YOU decide here is typed into the session exactly as written. Nothing is composed");
+        sb.AppendLine("at run time. So the trigger words are a cheap first filter and not the decision: they");
+        sb.AppendLine("decide what is worth looking at closely.");
         sb.AppendLine();
         sb.AppendLine("The instruction can be about anything a session's screen can show once it has stopped. Do");
         sb.AppendLine("not assume you know which kind of trouble is meant, and do not widen what they said: if");
@@ -237,12 +242,13 @@ public static class RuleDraftContract
         sb.AppendLine($"  \"answer\": \"{RuleDraftAnswers.Propose}\" or \"{RuleDraftAnswers.Ask}\",");
         sb.AppendLine($"  \"question\": \"the one thing you need answered (only when the answer is {RuleDraftAnswers.Ask})\",");
         sb.AppendLine("  \"screen_description\": \"what the screen looks like when this instruction applies, in plain words\",");
+        sb.AppendLine("  \"type\": \"the exact text that will be typed into the session when the instruction applies - the command or words they asked for, character for character, nothing added\",");
         sb.AppendLine("  \"trigger_words\": [\"words that would be on such a screen and not on an ordinary one\"],");
         sb.AppendLine("  \"checks\": [ { \"name\": \"a check from the list above\", \"arguments\": { \"parameter\": \"value\" } } ],");
         sb.AppendLine($"  \"scope\": \"{SessionRuleWire.AllSessionsWireValue}\", or an object with any of agent, repository, machine, mission,");
         sb.AppendLine("  \"cooldown_seconds\": how long to wait before acting on the same session again,");
         sb.AppendLine("  \"daily_cap\": how many times a day it may act on one session,");
-        sb.AppendLine("  \"read_back\": \"what will actually happen, in two or three sentences, addressed to them\"");
+        sb.AppendLine("  \"read_back\": \"what will actually happen, in two or three sentences, addressed to them, naming the exact text that will be typed\"");
         sb.AppendLine("}");
         return sb.ToString();
     }
@@ -355,6 +361,16 @@ public static class RuleDraftContract
                     "the drafted rule does not say what it would actually do, and a rule you cannot read " +
                     "back is a rule you cannot agree to. Nothing was drafted.");
 
+            // THE TEXT IT WILL TYPE IS DECIDED HERE AND NOWHERE ELSE (phase 1). It is the most consequential
+            // part of a rule, it is shown to the person as its own line, and nothing at run time composes
+            // one in its place - so a proposal without it is not a rule anybody can confirm.
+            var textToType = (RuleCallJson.Text(root, "type") ?? "").Trim();
+            if (textToType.Length == 0)
+                return RuleDraftReading.Refused(
+                    "the drafted rule does not say what it would type into the session. That text is decided " +
+                    "now and confirmed by you - nothing composes it when the rule fires - so a rule without " +
+                    "it is a rule that could never act. Nothing was drafted.");
+
             // THE WORDS, IN THE FORM THE STORE WILL KEEP THEM. One normaliser, shared with the store, so the
             // word that is checked below is the word that is stored later - not a padded one checked
             // narrow and stored wide.
@@ -383,6 +399,7 @@ public static class RuleDraftContract
                 AllAgents: allAgents,
                 ExampleScreen: screen.Excerpt,
                 ScreenDescription: (RuleCallJson.Text(root, "screen_description") ?? "").Trim(),
+                TextToType: textToType,
                 TriggerWords: triggerWords,
                 Calls: checks,
                 Scope: scope,

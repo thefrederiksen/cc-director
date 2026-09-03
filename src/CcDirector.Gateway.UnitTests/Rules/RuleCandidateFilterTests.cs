@@ -28,6 +28,7 @@ public sealed class RuleCandidateFilterTests
             id ?? Guid.NewGuid(),
             instruction,
             "A session stopped on a provider allowance notice.",
+            "/model opus",
             triggerWords ?? new[] { "reached your", "limit" },
             Array.Empty<RulePrimitiveCall>(),
             scope ?? RuleScope.AllSessions,

@@ -54,6 +54,7 @@ public sealed class RulesWriteGateTests : IDisposable
     {
         TenantId = tenant,
         Instruction = "When I run out of allowance, switch me to Opus.",
+        TextToType = "/model opus",
         ScreenDescription = "A session stopped on a provider allowance notice.",
         TriggerWords = new List<string> { "limit" },
         Calls = calls,
@@ -117,6 +118,7 @@ public sealed class RulesWriteGateTests : IDisposable
         var rule = store.Create(
             "When I run out of allowance, switch me to Opus.",
             "A session stopped on a provider allowance notice.",
+            "/model opus",
             new[] { "limit" }, GoodCalls(), RuleScope.AllSessions, 300, 5, Now);
 
         using var ctx = Db.CreateContext();
@@ -137,6 +139,7 @@ public sealed class RulesWriteGateTests : IDisposable
         var rule = store.Create(
             "When I run out of allowance, switch me to Opus.",
             "A session stopped on a provider allowance notice.",
+            "/model opus",
             new[] { "limit" }, GoodCalls(), RuleScope.AllSessions, 300, 5, Now);
 
         Assert.Equal(RuleState.DryRun, rule.State);
@@ -151,6 +154,7 @@ public sealed class RulesWriteGateTests : IDisposable
         var rule = store.Create(
             "When I run out of allowance, switch me to Opus.",
             "A session stopped on a provider allowance notice.",
+            "/model opus",
             new[] { "limit" }, GoodCalls(), RuleScope.AllSessions, 300, 5, Now);
         return (store, rule);
     }
@@ -259,6 +263,7 @@ public sealed class RulesWriteGateTests : IDisposable
         var ex = Assert.Throws<RuleRejectedException>(() => store.Create(
             "When I run out of allowance, switch me to Opus.",
             "A session stopped on a provider allowance notice.",
+            "/model opus",
             new[] { "limit" }, GoodCalls(), scope: null!, 300, 5, Now));
 
         Assert.NotEqual("", ex.Reason);
@@ -272,6 +277,7 @@ public sealed class RulesWriteGateTests : IDisposable
         var rule = store.Create(
             "When I run out of allowance, switch me to Opus.",
             "A session stopped on a provider allowance notice.",
+            "/model opus",
             new[] { "limit" }, GoodCalls(), RuleScope.AllSessions, 300, 5, Now);
 
         Assert.Equal(RuleScope.AllSessions, store.Get(rule.Id)!.Scope);
@@ -294,6 +300,7 @@ public sealed class RulesWriteGateTests : IDisposable
         var rule = store.Create(
             "When I run out of allowance, switch me to Opus.",
             "A session stopped on a provider allowance notice.",
+            "/model opus",
             new[] { "limit" },
             GoodCalls(),
             RuleScope.AllSessions,
@@ -320,6 +327,7 @@ public sealed class RulesWriteGateTests : IDisposable
         var rule = store.Create(
             "When I run out of allowance, switch me to Opus.",
             "A session stopped on a provider allowance notice.",
+            "/model opus",
             new[] { "limit" },
             GoodCalls(),
             RuleScope.AllSessions,
@@ -354,6 +362,7 @@ public sealed class RulesWriteGateTests : IDisposable
         var rule = store.Create(
             "When I run out of allowance, switch me to Opus.",
             "A session stopped on a provider allowance notice.",
+            "/model opus",
             new[] { "limit" },
             GoodCalls(),
             RuleScope.AllSessions,
@@ -384,6 +393,7 @@ public sealed class RulesWriteGateTests : IDisposable
         var rule = store.Create(
             "When I run out of allowance, switch me to Opus.",
             "A session stopped on a provider allowance notice.",
+            "/model opus",
             new[] { "limit" },
             GoodCalls(),
             RuleScope.AllSessions,
@@ -419,6 +429,7 @@ public sealed class RulesWriteGateTests : IDisposable
         var rule = store.Create(
             "When I run out of allowance, switch me to Opus.",
             "A session stopped on a provider allowance notice.",
+            "/model opus",
             new[] { "limit" },
             GoodCalls(),
             RuleScope.AllSessions,
@@ -452,6 +463,7 @@ public sealed class RulesWriteGateTests : IDisposable
         var rule = store.Create(
             "When I run out of allowance, switch me to Opus.",
             "A session stopped on a provider allowance notice.",
+            "/model opus",
             new[] { "limit" },
             GoodCalls(),
             RuleScope.AllSessions,

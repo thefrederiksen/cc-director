@@ -28,16 +28,20 @@ public sealed record RuleScope(string? Agent, string? Repository, string? Machin
 
 /// <summary>
 /// One standing instruction, as read back out of the store. <see cref="Instruction"/> is the authority -
-/// the sentence the account said - and everything else was derived from it. <see cref="PromotedBy"/> is
-/// who moved it out of dry run, and it is empty for exactly as long as the rule is in dry run - a live rule
-/// can always say which person made it live. <see cref="Acknowledgement"/> is what that person said they
-/// were agreeing to when they did, kept verbatim (fix round D, ruling D5): a record that cannot show what
-/// was agreed to is not a record of an agreement.
+/// the sentence the account said - and everything else was derived from it. <see cref="TextToType"/> is
+/// the exact text the rule types when it acts, decided at authoring time and confirmed by a person; the
+/// run-time call never composes it, and a rule whose text is empty - one stored before rules carried it -
+/// is refused out loud rather than fired. <see cref="PromotedBy"/> is who moved it out of dry run, and it
+/// is empty for exactly as long as the rule is in dry run - a live rule can always say which person made
+/// it live. <see cref="Acknowledgement"/> is what that person said they were agreeing to when they did,
+/// kept verbatim (fix round D, ruling D5): a record that cannot show what was agreed to is not a record of
+/// an agreement.
 /// </summary>
 public sealed record SessionRule(
     Guid Id,
     string Instruction,
     string ScreenDescription,
+    string TextToType,
     IReadOnlyList<string> TriggerWords,
     IReadOnlyList<RulePrimitiveCall> Calls,
     RuleScope Scope,

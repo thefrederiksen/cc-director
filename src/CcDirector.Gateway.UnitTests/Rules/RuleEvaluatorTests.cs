@@ -206,15 +206,21 @@ public sealed class RuleEvaluatorTests
         }
     }
 
+    /// <summary>The text every test rule types when it acts, stored with the rule (phase 1).</summary>
+    private const string TheStoredText = "/model opus";
+
     private static SessionRule Rule(
         RuleState state = RuleState.DryRun,
         IReadOnlyList<string>? triggerWords = null,
-        Guid? id = null) => new(
+        Guid? id = null,
+        string textToType = TheStoredText,
+        IReadOnlyList<RulePrimitiveCall>? calls = null) => new(
             id ?? Guid.NewGuid(),
             TheSentence,
             "A session stopped on a provider allowance notice.",
+            textToType,
             triggerWords ?? new[] { "reached your", "limit" },
-            Array.Empty<RulePrimitiveCall>(),
+            calls ?? Array.Empty<RulePrimitiveCall>(),
             RuleScope.AllSessions,
             300,
             5,
@@ -232,27 +238,18 @@ public sealed class RuleEvaluatorTests
         return env;
     }
 
-    /// <summary>The check the agent names by default: the words really are on this screen.</summary>
-    private const string TheWordsAreThere =
-        "{ \"name\": \"matches_any\", \"arguments\": { \"text\": \"<screen_text>\", \"terms\": [\"reached your\"] } }";
-
-    /// <summary>An ACT reply. Its reason QUOTES THE SCREEN, because an act whose reason cites nothing the
-    /// screen contains is refused - see the grounding tests below. The default reason used to cite nothing,
-    /// which is what let every act test here pass while the bound did not exist.</summary>
-    private static string ActReply(Guid ruleId, string type = "/usage-credits", string? checks = null)
-    {
-        var theChecks = checks ?? TheWordsAreThere;
-        return $$"""
+    /// <summary>An ACT reply in its phase 1 shape: the decision, ONE line copied from the screen, and why.
+    /// It carries no text to type and names no checks - both are on the rule. The quote is the notice
+    /// itself, so the grounding check finds it on the screen; the tests about a missing or invented
+    /// quote build their own replies.</summary>
+    private static string ActReply(Guid ruleId) => $$"""
         {
           "rule_id": "{{ruleId}}",
-          "understanding": "The session itself is blocked on its model allowance and cannot run a turn.",
           "decision": "act",
-          "reason": "The screen says 'reached your Fable 5 limit', which is the session's own state and not a discussion of one.",
-          "checks": [ {{theChecks}} ],
-          "type": "{{type}}"
+          "quote": "{{TheNotice}}",
+          "reason": "The session itself is blocked on its model allowance, which is what the instruction is about."
         }
         """;
-    }
 
     private static string DeclineReply(Guid ruleId, string reason) => $$"""
         {
@@ -332,19 +329,6 @@ public sealed class RuleEvaluatorTests
         Assert.Empty(env.Typed);
     }
 
-    [Fact]
-    public async Task A_declines_record_carries_what_the_agent_understood_as_well_as_what_it_decided()
-    {
-        var rule = Rule(state: RuleState.Live);
-        var env = EnvironmentWith(rule);
-        env.AgentReply = DeclineReply(rule.Id, "not this session's own state.");
-
-        await Run(env);
-
-        var firing = Assert.Single(env.Recorded);
-        Assert.Contains("talked about", firing.Understanding);
-    }
-
     // ---- dry run types nothing ----------------------------------------------------------------------
 
     [Fact]
@@ -352,7 +336,7 @@ public sealed class RuleEvaluatorTests
     {
         var rule = Rule(state: RuleState.DryRun);
         var env = EnvironmentWith(rule);
-        env.AgentReply = ActReply(rule.Id, "/usage-credits");
+        env.AgentReply = ActReply(rule.Id);
 
         var pass = await Run(env);
 
@@ -364,59 +348,7 @@ public sealed class RuleEvaluatorTests
         Assert.Equal(RuleDecisions.Act, firing.Decision);
         Assert.Equal("", firing.TypedText);
         Assert.Contains("dry run", firing.Outcome);
-        Assert.Contains("/usage-credits", firing.Outcome);
-    }
-
-    // ---- a live rule types exactly the composed text -------------------------------------------------
-
-    [Fact]
-    public async Task A_live_rule_types_exactly_what_the_agent_composed_and_records_it()
-    {
-        var rule = Rule(state: RuleState.Live);
-        var env = EnvironmentWith(rule);
-        env.AgentReply = ActReply(rule.Id, "/usage-credits");
-
-        var pass = await Run(env);
-
-        Assert.Equal(RulePassOutcomes.Acted, pass.What);
-        Assert.Equal("/usage-credits", Assert.Single(env.Typed));
-        var firing = Assert.Single(env.Recorded);
-        Assert.Equal(RuleDecisions.Act, firing.Decision);
-        Assert.Equal("/usage-credits", firing.TypedText);
-        Assert.Contains("typed", firing.Outcome);
-    }
-
-    [Fact]
-    public async Task The_checks_the_agent_named_are_run_and_their_answers_are_on_the_record()
-    {
-        var rule = Rule(state: RuleState.Live);
-        var env = EnvironmentWith(rule);
-        env.AgentReply = ActReply(rule.Id);
-
-        await Run(env);
-
-        var firing = Assert.Single(env.Recorded);
-        var run = Assert.Single(firing.Runs);
-        Assert.Equal("matches_any", run.Name);
-        Assert.Equal("text=<screen_text>, terms=reached your", run.Arguments);
-        Assert.Equal("true", run.Answer);
-    }
-
-    [Fact]
-    public async Task A_check_the_agent_staked_its_decision_on_that_answers_no_abandons_the_act()
-    {
-        var rule = Rule(state: RuleState.Live);
-        var env = EnvironmentWith(rule);
-        env.AgentReply = ActReply(rule.Id, "/usage-credits",
-            checks: "{ \"name\": \"matches_any\", \"arguments\": { \"text\": \"<screen_text>\", \"terms\": [\"not on this screen at all\"] } }");
-
-        var pass = await Run(env);
-
-        Assert.Equal(RulePassOutcomes.Abandoned, pass.What);
-        Assert.Empty(env.Typed);
-        var firing = Assert.Single(env.Recorded);
-        Assert.Equal(RuleDecisions.Abandoned, firing.Decision);
-        Assert.Contains("matches_any", firing.Reason);
+        Assert.Contains(TheStoredText, firing.Outcome);
     }
 
     // ---- the screen is re-read immediately before acting ---------------------------------------------
@@ -487,21 +419,6 @@ public sealed class RuleEvaluatorTests
         Assert.Equal(rule.Id, firing.RuleId);     // recorded against the rule that WAS in play
         Assert.Equal(RuleDecisions.Refused, firing.Decision);
         Assert.Contains(neverOffered.ToString(), firing.Reason);
-    }
-
-    [Fact]
-    public async Task A_reply_naming_a_check_the_product_does_not_ship_is_recorded_as_a_refusal()
-    {
-        var rule = Rule(state: RuleState.Live);
-        var env = EnvironmentWith(rule);
-        env.AgentReply = ActReply(rule.Id, "/usage-credits",
-            checks: "{ \"name\": \"run_shell\", \"arguments\": { \"command\": \"whoami\" } }");
-
-        var pass = await Run(env);
-
-        Assert.Equal(RulePassOutcomes.Refused, pass.What);
-        Assert.Empty(env.Typed);
-        Assert.Contains("run_shell", Assert.Single(env.Recorded).Reason);
     }
 
     [Fact]
@@ -576,7 +493,7 @@ public sealed class RuleEvaluatorTests
         var pass = await Run(env);
 
         Assert.Equal(RulePassOutcomes.SendUnconfirmed, pass.What);
-        Assert.Equal("/usage-credits", Assert.Single(env.Typed));
+        Assert.Equal(TheStoredText, Assert.Single(env.Typed));
         var firing = Assert.Single(env.Recorded);
 
         // The claim that must not be made: typed text is the product's word for "it reached the session".
@@ -584,7 +501,7 @@ public sealed class RuleEvaluatorTests
 
         // And the presence that must be there, so nothing is lost by refusing the claim: the record still
         // says exactly what was put on the wire, and says the screen is the evidence.
-        Assert.Contains("/usage-credits", firing.Outcome);
+        Assert.Contains(TheStoredText, firing.Outcome);
         Assert.Contains("nothing confirmed", firing.Outcome);
         Assert.Contains("screen", firing.Outcome);
         Assert.DoesNotContain("did not land", firing.Outcome);
@@ -636,77 +553,6 @@ public sealed class RuleEvaluatorTests
         Assert.Contains("running the agent", prompt, StringComparison.Ordinal);
     }
 
-    // ---- ruling A12: an act's reason has to be grounded in the screen it was given ------------------
-
-    /// <summary>An ACT reply whose reason quotes something that is not on the screen.</summary>
-    private static string UngroundedActReply(Guid ruleId) => $$"""
-        {
-          "rule_id": "{{ruleId}}",
-          "understanding": "The session is blocked on its model allowance.",
-          "decision": "act",
-          "reason": "the screen says 'YOUR SUBSCRIPTION HAS BEEN CANCELLED', so the allowance is gone.",
-          "checks": [ ],
-          "type": "/usage-credits"
-        }
-        """;
-
-    [Fact]
-    public async Task An_act_whose_reason_quotes_text_the_screen_does_not_contain_is_refused_and_types_nothing()
-    {
-        // THE BOUND RULING A12 ASKS FOR. A rule that acts on evidence that was not there is the same
-        // unfaithfulness that produced a decline quoting a screen from twelve minutes earlier, pointed in
-        // the direction that does something.
-        var rule = Rule(state: RuleState.Live);
-        var env = EnvironmentWith(rule);
-        env.AgentReply = UngroundedActReply(rule.Id);
-
-        var pass = await Run(env);
-
-        Assert.Equal(RulePassOutcomes.Ungrounded, pass.What);
-        Assert.Empty(env.Typed);
-
-        var firing = Assert.Single(env.Recorded);
-        Assert.Equal(RuleDecisions.Refused, firing.Decision);
-        Assert.Equal("", firing.TypedText);
-        Assert.Contains("YOUR SUBSCRIPTION HAS BEEN CANCELLED", firing.Grounding, StringComparison.Ordinal);
-    }
-
-    [Fact]
-    public async Task A_decline_whose_reason_quotes_text_the_screen_does_not_contain_is_recorded_with_the_mismatch_noted()
-    {
-        // Declining is the direction that does nothing, so the decline stands - but the record has to show
-        // the unfaithfulness rather than smooth it over.
-        var rule = Rule();
-        var env = EnvironmentWith(rule);
-        env.AgentReply = DeclineReply(rule.Id,
-            "the echo output explicitly says 'THE SCREEN HAS MOVED ON WHILE THE RULE WAS THINKING'.");
-
-        var pass = await Run(env);
-
-        Assert.Equal(RulePassOutcomes.Declined, pass.What);
-        Assert.Empty(env.Typed);
-
-        var firing = Assert.Single(env.Recorded);
-        Assert.Equal(RuleDecisions.Decline, firing.Decision);
-        Assert.Contains("THE SCREEN HAS MOVED ON", firing.Grounding, StringComparison.Ordinal);
-    }
-
-    [Fact]
-    public async Task Every_firing_says_what_the_grounding_check_found_even_when_there_was_nothing_to_check()
-    {
-        // THE PRESENCE. A run in which the grounding check never executed must not look identical to one
-        // in which it ran and found nothing wrong, so the statement is never blank on any firing.
-        var rule = Rule();
-        var env = EnvironmentWith(rule);
-        env.AgentReply = ActReply(rule.Id);
-
-        var pass = await Run(env);
-
-        Assert.Equal(RulePassOutcomes.DryRun, pass.What);
-        var firing = Assert.Single(env.Recorded);
-        Assert.NotEqual("", firing.Grounding);
-        Assert.Contains("grounding:", firing.Grounding, StringComparison.Ordinal);
-    }
 
     [Fact]
     public async Task A_refusal_says_the_grounding_check_did_not_apply_rather_than_saying_nothing()
@@ -723,70 +569,7 @@ public sealed class RuleEvaluatorTests
         Assert.Equal(RuleReasonGrounding.NotTheAgentsReason, firing.Grounding);
     }
 
-    [Fact]
-    public async Task An_act_whose_reason_quotes_the_screen_faithfully_still_acts()
-    {
-        // The PRESENCE half of the bound. A grounding check that refused everything would pass the tests
-        // above while making the feature impossible, and they could not tell the difference.
-        var rule = Rule(state: RuleState.Live);
-        var env = EnvironmentWith(rule);
-        env.AgentReply = $$"""
-        {
-          "rule_id": "{{rule.Id}}",
-          "understanding": "The session is blocked on its model allowance.",
-          "decision": "act",
-          "reason": "the screen says 'reached your Fable 5 limit', which is the session's own state.",
-          "checks": [ ],
-          "type": "/usage-credits"
-        }
-        """;
-
-        var pass = await Run(env);
-
-        Assert.Equal(RulePassOutcomes.Acted, pass.What);
-        Assert.Equal("/usage-credits", Assert.Single(env.Typed));
-    }
-
     // ---- an act must cite the screen ----------------------------------------------------------------
-
-    /// <summary>
-    /// AN ACT WHOSE REASON CITES NOTHING FROM THE SCREEN IS REFUSED, and this is the half of ruling A12 that
-    /// was missing.
-    ///
-    /// The grounding check refused a reason that quoted words the screen does not contain. It did not refuse
-    /// a reason that quoted NOTHING - it answered "there was nothing to check" and called that grounded. So
-    /// an agent could avoid the whole check by writing a plausible sentence with no quotation in it, and act
-    /// on evidence that nobody can go back and verify. An absence was being read as positive grounding,
-    /// which is the exact shape this mission's own standard forbids.
-    ///
-    /// A DECLINE stays permissive - declining is the direction that does nothing - but its record says
-    /// plainly that nothing was cited, so a decline that cited nothing cannot be mistaken for one whose
-    /// citation was checked and held.
-    /// </summary>
-    [Fact]
-    public async Task An_act_whose_reason_cites_nothing_from_the_screen_is_refused()
-    {
-        var rule = Rule(state: RuleState.Live);
-        var env = EnvironmentWith(rule);
-        env.AgentReply = $$"""
-        {
-          "rule_id": "{{rule.Id}}",
-          "understanding": "The session is blocked on its model allowance.",
-          "decision": "act",
-          "reason": "This session has plainly run out of its allowance and the instruction covers it exactly.",
-          "checks": [ ],
-          "type": "/usage-credits"
-        }
-        """;
-
-        var pass = await Run(env);
-
-        Assert.Equal(RulePassOutcomes.Ungrounded, pass.What);
-        Assert.Empty(env.Typed);
-        var firing = Assert.Single(env.Recorded);
-        Assert.Equal(RuleDecisions.Refused, firing.Decision);
-        Assert.Contains("cite", firing.Grounding, StringComparison.OrdinalIgnoreCase);
-    }
 
     [Fact]
     public async Task A_decline_that_cites_nothing_is_still_recorded_and_the_record_says_it_cited_nothing()
@@ -846,7 +629,7 @@ public sealed class RuleEvaluatorTests
         var pass = await Run(env);
 
         Assert.Equal(RulePassOutcomes.Acted, pass.What);
-        Assert.Equal("/usage-credits", Assert.Single(env.Typed));
+        Assert.Equal(TheStoredText, Assert.Single(env.Typed));
 
         // Written first: by the time the send seam was reached, the record already existed.
         Assert.Equal(1, env.RecordsWhenTheSendHappened);
@@ -856,8 +639,8 @@ public sealed class RuleEvaluatorTests
         Assert.True(env.Completed.ContainsKey(id),
             "the firing was written before the keystroke and never completed afterwards, so the record " +
             "still says only that a keystroke was about to go.");
-        Assert.Contains("/usage-credits", env.Completed[id].Outcome);
-        Assert.Equal("/usage-credits", env.Completed[id].TypedText);
+        Assert.Contains(TheStoredText, env.Completed[id].Outcome);
+        Assert.Equal(TheStoredText, env.Completed[id].TypedText);
     }
 
     // ---- still idle, immediately before the keystroke -----------------------------------------------
@@ -961,11 +744,230 @@ public sealed class RuleEvaluatorTests
 
         Assert.Equal(RulePassOutcomes.Acted, firstPass.What);
         Assert.Equal(RulePassOutcomes.AlreadyEvaluating, second.What);
-        Assert.Equal("/usage-credits", Assert.Single(env.Typed));
+        Assert.Equal(TheStoredText, Assert.Single(env.Typed));
         Assert.Single(env.Recorded, r => r.Decision == RuleDecisions.Act);
         Assert.Empty(second.Recorded);
     }
 
     private static string ScreenTextOf(RuleFiringDraft draft) =>
         draft.ScreenText.Split('\n').Select(l => l.TrimEnd()).Last(l => l.Contains("reached your"));
+
+    // ---- phase 1: the text typed is the STORED text, the question is yes/no plus one copied line -----
+
+    /// <summary>A phase 1 act reply: a decision and ONE line copied from the screen. It also carries a
+    /// "type" of its own, which the evaluator must ignore - nothing the model says is ever typed.</summary>
+    private static string ActWithQuote(Guid ruleId, string quote, string typeItWouldLike = "/usage-credits") => $$"""
+        {
+          "rule_id": "{{ruleId}}",
+          "decision": "act",
+          "quote": "{{quote}}",
+          "reason": "The session itself is blocked on its model allowance, which is what the instruction is about.",
+          "type": "{{typeItWouldLike}}"
+        }
+        """;
+
+    /// <summary>
+    /// THE ACCEPTANCE ROW: the text typed is the authored text, verbatim, and nothing is composed at run
+    /// time. The reply carries a text of its own and it is not typed; the stored text is, byte for byte.
+    /// </summary>
+    [Fact]
+    public async Task A_live_rule_types_the_stored_text_byte_for_byte_and_never_what_the_reply_carries()
+    {
+        var rule = Rule(state: RuleState.Live, textToType: "/model opus");
+        var env = EnvironmentWith(rule);
+        env.AgentReply = ActWithQuote(rule.Id, TheNotice, typeItWouldLike: "/usage-credits");
+
+        var pass = await Run(env);
+
+        Assert.Equal(RulePassOutcomes.Acted, pass.What);
+        Assert.Equal("/model opus", Assert.Single(env.Typed));
+        Assert.Equal("/model opus", Assert.Single(env.Recorded).TypedText);
+        Assert.DoesNotContain("/usage-credits", Assert.Single(env.Recorded).Outcome, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// A RULE STORED BEFORE RULES CARRIED THEIR TEXT HAS NOTHING TO TYPE. It must not silently stop
+    /// firing - a rule that silently stopped is a trust failure - and it must not fall back to composing
+    /// text at run time. So it is refused OUT LOUD: a recorded firing naming the rule as needing to be
+    /// re-authored, no model call, no keystroke.
+    /// </summary>
+    [Fact]
+    public async Task A_rule_stored_before_rules_carried_their_text_is_refused_out_loud_and_the_model_is_never_asked()
+    {
+        var rule = Rule(state: RuleState.Live, textToType: "");
+        var env = EnvironmentWith(rule);
+        env.AgentReply = ActWithQuote(rule.Id, TheNotice);
+
+        var pass = await Run(env);
+
+        Assert.Equal(0, env.AgentCalls);
+        Assert.Empty(env.Typed);
+        Assert.Equal(RulePassOutcomes.NeedsReauthoring, pass.What);
+        var firing = Assert.Single(env.Recorded);
+        Assert.Equal(rule.Id, firing.RuleId);
+        Assert.Equal(RuleDecisions.Refused, firing.Decision);
+        Assert.Contains("re-author", firing.Reason, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal("", firing.TypedText);
+    }
+
+    /// <summary>Two rules in play, one of them unauthored: the unauthored one is refused on its own record
+    /// and the other is still asked about. One rule's defect never silences another.</summary>
+    [Fact]
+    public async Task An_unauthored_rule_is_refused_on_its_own_record_while_the_other_rules_are_still_asked_about()
+    {
+        var old = Rule(state: RuleState.Live, textToType: "");
+        var current = Rule(state: RuleState.Live, textToType: "/model opus");
+        var env = EnvironmentWith(old);
+        env.StoredRules.Add(current);
+        env.AgentReply = ActWithQuote(current.Id, TheNotice);
+
+        var pass = await Run(env);
+
+        Assert.Equal(1, env.AgentCalls);
+        Assert.DoesNotContain(old.Id.ToString(), env.LastPrompt!, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(RulePassOutcomes.Acted, pass.What);
+        Assert.Equal("/model opus", Assert.Single(env.Typed));
+        Assert.Equal(2, env.Recorded.Count);
+        Assert.Contains(env.Recorded, f => f.RuleId == old.Id && f.Decision == RuleDecisions.Refused);
+        Assert.Contains(env.Recorded, f => f.RuleId == current.Id && f.Decision == RuleDecisions.Act);
+    }
+
+    /// <summary>The checks a rule was STORED with are the checks that run - the question names none, so
+    /// there is nothing for a model to invent an argument for.</summary>
+    [Fact]
+    public async Task The_checks_the_rule_was_stored_with_are_run_and_their_answers_are_on_the_record()
+    {
+        var stored = RulePrimitiveCall.To(
+            "matches_any",
+            RuleArgument.FromInput("text", RuleInput.ScreenText),
+            RuleArgument.LiteralList("terms", new[] { "reached your" }));
+        var rule = Rule(state: RuleState.Live, calls: new[] { stored });
+        var env = EnvironmentWith(rule);
+        env.AgentReply = ActWithQuote(rule.Id, TheNotice);
+
+        var pass = await Run(env);
+
+        Assert.Equal(RulePassOutcomes.Acted, pass.What);
+        var run = Assert.Single(Assert.Single(env.Recorded).Runs);
+        Assert.Equal("matches_any", run.Name);
+        Assert.Contains("true", run.Answer, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task A_stored_check_that_answers_no_abandons_the_act_and_types_nothing()
+    {
+        var stored = RulePrimitiveCall.To(
+            "matches_any",
+            RuleArgument.FromInput("text", RuleInput.ScreenText),
+            RuleArgument.LiteralList("terms", new[] { "zz-not-on-this-screen" }));
+        var rule = Rule(state: RuleState.Live, calls: new[] { stored });
+        var env = EnvironmentWith(rule);
+        env.AgentReply = ActWithQuote(rule.Id, TheNotice);
+
+        var pass = await Run(env);
+
+        Assert.Equal(RulePassOutcomes.Abandoned, pass.What);
+        Assert.Empty(env.Typed);
+        Assert.Equal(RuleDecisions.Abandoned, Assert.Single(env.Recorded).Decision);
+    }
+
+    /// <summary>
+    /// RULING A12, ASKED FOR AS A FIELD (phase 1, ruling P1-A). An act must cite something a person can go
+    /// back and check. The citation is the "quote" field - one line copied from the screen - and it is
+    /// checked against the very excerpt the model was shown. A quote that is not there refuses the act.
+    /// </summary>
+    [Fact]
+    public async Task An_act_whose_quote_is_not_on_the_screen_is_refused_and_types_nothing()
+    {
+        var rule = Rule(state: RuleState.Live);
+        var env = EnvironmentWith(rule);
+        env.AgentReply = ActWithQuote(rule.Id, "YOUR SUBSCRIPTION HAS BEEN CANCELLED");
+
+        var pass = await Run(env);
+
+        Assert.Equal(RulePassOutcomes.Ungrounded, pass.What);
+        Assert.Empty(env.Typed);
+        var firing = Assert.Single(env.Recorded);
+        Assert.Equal(RuleDecisions.Refused, firing.Decision);
+        Assert.Contains("YOUR SUBSCRIPTION HAS BEEN CANCELLED", firing.Grounding, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task An_act_with_no_quote_is_refused_because_nothing_could_be_checked()
+    {
+        var rule = Rule(state: RuleState.Live);
+        var env = EnvironmentWith(rule);
+        env.AgentReply = $$"""
+        {
+          "rule_id": "{{rule.Id}}",
+          "decision": "act",
+          "reason": "the screen says 'reached your Fable 5 limit', which is the session's own state."
+        }
+        """;
+
+        var pass = await Run(env);
+
+        Assert.Equal(RulePassOutcomes.Ungrounded, pass.What);
+        Assert.Empty(env.Typed);
+        Assert.Contains("nothing", Assert.Single(env.Recorded).Grounding, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>The PRESENCE half: a quote that IS a line of the screen lets the act through, and the
+    /// reason needs no quotation marks of its own for that.</summary>
+    [Fact]
+    public async Task An_act_whose_quote_is_a_line_of_the_screen_acts_and_the_record_names_the_line()
+    {
+        var rule = Rule(state: RuleState.Live);
+        var env = EnvironmentWith(rule);
+        env.AgentReply = ActWithQuote(rule.Id, TheNotice);
+
+        var pass = await Run(env);
+
+        Assert.Equal(RulePassOutcomes.Acted, pass.What);
+        Assert.Equal(TheStoredText, Assert.Single(env.Typed));
+        Assert.Contains(TheNotice, Assert.Single(env.Recorded).Grounding, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task A_decline_whose_quote_is_not_on_the_screen_is_recorded_with_the_mismatch_noted()
+    {
+        var rule = Rule(state: RuleState.Live);
+        var env = EnvironmentWith(rule);
+        env.AgentReply = $$"""
+        {
+          "rule_id": "{{rule.Id}}",
+          "decision": "decline",
+          "quote": "YOUR SUBSCRIPTION HAS BEEN CANCELLED",
+          "reason": "the notice is being discussed, not reported."
+        }
+        """;
+
+        var pass = await Run(env);
+
+        Assert.Equal(RulePassOutcomes.Declined, pass.What);
+        Assert.Empty(env.Typed);
+        var firing = Assert.Single(env.Recorded);
+        Assert.Equal(RuleDecisions.Decline, firing.Decision);
+        Assert.Contains("does not contain", firing.Grounding, StringComparison.Ordinal);
+    }
+
+    /// <summary>The question is yes/no plus one copied line. It offers no checks and asks for no text to
+    /// type, because the rule holds both already.</summary>
+    [Fact]
+    public async Task The_question_asks_only_whether_this_is_the_situation_and_for_one_copied_line()
+    {
+        var rule = Rule();
+        var env = EnvironmentWith(rule);
+        env.AgentReply = DeclineReply(rule.Id, "not this situation.");
+
+        await Run(env);
+
+        var prompt = env.LastPrompt!;
+        Assert.Contains("\"quote\"", prompt, StringComparison.Ordinal);
+        Assert.DoesNotContain("\"type\"", prompt, StringComparison.Ordinal);
+        Assert.DoesNotContain("\"checks\"", prompt, StringComparison.Ordinal);
+        Assert.DoesNotContain("matches_any", prompt, StringComparison.Ordinal);
+        // And the excerpt it carries is the one the quote is checked against - one function, one text.
+        Assert.Contains(RuleScreenExcerpt.Of(string.Join("\n", BlockedScreen)), prompt, StringComparison.Ordinal);
+    }
 }

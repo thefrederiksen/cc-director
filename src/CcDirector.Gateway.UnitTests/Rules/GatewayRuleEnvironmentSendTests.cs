@@ -114,4 +114,34 @@ public sealed class GatewayRuleEnvironmentSendTests
 
         Assert.Equal(RuleSendOutcomes.Confirmed, result.What);
     }
+
+
+    // ---- phase 1: the run-time question goes to the FAST model role ----------------------------------
+
+    /// <summary>
+    /// THE RUN-TIME CALL IS A YES/NO QUESTION AND GOES TO THE FAST ROLE. Measured through the phase 0
+    /// harness on the thinking role, the full JSON question timed out on nine of twelve real limit
+    /// screens at the sixty-second deadline. The question is now short - is this the situation, and one
+    /// line copied from the screen - which is what the fast role is for. Authoring, where a person is
+    /// waiting on a judgement, stays on the thinking role in GatewayHost.
+    /// </summary>
+    [Fact]
+    public async Task The_run_time_question_goes_to_the_fast_model_role()
+    {
+        WingmanModelRole? asked = null;
+        var env = new GatewayRuleEnvironment(
+            new UnusedStore(),
+            (_, _) => null,
+            (_, _) => new SessionDto { SessionId = SessionId },
+            (_, role, _) =>
+            {
+                asked = role;
+                return Task.FromException<IAgentBrain>(new NotSupportedException("the role is what this test reads."));
+            });
+
+        var answer = await env.AskAgentAsync(Tenant, "is this the situation?", CancellationToken.None);
+
+        Assert.Null(answer);
+        Assert.Equal(WingmanModelRole.Fast, asked);
+    }
 }

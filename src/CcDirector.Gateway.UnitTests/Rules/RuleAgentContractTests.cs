@@ -4,13 +4,21 @@ using Xunit;
 namespace CcDirector.Gateway.Tests.Rules;
 
 /// <summary>
-/// THE ONE AGENT CALL (Architect ruling A5): one question per screen covering every candidate rule, and a
-/// reply every part of which is validated against what was actually OFFERED. An id that was not a
-/// candidate is refused; a check that is not in the derived registry is refused; a decision outside the
-/// closed set is refused. A refusal is a stated reason, never a shrug.
+/// THE ONE AGENT CALL, IN ITS PHASE 1 SHAPE: a yes/no question plus one line copied from the screen.
 ///
-/// The prompt's expectations are DERIVED from the registry, never hand-kept: a test holding its own copy
-/// of the check list would pass while the shipped list said something else.
+/// Through phase 2 the question asked for an understanding, a reason, a list of checks and the text to
+/// type, and the phase 0 harness measured what that cost on real screens: timeouts on the positives, and
+/// no act ever grounded because no model quoted the screen. So the shape here is the one that was always
+/// meant. What these tests hold, each as a presence:
+///
+///   * the question carries every candidate by id and the account's own sentence, and the exact excerpt
+///     the citation will be checked against;
+///   * the question asks for a decision and ONE copied line, and does NOT ask for text to type or offer
+///     any checks - both are on the rule already;
+///   * a reply is read only if it names something that was offered; a decision outside the closed set,
+///     an unknown rule id and a missing reason are all stated refusals, never decisions;
+///   * the reply record has no field that could carry a keystroke (see RulesAgentReplyGuardTests for the
+///     assertion against the built assembly).
 /// </summary>
 public sealed class RuleAgentContractTests
 {
@@ -23,6 +31,7 @@ public sealed class RuleAgentContractTests
         id ?? Guid.NewGuid(),
         instruction ?? TheSentence,
         "A session stopped on a provider allowance notice.",
+        "/status",
         new[] { "reached your", "limit" },
         Array.Empty<RulePrimitiveCall>(),
         RuleScope.AllSessions,
@@ -33,370 +42,256 @@ public sealed class RuleAgentContractTests
         Now,
         Now);
 
-    private static readonly string[] Screen =
+    private const string TheNotice = "You've reached your Fable 5 limit. Run /usage-credits to continue.";
+
+    private static readonly string TheScreen = string.Join("\n", new[]
     {
-        "C:\\scratch>echo You've reached your Fable 5 limit. Run /usage-credits to continue.",
-        "You've reached your Fable 5 limit. Run /usage-credits to continue.",
+        "C:\\scratch>echo " + TheNotice,
+        TheNotice,
         "C:\\scratch>",
-    };
+    });
 
-    private static RulePrimitiveRegistry Registry => RulePrimitiveRegistry.Default;
+    private static string Excerpt() => RuleScreenExcerpt.Of(TheScreen);
 
-    // ---- the prompt --------------------------------------------------------------------------------
+    private static string ActReply(Guid ruleId, string quote = TheNotice, string reason = "The session itself is blocked on its allowance.") => $$"""
+        {
+          "rule_id": "{{ruleId}}",
+          "decision": "act",
+          "quote": "{{quote}}",
+          "reason": "{{reason}}"
+        }
+        """;
 
-    /// <summary>
-    /// THE JUDGE IS TOLD WHICH AGENT'S SCREEN IT IS READING. The same trouble prints different words on
-    /// different agents, so a yes/no about "is this that situation" is a question about one agent's
-    /// screen, and the judge is told which one rather than left to infer it from the wording.
-    /// </summary>
-    [Fact]
-    public void The_question_says_which_agent_the_session_runs()
-    {
-        var facts = new RuleSessionFacts("sid", "ClaudeCode", @"D:\repo", "SOREN_NORTH", "", "WaitingForInput");
-
-        var prompt = RuleAgentContract.BuildPrompt(new[] { Rule() }, Screen, Registry, facts);
-
-        Assert.Contains("running the agent ClaudeCode", prompt, StringComparison.Ordinal);
-        // The machine is deliberately NOT in the question - ruling A11, the screen is the only input to the
-        // decision, and RuleEvaluatorTests asserts the same from the evaluator's side.
-        Assert.DoesNotContain("SOREN_NORTH", prompt, StringComparison.Ordinal);
-    }
-
-    /// <summary>Without facts - the older callers - the question is unchanged, so nothing that used to
-    /// pass now says "running the agent" about nothing.</summary>
-    [Fact]
-    public void Without_session_facts_the_question_names_no_agent()
-    {
-        var prompt = RuleAgentContract.BuildPrompt(new[] { Rule() }, Screen, Registry);
-
-        Assert.DoesNotContain("running the agent", prompt, StringComparison.Ordinal);
-    }
+    // ---- the question ------------------------------------------------------------------------------
 
     [Fact]
     public void The_prompt_carries_every_candidate_rules_id_and_the_sentence_the_account_said()
     {
-        var one = Rule(instruction: "First instruction, in the account's own words.");
-        var two = Rule(instruction: "Second instruction, also in the account's own words.");
+        var first = Rule(instruction: "first instruction, in the account's own words");
+        var second = Rule(instruction: "second instruction, also the account's own words");
 
-        var prompt = RuleAgentContract.BuildPrompt(new[] { one, two }, Screen, Registry);
+        var prompt = RuleAgentContract.BuildPrompt(new[] { first, second }, Excerpt());
 
-        Assert.Contains(one.Id.ToString(), prompt);
-        Assert.Contains(two.Id.ToString(), prompt);
-        Assert.Contains("First instruction, in the account's own words.", prompt);
-        Assert.Contains("Second instruction, also in the account's own words.", prompt);
+        Assert.Contains(first.Id.ToString(), prompt, StringComparison.Ordinal);
+        Assert.Contains(second.Id.ToString(), prompt, StringComparison.Ordinal);
+        Assert.Contains("first instruction, in the account's own words", prompt, StringComparison.Ordinal);
+        Assert.Contains("second instruction, also the account's own words", prompt, StringComparison.Ordinal);
     }
 
+    /// <summary>The excerpt in the question is the excerpt the citation is checked against - the same
+    /// string, produced once by the one function the authoring path uses (ruling D2).</summary>
     [Fact]
-    public void The_prompt_carries_the_screen_it_is_asking_about()
+    public void The_prompt_carries_the_exact_excerpt_it_is_asking_about()
     {
-        var prompt = RuleAgentContract.BuildPrompt(new[] { Rule() }, Screen, Registry);
+        var prompt = RuleAgentContract.BuildPrompt(new[] { Rule() }, Excerpt());
 
-        Assert.Contains("You've reached your Fable 5 limit.", prompt);
-    }
-
-    [Fact]
-    public void The_prompt_offers_exactly_the_checks_the_registry_derives_and_no_others()
-    {
-        var prompt = RuleAgentContract.BuildPrompt(new[] { Rule() }, Screen, Registry);
-
-        Assert.NotEmpty(Registry.Primitives);   // instrument: an empty registry would make the rest vacuous
-        foreach (var primitive in Registry.Primitives)
-        {
-            Assert.Contains(primitive.Name, prompt);
-            Assert.Contains(primitive.Summary, prompt);
-        }
+        Assert.Contains(Excerpt(), prompt, StringComparison.Ordinal);
+        Assert.Contains(TheNotice, prompt, StringComparison.Ordinal);
     }
 
     [Fact]
     public void The_prompt_names_the_two_decisions_it_will_accept()
     {
-        var prompt = RuleAgentContract.BuildPrompt(new[] { Rule() }, Screen, Registry);
+        var prompt = RuleAgentContract.BuildPrompt(new[] { Rule() }, Excerpt());
 
-        Assert.Contains(RuleDecisions.Act, prompt);
-        Assert.Contains(RuleDecisions.Decline, prompt);
+        Assert.Contains("\"" + RuleDecisions.Act + "\"", prompt, StringComparison.Ordinal);
+        Assert.Contains("\"" + RuleDecisions.Decline + "\"", prompt, StringComparison.Ordinal);
     }
 
-    // ---- reading the reply -------------------------------------------------------------------------
+    /// <summary>THE SHAPE: a decision and ONE copied line. No text to type, because the rule holds it;
+    /// no checks, because the rule holds those too and a model given a list invents arguments for them.</summary>
+    [Fact]
+    public void The_prompt_asks_for_one_copied_line_and_does_not_ask_for_text_or_offer_checks()
+    {
+        var prompt = RuleAgentContract.BuildPrompt(new[] { Rule() }, Excerpt());
+
+        Assert.Contains("\"quote\"", prompt, StringComparison.Ordinal);
+        Assert.Contains("copied from the screen", prompt, StringComparison.Ordinal);
+        Assert.DoesNotContain("\"type\"", prompt, StringComparison.Ordinal);
+        Assert.DoesNotContain("\"checks\"", prompt, StringComparison.Ordinal);
+        Assert.DoesNotContain("\"understanding\"", prompt, StringComparison.Ordinal);
+        foreach (var primitive in RulePrimitiveRegistry.Default.Primitives)
+            Assert.DoesNotContain(primitive.Name + "(", prompt, StringComparison.Ordinal);
+    }
 
     [Fact]
-    public void A_well_formed_act_is_read_with_its_understanding_reason_checks_and_text()
+    public void The_prompt_says_declining_is_a_correct_answer_and_that_the_instruction_is_the_authority()
+    {
+        var prompt = RuleAgentContract.BuildPrompt(new[] { Rule() }, Excerpt());
+
+        Assert.Contains("DECLINE", prompt, StringComparison.Ordinal);
+        Assert.Contains("INSTRUCTION IS THE AUTHORITY", prompt, StringComparison.Ordinal);
+    }
+
+    // ---- reading a reply ---------------------------------------------------------------------------
+
+    [Fact]
+    public void A_well_formed_act_is_read_with_its_quote_and_reason()
     {
         var rule = Rule();
-        var raw = $$"""
+
+        var reading = RuleAgentContract.Read(ActReply(rule.Id), new[] { rule });
+
+        Assert.Null(reading.Refusal);
+        var reply = Assert.IsType<RuleAgentReply>(reading.Reply);
+        Assert.Equal(rule.Id, reply.RuleId);
+        Assert.Equal(RuleDecisions.Act, reply.Decision);
+        Assert.Equal(TheNotice, reply.Quote);
+        Assert.Equal("The session itself is blocked on its allowance.", reply.Reason);
+    }
+
+    /// <summary>A reply that carries a "type" of its own is read - the extra field is not an error - but
+    /// nothing of it survives: the reply record has nowhere to put it.</summary>
+    [Fact]
+    public void A_reply_that_offers_text_to_type_is_read_without_it_because_the_record_has_nowhere_to_put_it()
+    {
+        var rule = Rule();
+        var reply = $$"""
         {
           "rule_id": "{{rule.Id}}",
-          "understanding": "The session is blocked on its Fable 5 allowance and cannot run a turn.",
           "decision": "act",
-          "reason": "The screen is the session's own state, not a discussion of one.",
-          "checks": [
-            { "name": "matches_any", "arguments": { "text": "<screen_text>", "terms": ["reached your", "limit"] } }
-          ],
-          "type": "/usage-credits"
+          "quote": "{{TheNotice}}",
+          "reason": "blocked on its allowance.",
+          "type": "/usage-credits",
+          "checks": [ { "name": "matches_any", "arguments": { "text": "<screen_text>", "terms": ["reached your"] } } ]
         }
         """;
 
-        var reading = RuleAgentContract.Read(raw, new[] { rule }, Registry);
+        var reading = RuleAgentContract.Read(reply, new[] { rule });
 
         Assert.Null(reading.Refusal);
-        var reply = reading.Reply!;
-        Assert.Equal(rule.Id, reply.RuleId);
-        Assert.Equal(RuleDecisions.Act, reply.Decision);
-        Assert.Contains("blocked on its Fable 5 allowance", reply.Understanding);
-        Assert.Contains("not a discussion", reply.Reason);
-        Assert.Equal("/usage-credits", reply.TextToType);
-
-        var call = Assert.Single(reply.Checks);
-        Assert.Equal("matches_any", call.Name);
-        Assert.Equal("matches_any(text=<screen_text>, terms=reached your,limit)", call.Describe());
+        var properties = typeof(RuleAgentReply).GetProperties().Select(p => p.Name).OrderBy(n => n, StringComparer.Ordinal).ToArray();
+        Assert.Equal(new[] { "Decision", "Quote", "Reason", "RuleId" }, properties);
     }
 
     [Fact]
     public void A_reply_wrapped_in_a_fenced_code_block_is_still_read()
     {
         var rule = Rule();
-        var raw = "```json\n" + $$"""
-        { "rule_id": "{{rule.Id}}", "understanding": "u", "decision": "decline", "reason": "r" }
-        """ + "\n```";
+        var wrapped = "Here is my answer:\n```json\n" + ActReply(rule.Id) + "\n```\n";
 
-        var reading = RuleAgentContract.Read(raw, new[] { rule }, Registry);
+        var reading = RuleAgentContract.Read(wrapped, new[] { rule });
 
         Assert.Null(reading.Refusal);
-        Assert.Equal(RuleDecisions.Decline, reading.Reply!.Decision);
+        Assert.Equal(RuleDecisions.Act, reading.Reply!.Decision);
     }
 
     [Fact]
-    public void A_decline_needs_no_text_and_carries_its_reason()
+    public void A_decline_needs_no_quote_and_carries_its_reason()
     {
         var rule = Rule();
-        var raw = $$"""
+        var reply = $$"""
         {
           "rule_id": "{{rule.Id}}",
-          "understanding": "The screen is a document that quotes an allowance notice.",
           "decision": "decline",
-          "reason": "The notice is being discussed, not reported by the session about itself."
+          "reason": "the words are in a document the session is reading, not in its own state."
         }
         """;
 
-        var reading = RuleAgentContract.Read(raw, new[] { rule }, Registry);
+        var reading = RuleAgentContract.Read(reply, new[] { rule });
 
         Assert.Null(reading.Refusal);
         Assert.Equal(RuleDecisions.Decline, reading.Reply!.Decision);
-        Assert.Equal("", reading.Reply.TextToType);
-        Assert.Contains("discussed", reading.Reply.Reason);
+        Assert.Equal("", reading.Reply.Quote);
+        Assert.Equal("the words are in a document the session is reading, not in its own state.", reading.Reply.Reason);
     }
 
-    // ---- the refusals ------------------------------------------------------------------------------
+    [Fact]
+    public void A_quote_is_carried_as_written_and_whether_it_is_on_the_screen_is_not_this_readers_question()
+    {
+        var rule = Rule();
+
+        var reading = RuleAgentContract.Read(ActReply(rule.Id, quote: "  words that are on no screen  "), new[] { rule });
+
+        Assert.Null(reading.Refusal);
+        Assert.Equal("words that are on no screen", reading.Reply!.Quote);
+    }
 
     [Fact]
     public void No_answer_at_all_is_a_refusal_and_never_a_decision()
     {
-        var reading = RuleAgentContract.Read(null, new[] { Rule() }, Registry);
+        var reading = RuleAgentContract.Read(null, new[] { Rule() });
 
         Assert.Null(reading.Reply);
-        Assert.Contains("gave no answer", reading.Refusal);
+        Assert.Contains("no answer at all", reading.Refusal!, StringComparison.Ordinal);
     }
 
     [Fact]
     public void An_answer_that_is_not_an_answer_shape_is_a_refusal()
     {
-        var reading = RuleAgentContract.Read("I had a look and I think you should probably switch models.",
-            new[] { Rule() }, Registry);
+        var reading = RuleAgentContract.Read("I think you should probably act here.", new[] { Rule() });
 
         Assert.Null(reading.Reply);
-        Assert.NotNull(reading.Refusal);
+        Assert.Contains("not the answer shape", reading.Refusal!, StringComparison.Ordinal);
+        Assert.Contains("I think you should probably act here.", reading.Refusal, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Broken_json_is_a_refusal_and_never_partly_read()
+    {
+        var reading = RuleAgentContract.Read("{ \"rule_id\": }", new[] { Rule() });
+
+        Assert.Null(reading.Reply);
+        Assert.Contains("could not be read", reading.Refusal!, StringComparison.Ordinal);
     }
 
     [Fact]
     public void A_rule_id_that_was_not_offered_is_refused_and_the_reason_names_it()
     {
         var offered = Rule();
-        var neverOffered = Guid.NewGuid();
-        var raw = $$"""
-        { "rule_id": "{{neverOffered}}", "understanding": "u", "decision": "act", "reason": "r", "type": "/model opus" }
-        """;
+        var somebodyElse = Guid.NewGuid();
 
-        var reading = RuleAgentContract.Read(raw, new[] { offered }, Registry);
+        var reading = RuleAgentContract.Read(ActReply(somebodyElse), new[] { offered });
 
         Assert.Null(reading.Reply);
-        Assert.Contains(neverOffered.ToString(), reading.Refusal);
+        Assert.Contains(somebodyElse.ToString(), reading.Refusal!, StringComparison.Ordinal);
+        Assert.Contains("was not one of the 1", reading.Refusal, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void A_rule_id_that_is_not_an_id_at_all_is_refused()
+    {
+        var reading = RuleAgentContract.Read(
+            "{ \"rule_id\": \"the allowance one\", \"decision\": \"act\", \"quote\": \"x\", \"reason\": \"y\" }",
+            new[] { Rule() });
+
+        Assert.Null(reading.Reply);
+        Assert.Contains("not an instruction id", reading.Refusal!, StringComparison.Ordinal);
     }
 
     [Fact]
     public void A_decision_outside_the_closed_set_is_refused()
     {
         var rule = Rule();
-        var raw = $$"""
-        { "rule_id": "{{rule.Id}}", "understanding": "u", "decision": "maybe", "reason": "r" }
+        var reply = $$"""
+        { "rule_id": "{{rule.Id}}", "decision": "maybe", "quote": "", "reason": "not sure." }
         """;
 
-        var reading = RuleAgentContract.Read(raw, new[] { rule }, Registry);
+        var reading = RuleAgentContract.Read(reply, new[] { rule });
 
         Assert.Null(reading.Reply);
-        Assert.Contains("maybe", reading.Refusal);
+        Assert.Contains("'maybe'", reading.Refusal!, StringComparison.Ordinal);
+        Assert.Contains(RuleDecisions.Act, reading.Refusal, StringComparison.Ordinal);
+        Assert.Contains(RuleDecisions.Decline, reading.Refusal, StringComparison.Ordinal);
     }
 
-    [Fact]
-    public void A_check_the_product_does_not_ship_is_refused_and_the_reason_lists_what_it_does_ship()
-    {
-        var rule = Rule();
-        var raw = $$"""
-        {
-          "rule_id": "{{rule.Id}}", "understanding": "u", "decision": "act", "reason": "r", "type": "/model opus",
-          "checks": [ { "name": "run_shell", "arguments": { "command": "rm -rf /" } } ]
-        }
-        """;
-
-        var reading = RuleAgentContract.Read(raw, new[] { rule }, Registry);
-
-        Assert.Null(reading.Reply);
-        Assert.Contains("run_shell", reading.Refusal);
-        foreach (var primitive in Registry.Primitives)
-            Assert.Contains(primitive.Name, reading.Refusal);
-    }
-
-    [Fact]
-    public void A_check_given_the_wrong_arguments_is_refused()
-    {
-        var rule = Rule();
-        var raw = $$"""
-        {
-          "rule_id": "{{rule.Id}}", "understanding": "u", "decision": "act", "reason": "r", "type": "/model opus",
-          "checks": [ { "name": "matches_any", "arguments": { "text": "<screen_text>" } } ]
-        }
-        """;
-
-        var reading = RuleAgentContract.Read(raw, new[] { rule }, Registry);
-
-        Assert.Null(reading.Reply);
-        Assert.Contains("terms", reading.Refusal);
-    }
-
-    [Fact]
-    public void An_act_with_nothing_to_type_is_refused_rather_than_treated_as_a_decline()
-    {
-        var rule = Rule();
-        var raw = $$"""
-        { "rule_id": "{{rule.Id}}", "understanding": "u", "decision": "act", "reason": "r", "checks": [], "type": "" }
-        """;
-
-        var reading = RuleAgentContract.Read(raw, new[] { rule }, Registry);
-
-        Assert.Null(reading.Reply);
-        Assert.Contains("nothing to type", reading.Refusal);
-    }
-
-    [Fact]
-    public void An_argument_naming_something_the_rule_cannot_read_is_refused()
-    {
-        var rule = Rule();
-        var raw = $$"""
-        {
-          "rule_id": "{{rule.Id}}", "understanding": "u", "decision": "act", "reason": "r", "type": "/model opus",
-          "checks": [ { "name": "matches_any", "arguments": { "text": "<the_users_password>", "terms": ["x"] } } ]
-        }
-        """;
-
-        var reading = RuleAgentContract.Read(raw, new[] { rule }, Registry);
-
-        Assert.Null(reading.Reply);
-        Assert.Contains("the_users_password", reading.Refusal);
-    }
-
-    // ---- a malformed check collection is a refusal, never "no checks" -------------------------------
-
-    /// <summary>
-    /// A MALFORMED CHECK COLLECTION MUST NOT SILENTLY BECOME NO CHECKS.
-    ///
-    /// The reader took the checks only when the property was an ARRAY. A missing property, an object, a
-    /// number - each of those quietly produced an empty list, and the act went ahead as though the agent
-    /// had asked for no checks at all. The checks are the safety half of the reply: path containment,
-    /// freshness, whether the failure is even still on the screen. A check that disappears takes its
-    /// refusal with it, and the shape that swallowed it is an absence being read as a clean result.
-    ///
-    /// An EMPTY ARRAY stays legal and means what it says - the agent asked for no checks - so the reply
-    /// can still tell "I want none" from "I said nothing".
-    /// </summary>
+    /// <summary>A decision with no reason cannot be recorded - the record is the product - so it is refused
+    /// at this boundary, for EITHER decision: a decline is a recorded firing too, and a store refusal on
+    /// a decline would otherwise surface as an exception out of the pass rather than a stated refusal.</summary>
     [Theory]
-    [InlineData("{ }", "an object")]
-    [InlineData("7", "a number")]
-    [InlineData("\"matches_any\"", "a string")]
-    [InlineData("null", "null")]
-    public void A_checks_collection_that_is_not_an_array_is_refused(string checks, string what)
+    [InlineData("act")]
+    [InlineData("decline")]
+    public void A_decision_with_a_blank_reason_is_refused_at_the_reply_boundary(string decision)
     {
         var rule = Rule();
-        var raw = $$"""
-        {
-          "rule_id": "{{rule.Id}}", "understanding": "u", "decision": "act",
-          "reason": "the screen says 'reached your Fable 5 limit'.", "type": "/usage-credits",
-          "checks": {{checks}}
-        }
+        var reply = $$"""
+        { "rule_id": "{{rule.Id}}", "decision": "{{decision}}", "quote": "{{TheNotice}}", "reason": "   " }
         """;
 
-        var reading = RuleAgentContract.Read(raw, new[] { rule }, Registry);
+        var reading = RuleAgentContract.Read(reply, new[] { rule });
 
         Assert.Null(reading.Reply);
-        Assert.Contains("checks", reading.Refusal, StringComparison.OrdinalIgnoreCase);
-        Assert.False(string.IsNullOrWhiteSpace(reading.Refusal), "a refusal for " + what + " has to say why.");
-    }
-
-    [Fact]
-    public void A_reply_with_no_checks_property_at_all_is_refused()
-    {
-        var rule = Rule();
-        var raw = $$"""
-        {
-          "rule_id": "{{rule.Id}}", "understanding": "u", "decision": "act",
-          "reason": "the screen says 'reached your Fable 5 limit'.", "type": "/usage-credits"
-        }
-        """;
-
-        var reading = RuleAgentContract.Read(raw, new[] { rule }, Registry);
-
-        Assert.Null(reading.Reply);
-        Assert.Contains("checks", reading.Refusal, StringComparison.OrdinalIgnoreCase);
-    }
-
-    [Fact]
-    public void An_empty_checks_array_is_accepted_and_means_no_checks_were_asked_for()
-    {
-        // THE PRESENCE. A reader that refused every checks value would pass every assertion above while
-        // making a reply with nothing to check impossible - which is a legitimate reply.
-        var rule = Rule();
-        var raw = $$"""
-        {
-          "rule_id": "{{rule.Id}}", "understanding": "u", "decision": "act",
-          "reason": "the screen says 'reached your Fable 5 limit'.", "type": "/usage-credits",
-          "checks": []
-        }
-        """;
-
-        var reading = RuleAgentContract.Read(raw, new[] { rule }, Registry);
-
-        Assert.Null(reading.Refusal);
-        Assert.NotNull(reading.Reply);
-        Assert.Empty(reading.Reply!.Checks);
-    }
-
-    // ---- an act with no reason is not an answer -----------------------------------------------------
-
-    [Fact]
-    public void An_act_with_a_blank_reason_is_refused_at_the_reply_boundary()
-    {
-        // The record cannot be written without a reason - the store refuses it - so an act whose reason is
-        // blank is an act that CANNOT BE RECORDED. Letting it through the reply boundary means the send
-        // happens and the record that was supposed to account for it is then rejected. The boundary is
-        // where this belongs: nothing downstream can put the reason back.
-        var rule = Rule();
-        var raw = $$"""
-        {
-          "rule_id": "{{rule.Id}}", "understanding": "u", "decision": "act", "reason": "   ",
-          "type": "/usage-credits", "checks": []
-        }
-        """;
-
-        var reading = RuleAgentContract.Read(raw, new[] { rule }, Registry);
-
-        Assert.Null(reading.Reply);
-        Assert.Contains("reason", reading.Refusal, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("gave no reason", reading.Refusal!, StringComparison.Ordinal);
+        Assert.Contains(decision, reading.Refusal, StringComparison.Ordinal);
     }
 }

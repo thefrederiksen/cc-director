@@ -53,9 +53,14 @@ public static class RulePassOutcomes
     /// a reason not to act rather than a detail to log afterwards.</summary>
     public const string NotRecorded = "not-recorded";
 
-    /// <summary>The reply decided to ACT and its stated reason quoted text the screen does not contain, so
-    /// the act was refused (Architect ruling A12). Recorded, with what was quoted and where it was not.</summary>
+    /// <summary>The reply decided to ACT and the line it cited is not on the screen - or it cited none -
+    /// so the act was refused (Architect ruling A12). Recorded, with what was cited and that it was not there.</summary>
     public const string Ungrounded = "ungrounded";
+
+    /// <summary>Every rule in play was stored before rules carried the text they type, so none of them
+    /// could act and none was asked about. Each has a recorded refusal naming it as needing to be
+    /// re-authored (phase 1). Never a fallback to composing text at run time, and never silence.</summary>
+    public const string NeedsReauthoring = "needs-re-authoring";
 
     /// <summary>The rule is in dry run: it decided to act, and typed nothing.</summary>
     public const string DryRun = "dry-run";
@@ -151,10 +156,16 @@ public interface IRuleEnvironment
 ///
 /// THE ORDER IS THE SAFETY. Free checks first, so the common case - a session that finished a turn
 /// normally - costs one screen read and nothing else and never reaches a model. Then ONE agent call
-/// covering every surviving rule (Architect ruling A5), whose reply is validated against what was offered.
-/// Then the checks the agent staked its decision on. Then, immediately before the keystroke and not a
-/// moment earlier, the screen is READ AGAIN: a session that has moved on since the decision is abandoned.
-/// And a rule in dry run never reaches the send at all.
+/// covering every surviving rule (Architect ruling A5) - a yes/no question plus one line copied from the
+/// screen (phase 1) - whose reply is validated against what was offered and whose citation is checked
+/// against the excerpt it was shown. Then the checks the rule was stored with. Then, immediately before
+/// the keystroke and not a moment earlier, the screen is READ AGAIN: a session that has moved on since
+/// the decision is abandoned. And a rule in dry run never reaches the send at all.
+///
+/// THE TEXT TYPED IS THE RULE'S OWN, decided when it was written and confirmed by a person. Nothing here
+/// composes a keystroke, and the reply the model gives has no field that could carry one. A rule stored
+/// before rules carried their text is refused out loud - a recorded firing naming it as needing to be
+/// re-authored - and never falls back to composing.
 ///
 /// ONE PASS AT A TIME PER SESSION, AND THAT IS WHAT MAKES THE CEILING A CEILING. Every turn-end signal
 /// starts its own pass, and the free checks read a rule's prior firings BEFORE the agent call and before
@@ -261,47 +272,73 @@ public sealed class RuleEvaluator
             return Nothing(RulePassOutcomes.NoCandidates,
                 string.Join(" ", candidates.Skipped.Select(s => s.Reason)));
 
-        FileLog.Write($"[RuleEvaluator] sid={sessionId}: {candidates.Chosen.Count} rule(s) worth asking about");
+        // A RULE WITH NOTHING TO TYPE IS REFUSED OUT LOUD, BEFORE ANY MODEL IS ASKED (phase 1). The text a
+        // rule types is decided when it is written; a rule stored before rules carried that text has none.
+        // It must not silently stop firing - a rule that silently stopped is a trust failure - and it must
+        // not fall back to composing text at run time, which would defeat the point of this phase and hide
+        // it. So each such rule gets a recorded refusal naming it as needing to be re-authored, on its own
+        // record, and the rules that do carry their text are asked about as if it were not there.
+        var unauthored = candidates.Chosen.Where(r => string.IsNullOrWhiteSpace(r.TextToType)).ToList();
+        var ready = candidates.Chosen.Where(r => !string.IsNullOrWhiteSpace(r.TextToType)).ToList();
+        var refusedForReauthoring = unauthored
+            .Select(rule => Record(tenant, new RuleFiringDraft(
+                rule.Id, sessionId, screen, "", RuleDecisions.Refused, NeedsReauthoringReason,
+                Array.Empty<RulePrimitiveRun>(), "", "nothing was typed: this rule needs re-authoring.",
+                RuleReasonGrounding.NotTheAgentsReason)))
+            .ToList();
+        if (unauthored.Count > 0)
+            FileLog.Write($"[RuleEvaluator] sid={sessionId}: {unauthored.Count} rule(s) refused - stored with no text to type, need re-authoring");
 
-        var prompt = RuleAgentContract.BuildPrompt(candidates.Chosen, rows, _registry, facts);
+        if (ready.Count == 0)
+            return new RulePass(RulePassOutcomes.NeedsReauthoring, NeedsReauthoringReason, refusedForReauthoring);
+
+        FileLog.Write($"[RuleEvaluator] sid={sessionId}: {ready.Count} rule(s) worth asking about");
+
+        // ONE TEXT. The excerpt the question carries is the excerpt the citation is checked against - the
+        // same string, produced once by the one function the authoring path uses (ruling D2).
+        var excerpt = RuleScreenExcerpt.Of(screen);
+        var prompt = RuleAgentContract.BuildPrompt(ready, excerpt, facts);
         var raw = await _env.AskAgentAsync(tenant, prompt, ct).ConfigureAwait(false);
-        var reading = RuleAgentContract.Read(raw, candidates.Chosen, _registry);
+        var reading = RuleAgentContract.Read(raw, ready);
 
         if (reading.Refusal is not null)
         {
             // Recorded against EVERY rule that was in play. The pass covered all of them, none of them
             // fired, and each one's record has to show that its evaluation was refused rather than showing
             // nothing at all - which is exactly what a rule that crashed would show.
-            var written = candidates.Chosen
+            var written = ready
                 .Select(rule => Record(tenant, new RuleFiringDraft(
                     rule.Id, sessionId, screen, "", RuleDecisions.Refused, reading.Refusal,
                     Array.Empty<RulePrimitiveRun>(), "", "nothing was typed.",
                     RuleReasonGrounding.NotTheAgentsReason)))
                 .ToList();
-            return new RulePass(RulePassOutcomes.Refused, reading.Refusal, written);
+            return new RulePass(RulePassOutcomes.Refused, reading.Refusal, refusedForReauthoring.Concat(written).ToList());
         }
 
         var reply = reading.Reply!;
-        var chosen = candidates.Chosen.First(r => r.Id == reply.RuleId);
+        var chosen = ready.First(r => r.Id == reply.RuleId);
 
+        // THE CHECKS THE RULE WAS STORED WITH. The question names no checks, so there is nothing for a
+        // model to invent an argument for; the rule's own validated calls run, exactly as written.
         var runtime = new RuleRuntime(screen, facts.RepositoryPath, _env.NowUtc, FirstFailureUtc: null);
-        var checks = RuleCheckRunner.Run(reply.Checks, runtime, _registry);
+        var checks = RuleCheckRunner.Run(chosen.Calls, runtime, _registry);
 
-        // RULING A12: IS THE STATED REASON GROUNDED IN THE SCREEN IT WAS GIVEN? Computed before either
-        // branch, so the answer is on the record whichever way the decision went, and so a run where this
-        // never happened cannot look like a run where it happened and found nothing wrong.
-        var grounding = RuleReasonGrounding.Check(reply.Reason, screen);
+        // RULING A12: IS THE CITATION ON THE SCREEN IT WAS GIVEN? The answer's one copied line is checked
+        // against the excerpt the question carried. Computed before either branch, so the answer is on
+        // the record whichever way the decision went, and so a run where this never happened cannot look
+        // like a run where it happened and found nothing wrong.
+        var grounding = RuleReasonGrounding.CheckQuote(reply.Quote, excerpt);
 
         if (reply.Decision == RuleDecisions.Decline)
         {
-            // A decline stands even when its reason quotes something that is not there - declining is the
-            // direction that does nothing, and the record should show what actually happened. But the
-            // mismatch is NOTED rather than smoothed over, because it is the same unfaithfulness that
-            // would be an act on evidence that was not there.
+            // A decline stands even when its citation is not there - declining is the direction that does
+            // nothing, and the record should show what actually happened. But the mismatch is NOTED rather
+            // than smoothed over, because it is the same unfaithfulness that would be an act on evidence
+            // that was not there.
             var declined = Record(tenant, new RuleFiringDraft(
-                chosen.Id, sessionId, screen, reply.Understanding, RuleDecisions.Decline, reply.Reason,
+                chosen.Id, sessionId, screen, "", RuleDecisions.Decline, reply.Reason,
                 checks.Runs, "", "declined - nothing was typed.", grounding.Statement));
-            return new RulePass(RulePassOutcomes.Declined, reply.Reason, new[] { declined });
+            return new RulePass(RulePassOutcomes.Declined, reply.Reason, refusedForReauthoring.Append(declined).ToList());
         }
 
         if (!grounding.CanCarryAnAct)
@@ -310,31 +347,33 @@ public sealed class RuleEvaluator
             // Recorded as a refusal carrying the grounding statement, so the reader sees which of the two it
             // was rather than an act that never happened.
             var ungrounded = Record(tenant, new RuleFiringDraft(
-                chosen.Id, sessionId, screen, reply.Understanding, RuleDecisions.Refused, reply.Reason,
+                chosen.Id, sessionId, screen, "", RuleDecisions.Refused, reply.Reason,
                 checks.Runs, "",
                 grounding.HasCitation
-                    ? "nothing was typed: the reason for acting cites text this screen does not contain."
-                    : "nothing was typed: the reason for acting cites nothing from this screen, so there is " +
-                      "nothing anybody could check it against.",
+                    ? "nothing was typed: the line cited for acting is not on this screen."
+                    : "nothing was typed: the answer cites no line from this screen, so there is nothing " +
+                      "anybody could check it against.",
                 grounding.Statement));
             FileLog.Write($"[RuleEvaluator] sid={sessionId}: act REFUSED, {grounding.Statement}");
-            return new RulePass(RulePassOutcomes.Ungrounded, grounding.Statement, new[] { ungrounded });
+            return new RulePass(RulePassOutcomes.Ungrounded, grounding.Statement, refusedForReauthoring.Append(ungrounded).ToList());
         }
 
         if (checks.Problem is not null)
-            return Abandon(tenant, chosen, sessionId, screen, reply, checks.Runs, checks.Problem);
+            return Abandon(tenant, chosen, sessionId, screen, checks.Runs, checks.Problem, refusedForReauthoring);
 
         // THE RE-READ. Immediately before the keystroke and after every decision has been made, because a
         // screen that moved on in between belongs to a different moment than the one that was judged.
         var rowsNow = await _env.ReadScreenRowsAsync(tenant, directorId, sessionId, ct).ConfigureAwait(false);
         if (rowsNow is null)
-            return Abandon(tenant, chosen, sessionId, screen, reply, checks.Runs,
-                "the screen could not be read again immediately before typing, so nothing was typed.");
+            return Abandon(tenant, chosen, sessionId, screen, checks.Runs,
+                "the screen could not be read again immediately before typing, so nothing was typed.",
+                refusedForReauthoring);
 
         if (!string.Equals(Join(rowsNow), screen, StringComparison.Ordinal))
-            return Abandon(tenant, chosen, sessionId, screen, reply, checks.Runs,
+            return Abandon(tenant, chosen, sessionId, screen, checks.Runs,
                 "the screen changed between the decision and the keystroke, so the decision was about a " +
-                "screen that is no longer there and nothing was typed.");
+                "screen that is no longer there and nothing was typed.",
+                refusedForReauthoring);
 
         // AND THE SESSION ITSELF IS RE-READ, NOT ONLY ITS SCREEN. "Idle sessions only" is a primary bound
         // and it was read once, before the model call - the longest gap in the pass. A new owner turn makes
@@ -343,27 +382,34 @@ public sealed class RuleEvaluator
         // Screen equality is not proof of idleness.
         var factsNow = _env.ReadSessionFacts(tenant, sessionId);
         if (factsNow is null)
-            return Abandon(tenant, chosen, sessionId, screen, reply, checks.Runs,
-                "the session left the roster between the decision and the keystroke, so nothing was typed.");
+            return Abandon(tenant, chosen, sessionId, screen, checks.Runs,
+                "the session left the roster between the decision and the keystroke, so nothing was typed.",
+                refusedForReauthoring);
 
         if (string.Equals(factsNow.ActivityState, RuleCandidateFilter.WorkingState, StringComparison.OrdinalIgnoreCase))
-            return Abandon(tenant, chosen, sessionId, screen, reply, checks.Runs,
+            return Abandon(tenant, chosen, sessionId, screen, checks.Runs,
                 "the session started working between the decision and the keystroke - its screen had not " +
-                "caught up yet - so nothing was typed. A rule only ever acts on an idle session.");
+                "caught up yet - so nothing was typed. A rule only ever acts on an idle session.",
+                refusedForReauthoring);
 
         var scopeNow = RuleCandidateFilter.WhyOutOfScope(chosen.Scope, factsNow);
         if (scopeNow is not null)
-            return Abandon(tenant, chosen, sessionId, screen, reply, checks.Runs,
-                "the session no longer matches what this rule watches, so nothing was typed: " + scopeNow);
+            return Abandon(tenant, chosen, sessionId, screen, checks.Runs,
+                "the session no longer matches what this rule watches, so nothing was typed: " + scopeNow,
+                refusedForReauthoring);
+
+        // THE TEXT IS THE RULE'S OWN, BYTE FOR BYTE. Decided when the rule was written, confirmed by a
+        // person, stored with it. The reply carried no text and could not have; see RuleAgentReply.
+        var text = chosen.TextToType;
 
         if (chosen.State == RuleState.DryRun)
         {
             var wouldHave = Record(tenant, new RuleFiringDraft(
-                chosen.Id, sessionId, screen, reply.Understanding, RuleDecisions.Act, reply.Reason,
+                chosen.Id, sessionId, screen, "", RuleDecisions.Act, reply.Reason,
                 checks.Runs, "",
-                "dry run: nothing was typed. It would have typed: " + reply.TextToType,
+                "dry run: nothing was typed. It would have typed: " + text,
                 grounding.Statement));
-            return new RulePass(RulePassOutcomes.DryRun, reply.TextToType, new[] { wouldHave });
+            return new RulePass(RulePassOutcomes.DryRun, text, refusedForReauthoring.Append(wouldHave).ToList());
         }
 
         // THE RECORD EXISTS BEFORE THE KEYSTROKE DOES. Everything that can make a record fail - a rule
@@ -376,9 +422,9 @@ public sealed class RuleEvaluator
         // and only so the pass can say what happened in words; any other failure propagates, which stops
         // the send just as effectively because it happens before it.
         var intent = new RuleFiringDraft(
-            chosen.Id, sessionId, screen, reply.Understanding, RuleDecisions.Act, reply.Reason,
+            chosen.Id, sessionId, screen, "", RuleDecisions.Act, reply.Reason,
             checks.Runs, "",
-            "about to type into the session: " + reply.TextToType +
+            "about to type into the session: " + text +
             ". This record was written BEFORE the keystroke went out; if it still says only this, nothing " +
             "ever came back to say what became of it.",
             grounding.Statement);
@@ -396,7 +442,7 @@ public sealed class RuleEvaluator
                 ex.Reason);
         }
 
-        var sent = await _env.TypeIntoSessionAsync(tenant, directorId, sessionId, reply.TextToType, ct)
+        var sent = await _env.TypeIntoSessionAsync(tenant, directorId, sessionId, text, ct)
             .ConfigureAwait(false);
 
         // A keystroke that never left this Gateway is the only case in which nothing was typed. The
@@ -414,10 +460,10 @@ public sealed class RuleEvaluator
             RuleSendOutcomes.NotSent => (
                 RulePassOutcomes.NotSent, "", "nothing was typed: " + sent.Detail),
             RuleSendOutcomes.Confirmed => (
-                RulePassOutcomes.Acted, reply.TextToType, "typed into the session: " + reply.TextToType),
+                RulePassOutcomes.Acted, text, "typed into the session: " + text),
             _ => (
                 RulePassOutcomes.SendUnconfirmed, "",
-                "sent to the machine running this session: " + reply.TextToType +
+                "sent to the machine running this session: " + text +
                 " - and nothing confirmed what became of it (" + sent.Detail +
                 "). The session's screen is the only evidence of whether it landed."),
         };
@@ -425,19 +471,26 @@ public sealed class RuleEvaluator
         Complete(tenant, firingId, typed, outcome);
 
         var acted = intent with { TypedText = typed, Outcome = outcome };
-        return new RulePass(what, confirmed ? reply.TextToType : sent.Detail, new[] { acted });
+        return new RulePass(what, confirmed ? text : sent.Detail, refusedForReauthoring.Append(acted).ToList());
     }
+
+    /// <summary>The reason written on the record of a rule that was stored before rules carried the text
+    /// they type. It names the way out, because a refusal that does not is a rule that silently stopped.</summary>
+    internal const string NeedsReauthoringReason =
+        "this rule was stored before a rule carried the exact text it types, so it has nothing to type and " +
+        "was not asked about. It needs to be re-authored: draft it again against a session's screen and " +
+        "confirm the text it will type. Nothing was typed, and nothing is composed at run time in its place.";
 
     private RulePass Abandon(
         TenantId tenant, SessionRule rule, string sessionId, string screen,
-        RuleAgentReply reply, IReadOnlyList<RulePrimitiveRun> runs, string why)
+        IReadOnlyList<RulePrimitiveRun> runs, string why, IReadOnlyList<RuleFiringDraft> alreadyWritten)
     {
         // The reason on an abandonment is this Gateway's own words, not the agent's, so there is nothing of
         // the agent's to check against the screen. Saying that is not the same as saying nothing.
         var firing = Record(tenant, new RuleFiringDraft(
-            rule.Id, sessionId, screen, reply.Understanding, RuleDecisions.Abandoned, why,
+            rule.Id, sessionId, screen, "", RuleDecisions.Abandoned, why,
             runs, "", "abandoned - nothing was typed.", RuleReasonGrounding.NotTheAgentsReason));
-        return new RulePass(RulePassOutcomes.Abandoned, why, new[] { firing });
+        return new RulePass(RulePassOutcomes.Abandoned, why, alreadyWritten.Append(firing).ToList());
     }
 
     private RuleFiringDraft Record(TenantId tenant, RuleFiringDraft draft)

@@ -144,6 +144,7 @@ public sealed class RuleDraftContractTests
     {
       "answer": "propose",
       "screen_description": "The session has stopped on a notice that the account is out of allowance.",
+      "type": "/model opus",
       "trigger_words": ["usage limit", "11:50pm"],
       "checks": [ { "name": "matches_any", "arguments": { "text": "<screen_text>", "terms": ["usage limit", "out of credits"] } } ],
       "scope": "all-sessions",
@@ -616,5 +617,41 @@ public sealed class RuleDraftContractTests
     {
         Assert.Throws<ArgumentNullException>(() => RuleDraftContract.Read(AGoodReply, TheSentence, Registry, null!));
         Assert.Throws<ArgumentNullException>(() => RuleDraftContract.BuildDraftPrompt(OneTurn(TheSentence), Registry, null!));
+    }
+
+
+    // ---- phase 1: the text the rule will type is decided here, and shown -----------------------------
+
+    /// <summary>The question asks for the exact text the rule will type, as its own field, because the
+    /// run-time call no longer composes one: it is a yes/no question, and it types what was stored.</summary>
+    [Fact]
+    public void The_question_asks_for_the_exact_text_the_rule_will_type()
+    {
+        var prompt = RuleDraftContract.BuildDraftPrompt(OneTurn(TheSentence), Registry, Screen(ACapturedLimitScreen));
+
+        Assert.Contains("\"type\":", prompt, StringComparison.Ordinal);
+        Assert.DoesNotContain("composes text", prompt, StringComparison.Ordinal);
+    }
+
+    /// <summary>A proposal that does not say what it types is not a rule anybody can confirm - the
+    /// keystroke is the consequential part - and nothing at run time will fill it in.</summary>
+    [Fact]
+    public void A_proposal_that_does_not_say_what_it_types_is_refused()
+    {
+        var reply = AGoodReply.Replace("\"type\": \"/model opus\",", "", StringComparison.Ordinal);
+        Assert.DoesNotContain("\"type\"", reply, StringComparison.Ordinal);
+
+        var reading = RuleDraftContract.Read(reply, TheSentence, Registry, Screen(ACapturedLimitScreen));
+
+        Assert.Null(reading.Proposal);
+        Assert.Contains("type", reading.Refusal!, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void A_proposed_rule_carries_the_text_it_will_type()
+    {
+        var reading = RuleDraftContract.Read(AGoodReply, TheSentence, Registry, Screen(ACapturedLimitScreen));
+
+        Assert.Equal("/model opus", reading.Proposal!.TextToType);
     }
 }

@@ -187,13 +187,26 @@ public sealed class ScreenCorpusTests
         });
     }
 
+    /// <summary>A corpus rule with no text to type would be refused by the engine before any model is
+    /// asked (phase 1), so every case it was chosen for would read as "not asked" and prove nothing about
+    /// the model. Every corpus rule says what it types, as every stored rule must.</summary>
+    [Fact]
+    public void Every_corpus_rule_says_what_it_types()
+    {
+        var rules = Rules.Value;
+        Assert.True(rules.Count > 0, "rules.json holds no rules, and a corpus judged against no rules proves nothing.");
+        var silent = rules.Where(r => string.IsNullOrWhiteSpace(r.TextToType)).Select(r => "  " + r.Id).ToList();
+        Assert.True(silent.Count == 0,
+            "rule(s) with no text to type, which the engine would refuse before asking any model: " + string.Join(", ", silent));
+    }
+
     // ---- the checks, proven on known-bad cases under a temporary directory --------------------------------
 
     private static readonly Guid TheRule = Guid.Parse("11111111-2222-3333-4444-555555555555");
 
     private static readonly IReadOnlyList<SessionRule> TemporaryRules = new[]
     {
-        new SessionRule(TheRule, "when a session hits its usage limit, switch model", "a usage limit notice",
+        new SessionRule(TheRule, "when a session hits its usage limit, switch model", "a usage limit notice", "/model opus",
             new[] { "reached your", "usage limit" }, Array.Empty<RulePrimitiveCall>(), RuleScope.AllSessions,
             60, 5, RuleState.DryRun, "", ScreenCorpus.RuleStampUtc, ScreenCorpus.RuleStampUtc),
     };

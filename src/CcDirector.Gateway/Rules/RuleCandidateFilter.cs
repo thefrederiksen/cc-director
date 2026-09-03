@@ -6,8 +6,9 @@ namespace CcDirector.Gateway.Rules;
 /// </summary>
 public static class RuleDecisions
 {
-    /// <summary>The instruction applied and the agent composed something to type. In dry run nothing is
-    /// typed, but the decision is still an act and still counts against the ceiling.</summary>
+    /// <summary>The instruction applied and the rule's stored text is what gets typed (phase 1: nothing is
+    /// composed at run time). In dry run nothing is typed, but the decision is still an act and still
+    /// counts against the ceiling.</summary>
     public const string Act = "act";
 
     /// <summary>The agent read the screen against the instruction and decided the instruction does not

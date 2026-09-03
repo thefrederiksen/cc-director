@@ -5,16 +5,28 @@ namespace CcDirector.Gateway.Rules;
 
 /// <summary>
 /// One reply from the agent, after every part of it has been checked against what was actually offered.
-/// Nothing reaches this record that was not validated: the rule was a candidate this pass, the decision is
-/// one of the two, and every check is a real check with real arguments.
+/// Nothing reaches this record that was not validated: the rule was a candidate this pass and the decision
+/// is one of the two.
+///
+/// THERE IS NO TEXT TO TYPE ON THIS RECORD, AND THERE MUST NEVER BE ONE (phase 1). The text a rule types is
+/// decided when the rule is written, confirmed by a person, and stored with the rule; the evaluator types
+/// <see cref="SessionRule.TextToType"/> and nothing else. A field here for text would be a path by which a
+/// model composes a keystroke at run time, which is the thing this phase removed. <c>RulesAgentReplyGuardTests</c>
+/// asserts against the built assembly that this record carries exactly these four parts.
 /// </summary>
+/// <param name="RuleId">The one instruction the answer is about.</param>
+/// <param name="Decision">Act or decline. Nothing else is read as a decision.</param>
+/// <param name="Quote">ONE line copied from the screen, as the model wrote it - the citation an act has to
+/// carry (Architect ruling A12, asked for as a field by ruling P1-A). Empty when the model gave none. It
+/// is checked against the excerpt the model was shown by <see cref="RuleReasonGrounding.CheckQuote"/>;
+/// this record does not say whether it is on the screen, only what was cited.</param>
+/// <param name="Reason">Why, in the model's words. Required for both decisions, because the firing record
+/// is made of it and a record with no reason is a record of nothing.</param>
 public sealed record RuleAgentReply(
     Guid RuleId,
-    string Understanding,
     string Decision,
-    string Reason,
-    IReadOnlyList<RulePrimitiveCall> Checks,
-    string TextToType);
+    string Quote,
+    string Reason);
 
 /// <summary>A reply, or a stated refusal. Exactly one of the two is set.</summary>
 public sealed record RuleAgentReading(RuleAgentReply? Reply, string? Refusal)
@@ -30,12 +42,23 @@ public sealed record RuleAgentReading(RuleAgentReply? Reply, string? Refusal)
 /// THE ONE AGENT CALL (Architect ruling A5). One question per screen covering EVERY candidate rule - not
 /// one call per rule - and a reply whose every part is validated against what was offered.
 ///
-/// WHAT IS OFFERED IS WHAT MAY BE NAMED. The question carries the candidate rules by id, the account's own
-/// sentence for each, the screen, and the checks the product ships - and that last list is READ OFF THE
-/// DERIVED REGISTRY, so the question can never advertise a check that does not exist. Coming back, an id
-/// that was not a candidate is refused, a decision outside the closed set is refused, and a check that is
-/// not in the registry (or is given the wrong arguments) is refused by the SAME validator that guards the
-/// store. There is one definition of a legal call in this feature, not two.
+/// THE QUESTION IS YES OR NO, PLUS ONE COPIED LINE (phase 1). Through phase 2 this asked for an
+/// understanding, a decision, a reason, a list of checks and the text to type - about 600 characters of
+/// JSON - and the phase 0 harness measured what that cost on 32 real screens: the thinking model timed out
+/// on nine of the twelve real limit screens, the fast model pattern-matched the words on seven of twenty
+/// negatives, and neither model ever quoted the screen, so the grounding check refused every act on every
+/// real limit screen. The engine as shipped never acted on the case it was built for.
+///
+/// So the question is now the one that was always meant: is this screen the situation the instruction is
+/// about? The text to type is on the rule, decided at authoring and confirmed by a person, and is never
+/// asked for here. The checks are on the rule too, so there is nothing for a model to invent an argument
+/// for. What IS asked for, as its own named field, is one line copied from the screen - the citation an act
+/// must carry so that a person can go back and check it (ruling A12, kept exactly; ruling P1-A changed only
+/// the way it is asked for). It is checked against the very excerpt this question carried.
+///
+/// WHAT IS OFFERED IS WHAT MAY BE NAMED. The question carries the candidate rules by id and the account's
+/// own sentence for each; coming back, an id that was not a candidate is refused and a decision outside
+/// the closed set is refused.
 ///
 /// A REFUSAL IS NOT A DECISION. An answer nobody can read never degrades into "do nothing quietly": it
 /// comes back as a stated reason, and the evaluator writes it down against every rule that was in play.
@@ -43,14 +66,19 @@ public sealed record RuleAgentReading(RuleAgentReply? Reply, string? Refusal)
 /// </summary>
 public static class RuleAgentContract
 {
-    /// <summary>How many lines of the screen tail the question carries.</summary>
-    public const int ScreenTailLines = 40;
+    /// <summary>How many lines of the screen tail the question carries. The excerpt itself is produced by
+    /// <see cref="RuleScreenExcerpt.Of"/> - the one function the authoring path uses too - so this is the
+    /// same number as <see cref="RuleScreenExcerpt.Lines"/> and is kept for the callers that name it.</summary>
+    public const int ScreenTailLines = RuleScreenExcerpt.Lines;
 
     /// <summary>
-    /// Build the one question for this screen: what a rule is, the rules in play, the screen, the checks
-    /// that exist, and the exact shape of the answer.
+    /// Build the one question for this screen: what a rule is, the rules in play, the screen excerpt, and
+    /// the exact shape of the answer.
     /// </summary>
-    /// <exception cref="ArgumentNullException">The registry is null.</exception>
+    /// <param name="candidates">The rules in play, every one with the text it types already stored.</param>
+    /// <param name="screenExcerpt">THE EXACT TEXT the model is shown - <see cref="RuleScreenExcerpt.Of"/>
+    /// of the screen - which is also the text the quote is checked against. One string, produced once, so
+    /// the prompt and the check cannot see different lengths of the same screen.</param>
     /// <param name="facts">The session being judged, when known. ONLY the agent is taken from it: a screen
     /// means something relative to the agent that printed it, so the judge is told which one. The machine,
     /// the repository and the clock are NOT put in the question - ruling A11 says the screen is the only
@@ -58,23 +86,23 @@ public static class RuleAgentContract
     /// does not decide WHETHER the instruction applies (scope already removed every other agent's session
     /// before this was asked); it decides how the screen is read.</param>
     public static string BuildPrompt(
-        IReadOnlyList<SessionRule> candidates,
-        IReadOnlyList<string> screenRows,
-        RulePrimitiveRegistry registry,
-        RuleSessionFacts? facts = null)
+        IReadOnlyList<SessionRule> candidates, string screenExcerpt, RuleSessionFacts? facts = null)
     {
-        if (registry is null) throw new ArgumentNullException(nameof(registry));
-
         var sb = new StringBuilder();
         sb.AppendLine("An account has given you standing instructions about its coding sessions. One of its");
         sb.AppendLine("sessions has just gone idle. Below is the tail of that session's terminal screen, and the");
         sb.AppendLine("instructions that might apply to it.");
         sb.AppendLine();
-        sb.AppendLine("Read the screen against the instruction and decide. The INSTRUCTION IS THE AUTHORITY: do");
-        sb.AppendLine("what it says and nothing more. If the screen is not what the instruction is about - if the");
-        sb.AppendLine("words merely appear in something the session is reading, writing or discussing rather than");
-        sb.AppendLine("in the session's own report of its own state - then DECLINE and say why. Declining is a");
-        sb.AppendLine("correct and expected answer, not a failure.");
+        sb.AppendLine("Answer ONE question: is this screen the situation one of these instructions is about?");
+        sb.AppendLine("The INSTRUCTION IS THE AUTHORITY. It names a situation, and the question is whether the");
+        sb.AppendLine("session is IN that situation right now - its own agent reporting its own state, at the");
+        sb.AppendLine("bottom of its own screen. If the words merely appear in something the session is reading,");
+        sb.AppendLine("writing, quoting, summarising or discussing - documentation, code, a diff, a log, a test,");
+        sb.AppendLine("a report about some other session - then the session is not in that situation: DECLINE");
+        sb.AppendLine("and say why. If the screen shows a similar but different situation from the one the");
+        sb.AppendLine("instruction names, decline: the instruction is about the situation it describes and not");
+        sb.AppendLine("the family of situations it belongs to. Declining is a correct and expected answer, not");
+        sb.AppendLine("a failure.");
         sb.AppendLine();
 
         sb.AppendLine("--- the standing instructions in play ---");
@@ -94,30 +122,16 @@ public static class RuleAgentContract
         }
 
         sb.AppendLine("--- the session's screen ---");
-        foreach (var line in Tail(screenRows, ScreenTailLines)) sb.AppendLine(line);
+        sb.AppendLine(screenExcerpt ?? "");
         sb.AppendLine("--- end of screen ---");
-        sb.AppendLine();
-
-        sb.AppendLine("You may ask for any of these checks to be run. They are the ONLY checks that exist; you");
-        sb.AppendLine("cannot write code and you cannot invent one. Name a check only if its answer is a condition");
-        sb.AppendLine("you are staking your decision on - a check that answers no will abandon the act.");
-        foreach (var primitive in registry.Primitives)
-        {
-            sb.AppendLine($"  {primitive.Name}({string.Join(", ", primitive.Parameters.Select(p => p.Name))}) - {primitive.Summary}");
-        }
-        sb.AppendLine();
-        sb.AppendLine("An argument's value is either written out, or one of these things read when the rule runs,");
-        sb.AppendLine("written in angle brackets: " + string.Join(", ", RuleInputs.Names.Select(n => "<" + n + ">")) + ".");
         sb.AppendLine();
 
         sb.AppendLine("Answer with JSON and nothing else, in exactly this shape:");
         sb.AppendLine("{");
         sb.AppendLine("  \"rule_id\": \"the id of the ONE instruction you are answering about\",");
-        sb.AppendLine("  \"understanding\": \"what you think this screen shows, in one or two sentences\",");
         sb.AppendLine($"  \"decision\": \"{RuleDecisions.Act}\" or \"{RuleDecisions.Decline}\",");
-        sb.AppendLine("  \"reason\": \"why, in one or two sentences\",");
-        sb.AppendLine("  \"checks\": [ { \"name\": \"a check from the list above\", \"arguments\": { \"parameter\": \"value\" } } ],");
-        sb.AppendLine($"  \"type\": \"the exact text to type into the session (only when the decision is {RuleDecisions.Act})\"");
+        sb.AppendLine($"  \"quote\": \"when the decision is {RuleDecisions.Act}: ONE line copied from the screen above, exactly as it appears there, that shows the session is in this situation. Copy it character for character - do not shorten it, tidy it or paraphrase it. When the decision is {RuleDecisions.Decline}, leave this empty.\",");
+        sb.AppendLine("  \"reason\": \"why, in one sentence\"");
         sb.AppendLine("}");
         return sb.ToString();
     }
@@ -126,14 +140,8 @@ public static class RuleAgentContract
     /// Read a reply, refusing anything that names something it was not offered. Every refusal says what was
     /// wrong in words that go straight onto the firing record.
     /// </summary>
-    /// <exception cref="ArgumentNullException">The registry is null.</exception>
-    public static RuleAgentReading Read(
-        string? raw,
-        IReadOnlyList<SessionRule> offered,
-        RulePrimitiveRegistry registry)
+    public static RuleAgentReading Read(string? raw, IReadOnlyList<SessionRule> offered)
     {
-        if (registry is null) throw new ArgumentNullException(nameof(registry));
-
         if (string.IsNullOrWhiteSpace(raw))
             return RuleAgentReading.Refused(
                 "the agent gave no answer at all, so nothing was decided and nothing was done.");
@@ -182,38 +190,21 @@ public static class RuleAgentContract
                     $"the agent answered '{Shorten(decision)}', and the only answers there are are " +
                     $"'{RuleDecisions.Act}' and '{RuleDecisions.Decline}'.");
 
-            var checks = RuleCallJson.ReadChecks(root, "checks", required: decision == RuleDecisions.Act, out var checksProblem);
-            if (checks is null)
-                return RuleAgentReading.Refused("the agent's answer does not say what it wants checked: " + checksProblem);
-
-            var validation = RuleCallValidator.ValidateAll(checks, registry);
-            if (!validation.IsValid)
-                return RuleAgentReading.Refused(
-                    "the agent asked for a check that cannot be run: " + validation.Reason);
-
-            // AN ACT WITH NO REASON CANNOT BE RECORDED, so it is not an answer. The store refuses a firing
-            // with a blank reason - the record is the product - and by the time that refusal arrives the
-            // send has already happened. This is the only boundary that can still refuse it, because
-            // nothing downstream can put the reason back.
+            // A DECISION WITH NO REASON CANNOT BE RECORDED, so it is not an answer. The store refuses a
+            // firing with a blank reason - the record is the product - and this is the boundary that can
+            // still refuse it in words, for either decision: an act because the send would already have
+            // happened by the time the store spoke, a decline because a decline is a recorded firing too.
             var statedReason = (RuleCallJson.Text(root, "reason") ?? "").Trim();
-            if (decision == RuleDecisions.Act && statedReason.Length == 0)
+            if (statedReason.Length == 0)
                 return RuleAgentReading.Refused(
-                    "the agent decided to act and gave no reason for it. The reason is what the firing " +
-                    "record is made of, so an act with none is an act nobody could account for afterwards.");
+                    $"the agent decided to {decision} and gave no reason for it. The reason is what the " +
+                    "firing record is made of, so a decision with none is one nobody could account for afterwards.");
 
-            var textToType = (RuleCallJson.Text(root, "type") ?? "").Trim();
-            if (decision == RuleDecisions.Act && textToType.Length == 0)
-                return RuleAgentReading.Refused(
-                    "the agent decided to act and then gave nothing to type. An act with nothing to type is " +
-                    "not a decline - it is an answer that was not finished, so nothing was done.");
+            // THE CITATION, as written. Whether it is on the screen is the grounding check's question,
+            // asked by the evaluator against the excerpt this reply was about; this reader only carries it.
+            var quote = RuleTriggerWords.Normalise(RuleCallJson.Text(root, "quote"));
 
-            return RuleAgentReading.Accepted(new RuleAgentReply(
-                ruleId,
-                (RuleCallJson.Text(root, "understanding") ?? "").Trim(),
-                decision,
-                statedReason,
-                checks,
-                decision == RuleDecisions.Act ? textToType : ""));
+            return RuleAgentReading.Accepted(new RuleAgentReply(ruleId, decision, quote, statedReason));
         }
     }
 
@@ -234,13 +225,5 @@ public static class RuleAgentContract
     {
         var text = (value ?? "").Trim().ReplaceLineEndings(" ");
         return text.Length <= 200 ? text : text[..200] + "...";
-    }
-
-    private static IReadOnlyList<string> Tail(IReadOnlyList<string>? rows, int tailLines)
-    {
-        if (rows is null || rows.Count == 0 || tailLines <= 0) return Array.Empty<string>();
-        var content = rows.Where(r => !string.IsNullOrWhiteSpace(r)).Select(r => r.TrimEnd()).ToList();
-        if (content.Count <= tailLines) return content;
-        return content.GetRange(content.Count - tailLines, tailLines);
     }
 }

@@ -171,6 +171,10 @@ public static class ScreenCorpus
                 Id: id,
                 Instruction: RuleCallJson.Text(element, "instruction") ?? "",
                 ScreenDescription: RuleCallJson.Text(element, "screenDescription") ?? "",
+                // THE TEXT IT TYPES, stored with the rule (phase 1). Required of a corpus rule as it is of
+                // a stored one: a rule with none is refused by the engine before any model is asked, so a
+                // corpus rule without it would never put a screen in front of the model.
+                TextToType: RuleCallJson.Text(element, "textToType") ?? "",
                 TriggerWords: triggerWords,
                 Calls: calls,
                 Scope: RuleScope.AllSessions,

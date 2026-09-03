@@ -93,6 +93,7 @@ public sealed class RuleEvaluatorAgainstTheRealStoreTests : IDisposable
             "If a session's screen says it has run out of its model allowance, type the command that shows " +
             "me what is left.",
             "A session stopped on a provider allowance notice.",
+            "/status",
             new[] { "reached your", "limit" },
             Array.Empty<RulePrimitiveCall>(),
             RuleScope.AllSessions,
@@ -108,14 +109,14 @@ public sealed class RuleEvaluatorAgainstTheRealStoreTests : IDisposable
             Now);
     }
 
+    /// <summary>A phase 1 act reply: the decision, ONE line copied from the screen, and why. It carries no
+    /// text to type - the rule was stored with "/status", and that is what is typed.</summary>
     private static string ActReply(Guid ruleId) => $$"""
         {
           "rule_id": "{{ruleId}}",
-          "understanding": "The session is blocked on its model allowance.",
           "decision": "act",
-          "reason": "The screen says 'reached your Fable 5 limit', which is the session's own state.",
-          "checks": [],
-          "type": "/usage-credits"
+          "quote": "{{TheNotice}}",
+          "reason": "The session itself is blocked on its allowance, which is the session's own state."
         }
         """;
 
@@ -151,14 +152,14 @@ public sealed class RuleEvaluatorAgainstTheRealStoreTests : IDisposable
         var pass = await new RuleEvaluator(env).EvaluateAsync(Tenant, DirectorId, SessionId, CancellationToken.None);
 
         Assert.Equal(RulePassOutcomes.Acted, pass.What);
-        Assert.Equal("/usage-credits", Assert.Single(env.Typed));
+        Assert.Equal("/status", Assert.Single(env.Typed));
 
         // Read back through a SECOND store over the same database - a real read, not the object just handed
         // out - because the whole point is that the record is DURABLE before the keystroke.
         var reopened = new SessionRuleStore(_h.Open());
         var firing = Assert.Single(reopened.FiringsFor(rule.Id));
         Assert.Equal(RuleDecisions.Act, firing.Decision);
-        Assert.Equal("/usage-credits", firing.TypedText);
-        Assert.Contains("/usage-credits", firing.Outcome);
+        Assert.Equal("/status", firing.TypedText);
+        Assert.Contains("/status", firing.Outcome);
     }
 }

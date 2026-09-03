@@ -59,6 +59,9 @@ public sealed class SessionRuleStore : IRuleReading
     public SessionRule Create(
         string instruction,
         string screenDescription,
+        // THE TEXT IT TYPES, decided here and never at run time (phase 1). Required: a rule that does not
+        // say what it types is refused by the shared rules below, in the words a person reads.
+        string textToType,
         IEnumerable<string> triggerWords,
         IEnumerable<RulePrimitiveCall> calls,
         // DELIBERATELY NULLABLE. A missing scope is a real thing that arrives at runtime - it is what
@@ -73,6 +76,10 @@ public sealed class SessionRuleStore : IRuleReading
 
         var sentence = (instruction ?? "").Trim();
         var description = (screenDescription ?? "").Trim();
+        // TRIMMED AT THE ENDS. The evaluator types this string byte for byte and the route presses Enter
+        // itself, so a trailing line break would be a second Enter and surrounding spaces are never part
+        // of a command. What is stored is what is typed; what is typed is what the person read.
+        var typed = (textToType ?? "").Trim();
         // THE ONE NORMALISER. The draft reader checks a word in exactly this form and the store keeps it in
         // exactly this form, because both call the same function (fix round D, ruling D2).
         var words = RuleTriggerWords.NormaliseAll(triggerWords).ToList();
@@ -97,6 +104,7 @@ public sealed class SessionRuleStore : IRuleReading
                 TenantId = ctx.ActiveTenant!,
                 Instruction = sentence,
                 ScreenDescription = description,
+                TextToType = typed,
                 TriggerWords = words,
                 Calls = theCalls.Select(CopyOf).ToList(),
                 ScopeAgent = Blank(theScope.Agent),
@@ -385,6 +393,7 @@ public sealed class SessionRuleStore : IRuleReading
         e.Id,
         e.Instruction,
         e.ScreenDescription,
+        e.TextToType,
         e.TriggerWords.ToList(),
         e.Calls.Select(CopyOf).ToList(),
         new RuleScope(e.ScopeAgent, e.ScopeRepository, e.ScopeMachine, e.ScopeMission),

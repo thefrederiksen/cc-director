@@ -20,7 +20,7 @@ public sealed class ScreenHarnessJudgementTests
 
     private static readonly IReadOnlyList<SessionRule> Rules = new[]
     {
-        new SessionRule(TheRule, "switch model at the limit", "a limit notice", new[] { "limit" },
+        new SessionRule(TheRule, "switch model at the limit", "a limit notice", "/model opus", new[] { "limit" },
             Array.Empty<RulePrimitiveCall>(), RuleScope.AllSessions, 60, 5, RuleState.DryRun, "",
             ScreenCorpus.RuleStampUtc, ScreenCorpus.RuleStampUtc),
     };

@@ -43,6 +43,7 @@ public sealed class RulePromotionBoundaryTests : IDisposable
     private SessionRule CreateTheRule(SessionRuleStore store) => store.Create(
         "When I run out of allowance, switch me to Opus.",
         "A session stopped on a provider allowance notice.",
+        "/model opus",
         new[] { "limit" },
         GoodCalls(),
         RuleScope.AllSessions,

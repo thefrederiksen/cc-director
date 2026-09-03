@@ -26,6 +26,13 @@ public sealed class SessionRuleEntity : GatewayMintedKeyEntity
     /// A description the account reads - never a matching expression, and never editable as one.</summary>
     public string ScreenDescription { get; set; } = "";
 
+    /// <summary>THE EXACT TEXT THIS RULE TYPES when it acts, decided when the rule was written and shown to
+    /// the person who confirmed it (Session Rules mission, phase 1). Nothing is composed at run time: the
+    /// evaluator asks a model only whether the screen is the situation, and types this, byte for byte.
+    /// A rule stored before this column existed holds the empty string, and the evaluator refuses to
+    /// fire it - out loud, on its record - until it is re-authored. It never falls back to composing.</summary>
+    public string TextToType { get; set; } = "";
+
     /// <summary>The cheap words that keep the rule from costing anything: unless one of these is on the
     /// screen, nothing further happens. Derived by the model, never chosen by the account.</summary>
     public List<string> TriggerWords { get; set; } = new();

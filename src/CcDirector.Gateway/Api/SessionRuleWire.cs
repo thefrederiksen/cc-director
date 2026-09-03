@@ -27,6 +27,10 @@ internal static class SessionRuleWire
         id = r.Id,
         instruction = r.Instruction,
         screenDescription = r.ScreenDescription,
+        // THE EXACT TEXT IT TYPES (phase 1). The most consequential thing a rule does, so it is delivered
+        // with the rule and every client shows it verbatim. Empty on a rule stored before rules carried
+        // it - such a rule is refused out loud by the evaluator until it is re-authored.
+        textToType = r.TextToType,
         triggerWords = r.TriggerWords,
         checks = r.Calls.Select(c => c.Describe()).ToList(),
         scope = new { agent = r.Scope.Agent, repository = r.Scope.Repository, machine = r.Scope.Machine, mission = r.Scope.Mission },
@@ -201,6 +205,8 @@ internal static class SessionRuleWire
         sessionId = proposal.SessionId,
         allAgents = proposal.AllAgents,
         screenDescription = proposal.ScreenDescription,
+        // The text the rule will type, decided at authoring and confirmed by the person (phase 1).
+        textToType = proposal.TextToType,
         triggerWords = proposal.TriggerWords,
         checks = proposal.Calls.Select(AsWritten).ToList(),
         scope = ScopeAsWritten(proposal.Scope),

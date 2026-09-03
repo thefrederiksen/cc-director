@@ -48,10 +48,15 @@ internal sealed class GatewayRuleEnvironment : IRuleEnvironment
     /// not connected, which every read treats as "cannot tell" rather than as a fault.</param>
     /// <param name="session">Reads a session's roster row from the pushed snapshot, or null when it is no
     /// longer there.</param>
-    /// <param name="brainProvider">The model provider. The THINKING role is used deliberately: reading a
-    /// screen against a standing instruction and deciding whether the instruction reaches it is a judgement,
-    /// not a one-word classification, and it is the judgement that keeps a rule from acting on a screen that
-    /// merely mentions the words.</param>
+    /// <param name="brainProvider">The model provider. The FAST role is used for the run-time question
+    /// (phase 1). Through phase 2 this asked the thinking role for about 600 characters of JSON - an
+    /// understanding, a reason, checks and the text to type - and the phase 0 harness measured that on 32
+    /// real screens: nine of the twelve real limit screens timed out at the sixty-second deadline, and no
+    /// real limit screen was ever acted on. The question is now "is this the situation" plus one line
+    /// copied from the screen, which is a latency-sensitive response-only path - what the fast role is for.
+    /// Authoring, where a person is waiting on a judgement about their own sentence, stays on the thinking
+    /// role in <c>GatewayHost</c>. Whether the fast role declines every negative in the corpus is measured by
+    /// the harness, not assumed here.</param>
     /// <param name="enterTenantScope">Enters a tenant's storage scope for the duration of a read or write.
     /// Optional (self-host has one partition and the scope is inert).</param>
     /// <param name="nowUtc">The clock, as a seam.</param>
@@ -128,7 +133,7 @@ internal sealed class GatewayRuleEnvironment : IRuleEnvironment
     {
         try
         {
-            using var brain = await _brainProvider(tenant, WingmanModelRole.Thinking, ct).ConfigureAwait(false);
+            using var brain = await _brainProvider(tenant, WingmanModelRole.Fast, ct).ConfigureAwait(false);
             var result = await brain.AskAsync(prompt, ct).ConfigureAwait(false);
             return result?.Text;
         }

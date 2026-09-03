@@ -143,6 +143,7 @@ internal static class SessionRuleEndpoints
                 var rule = store.Create(
                     RuleCallJson.Text(body, "instruction") ?? "",
                     RuleCallJson.Text(body, "screenDescription") ?? "",
+                    RuleCallJson.Text(body, "textToType") ?? "",
                     words,
                     SessionRuleWire.Calls(body),
                     scope,
