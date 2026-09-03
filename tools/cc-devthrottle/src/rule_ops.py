@@ -30,6 +30,13 @@ and this prints them verbatim. And an answer that is missing the field this clie
 ERROR, never an empty list: "No rules yet" printed over a broken answer is an absence-shaped check
 reporting a positive fact when the data never arrived.
 
+AND IT READS NOTHING IT HAS NOT CHECKED THE SHAPE OF (fix round E, ruling E2). A present field of the
+wrong shape - `{"rules": null}`, a rule with no trigger words, a firing whose decision is a number - is
+as broken as a missing one, and used to be printed as a clean empty state. Every answer is validated at
+runtime, the container and every required field inside every record, and nothing here supplies an empty
+string, "(none)" or 0 for a field the Gateway did not send: a field it did not send is a broken answer,
+not a zero.
+
 WHAT IS DELIBERATELY NOT HERE: promoting a rule out of dry run. Everything below stores a rule that
 WATCHES and TYPES NOTHING; arming it is the one step that lets a machine act on somebody's sessions
 unattended, and the owner's ruling is that an agent's credential may not do it. The Gateway refuses it
@@ -132,35 +139,19 @@ class RuleClient:
         text = (resp.text or "").strip()
         return text if text else f"the Gateway returned HTTP {resp.status_code}"
 
-    @staticmethod
-    def _field(answer: Dict[str, Any], what: str, field: str) -> Any:
-        """The field the caller asked for, or an ERROR - never a quiet empty value.
-
-        A MISSING FIELD IS A BROKEN INSTRUMENT (fix round D, ruling D8). An answer without `rules` in it
-        is not an account with no rules; it is an answer this client cannot read, and saying "No rules
-        yet" over it would report a positive fact the data never supported.
-        """
-        if not isinstance(answer, dict) or field not in answer:
-            raise GatewayError(
-                f"{what} answered without a '{field}' field, so nothing can be said about it. That is "
-                "not an empty result; it is an answer this command cannot read."
-            )
-        return answer[field]
-
     def rules(self) -> List[Dict[str, Any]]:
-        return self._field(self._json_or_raise(self._request("GET", "/gateway/rules")), "GET /gateway/rules", "rules")
+        answer = self._json_or_raise(self._request("GET", "/gateway/rules"))
+        return [_read_rule("GET /gateway/rules", r) for r in _need(answer, "rules", list, "GET /gateway/rules")]
 
     def rule(self, rule_id: str) -> Dict[str, Any]:
-        return self._field(
-            self._json_or_raise(self._request("GET", f"/gateway/rules/{rule_id}")), "GET /gateway/rules/{id}", "rule"
-        )
+        what = "GET /gateway/rules/{id}"
+        answer = self._json_or_raise(self._request("GET", f"/gateway/rules/{rule_id}"))
+        return _read_rule(what, _need(answer, "rule", dict, what))
 
     def firings(self, rule_id: str) -> List[Dict[str, Any]]:
-        return self._field(
-            self._json_or_raise(self._request("GET", f"/gateway/rules/{rule_id}/firings")),
-            "GET /gateway/rules/{id}/firings",
-            "firings",
-        )
+        what = "GET /gateway/rules/{id}/firings"
+        answer = self._json_or_raise(self._request("GET", f"/gateway/rules/{rule_id}/firings"))
+        return [_read_firing(what, f) for f in _need(answer, "firings", list, what)]
 
     def screen(self, session_id: str, lines: int = 60) -> str:
         """The session's terminal text as it is RIGHT NOW, for an agent that wants to LOOK at the thing a
@@ -182,7 +173,7 @@ class RuleClient:
         `all_agents` (the star) is set. Nothing about the screen, the agent or the machine is sent from
         here - they are facts the Gateway holds, not claims this client makes.
         """
-        return self._json_or_raise(
+        answer = self._json_or_raise(
             self._request(
                 "POST",
                 "/gateway/rules/draft",
@@ -193,22 +184,120 @@ class RuleClient:
                 },
             )
         )
+        return _read_draft_answer("POST /gateway/rules/draft", answer)
 
     def create(self, rule_body: Dict[str, Any]) -> Dict[str, Any]:
         """Store a rule. It is ALWAYS stored in dry run - there is no argument that could make it live.
         The body names the session it was grounded in; the Gateway reads that screen again first."""
-        return self._field(
-            self._json_or_raise(self._request("POST", "/gateway/rules", rule_body)), "POST /gateway/rules", "rule"
-        )
+        what = "POST /gateway/rules"
+        answer = self._json_or_raise(self._request("POST", "/gateway/rules", rule_body))
+        return _read_rule(what, _need(answer, "rule", dict, what))
 
     def delete(self, rule_id: str) -> bool:
-        return bool(
-            self._field(
-                self._json_or_raise(self._request("DELETE", f"/gateway/rules/{rule_id}")),
-                "DELETE /gateway/rules/{id}",
-                "deleted",
-            )
+        what = "DELETE /gateway/rules/{id}"
+        answer = self._json_or_raise(self._request("DELETE", f"/gateway/rules/{rule_id}"))
+        return _need(answer, "deleted", bool, what)
+
+
+# ---- the shape of what came back, checked before anything is believed (fix round E, ruling E2) ---------
+
+def _kind(value: Any) -> str:
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "a boolean"
+    if isinstance(value, list):
+        return "a list"
+    if isinstance(value, dict):
+        return "an object"
+    return type(value).__name__
+
+
+def _need(obj: Any, field: str, kind: type, what: str) -> Any:
+    """The field, present and of the kind asked for, or a GatewayError naming it - never a quiet
+    default. `bool` is asked for exactly (a Python bool is an int, and 1 is not an answer to a yes-or-no
+    question)."""
+    if not isinstance(obj, dict) or field not in obj:
+        raise GatewayError(
+            f"{what} answered without a '{field}' field, so nothing can be said about it. That is "
+            "not an empty result; it is an answer this command cannot read."
         )
+    value = obj[field]
+    ok = isinstance(value, bool) if kind is bool else (isinstance(value, kind) and not isinstance(value, bool))
+    if not ok:
+        wanted = {str: "a string", int: "a whole number", bool: "a boolean", list: "a list", dict: "an object"}[kind]
+        raise GatewayError(
+            f"{what} answered with '{field}' as {_kind(value)} where {wanted} was expected, so nothing "
+            "can be said about it. That is not an empty result; it is an answer this command cannot read."
+        )
+    return value
+
+
+def _need_strings(obj: Any, field: str, what: str) -> List[str]:
+    values = _need(obj, field, list, what)
+    for item in values:
+        if not isinstance(item, str):
+            raise GatewayError(
+                f"{what} answered with '{field}' holding {_kind(item)} where a list of strings was expected."
+            )
+    return values
+
+
+def _read_rule(what: str, value: Any) -> Dict[str, Any]:
+    """A rule as the Gateway serves one, every required field checked and nothing defaulted."""
+    if not isinstance(value, dict):
+        raise GatewayError(f"{what} answered with a rule that is {_kind(value)} where an object was expected.")
+    for field in ("id", "instruction", "screenDescription", "scopeLabel", "waitLabel", "state",
+                  "promotedBy", "acknowledgement", "createdUtc", "updatedUtc"):
+        _need(value, field, str, what)
+    _need_strings(value, "triggerWords", what)
+    _need_strings(value, "checks", what)
+    scope = _need(value, "scope", dict, what)
+    for part in ("agent", "repository", "machine", "mission"):
+        if part in scope and scope[part] is not None and not isinstance(scope[part], str):
+            raise GatewayError(
+                f"{what} answered with 'scope.{part}' as {_kind(scope[part])} where a string or null was expected."
+            )
+    _need(value, "cooldownSeconds", int, what)
+    _need(value, "dailyCap", int, what)
+    return value
+
+
+def _read_firing(what: str, value: Any) -> Dict[str, Any]:
+    """A firing as the Gateway serves one, every required field checked and nothing defaulted."""
+    if not isinstance(value, dict):
+        raise GatewayError(f"{what} answered with a firing that is {_kind(value)} where an object was expected.")
+    for field in ("id", "ruleId", "sessionId", "occurredUtc", "screenText", "understanding", "decision",
+                  "reason", "typedText", "outcome", "grounding"):
+        _need(value, field, str, what)
+    for run in _need(value, "checksRun", list, what):
+        for field in ("name", "arguments", "answer"):
+            _need(run, field, str, what)
+    return value
+
+
+def _read_draft_answer(what: str, answer: Any) -> Dict[str, Any]:
+    """A draft answer: a proposal with every part, or a question. Anything else is unreadable."""
+    if not isinstance(answer, dict):
+        raise GatewayError(f"{what} answered with {_kind(answer)} where an object was expected.")
+    if "rule" in answer:
+        rule = _need(answer, "rule", dict, what)
+        for field in ("instruction", "sessionId", "screenDescription"):
+            _need(rule, field, str, what)
+        _need(rule, "allAgents", bool, what)
+        _need_strings(rule, "triggerWords", what)
+        _need(rule, "checks", list, what)
+        if "scope" not in rule or not isinstance(rule["scope"], (str, dict)):
+            raise GatewayError(f"{what} answered with a rule whose 'scope' is not a string or an object.")
+        _need(rule, "cooldownSeconds", int, what)
+        _need(rule, "dailyCap", int, what)
+        for field in ("readBack", "exampleScreen", "scopeLabel", "waitLabel"):
+            _need(answer, field, str, what)
+        return answer
+    if "question" in answer:
+        _need(answer, "question", str, what)
+        return answer
+    raise GatewayError(f"{what} answered without a rule, a question or a reason.")
 
 
 def _client() -> RuleClient:
@@ -227,30 +316,23 @@ def _session_id(target: str) -> str:
     return gateway.field(chosen, "sessionId", "SessionId")
 
 
-def _label(rule: Dict[str, Any], field: str) -> str:
-    """A label the Gateway stamped on the rule, printed verbatim. A rule served without one is an
-    answer this client cannot read - it composes no words of its own for the scope or the wait."""
-    if field not in rule:
-        raise GatewayError(
-            f"the Gateway served a rule without its '{field}', which happens on a build from before "
-            "the labels were stamped on the Gateway. Upgrade or redeploy the Gateway."
-        )
-    return str(rule[field])
-
-
 def _describe(rule: Dict[str, Any]) -> None:
-    console.print(f"[bold]{rule.get('instruction', '')}[/bold]")
-    console.print(f"  id            {rule.get('id', '')}")
-    console.print(f"  state         {rule.get('state', '')}")
-    console.print(f"  watches for   {rule.get('screenDescription', '')}")
-    console.print(f"  trigger words {', '.join(rule.get('triggerWords') or []) or '(none)'}")
-    checks = rule.get("checks") or []
-    console.print(f"  checks        {', '.join(checks) if checks else '(none)'}")
-    console.print(f"  acts on       {_label(rule, 'scopeLabel')}")
-    console.print(f"  ceilings      {_label(rule, 'waitLabel')} apart, {rule.get('dailyCap', 0)} a day")
-    if rule.get("promotedBy"):
+    """Print a rule the Gateway served. It has been read through `_read_rule`, so every field is
+    present and of the right shape; nothing here defaults a missing one, and a rule that reaches this
+    unread is an error naming the field rather than a line printing 0."""
+    what = "the rule being printed"
+    console.print(f"[bold]{_need(rule, 'instruction', str, what)}[/bold]")
+    console.print(f"  id            {_need(rule, 'id', str, what)}")
+    console.print(f"  state         {_need(rule, 'state', str, what)}")
+    console.print(f"  watches for   {_need(rule, 'screenDescription', str, what)}")
+    console.print(f"  trigger words {', '.join(_need_strings(rule, 'triggerWords', what))}")
+    checks = _need_strings(rule, "checks", what)
+    console.print(f"  checks        {', '.join(checks) if checks else 'none asked for'}")
+    console.print(f"  acts on       {_need(rule, 'scopeLabel', str, what)}")
+    console.print(f"  ceilings      {_need(rule, 'waitLabel', str, what)} apart, {_need(rule, 'dailyCap', int, what)} a day")
+    if _need(rule, "promotedBy", str, what):
         console.print(f"  made live by  {rule['promotedBy']}")
-    if rule.get("acknowledgement"):
+    if _need(rule, "acknowledgement", str, what):
         console.print(f"  who agreed to {rule['acknowledgement']}")
 
 
@@ -281,26 +363,26 @@ def show_rule(rule_id: str, json_output: bool) -> None:
             console.print_json(json.dumps({"rule": rule, "firings": firings}))
             return
         _describe(rule)
+        console.print("")
+        if not firings:
+            console.print("It has not fired yet.")
+            return
+        # A DECLINE IS A FIRING TOO, and is printed like an act: a rule that did nothing because it
+        # decided not to act must not read the same as one that did nothing because something broke.
+        console.print(f"[bold]What it has done[/bold] ({len(firings)})")
+        for firing in firings:
+            what = "the firing being printed"
+            console.print(
+                f"  {_need(firing, 'occurredUtc', str, what)}  {_need(firing, 'decision', str, what)}  "
+                f"session {_need(firing, 'sessionId', str, what)}"
+            )
+            console.print(f"    why      {_need(firing, 'reason', str, what)}")
+            if _need(firing, "typedText", str, what):
+                console.print(f"    typed    {firing['typedText']}")
+            console.print(f"    outcome  {_need(firing, 'outcome', str, what)}")
     except GatewayError as exc:
         err_console.print(f"[red]Error:[/red] {exc}")
         raise typer.Exit(1)
-
-    console.print("")
-    if not firings:
-        console.print("It has not fired yet.")
-        return
-    # A DECLINE IS A FIRING TOO, and is printed like an act: a rule that did nothing because it decided
-    # not to act must not read the same as one that did nothing because something broke.
-    console.print(f"[bold]What it has done[/bold] ({len(firings)})")
-    for firing in firings:
-        console.print(
-            f"  {firing.get('occurredUtc', '')}  {firing.get('decision', '')}  "
-            f"session {firing.get('sessionId', '')}"
-        )
-        console.print(f"    why      {firing.get('reason', '')}")
-        if firing.get("typedText"):
-            console.print(f"    typed    {firing['typedText']}")
-        console.print(f"    outcome  {firing.get('outcome', '')}")
 
 
 def show_screen(target: str, lines: int) -> None:
@@ -337,17 +419,10 @@ def draft_rule(said: str, target: str, json_output: bool, all_agents: bool = Fal
         console.print("Run this again with that answered in the sentence.")
         return
 
-    console.print(answer.get("readBack", ""))
+    console.print(answer["readBack"])
     console.print("")
-    try:
-        console.print(f"  acts on       {_label(answer, 'scopeLabel')}")
-        console.print(
-            f"  ceilings      {_label(answer, 'waitLabel')} apart, "
-            f"{(answer.get('rule') or {}).get('dailyCap', 0)} a day"
-        )
-    except GatewayError as exc:
-        err_console.print(f"[red]Error:[/red] {exc}")
-        raise typer.Exit(1)
+    console.print(f"  acts on       {answer['scopeLabel']}")
+    console.print(f"  ceilings      {answer['waitLabel']} apart, {answer['rule']['dailyCap']} a day")
     console.print("")
     console.print(
         "[dim]Nothing was stored. Save this answer as JSON (run again with --json) and pass the file to "

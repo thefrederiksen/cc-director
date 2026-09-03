@@ -78,6 +78,8 @@ A_STORED_RULE = dict(
     scopeLabel="agent ClaudeCode",
     waitLabel="10 minutes",
     checks=[],
+    createdUtc="2026-09-03T09:00:00Z",
+    updatedUtc="2026-09-03T09:00:00Z",
 )
 
 

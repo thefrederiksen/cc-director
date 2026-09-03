@@ -26,9 +26,14 @@
 //
 // THIS CLIENT DECIDES NOTHING (repository rule 7, and fix round D, ruling D8). The words a person reads
 // for a rule's scope and its wait - "every session", "10 minutes" - are stamped onto the rule by the
-// Gateway as `scopeLabel` and `waitLabel`, and the page renders them verbatim. It used to compose them
-// here, and again in the page, and the command line composed its own, so two clients could disagree
-// about one stored state.
+// Gateway as `scopeLabel` and `waitLabel`, and the page renders them verbatim.
+//
+// AND IT READS NOTHING IT HAS NOT CHECKED THE SHAPE OF (fix round E, ruling E2). A missing field was
+// already an error; a PRESENT field of the wrong shape - `{"rules": null}`, a record with no trigger
+// words, a decision that is a number - was read as an empty result and printed as "No rules yet". Every
+// answer is now validated at runtime: the container, and every required field inside every record. A
+// malformed or version-skewed answer is reported as exactly that, never as the positive fact that
+// nothing exists.
 import { authHeaders, GatewayError } from "../api/client";
 
 /** Which sessions a rule may act on. A null part means "any". All four null is every session. */
@@ -172,19 +177,158 @@ function contentType(res: Response): string {
 // caught this file doing it.
 //
 // `what` names the action in the words a person would use for it, never the method and the path.
-async function readJson<T>(res: Response, what: string): Promise<T> {
+async function readJson(res: Response, what: string): Promise<unknown> {
   if (!res.ok) throw await GatewayError.from(res, what);
   if (contentType(res) !== "application/json") throw notTheRuleSurface(contentType(res) || "an unlabelled body");
-  return (await res.json()) as T;
+  return (await res.json()) as unknown;
 }
 
-// A MISSING FIELD IS A BROKEN INSTRUMENT, NOT AN EMPTY RESULT (fix round D, ruling D8). An answer
-// without the field this client asked for is reported as exactly that - never read as an empty list
-// that then becomes "No rules yet" or "It has not fired yet" on the page, which would be an absence-
-// shaped check reporting a positive fact when the data never arrived.
-function missing(res: Response, what: string, field: string): GatewayError {
-  return new GatewayError(res.status, `${what} returned no ${field} field, so nothing can be said about it.`);
+// ---- the shape of what came back, checked before anything is believed ------------------------------
+
+/** What a value is, in the words an error names it by. */
+function kindOf(value: unknown): string {
+  if (value === null) return "null";
+  if (Array.isArray(value)) return "a list";
+  return typeof value === "object" ? "an object" : typeof value;
 }
+
+/** A broken answer: the field named, what was expected, what came. Never an empty result. */
+function broken(status: number, what: string, field: string, expected: string, saw: unknown): GatewayError {
+  return new GatewayError(
+    status,
+    `${what} answered with '${field}' as ${kindOf(saw)} where ${expected} was expected, so nothing can be ` +
+      "said about it. That is not an empty result; it is an answer this client cannot read.",
+  );
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** The field, present and of the kind asked for, or a broken-answer error naming it. */
+function need(status: number, what: string, obj: Record<string, unknown>, field: string, kind: "string" | "number" | "boolean"): unknown {
+  const value = obj[field];
+  if (typeof value !== kind) throw broken(status, what, field, `a ${kind}`, value);
+  return value;
+}
+
+function needString(status: number, what: string, obj: Record<string, unknown>, field: string): string {
+  return need(status, what, obj, field, "string") as string;
+}
+
+function needNumber(status: number, what: string, obj: Record<string, unknown>, field: string): number {
+  return need(status, what, obj, field, "number") as number;
+}
+
+function needBoolean(status: number, what: string, obj: Record<string, unknown>, field: string): boolean {
+  return need(status, what, obj, field, "boolean") as boolean;
+}
+
+function needList(status: number, what: string, obj: Record<string, unknown>, field: string): unknown[] {
+  const value = obj[field];
+  if (!Array.isArray(value)) throw broken(status, what, field, "a list", value);
+  return value;
+}
+
+function needStringList(status: number, what: string, obj: Record<string, unknown>, field: string): string[] {
+  const list = needList(status, what, obj, field);
+  for (const item of list) if (typeof item !== "string") throw broken(status, what, field, "a list of strings", item);
+  return list as string[];
+}
+
+function needObject(status: number, what: string, obj: Record<string, unknown>, field: string): Record<string, unknown> {
+  const value = obj[field];
+  if (!isRecord(value)) throw broken(status, what, field, "an object", value);
+  return value;
+}
+
+function needRoot(status: number, what: string, body: unknown): Record<string, unknown> {
+  if (!isRecord(body)) throw broken(status, what, "the answer", "an object", body);
+  return body;
+}
+
+/** One part of a scope: a string, or null for "any". */
+function scopePart(status: number, what: string, scope: Record<string, unknown>, field: string): string | null {
+  const value = scope[field];
+  if (value === null || value === undefined) return null;
+  if (typeof value !== "string") throw broken(status, what, `scope.${field}`, "a string or null", value);
+  return value;
+}
+
+/** A rule as the Gateway serves one, every required field checked. */
+function readRule(status: number, what: string, value: unknown): SessionRule {
+  if (!isRecord(value)) throw broken(status, what, "rule", "an object", value);
+  const scope = needObject(status, what, value, "scope");
+  return {
+    id: needString(status, what, value, "id"),
+    instruction: needString(status, what, value, "instruction"),
+    screenDescription: needString(status, what, value, "screenDescription"),
+    triggerWords: needStringList(status, what, value, "triggerWords"),
+    checks: needStringList(status, what, value, "checks"),
+    scope: {
+      agent: scopePart(status, what, scope, "agent"),
+      repository: scopePart(status, what, scope, "repository"),
+      machine: scopePart(status, what, scope, "machine"),
+      mission: scopePart(status, what, scope, "mission"),
+    },
+    scopeLabel: needString(status, what, value, "scopeLabel"),
+    cooldownSeconds: needNumber(status, what, value, "cooldownSeconds"),
+    waitLabel: needString(status, what, value, "waitLabel"),
+    dailyCap: needNumber(status, what, value, "dailyCap"),
+    state: needString(status, what, value, "state"),
+    promotedBy: needString(status, what, value, "promotedBy"),
+    acknowledgement: needString(status, what, value, "acknowledgement"),
+    createdUtc: needString(status, what, value, "createdUtc"),
+    updatedUtc: needString(status, what, value, "updatedUtc"),
+  };
+}
+
+/** One firing as the Gateway serves one, every required field checked. */
+function readFiring(status: number, what: string, value: unknown): RuleFiring {
+  if (!isRecord(value)) throw broken(status, what, "firing", "an object", value);
+  const checksRun = needList(status, what, value, "checksRun").map((run) => {
+    if (!isRecord(run)) throw broken(status, what, "checksRun", "a list of objects", run);
+    return {
+      name: needString(status, what, run, "name"),
+      arguments: needString(status, what, run, "arguments"),
+      answer: needString(status, what, run, "answer"),
+    };
+  });
+  return {
+    id: needString(status, what, value, "id"),
+    ruleId: needString(status, what, value, "ruleId"),
+    sessionId: needString(status, what, value, "sessionId"),
+    occurredUtc: needString(status, what, value, "occurredUtc"),
+    screenText: needString(status, what, value, "screenText"),
+    understanding: needString(status, what, value, "understanding"),
+    decision: needString(status, what, value, "decision"),
+    reason: needString(status, what, value, "reason"),
+    checksRun,
+    typedText: needString(status, what, value, "typedText"),
+    outcome: needString(status, what, value, "outcome"),
+    grounding: needString(status, what, value, "grounding"),
+  };
+}
+
+/** The drafted rule, in the shape the write route takes, every required field checked. */
+function readWriteBody(status: number, what: string, value: unknown): RuleWriteBody {
+  if (!isRecord(value)) throw broken(status, what, "rule", "an object", value);
+  const scope = value.scope;
+  if (typeof scope !== "string" && !isRecord(scope)) throw broken(status, what, "scope", "a string or an object", scope);
+  return {
+    instruction: needString(status, what, value, "instruction"),
+    sessionId: needString(status, what, value, "sessionId"),
+    allAgents: needBoolean(status, what, value, "allAgents"),
+    screenDescription: needString(status, what, value, "screenDescription"),
+    triggerWords: needStringList(status, what, value, "triggerWords"),
+    checks: needList(status, what, value, "checks"),
+    scope,
+    cooldownSeconds: needNumber(status, what, value, "cooldownSeconds"),
+    dailyCap: needNumber(status, what, value, "dailyCap"),
+  };
+}
+
+// ---- the calls --------------------------------------------------------------------------------------
 
 /** GET /gateway/rules - every standing instruction this account has. */
 export async function getRules(signal?: AbortSignal): Promise<SessionRule[]> {
@@ -193,9 +337,9 @@ export async function getRules(signal?: AbortSignal): Promise<SessionRule[]> {
     headers: { Accept: "application/json", ...authHeaders() },
     signal,
   });
-  const body = await readJson<{ rules?: SessionRule[] }>(res, "read your rules");
-  if (body.rules === undefined) throw missing(res, "GET /gateway/rules", "rules");
-  return body.rules;
+  const what = "GET /gateway/rules";
+  const body = needRoot(res.status, what, await readJson(res, "read your rules"));
+  return needList(res.status, what, body, "rules").map((rule) => readRule(res.status, what, rule));
 }
 
 /** GET /gateway/rules/{id}/firings - everything one rule has ever done, newest first. */
@@ -205,9 +349,9 @@ export async function getRuleFirings(id: string, signal?: AbortSignal): Promise<
     headers: { Accept: "application/json", ...authHeaders() },
     signal,
   });
-  const body = await readJson<{ firings?: RuleFiring[] }>(res, "read what this rule has done");
-  if (body.firings === undefined) throw missing(res, "GET /gateway/rules/{id}/firings", "firings");
-  return body.firings;
+  const what = "GET /gateway/rules/{id}/firings";
+  const body = needRoot(res.status, what, await readJson(res, "read what this rule has done"));
+  return needList(res.status, what, body, "firings").map((firing) => readFiring(res.status, what, firing));
 }
 
 /**
@@ -232,29 +376,20 @@ export async function draftRule(
     body: JSON.stringify({ turns, sessionId, allAgents }),
     signal,
   });
-  const body = await readJson<{
-    readBack?: string;
-    rule?: RuleWriteBody;
-    question?: string;
-    exampleScreen?: string;
-    scopeLabel?: string;
-    waitLabel?: string;
-  }>(res, "work out a rule from what you said");
-  if (body.rule !== undefined && body.readBack !== undefined) {
-    if (body.exampleScreen === undefined) throw missing(res, "POST /gateway/rules/draft", "exampleScreen");
-    if (body.scopeLabel === undefined) throw missing(res, "POST /gateway/rules/draft", "scopeLabel");
-    if (body.waitLabel === undefined) throw missing(res, "POST /gateway/rules/draft", "waitLabel");
+  const what = "POST /gateway/rules/draft";
+  const body = needRoot(res.status, what, await readJson(res, "work out a rule from what you said"));
+  if ("rule" in body) {
     return {
       proposal: {
-        readBack: body.readBack,
-        rule: body.rule,
-        exampleScreen: body.exampleScreen,
-        scopeLabel: body.scopeLabel,
-        waitLabel: body.waitLabel,
+        readBack: needString(res.status, what, body, "readBack"),
+        rule: readWriteBody(res.status, what, body.rule),
+        exampleScreen: needString(res.status, what, body, "exampleScreen"),
+        scopeLabel: needString(res.status, what, body, "scopeLabel"),
+        waitLabel: needString(res.status, what, body, "waitLabel"),
       },
     };
   }
-  if (body.question !== undefined) return { question: body.question };
+  if ("question" in body) return { question: needString(res.status, what, body, "question") };
   throw new GatewayError(res.status, "The Gateway answered without a rule, a question or a reason.");
 }
 
@@ -270,9 +405,9 @@ export async function createRule(rule: RuleWriteBody, signal?: AbortSignal): Pro
     body: JSON.stringify(rule),
     signal,
   });
-  const body = await readJson<{ rule?: SessionRule }>(res, "store this rule");
-  if (!body.rule) throw missing(res, "POST /gateway/rules", "rule");
-  return body.rule;
+  const what = "POST /gateway/rules";
+  const body = needRoot(res.status, what, await readJson(res, "store this rule"));
+  return readRule(res.status, what, body.rule);
 }
 
 /**
@@ -294,9 +429,9 @@ export async function promoteRule(
     body: JSON.stringify({ acknowledgement }),
     signal,
   });
-  const body = await readJson<{ rule?: SessionRule }>(res, "make this rule live");
-  if (!body.rule) throw missing(res, "POST /gateway/rules/{id}/promote", "rule");
-  return body.rule;
+  const what = "POST /gateway/rules/{id}/promote";
+  const body = needRoot(res.status, what, await readJson(res, "make this rule live"));
+  return readRule(res.status, what, body.rule);
 }
 
 /** DELETE /gateway/rules/{id} - the rule goes; its firings stay. The record outlives the rule. */
@@ -306,7 +441,7 @@ export async function deleteRule(id: string, signal?: AbortSignal): Promise<bool
     headers: { Accept: "application/json", ...authHeaders() },
     signal,
   });
-  const body = await readJson<{ deleted?: boolean }>(res, "delete this rule");
-  if (body.deleted === undefined) throw missing(res, "DELETE /gateway/rules/{id}", "deleted");
-  return body.deleted === true;
+  const what = "DELETE /gateway/rules/{id}";
+  const body = needRoot(res.status, what, await readJson(res, "delete this rule"));
+  return needBoolean(res.status, what, body, "deleted");
 }
