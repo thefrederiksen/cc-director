@@ -108,7 +108,8 @@ public sealed record HarnessOptions(
     string CorpusDirectory,
     string OutputDirectory,
     IReadOnlyList<string>? OnlyCases,
-    int Runs = HarnessRun.DefaultRuns);
+    int Runs = HarnessRun.DefaultRuns,
+    int FirstRun = 1);
 
 /// <summary>
 /// THE RUN: every case through the real <see cref="RuleEvaluator"/> on every model named, cases one at a
@@ -173,6 +174,8 @@ public static class HarnessRun
         Directory.CreateDirectory(options.OutputDirectory);
         if (options.Runs < 1)
             throw new ArgumentException("--runs has to be at least 1; every case is asked that many times.", nameof(options));
+        if (options.FirstRun < 1)
+            throw new ArgumentException("--first-run has to be at least 1; it is the label of this invocation's first run.", nameof(options));
         console.WriteLine("screen harness: " + cases.Count + " case(s) x " + options.Runs + " run(s), " + rules.Count +
                           " rule(s), models: " + string.Join(", ", models.Select(m => m.Name)));
         console.WriteLine("corpus: " + options.CorpusDirectory);
@@ -184,7 +187,7 @@ public static class HarnessRun
             lock (lockObject) console.WriteLine(line);
         }
 
-        var perModel = await Task.WhenAll(models.Select(m => RunModelAsync(m.Name, m.Id, rules, cases, key, options.Runs, Log, ct)))
+        var perModel = await Task.WhenAll(models.Select(m => RunModelAsync(m.Name, m.Id, rules, cases, key, options.Runs, options.FirstRun, Log, ct)))
             .ConfigureAwait(false);
 
         var rows = perModel.SelectMany(r => r).ToList();
@@ -273,13 +276,16 @@ public static class HarnessRun
         IReadOnlyList<ScreenCase> cases,
         string key,
         int runs,
+        int firstRun,
         Action<string> log,
         CancellationToken ct)
     {
         var results = new List<CaseResult>();
         // RUNS OUTER, CASES INNER: the second answer to a case comes after every other case has been asked
-        // once, so two answers to one screen are never back to back on a warm path.
-        for (var run = 1; run <= runs; run++)
+        // once, so two answers to one screen are never back to back on a warm path. The run label starts at
+        // firstRun so a corpus too slow for one foreground window can be asked run by run in separate
+        // invocations and merged, with every answer still counted once.
+        for (var run = firstRun; run < firstRun + runs; run++)
         {
             foreach (var screenCase in cases)
             {

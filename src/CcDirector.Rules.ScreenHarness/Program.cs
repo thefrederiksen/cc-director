@@ -11,6 +11,7 @@ string? output = null;
 List<string>? onlyCases = null;
 string? merge = null;
 var runs = HarnessRun.DefaultRuns;
+var firstRun = 1;
 
 for (var i = 0; i < args.Length; i++)
 {
@@ -41,6 +42,13 @@ for (var i = 0; i < args.Length; i++)
         case "--merge":
             merge = Path.GetFullPath(Value("--merge"));
             break;
+        case "--first-run":
+            if (!int.TryParse(Value("--first-run"), out firstRun) || firstRun < 1)
+            {
+                Console.Error.WriteLine("usage error: --first-run needs a whole number of at least 1");
+                return 2;
+            }
+            break;
         case "--runs":
             if (!int.TryParse(Value("--runs"), out runs) || runs < 1)
             {
@@ -51,7 +59,7 @@ for (var i = 0; i < args.Length; i++)
         case "--help":
         case "-h":
             Console.WriteLine("usage: dotnet run --project src/CcDirector.Rules.ScreenHarness -- " +
-                              "[--models wingman,wingman-fast] [--corpus <dir>] [--out <dir>] [--case <id>[,<id>...]] [--runs N] | --merge <parent dir>");
+                              "[--models wingman,wingman-fast] [--corpus <dir>] [--out <dir>] [--case <id>[,<id>...]] [--runs N] [--first-run K] | --merge <parent dir>");
             return 0;
         default:
             Console.Error.WriteLine("usage error: unknown argument '" + args[i] + "'. Try --help.");
@@ -70,7 +78,8 @@ var options = new HarnessOptions(
     CorpusDirectory: corpus ?? RepositoryRoot.DefaultCorpus(),
     OutputDirectory: output ?? RepositoryRoot.DefaultOutput(),
     OnlyCases: onlyCases,
-    Runs: runs);
+    Runs: runs,
+    FirstRun: firstRun);
 
 try
 {
