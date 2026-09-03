@@ -166,3 +166,47 @@ changes the question to "is this that situation" plus one copied line, which is 
 Phase 0 ran the evaluator with a per-case environment. It did not run a Director, did not type into a
 session, and did not exercise `GatewayHost.ReadRuleScreenAsync`. A green harness is not a working
 feature; it is a working judgement. The typing end is proven by the demonstrations, not here.
+
+---
+
+# SECOND ADDENDUM - three rulings made mid-phase, on evidence from the first smoke runs
+
+## RULING P1-C - a rule's judgement must not be a dice roll, and the gate is no longer one run
+
+The Phase 1 smoke runs found **the same negative screen answering decline on one run and act on the
+next.** That is the unacceptable failure - a false act - appearing intermittently, which is worse than
+appearing consistently, because a harness run can then pass by luck.
+
+Two consequences, and they are separate:
+
+1. **It is a product defect, not a testing nuisance.** A standing instruction that types into a session
+   on Tuesday and declines the identical screen on Wednesday is not a rule; it is a coin. Find out
+   whether the run-time call can be made deterministic - a temperature or a seed on the brain - and if
+   it can, use it. If it cannot, say so plainly rather than working around it.
+2. **The gate changes shape.** "Zero wrong answers across twenty negatives" measured ONCE is luck, not
+   a measurement, and this repository has already paid for a gate that was luck. The harness runs each
+   case **at least three times**, and reports the **worst case per case** plus the total wrong-negative
+   count across all runs. Never the best, never the mean.
+
+**Report the flip rate as its own number**, whatever it turns out to be. If a rule's judgement is
+non-deterministic, the owner needs that stated in the QA report as a property of the feature - and it
+may change his model decision, which is his call to make and not ours to absorb.
+
+## RULING P1-D - a blank reason is a refusal, not a pass
+
+The fast model leaves the reason blank when it fills the quote. The quote is now the checkable evidence
+and is mandatory - but the reason is what a person reads in the firing record when they ask why their
+session was typed into, and an act carrying no reason is precisely the absence-shaped hole this mission
+keeps closing.
+
+Ask for two separate small fields, quote and reason. If either comes back empty, that is a REFUSAL,
+recorded as one, naming which field was missing. Never a silent pass.
+
+## RULING P1-E - if you normalise the quote, normalise the screen with the SAME function
+
+The fast model mangled a glyph-laden line, and asking for the words only is the right fix. But
+**normalising one side of a comparison and not the other rebuilds the defect ruling D2 just removed** -
+the check and the prompt looking at different text.
+
+One normaliser, applied to both sides, at one call site. The test is a real glyph-laden line from the
+corpus: a faithful quote passes, an invented one still fails.
