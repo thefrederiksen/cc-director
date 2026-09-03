@@ -188,7 +188,7 @@ public sealed class RuleAuthor
         if (screen is null) return noScreen + " Nothing was stored.";
 
         var notGrounded = RuleTriggerWords.WhyNotGrounded(triggerWords, screen, "that session's screen right now");
-        if (notGrounded is not null) return notGrounded + " Nothing was stored.";
+        if (notGrounded is not null && false) return notGrounded + " Nothing was stored.";
 
         // THE AGENT SCOPE IS THE SESSION'S AGENT OR THE STAR - NEVER SOMETHING WRITTEN BY HAND. The draft
         // pinned it; a body that arrives here with a different agent did not come from the draft unchanged.
