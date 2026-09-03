@@ -4,7 +4,8 @@ The answer to `inspection-b.md`, which returned **CHANGES REQUIRED** with twelve
 critical.
 
 Branch `mission/session-rules-fb`, worktree `D:\ReposFred\devthrottle-session-rules-fb`, cut from
-`origin/mission/session-rules`. Nineteen commits, pushed. Head **`51e3f4f4a`**.
+`origin/mission/session-rules`, pushed. **The last commit that changes any code is `51e3f4f4a`**, and it is
+the commit the gate below was run on; everything after it on this branch is this report.
 
 **The gate at the head, `.\scripts\test-local.ps1`, no filter: all nine projects Completed, 4,749 passed,
 2 skipped, 0 failed, exit code 0.** The two parked suites did not run and are the Architect's to cover
@@ -340,6 +341,7 @@ appear and they are not the same instrument, so the column says which:
 | Parked `CcDirector.Gateway.Tests` | | | | | **PENDING** - not run; the machine-wide lock was held by a release gate |
 | Parked `CcDirector.Core.Tests` | | | | | **PENDING** - not run |
 
-An attribution audit was run over all nineteen commits and over the whole diff: no hit for a
-co-authorship trailer, a generated-with footer, or any assistant, model or vendor name. The grep was first
-run against a planted trailer and printed it, so a clean result is a result and not an empty instrument.
+An attribution audit was run over every commit on this branch and over the whole diff - which is 4,858
+lines, so the instrument had something to read - looking for a co-authorship trailer, a generated-with
+footer, or any assistant, model or vendor name. No hit. The same grep was first run against a PLANTED
+trailer and printed it, so the clean result is a result rather than an empty instrument.
