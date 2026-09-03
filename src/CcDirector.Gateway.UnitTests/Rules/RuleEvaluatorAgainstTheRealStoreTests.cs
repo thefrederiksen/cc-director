@@ -98,7 +98,7 @@ public sealed class RuleEvaluatorAgainstTheRealStoreTests : IDisposable
             RuleScope.AllSessions,
             cooldownSeconds: 300,
             dailyCap: 5,
-            Now);
+            Now, Grounded.For(new[] { "reached your", "limit" }));
 
         return store.Promote(
             rule.Id,

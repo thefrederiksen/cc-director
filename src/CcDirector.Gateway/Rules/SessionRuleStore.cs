@@ -22,6 +22,15 @@ namespace CcDirector.Gateway.Rules;
 /// exists where the claim always said it did. What this file adds on top of that gate is the plain-English
 /// refusal a person reads: which check was named, which value was missing, and what the product ships.
 ///
+/// GROUNDING IS ENFORCED HERE TOO, NOT ON ONE ROUTE (fix round E, ruling E1). <see cref="Create"/> takes a
+/// <see cref="RuleGroundingEvidence"/> that only <see cref="RuleAuthor"/> can mint, after reading the
+/// session's screen through the Gateway and finding every trigger word on it; the evidence has to name
+/// exactly the words being stored, and it is spent by the write. The context's gate refuses a new rule,
+/// or a change to a stored rule's words, unless the save carries <c>GroundingInEffect</c> - the same
+/// shape as promotion, so a caller that goes round this store meets the same refusal. An inspection
+/// persisted five trigger strings straight through this store with no screen read anywhere; it cannot
+/// now.
+///
 /// DRY RUN IS ENFORCED, NOT DOCUMENTED. <see cref="Create"/> takes no state and always writes a dry-run
 /// rule, so no caller can create a live one, and the write gate refuses a new rule that is not in dry run
 /// however it was built. A person promotes it with <see cref="Promote"/>, which requires a
@@ -52,10 +61,15 @@ public sealed class SessionRuleStore : IRuleReading
     }
 
     /// <summary>
-    /// Store a new rule. It is ALWAYS created in dry run - there is no parameter that could make it live.
+    /// Store a new rule. It is ALWAYS created in dry run - there is no parameter that could make it live -
+    /// and it is stored ONLY with evidence that its trigger words were checked against the session's
+    /// screen, minted by <see cref="RuleAuthor.GroundAsync"/> and nothing else.
     /// </summary>
+    /// <param name="evidence">Evidence that every trigger word was found on the session's screen by a
+    /// fresh Gateway read. DELIBERATELY NULLABLE, like the scope: a caller that has none is a real thing
+    /// that arrives at runtime, and the refusal is part of the contract.</param>
     /// <exception cref="RuleRejectedException">The instruction, the bounds or one of the calls is not
-    /// something that can be stored; the reason says which and why.</exception>
+    /// something that can be stored, or the words carry no evidence; the reason says which and why.</exception>
     public SessionRule Create(
         string instruction,
         string screenDescription,
@@ -67,7 +81,8 @@ public sealed class SessionRuleStore : IRuleReading
         RuleScope? scope,
         int cooldownSeconds,
         int dailyCap,
-        DateTime nowUtc)
+        DateTime nowUtc,
+        RuleGroundingEvidence? evidence)
     {
         FileLog.Write($"[SessionRuleStore] Create: instruction length={instruction?.Length ?? 0}");
 
@@ -77,6 +92,24 @@ public sealed class SessionRuleStore : IRuleReading
         // exactly this form, because both call the same function (fix round D, ruling D2).
         var words = RuleTriggerWords.NormaliseAll(triggerWords).ToList();
         var theCalls = (calls ?? Array.Empty<RulePrimitiveCall>()).ToList();
+
+        // THE WORDS CARRY EVIDENCE OR THEY ARE NOT STORED (fix round E, ruling E1). Not "some evidence":
+        // evidence for exactly these words, spent by this write.
+        if (evidence is null)
+            throw new RuleRejectedException(
+                "a rule's trigger words are stored only with evidence that they were checked against the " +
+                "session's screen, and this call carried none. The words are read off a real screen by the " +
+                "Gateway; nothing stores words that were not.");
+        if (!evidence.Covers(words))
+            throw new RuleRejectedException(
+                "this evidence was minted for the words " +
+                string.Join(", ", evidence.Words.Select(w => "\"" + w + "\"")) + ", not for " +
+                string.Join(", ", words.Select(w => "\"" + w + "\"")) + ". Evidence that a screen showed " +
+                "one set of words is not evidence that it showed another.");
+        if (!evidence.TryConsume())
+            throw new RuleRejectedException(
+                "this evidence has already been spent storing a rule. A screen read vouches for one write, " +
+                "and the same read cannot be presented again.");
 
         // A MISSING SCOPE IS NOT "EVERY SESSION". Scope is a real safety bound, and turning an omission
         // into the WIDEST possible value is a fail-open: the contract could not tell "the account chose
@@ -125,8 +158,13 @@ public sealed class SessionRuleStore : IRuleReading
             }
 
             ctx.SessionRules.Add(entity);
-            ctx.SaveChanges();
-            FileLog.Write($"[SessionRuleStore] Create: stored rule {entity.Id} in dry run");
+            // Tell the write gate that THIS save carries grounding evidence for THIS rule. Without it the
+            // gate refuses a new rule's words, which is what closes the route straight through the DbSet
+            // as well - the same shape as PromotionInEffect, see GatewayDbContext.
+            ctx.GroundingInEffect = entity.Id;
+            try { ctx.SaveChanges(); }
+            finally { ctx.GroundingInEffect = null; }
+            FileLog.Write($"[SessionRuleStore] Create: stored rule {entity.Id} in dry run, grounded in session {evidence.SessionId}");
             return ToRecord(entity);
         }
     }

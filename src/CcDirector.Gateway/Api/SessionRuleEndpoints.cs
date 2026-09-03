@@ -127,19 +127,21 @@ internal static class SessionRuleEndpoints
             {
                 var words = SessionRuleWire.Strings(body, "triggerWords");
                 var scope = SessionRuleWire.ReadScope(body);
-                var notGrounded = await author.WhyNotGroundedAsync(
+                var grounding = await author.GroundAsync(
                     tenant,
                     RuleCallJson.Text(body, "sessionId"),
                     words,
                     scope,
                     SessionRuleWire.Flag(body, "allAgents"),
                     ct);
-                if (notGrounded is not null)
+                if (grounding.Evidence is null)
                 {
-                    FileLog.Write($"[SessionRuleEndpoints] POST /gateway/rules REFUSED at the write gate: {notGrounded}");
-                    return Results.Json(new { error = notGrounded }, statusCode: StatusCodes.Status400BadRequest);
+                    FileLog.Write($"[SessionRuleEndpoints] POST /gateway/rules REFUSED at the write gate: {grounding.Refusal}");
+                    return Results.Json(new { error = grounding.Refusal }, statusCode: StatusCodes.Status400BadRequest);
                 }
 
+                // THE EVIDENCE GOES WITH THE WRITE. The store refuses words without it, and the context
+                // refuses the save without the store's mark - so this is the only way words get stored.
                 var rule = store.Create(
                     RuleCallJson.Text(body, "instruction") ?? "",
                     RuleCallJson.Text(body, "screenDescription") ?? "",
@@ -148,7 +150,8 @@ internal static class SessionRuleEndpoints
                     scope,
                     SessionRuleWire.Number(body, "cooldownSeconds"),
                     SessionRuleWire.Number(body, "dailyCap"),
-                    DateTime.UtcNow);
+                    DateTime.UtcNow,
+                    grounding.Evidence);
                 FileLog.Write($"[SessionRuleEndpoints] POST /gateway/rules: stored {rule.Id} in dry run");
                 return Results.Json(new { rule = SessionRuleWire.Project(rule) });
             }
