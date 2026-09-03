@@ -194,3 +194,57 @@ at the first newline. Write the detail to
 `docs/missions/session-rules-2026-09-02/fix-round-d-report.md`, one section per ruling, saying for each
 whether it is closed and what proves it. Name that file in your one line. Do not open a pull request
 and do not merge; only the Architect lands work on main.
+
+---
+
+## RULING D11 - added after the guard fix, because the guard turned out to be the ONLY thing standing there
+
+The guard fix (`dd78fd878`, finding 1) closed correctly, but its report named a fourth thing it could
+not close and was right to: **`RulePromotionGrant` would accept a session key.** The route guard is
+therefore the single mechanism preventing an agent credential from arming a rule - and the owner named
+that exact transition as the one real exposure in the whole feature.
+
+One mechanism is not enough for the one thing that matters most, and this repository has a name for
+why: authentication is not authorization. The route list said "this credential may not come through
+this door" and nothing at the destination asked "who is this?". That is the shape the original blocker
+had - a decision made in one place that a second place never learned about.
+
+**Refuse promotion at the grant as well, on the credential itself, not on the route.** A session key
+that somehow reaches `RulePromotionGrant` is refused there with its own sentence. The two checks are
+deliberately redundant: the route guard is the boundary, and this is the thing that still holds when a
+future route change moves the boundary without anybody noticing.
+
+Test it directly - construct a promotion attempt carrying a session-key identity and assert the
+refusal - so it does not depend on the route guard being correct in order to pass.
+
+### Correction to D11's stated reason, made on evidence 2026-09-03
+
+**D11 stands. Its justification above was wrong, and the truth is worse.**
+
+D11 was written from the guard fix report's claim that `RulePromotionGrant` would ACCEPT a session
+key, which would have meant an agent credential could arm a rule if it ever reached the grant. That
+claim is false. The fix round D Manager found, and the Architect then confirmed independently by
+reading the two constants rather than by taking either report on trust, that the grant refused
+**everyone**:
+
+- `RulePromotionGrant` reads the request item `DeviceKeyId`.
+- `AuthMiddleware` writes `cc.auth.DeviceKey` (`DeviceKeyItemKey`).
+- They are different strings, nothing anywhere writes `DeviceKeyId`, and the middleware sets no
+  authenticated principal - it carries identity on `ctx.Items`.
+
+So `CallerOf` returned null on every real request and every promotion over HTTP threw "this request
+has no caller the Gateway authenticated".
+
+**Promotion has been shipped broken on `main` since fix round A hardened it.** The promote route in a
+released feature could never have worked for any account. The only promotion this mission ever
+demonstrated happened on 2026-09-02 under the OLD id-and-timestamp shape - before the hardening that
+introduced the bug - and `qa-report.md` is honest that the call "no longer works as written". Nobody
+read that sentence as literally as it turned out to be true.
+
+**This goes in the QA report as a user-facing defect the mission found and fixed**, not as an
+internal note. It is also the mission's own law demonstrated on the mission itself: a fix round is new
+writing and carries a new writer's risk, and fix round A's hardening was not gated as hard as the
+first draft was.
+
+D11 is now defence in depth on a grant that actually works, rather than the only correct check on one
+that did not.

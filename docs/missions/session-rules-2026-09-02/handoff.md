@@ -219,3 +219,25 @@ invented bound presented as his decision is the defect this mission keeps naming
 | `phase-1-fast-model-brief.md` | The run-time call. **Establishes that this is a store change with a migration, not a model swap** |
 | `phase-2-clock-brief.md` | The clock. **Corrects the plan: not cron jobs, not snooze - a rule-owned wake swept in the shape of `CronEngine`** |
 | `demonstrations-brief.md` | The three scenarios and what each must not be allowed to fake |
+
+## A shipped defect the mission found: promotion has never worked over HTTP
+
+Found by the fix round D Manager, confirmed independently by the Architect reading the constants
+rather than either report: `RulePromotionGrant` reads the request item `DeviceKeyId`; `AuthMiddleware`
+writes `cc.auth.DeviceKey`; nothing writes `DeviceKeyId`; and the middleware sets no authenticated
+principal. So the caller lookup returned null on every real request and **every promotion over HTTP
+was refused as having no caller.**
+
+Introduced by fix round A's hardening, which was correct in intent - promotion previously took a rule
+id and a timestamp and nothing else - and shipped to `main` in pull request 2665. The only promotion
+this mission ever demonstrated was on 2026-09-02 under the OLD shape, before the bug existed.
+
+No account is affected in practice, but **the promote button in a released feature could never have
+worked**, and it goes in the QA report as a user-facing defect the mission found and fixed - not as an
+internal note. It is also this mission's own law demonstrated on itself: a fix round is new writing and
+carries a new writer's risk, and fix round A was not gated as hard as the first draft.
+
+Three defects this mission has now found share ONE shape - a decision proven by constructing an object
+directly rather than by driving the real request: the session-key guard (a route nobody classified),
+this grant (a caller nobody wrote), and inspection finding 9 (a tenant that could be a constant). That
+is a finding about the SUITE, not three separate slips, and the QA report should say so.
