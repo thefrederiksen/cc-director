@@ -377,7 +377,7 @@ public sealed class SessionOrderingTests
     private static SessionDto Raw(string activityState, bool wingmanEnabled = false, bool brandNew = false,
         bool backgroundRunning = false, bool controlled = false, string? controllerId = null,
         bool transcribing = false, bool autoExplaining = false, string briefingState = "None",
-        string? sessionRole = null) => new()
+        string? sessionRole = null, string? originKind = null) => new()
     {
         SessionId = "raw",
         ActivityState = activityState,
@@ -390,6 +390,7 @@ public sealed class SessionOrderingTests
         IsAutoExplaining = autoExplaining,
         BriefingState = briefingState,
         SessionRole = sessionRole,
+        OriginKind = originKind,
         // StatusColor deliberately left at its default "unknown" to PROVE the fold never reads it.
     };
 
@@ -687,13 +688,286 @@ public sealed class SessionOrderingTests
     }
 
     [Fact]
-    public void EffectiveColor_Architect_RedAllowed_EvenWithAController()
+    public void EffectiveColor_Architect_Stopped_IsSupervised_NotRed()
     {
-        // Chunk 2.5: an explicit Architect is human-facing. Even one that happens to carry a controller keeps
-        // its red - the aggregation's explicit-wins precedence resolves it to Architect (not Worker), so the
-        // fold (which only suppresses Worker) never suppresses it.
-        Assert.Equal("red", SessionOrdering.EffectiveColor(
+        // THIS TEST USED TO ASSERT THE OPPOSITE, AND IT WAS DEFENDING A DIVERGENCE. It read
+        // EffectiveColor_Architect_RedAllowed_EvenWithAController, on the premise "an explicit Architect is
+        // human-facing" - which is the design as it stood BEFORE the owner amended it on 2026-07-09:
+        //
+        //   "the Architect does NOT push needs-you or status to the human - that is the Manager's job...
+        //    Like a Worker, the Architect never surfaces to the human. The ONLY difference from a Worker:
+        //    the human may PULL the Architect into a design conversation the HUMAN initiates."
+        //   (docs/new_architecture/session-roles-semantics.md, and the attention routing table in it)
+        //
+        // The amendment reached the document and never reached the code, and this green test is why nobody
+        // noticed for two months: it stated the superseded rule in the present tense. Recorded here rather
+        // than quietly deleted, because a test that defends a defect is the most expensive kind this
+        // repository has, and this file's own history says so.
+        Assert.Equal("supporting", SessionOrdering.EffectiveColor(
             Raw("WaitingForInput", controlled: true, controllerId: Guid.NewGuid().ToString(), sessionRole: SessionRoles.Architect)));
+    }
+
+    [Fact]
+    public void EffectiveColor_Architect_Working_IsStillBlue()
+    {
+        // The negative control for the test above, and the law: nothing outranks working. Widening the
+        // suppression must not reintroduce the 2026-07-14 defect where ownership erased activity.
+        Assert.Equal("blue", SessionOrdering.EffectiveColor(
+            Raw("Working", sessionRole: SessionRoles.Architect)));
+    }
+
+    // ===================================================================================================
+    // SUPERVISED SESSIONS DO NOT ASK THE OWNER (owner's ruling, 2026-09-02):
+    //   "supervised still show up in Director and Cockpit, session should go to onhold when not working"
+    //
+    // Three kinds are supervised for three different reasons - a live supervisor, a design seat, a
+    // schedule - so each gets its own case rather than one parameterised sweep that would still pass if
+    // two of the three silently stopped working.
+    //
+    // Every case below asserts all THREE fold outputs together. The colour alone is not the behaviour the
+    // owner asked for: a slate dot still sitting in the middle of his list is the thing he complained
+    // about. Asserting the colour and letting the bucket drift is how the "blue dot labelled Snoozed"
+    // defect happened, and this file exists partly to record that.
+    // ===================================================================================================
+
+    [Fact]
+    public void Supervised_Worker_Stopped_IsSlate_Snoozed_AndParked()
+    {
+        var s = Raw("WaitingForInput", controlled: true, controllerId: Guid.NewGuid().ToString(),
+            sessionRole: SessionRoles.Worker);
+        Assert.Equal("supporting", SessionOrdering.EffectiveColor(s));
+        Assert.Equal("Snoozed", SessionOrdering.StateLabel(s));
+        Assert.Equal(SessionOrdering.TriageBucket.OnHold, SessionOrdering.Classify(s));
+    }
+
+    [Fact]
+    public void Supervised_Architect_Stopped_IsSlate_Snoozed_AndParked()
+    {
+        var s = Raw("WaitingForInput", sessionRole: SessionRoles.Architect);
+        Assert.Equal("supporting", SessionOrdering.EffectiveColor(s));
+        Assert.Equal("Snoozed", SessionOrdering.StateLabel(s));
+        Assert.Equal(SessionOrdering.TriageBucket.OnHold, SessionOrdering.Classify(s));
+    }
+
+    [Fact]
+    public void Supervised_ScheduledRun_Stopped_IsSlate_Snoozed_AndParked()
+    {
+        // A cron firing has no supervisor to report to and nobody was at a keyboard, so it resolves to
+        // Standalone - which is exactly why the ROLE alone could never have covered this case and the
+        // origin has to be read. This is the largest single source of roster noise on a fleet with
+        // recurring jobs, and it matches the owner's standing rule that scheduled runs escalate by email
+        // rather than by sitting red on the roster.
+        var s = Raw("WaitingForInput", sessionRole: SessionRoles.Standalone, originKind: "schedule");
+        Assert.Equal("supporting", SessionOrdering.EffectiveColor(s));
+        Assert.Equal("Snoozed", SessionOrdering.StateLabel(s));
+        Assert.Equal(SessionOrdering.TriageBucket.OnHold, SessionOrdering.Classify(s));
+    }
+
+    [Theory]
+    [InlineData(SessionRoles.Worker, null)]
+    [InlineData(SessionRoles.Architect, null)]
+    [InlineData(SessionRoles.Standalone, "schedule")]
+    public void Supervised_Working_IsStillBlue_NothingOutranksWorking(string role, string? origin)
+    {
+        // THE LAW, asserted against the new rule for every kind it added. Widening an attention rule is
+        // exactly when the 2026-07-14 defect comes back - every rule that has ever sat above the working
+        // check has been a defect, and each one cost the owner a day.
+        var isWorker = role == SessionRoles.Worker;
+        var s = Raw("Working", sessionRole: role, originKind: origin,
+            controlled: isWorker, controllerId: isWorker ? Guid.NewGuid().ToString() : null);
+        Assert.Equal("blue", SessionOrdering.EffectiveColor(s));
+        Assert.Equal("Working", SessionOrdering.StateLabel(s));
+        Assert.Equal(SessionOrdering.TriageBucket.Active, SessionOrdering.Classify(s));
+    }
+
+    [Fact]
+    public void Supervised_Exited_ReadsExited_NotSnoozed()
+    {
+        // The owner already ruled this exact question for his own snooze (defect 21): a dead session must
+        // never hide behind a Snoozed label. The same reasoning binds a supervised one - otherwise a
+        // worker that DIED would be indistinguishable from one that finished politely.
+        var s = Raw("Exited", controlled: true, controllerId: Guid.NewGuid().ToString(),
+            sessionRole: SessionRoles.Worker);
+        Assert.Equal("grey", SessionOrdering.EffectiveColor(s));
+        Assert.Equal("Exited", SessionOrdering.StateLabel(s));
+    }
+
+    [Fact]
+    public void Supervised_Crashed_ReadsCrashed_TheOneThingNeverQuietened()
+    {
+        // A crash is the one signal on this whole ladder that must survive every suppression rule. Had
+        // widening the rule swallowed this, a worker that DIED would look like a worker that finished -
+        // silently, on a roster the owner has just been told he can stop watching.
+        var s = Raw("Exited", controlled: true, controllerId: Guid.NewGuid().ToString(),
+            sessionRole: SessionRoles.Worker);
+        s.Crashed = true;
+        Assert.Equal("error", SessionOrdering.EffectiveColor(s));
+        Assert.Equal("Crashed", SessionOrdering.StateLabel(s));
+    }
+
+    [Fact]
+    public void Supervised_OwnerIsDictatingIntoIt_StaysOrange()
+    {
+        // An utterance in flight means the OWNER is speaking into this session right now. He is driving
+        // it, so the row must say so - the same reasoning that lets his own words supersede his own
+        // snooze. This is why the supervised arm sits BELOW dictation orange rather than above it.
+        var s = Raw("WaitingForInput", controlled: true, controllerId: Guid.NewGuid().ToString(),
+            sessionRole: SessionRoles.Worker, transcribing: true);
+        Assert.Equal("orange", SessionOrdering.EffectiveColor(s));
+    }
+
+    [Fact]
+    public void Supervised_WithAnInFlightBrief_IsSnoozed_NeverWingmanReading()
+    {
+        // The supervised arm sits ABOVE the two yellows, and this proves it is true on its own rather
+        // than by trusting the wingman never to have started. The fold's correctness must not rest on a
+        // producer's good behaviour - that assumption is what left the desktop stuck on "Preparing voice"
+        // for the whole of #1843.
+        var s = Raw("WaitingForInput", controlled: true, controllerId: Guid.NewGuid().ToString(),
+            sessionRole: SessionRoles.Worker, briefingState: "Briefing");
+        Assert.Equal("supporting", SessionOrdering.EffectiveColor(s));
+        Assert.Equal("Snoozed", SessionOrdering.StateLabel(s));
+    }
+
+    [Fact]
+    public void Supervised_OrphanedWorker_SurfacesRed_EscapeHatchIntact()
+    {
+        // THE NEGATIVE CONTROL FOR THE WHOLE RULE. A worker whose supervisor died resolves to Standalone,
+        // so it is NOT supervised and its red reaches the owner - the owner's 2026-07-09 orphan ruling
+        // ("ALWAYS involve the operator" on an exception). If this ever goes quiet, the rule has stopped
+        // being "route attention elsewhere" and started being "lose it".
+        var s = Raw("WaitingForInput", controlled: true, controllerId: Guid.NewGuid().ToString(),
+            sessionRole: SessionRoles.Standalone);
+        Assert.Equal("red", SessionOrdering.EffectiveColor(s));
+        Assert.Equal(SessionOrdering.TriageBucket.NeedsYou, SessionOrdering.Classify(s));
+    }
+
+    [Fact]
+    public void Supervised_ManagerAndStandalone_StillReachTheOwner()
+    {
+        // The other half of the negative control: the two human-facing seats are untouched. The whole
+        // design rests on the owner still hearing from a Manager - quietening the workers is only safe
+        // because their manager consolidates and reports.
+        foreach (var role in new[] { SessionRoles.Manager, SessionRoles.Standalone })
+        {
+            var s = Raw("WaitingForInput", sessionRole: role);
+            Assert.Equal("red", SessionOrdering.EffectiveColor(s));
+            Assert.Equal(SessionOrdering.TriageBucket.NeedsYou, SessionOrdering.Classify(s));
+        }
+    }
+
+    [Fact]
+    public void Supervised_HumanOriginIsNotSwallowedByTheScheduleArm()
+    {
+        // The origin arm reads ONE token. A session a person started must never be quietened by it, and
+        // an over-broad match here would be invisible: it would simply make his own sessions stop asking.
+        foreach (var origin in new string?[] { "human", "agent", "unknown", null })
+        {
+            var s = Raw("WaitingForInput", sessionRole: SessionRoles.Standalone, originKind: origin);
+            Assert.Equal("red", SessionOrdering.EffectiveColor(s));
+        }
+    }
+
+    // ===================================================================================================
+    // THE ORPHAN'S EXPLANATION (owner's orphan ruling, 2026-07-09).
+    //
+    // The hand-back to the owner already worked - a session whose supervisor died resolves to Standalone,
+    // so its red surfaces. What it never carried was the REASON, so an orphan was indistinguishable from an
+    // ordinary session at a prompt and the owner had to open it to find out it was wreckage rather than
+    // work. These prove the sentence appears exactly when it should and stays silent the rest of the time.
+    // ===================================================================================================
+
+    private static SessionDto Orphan(string activityState = "WaitingForInput", string role = SessionRoles.Standalone)
+    {
+        var s = Raw(activityState, controlled: true, controllerId: "the-dead-one", sessionRole: role);
+        return s;
+    }
+
+    [Fact]
+    public void SupervisorLost_StoppedOrphan_IsToldWhatHappened_AndNamesTheSupervisor()
+    {
+        var gone = new SessionDto { SessionId = "the-dead-one", Name = "Release - Manager", ActivityState = "Exited" };
+
+        var notice = SessionOrdering.SupervisorLostNotice(Orphan(), gone);
+
+        Assert.NotNull(notice);
+        Assert.Contains("Release - Manager", notice);
+        // The owner must be told what to DO, not merely what happened - the ruling's words were "here is the
+        // task; here is where you are stuck", i.e. enough to act on without opening it first.
+        Assert.Contains("resume it", notice);
+        Assert.Contains("stop it", notice);
+    }
+
+    [Fact]
+    public void SupervisorLost_SupervisorGoneFromTheRosterEntirely_StillExplainsItself()
+    {
+        // The COMMONEST case, and the one a name-first design would have got wrong: a supervisor that exited
+        // long enough ago has left the roster, so the lookup returns nothing. A missing name is not a missing
+        // explanation - it drops the name and still says what happened and what to do.
+        var notice = SessionOrdering.SupervisorLostNotice(Orphan(), supervisor: null);
+
+        Assert.NotNull(notice);
+        Assert.Contains("has gone", notice);
+        Assert.Contains("resume it", notice);
+    }
+
+    [Fact]
+    public void SupervisorLost_SaysNothingWhileTheOrphanIsStillWorking()
+    {
+        // Mid-turn it is getting on with the work it was given and there is nothing to decide. The notice is
+        // for the moment it STOPS - which is the moment it would otherwise sit red and unexplained.
+        Assert.Null(SessionOrdering.SupervisorLostNotice(Orphan("Working"), supervisor: null));
+    }
+
+    [Fact]
+    public void SupervisorLost_SaysNothingWhenTheSupervisorIsAlive()
+    {
+        // A live supervisor means role Worker, which is the resolver's way of saying "controlled AND the
+        // controller is alive". Nothing is stranded, so there is nothing to say.
+        var alive = new SessionDto { SessionId = "the-dead-one", Name = "still here", ActivityState = "Working" };
+
+        Assert.Null(SessionOrdering.SupervisorLostNotice(Orphan(role: SessionRoles.Worker), alive));
+    }
+
+    [Fact]
+    public void SupervisorLost_SaysNothingForAnOrdinarySessionThatNeverHadASupervisor()
+    {
+        // The negative control that matters most: almost every session on the fleet is this one, and a notice
+        // leaking onto it would put a sentence about abandonment on rows that were never supervised at all.
+        Assert.Null(SessionOrdering.SupervisorLostNotice(
+            Raw("WaitingForInput", sessionRole: SessionRoles.Standalone), supervisor: null));
+    }
+
+    [Fact]
+    public void SupervisorLost_SaysNothingAboutAnOrphanThatHasItselfExited()
+    {
+        // It is not stranded, it is over. Telling the owner to "resume it, hand it over, or stop it" about a
+        // session that has already ended would send him to look at wreckage twice.
+        Assert.Null(SessionOrdering.SupervisorLostNotice(Orphan("Exited"), supervisor: null));
+    }
+
+    [Fact]
+    public void SupervisorLost_SaysNothingAboutAnArchitectThatCarriesAController()
+    {
+        // An Architect is supervised BY DECLARATION, not by who spawned it, so losing a spawner strands
+        // nothing. Without this arm every Architect spawned by a session that later ended would start
+        // announcing itself as abandoned - the opposite of the ruling that says it never surfaces at all.
+        Assert.Null(SessionOrdering.SupervisorLostNotice(Orphan(role: SessionRoles.Architect), supervisor: null));
+    }
+
+    [Fact]
+    public void SupervisorLost_ChangesNothingAboutTheDot_TheLabel_OrTheBucket()
+    {
+        // A NOTICE, NEVER A COLOUR - the same rule the delivery notice follows. Recolouring would say
+        // something false about what the agent is doing in order to say something true about its
+        // supervision. The orphan is red and in the owner's queue because it has STOPPED, which is exactly
+        // what it would be without this sentence; the sentence only explains it.
+        var orphan = Orphan();
+
+        Assert.NotNull(SessionOrdering.SupervisorLostNotice(orphan, supervisor: null));
+        Assert.Equal("red", SessionOrdering.EffectiveColor(orphan));
+        Assert.Equal("Needs you", SessionOrdering.StateLabel(orphan));
+        Assert.Equal(SessionOrdering.TriageBucket.NeedsYou, SessionOrdering.Classify(orphan));
     }
 
     [Fact]
@@ -812,11 +1086,14 @@ public sealed class SessionOrderingTests
     }
 
     [Fact]
-    public void StateLabel_LiveWorker_WhoseRedIsSuppressed_IsSubAgent()
+    public void StateLabel_LiveWorker_Stopped_IsSnoozed()
     {
-        // "Sub-agent" survives for the ONE case that still recedes: a live Worker whose red is suppressed
-        // so the need routes to its manager rather than the human.
-        Assert.Equal("Sub-agent", SessionOrdering.StateLabel(
+        // Was StateLabel_LiveWorker_WhoseRedIsSuppressed_IsSubAgent, asserting "Sub-agent". The owner's
+        // ruling of 2026-09-02 - "session should go to onhold when not working" - makes this a STATE, so it
+        // takes the owner's own word for that state. "Sub-agent" also described the row's parentage rather
+        // than what it was doing, and it was plainly wrong for the two kinds the rule now covers (an
+        // Architect is not a sub-agent; neither is a cron firing). The slate dot still says "not yours".
+        Assert.Equal("Snoozed", SessionOrdering.StateLabel(
             Raw("WaitingForInput", controlled: true, controllerId: Guid.NewGuid().ToString(), sessionRole: "Worker")));
     }
 

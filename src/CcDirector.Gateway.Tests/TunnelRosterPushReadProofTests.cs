@@ -1,4 +1,4 @@
-using System.Net;
+﻿using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Net.Sockets;
@@ -158,9 +158,21 @@ public sealed class TunnelRosterPushReadProofTests : IAsyncLifetime
         var sessions = mine!["sessions"]?.AsArray();
 
         var workerOut = Assert.Single(sessions!, s => s?["sessionId"]?.GetValue<string>() == wrk);
-        // Before the fix: "red" / "Needs you" here, "supporting" / "Sub-agent" on the roster.
+        // Before the fix: "red" / "Needs you" here, the receded answer on the roster.
         Assert.Equal("supporting", workerOut?["effectiveColor"]?.GetValue<string>());
-        Assert.Equal("Sub-agent", workerOut?["stateLabel"]?.GetValue<string>());
+        // "Snoozed" (was "Sub-agent") since the owner ruled on 2026-09-02 that a supervised session goes to
+        // on-hold when it is not working.
+        Assert.Equal("Snoozed", workerOut?["stateLabel"]?.GetValue<string>());
+        // NO BUCKET ASSERTION HERE, ON PURPOSE - /exes/list DOES NOT EMIT ONE. Its projection
+        // (ExesEndpoints) hand-picks eight fields - sessionId, name, agent, activityState, statusColor,
+        // effectiveColor, stateLabel, snoozeExpired - and triageBucket is not among them. An assertion on it
+        // fails not because the fold is wrong but because this page never carried the field; that is exactly
+        // the mistake that was made here first, and this note exists so the next person does not repeat it.
+        //
+        // The bucket IS proven over real HTTP, on the path where it matters: the ROSTER, in
+        // SessionsAggregationTests. This is a developer diagnostic page, and its contract is the colour and
+        // the words beside it. If it ever needs the bucket, add it to the projection first - do not assert a
+        // field into existence.
 
         // The manager is untouched - its own working shows blue, and the law holds on this page too.
         var mgrOut = Assert.Single(sessions!, s => s?["sessionId"]?.GetValue<string>() == mgr);

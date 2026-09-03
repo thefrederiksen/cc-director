@@ -1,4 +1,4 @@
-using CcDirector.Gateway.Contracts;
+﻿using CcDirector.Gateway.Contracts;
 using Xunit;
 
 namespace CcDirector.Gateway.Tests;
@@ -89,7 +89,10 @@ public sealed class DesktopGatewayFoldAgreementTests
         };
 
         Assert.Equal("supporting", SessionOrdering.EffectiveColor(codex));
-        Assert.Equal("Sub-agent", SessionOrdering.StateLabel(codex));
+        // The label is "Snoozed" (was "Sub-agent") since the owner ruled on 2026-09-02 that a supervised
+        // session goes to on-hold when it is not working; the slate dot is unchanged. See the supervised arm
+        // in SessionOrdering.EffectiveColor.
+        Assert.Equal("Snoozed", SessionOrdering.StateLabel(codex));
     }
 
     [Fact]

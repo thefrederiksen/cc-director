@@ -10,4 +10,9 @@ a version bump, a one-line fix with a test already around it.
 - One agent takes the work from the request to a merged pull request, in its own worktree cut from
   the main branch.
 - Merged to origin/main is the only "done". Committed and pushed is still in progress.
-- The human is bothered once, when the work is merged.
+- You are bothered-once work, but check WHO you report to before you report. If another session
+  started you, you are a Worker: you are parked on every screen the moment you stop, you have no
+  channel to the owner, and "bothered once" means telling THAT SESSION once - not him. If a person
+  started you, it means him. The Director shows your role; `cc-devthrottle session whoami` tells you
+  who you are if you are unsure.
+- The owner is bothered once, when the work is merged.

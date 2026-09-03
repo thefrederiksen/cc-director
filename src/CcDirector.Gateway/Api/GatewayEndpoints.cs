@@ -130,6 +130,12 @@ internal static class GatewayEndpoints
         // return an EXPIRED snooze to "needs you" (OnHold=false) on its own even if its Director has died.
         // When null the hold endpoint returns 503: there is no plain-forward fallback - the Gateway owns hold.
         Snooze.SnoozeRegistry? snoozeRegistry = null,
+        // Issue #2662: the Gateway-owned hand-raise registry - a supervised session's "I need my supervisor".
+        // POST /sessions/{sid}/needs-manager REQUIRES it (503 when null, no fallback: the Gateway owns this
+        // the same way it owns hold), and the /sessions fold reads it to stamp NeedsManager + the reason.
+        // Null (old callers, tests) leaves every hand down, which is the honest answer when nothing records
+        // them - never a silently-inert flag that reads as "nobody needs anything".
+        Fleet.HandRaiseRegistry? handRaises = null,
         // Gateway Cleanup mission (Wave 4b): the Gateway-native mission store. When non-null, the
         // POST/GET /missions routes are mapped and a mission-scoped spawn validates against it. Missions are
         // a fleet-level concept, so the source of truth lives here at the Gateway. Null (old callers, tests)
@@ -1556,7 +1562,7 @@ internal static class GatewayEndpoints
             // stamp the presentation fold (which reads the role to suppress a live Worker's red toward the
             // human). Done here, once, because the role needs the full fleet view - the UNFILTERED one
             // (`fleet`), not the response set (`all`). See defect 13 in StampFleetRolesAndFold.
-            StampFleetRolesAndFold(fleet, all, needsYouStampFor, snoozeRegistry, reqTenant.Value);
+            StampFleetRolesAndFold(fleet, all, needsYouStampFor, snoozeRegistry, reqTenant.Value, handRaises);
 
             // DevThrottle Stats: fold the assembled roster's per-session input tallies into the always-
             // available aggregate that backs "Your Throttle". This is the ONE path that carries
@@ -1905,7 +1911,7 @@ internal static class GatewayEndpoints
             // is driven by the roster read. Letting a by-id read stamp it would drive that clock out of band
             // and corrupt the roster's own waiting times. NeedsYouSince stays unstamped here, exactly as
             // before - this fix does not claim it.
-            StampFleetRolesAndFold(fleet, new[] { session }, needsYouStampFor: null, snoozeRegistry: snoozeRegistry, tenant: reqTenant.Value);
+            StampFleetRolesAndFold(fleet, new[] { session }, needsYouStampFor: null, snoozeRegistry: snoozeRegistry, tenant: reqTenant.Value, handRaises: handRaises);
             return Results.Json(session);
         });
 
@@ -2247,6 +2253,51 @@ internal static class GatewayEndpoints
         // to the Director: it mutates the registry FIRST, then triggers a prompt, bounded set-display-state
         // push so the desktop rail reflects the folded hold (the single writer of the Director's raw hold).
         // The registry mutation stands even if that push times out - the periodic sweep reconciles the rail.
+        // RAISE A HAND TO YOUR SUPERVISOR (issue #2662). The other half of the supervised rule: a supervised
+        // session is quiet toward the owner BY CONSTRUCTION, so this is the channel it uses instead.
+        //
+        // DELIBERATELY NOT A CHANNEL TO THE OWNER. Nothing here touches the colour, the label or the triage
+        // bucket - the fold does not read the flag - so a worker cannot use this to reach him however hard it
+        // tries. That is the prior-art lesson written into the roles design: enforce it in the transport, not
+        // by asking a worker nicely. A worker with a genuinely owner-shaped problem tells its supervisor,
+        // which is a Manager, which is a seat that may surface.
+        //
+        // THE REASON IS REQUIRED. A hand up with no words tells a supervisor almost nothing and turns this
+        // into the "notice me" ping the roles design specifically rejects - messages are for CONTENT.
+        app.MapPost("/sessions/{sid}/needs-manager", async (HttpContext ctx, string sid, NeedsManagerRequest req, CancellationToken ct) =>
+        {
+            var (director, session) = await LocateSessionForRequestAsync(ctx, tenantBoundary, registry, sid, pushedSessions, streamStaleResolved, owners);
+            if (session is null || director is null)
+                return SessionUnavailable(ctx, tenantBoundary, pushedSessions, sid);
+            if (handRaises is null)
+                return Results.StatusCode(StatusCodes.Status503ServiceUnavailable);
+            var reqTenant = ResolveReadTenant(ctx, tenantBoundary);
+            if (reqTenant is null) return Results.NotFound();
+
+            var body = req ?? new NeedsManagerRequest();
+            if (!body.Raised)
+            {
+                handRaises.Clear(reqTenant.Value, sid);
+                FileLog.Write($"[GatewayEndpoints] needs-manager CLEARED sid={sid}");
+                return Results.Ok(new { sessionId = sid, raised = false });
+            }
+
+            var reason = (body.Reason ?? "").Trim();
+            if (reason.Length == 0)
+            {
+                return Results.BadRequest(new
+                {
+                    error = "Say what you need. A raised hand with no words is a 'notice me' ping, and your "
+                          + "supervisor cannot act on it without opening you - which is the work this is "
+                          + "supposed to save."
+                });
+            }
+
+            var raise = handRaises.Raise(reqTenant.Value, sid, reason);
+            FileLog.Write($"[GatewayEndpoints] needs-manager RAISED sid={sid}: {reason}");
+            return Results.Ok(new { sessionId = sid, raised = true, reason = raise.Reason, raisedAt = raise.RaisedAtUtc });
+        }).RequireAuthorization();
+
         app.MapPost("/sessions/{sid}/hold", async (HttpContext ctx, string sid, HoldRequest req, CancellationToken ct) =>
         {
             var (director, session) = await LocateSessionForRequestAsync(ctx, tenantBoundary, registry, sid, pushedSessions, streamStaleResolved, owners);
@@ -4411,7 +4462,8 @@ internal static class GatewayEndpoints
         IReadOnlyList<SessionDto> toStamp,
         Func<TenantId, string, bool, DateTime?>? needsYouStampFor = null,
         Snooze.SnoozeRegistry? snoozeRegistry = null,
-        TenantId? tenant = null)
+        TenantId? tenant = null,
+        Fleet.HandRaiseRegistry? handRaises = null)
     {
         if (roleUniverse is null) throw new ArgumentNullException(nameof(roleUniverse));
         if (toStamp is null) throw new ArgumentNullException(nameof(toStamp));
@@ -4531,6 +4583,19 @@ internal static class GatewayEndpoints
             // the label so every client renders one sentence it did not compose. Null on a session that has
             // not lost anything, which is almost all of them.
             s.PromptDeliveryNotice = SessionOrdering.PromptDeliveryNotice(s);
+            // THE ORPHAN'S EXPLANATION (owner's orphan ruling, 2026-07-09), stamped HERE because this is the
+            // only place that holds the whole fleet - naming the supervisor means finding it, and it may be
+            // a session on another machine entirely. The lookup deliberately searches the ROLE UNIVERSE and
+            // not the response set: a caller filtering the roster must not be able to turn "your supervisor
+            // exited" into "your supervisor never existed" and lose its name from the sentence.
+            //
+            // A miss is a real and ordinary answer, not a failure - a supervisor that exited long enough ago
+            // has left the roster altogether - so the notice simply drops the name and still explains itself.
+            s.SupervisorLostNotice = SessionOrdering.SupervisorLostNotice(
+                s,
+                string.IsNullOrEmpty(s.ControllerSessionId)
+                    ? null
+                    : roleUniverse.FirstOrDefault(u => string.Equals(u.SessionId, s.ControllerSessionId, StringComparison.Ordinal)));
             s.TriageBucket = SessionOrdering.Classify(s) switch
             {
                 SessionOrdering.TriageBucket.NeedsYou => "needsYou",
@@ -4556,6 +4621,21 @@ internal static class GatewayEndpoints
             // loop: this read is a third of the fold's snooze database traffic and it lives here, out of sight
             // of the loop above.
             s.SnoozeUntil = holds.SnoozeUntilFor(s.SessionId);
+
+            // THE RAISED HAND (issue #2662), stamped in the same pass as everything else so every surface
+            // gets one answer. Read as "raised AND still working": a worker that has STOPPED has its hand
+            // lowered here, by derivation, with no sweep and nothing to remember - stopping already carries
+            // its own cue to the supervisor, and a latch somebody had to clear is the one that would still be
+            // up next week.
+            //
+            // NOT read by the colour, the label or the triage bucket, and it must never be. This is a signal
+            // between two sessions; giving it a branch in those arms would put a worker's problem back in the
+            // owner's queue, which is precisely what the supervised rule exists to stop.
+            var raised = handRaises is null || string.IsNullOrEmpty(s.SessionId)
+                ? null
+                : handRaises.Get(tenant ?? TenantId.Local, s.SessionId);
+            s.NeedsManager = raised is not null && SessionOrdering.IsWorkingSession(s);
+            s.NeedsManagerReason = s.NeedsManager ? raised!.Reason : null;
         }
 
         Diagnostics.LoadTestMetrics.FoldDurationMs.RecordSince(foldStart);

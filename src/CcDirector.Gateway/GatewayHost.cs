@@ -788,6 +788,12 @@ public sealed class GatewayHost : IAsyncDisposable
     // non-interruptive by construction: a Working session is never evaluated and never touched.
     private Supervision.SessionSupervisor? _sessionSupervisor;
 
+    // Issue #2662: the raised hands of supervised sessions. Constructed unconditionally and never null - a
+    // null registry would make every hand read as "down", which is the shape of failure this whole mission
+    // exists to remove (a check that passes because nothing is recording). In memory on purpose; see the
+    // class for why a raised hand is not a promise that must outlive a restart.
+    private readonly Fleet.HandRaiseRegistry _handRaises = new();
+
     // The rule evaluator (Session Rules mission, phase 2). Hangs off the SAME Working -> idle boundary the
     // supervisor does, so a working session is out of its reach by construction rather than by a rule
     // somebody has to remember.
@@ -1503,6 +1509,7 @@ public sealed class GatewayHost : IAsyncDisposable
                 // owning tenant so a session id shared across accounts keeps a per-tenant "waiting since".
                 tenant: _tenantPass.Current ?? TenantId.Local,
                 needsYouStampFor: (tenant, sid, isRed) => _needsYouClock.Stamp(tenant, sid, isRed),
+                handRaises: _handRaises,
                 snoozeRegistry: _snoozeRegistry,
                 // Same tenant guard as the two booleans above: an ambient tenant that cannot name a voice
                 // partition answers "no voice state at all" rather than throwing out of PushSnapshot.
@@ -2266,11 +2273,35 @@ public sealed class GatewayHost : IAsyncDisposable
             {
                 if (_tenantPass.Current is not { } tenant) return;   // deny: no scope in effect -> sweep nothing
                 var on = _tenantSettingsResolver.VoiceModeAll(tenant);
+                // ONE SNAPSHOT FEEDS BOTH DIRECTIONS. Taking it twice would let a session appear in one
+                // pass and not the other, so the sweep could switch a row on and off across a single tick.
+                var snapshot = PushedSessions.SnapshotFresh(tenant, stale);
+
+                // OFF FIRST, and unconditionally - see PlanOff for why it is not gated on the fleet switch.
+                // These are sessions marked for voice BEFORE the supervised rule existed (voice marking is
+                // persisted, so they survive restarts); without this pass they would be narrated at the owner
+                // for ever and the rule would look like it had done nothing.
+                foreach (var (directorId, sid) in Wingman.VoiceModeAllSweep.PlanOff(
+                             snapshot, s => vs.IsVoiceSession(tenant, s)))
+                {
+                    var offResult = await Api.DirectorCommandRouter.TrySendAsync(
+                        sendCommand, directorId, "voice-mode", sid, new { enabled = false }, CancellationToken.None);
+                    // UNMARK EVEN IF THE DIRECTOR DID NOT ANSWER, and note this is the OPPOSITE of the
+                    // on-direction below, which marks only on Ok. The asymmetry is deliberate: marking a
+                    // session the Director never heard about would make the Gateway spend narration on a
+                    // session whose own view says it is not a voice session, but UNMARKING one it never heard
+                    // about only stops the Gateway spending narration - the safe direction of the same
+                    // disagreement. The Director's own flag is corrected by a later pass when it comes back.
+                    vs.Unmark(tenant, sid);
+                    FileLog.Write($"[GatewayHost] voice-mode sweep: switched OFF supervised sid={sid} " +
+                                  $"director={directorId} tenant={tenant.ToLogString()} directorAck={(offResult is { Ok: true })}");
+                }
+
                 // Plan returns empty immediately for a tenant that is not in voice mode, so a fleet with the
                 // switch off costs one flag read and nothing else.
                 var plan = Wingman.VoiceModeAllSweep.Plan(
                     on,
-                    PushedSessions.SnapshotFresh(tenant, stale),
+                    snapshot,
                     sid => vs.IsVoiceSession(tenant, sid));
                 if (plan.Count == 0) return;
 
@@ -3199,6 +3230,7 @@ public sealed class GatewayHost : IAsyncDisposable
             // Snooze Length mission: the Gateway-owned snooze registry. POST /sessions/{sid}/hold records
             // (or clears) a snooze-until here, and the /sessions fold overlays an EXPIRED snooze back into
             // "needs you" so the session returns on its own even after its Director dies.
+            handRaises: _handRaises,
             snoozeRegistry: _snoozeRegistry,
             // Gateway Cleanup mission (Wave 4b): the Gateway-native mission store backs POST/GET /missions and
             // mission-scoped spawn validation. Missions are a fleet concept, so their source of truth is here.
@@ -4149,6 +4181,11 @@ public sealed class GatewayHost : IAsyncDisposable
         TenantId tenant,
         Func<TenantId, string, bool, DateTime?>? needsYouStampFor,
         Snooze.SnoozeRegistry? snoozeRegistry,
+        // Issue #2662: threaded so the PUSH path folds the same inputs as the roster. #1843 is the whole
+        // reason this is not optional-and-forgotten: that seam already shipped once folding without two of
+        // the roster's inputs, and the two surfaces disagreed silently for days. Sharing the fold function
+        // is not sharing the answer - the INPUTS have to match.
+        Fleet.HandRaiseRegistry? handRaises,
         Func<string, Core.HostedAi.HostedAiState?>? voiceUnavailableFor = null,
         Func<string, bool>? nothingToNarrateFor = null,
         Func<string, bool>? directorCannotSendConversationFor = null,
@@ -4184,7 +4221,7 @@ public sealed class GatewayHost : IAsyncDisposable
                 directorCannotSendConversation: directorCannotSendConversationFor?.Invoke(s.SessionId) ?? false,
                 waitingSince: s.VoiceWaitingSince);
         }
-        Api.GatewayEndpoints.StampFleetRolesAndFold(sessions, sessions, needsYouStampFor, snoozeRegistry, tenant);
+        Api.GatewayEndpoints.StampFleetRolesAndFold(sessions, sessions, needsYouStampFor, snoozeRegistry, tenant, handRaises);
     }
 
     /// <summary>

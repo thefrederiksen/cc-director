@@ -174,6 +174,51 @@ Do NOT set it for: routine progress, "I finished" (idling to Waiting covers that
 the worker can decide itself. The bar is: "I would be red-to-human if I were Standalone, and I
 am still mid-turn so idling will not express it."
 
+## AMENDED 2026-09-02 - the owner widened this, and it is now BUILT
+
+Two things changed, and both are in the code and in
+`docs/new_architecture/session-state.html` (the authority for the ladder):
+
+1. **Suppression became PARKING.** A suppressed session used to be recoloured and left sitting in the
+   middle of the roster. The owner's ruling - *"supervised still show up in Director and Cockpit,
+   session should go to onhold when not working"* - makes it sink into the parked bucket instead. It
+   is still fully visible and readable on every screen; it just stops being in his queue.
+2. **The rule covers three kinds, not one.** It was Worker-only. It is now every SUPERVISED session:
+   a **Worker** (live supervisor), an **Architect** (the 2026-07-09 amendment recorded below, which
+   had reached this document and never reached the code), and a **scheduled run** (`OriginKind ==
+   "schedule"` - a cron firing has no supervisor to report to, and the owner's standing rule is that
+   scheduled runs escalate by email rather than by sitting red on the roster).
+
+Unchanged, and load-bearing: **nothing outranks working**, an **exited or crashed** session never
+hides behind a snoozed label, and the **orphan escape hatch** still fires - a session whose
+supervisor died resolves to Standalone, so it is not supervised and its red reaches the owner.
+
+3. **The wingman no longer enrols a supervised session into voice mode.** `VoiceModeAllSweep.Plan` resolves
+   the roles itself and skips them - it has to resolve, because the push store nulls the role at ingest, so a
+   check that merely read the field would answer "not supervised" for every session on the fleet and narrate
+   exactly as before. Measured, not asserted: with the resolution removed and the skip left in, all three
+   supervised cases fail.
+
+   INCOMPLETE, and stated plainly: this stops NEW enrolment only. A session already marked as a voice session
+   before this change stays marked and is still narrated, because the sweep is deliberately one-directional
+   and never switches voice OFF. Un-enrolling the ones already on is not built.
+
+4. **A supervised session can raise its hand to its supervisor** - issue #2662, BUILT. `NeedsManager` was
+   declared on the wire from July with zero writers and zero readers; it now has a Gateway-owned registry, an
+   endpoint (`POST /sessions/{sid}/needs-manager`), a fold stamp on both the roster and the display-push
+   paths, and two commands: `cc-devthrottle session raise "<what I need>"` and `cc-devthrottle session
+   workers`. The hand LOWERS ITSELF when the session stops working - derived, not swept - because stopping
+   already cues the supervisor and a latch somebody had to clear is the one still up next week. The reason is
+   required: a hand with no words is the "notice me" ping this design rejects.
+
+   The owner never sees it. It is not read by the colour, the label or the triage bucket, and a test asserts a
+   raised hand changes none of the three - at both ends of the ladder.
+
+STILL NOT BUILT, and this document should not be read as claiming otherwise: no client draws the
+viewer-relative manager-facing HIGHLIGHT described below - no client knows its own session id, so none can
+ask "am I this row's supervisor?". The manager-facing surface built for #2662 is the COMMAND LINE
+(`session workers`), which is where managers actually live on this fleet. A rail highlight remains open.
+
 ## Attention routing table
 
 | Role | Signal | Layer | Who sees it |
