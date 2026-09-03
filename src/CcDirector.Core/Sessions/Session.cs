@@ -568,6 +568,17 @@ public sealed class Session : IDisposable
     public string? ClaudeSessionId { get; internal set; }
 
     /// <summary>
+    /// When the Director last cleared this session's context through a driver that could not report the
+    /// transcript the clear started (pi's <c>/new</c>: the new file appears only with the next message).
+    /// Null when no such clear is outstanding. <see cref="Pi.PiSessionRebinder"/> consumes it at the next
+    /// turn end and clears it once the session is relinked to the file created after it (issue #2670).
+    /// </summary>
+    public DateTime? ContextClearedUtc { get; private set; }
+
+    /// <summary>The outstanding clear has been resolved to its transcript; nothing is pending.</summary>
+    internal void ClearContextClearedStamp() => ContextClearedUtc = null;
+
+    /// <summary>
     /// The absolute path to the current Claude transcript .jsonl, as reported by the Claude
     /// SessionStart hook. Authoritative across /clear and compaction (Claude mints a new id
     /// and file on each), where deriving the path from a stale <see cref="ClaudeSessionId"/>
@@ -2694,7 +2705,11 @@ public sealed class Session : IDisposable
 
         if (!driver.Capabilities.HasFlag(Drivers.DriverCapabilities.TranscriptRead) || oldId is null)
         {
-            FileLog.Write($"[Session] ClearContextAsync: no transcript tracking for {driver.Kind}, clear submitted");
+            // The clear happened but the transcript it starts cannot be found here: pi, for one, writes
+            // the new file only on the next message. Stamp the moment, so a watcher that runs at the
+            // session's next turn end can find the file created after it (PiSessionRebinder, #2670).
+            ContextClearedUtc = t0;
+            FileLog.Write($"[Session] ClearContextAsync: no synchronous transcript tracking for {driver.Kind}; clear submitted and stamped at {t0:O}");
             return null;
         }
 

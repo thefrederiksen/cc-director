@@ -172,7 +172,7 @@ public sealed class AgentPluginRegistryTests
         Assert.Equal(AgentHistoryProviderKind.TranscriptFile, plugin.History.ProviderKind);
         Assert.True(plugin.History.SupportsConversationHistory);
         Assert.Contains(".pi", plugin.History.StoreDescription);
-        Assert.False(plugin.Launch.SupportsPreassignedSessionId);
+        Assert.True(plugin.Launch.SupportsPreassignedSessionId);   // pi --session-id (issue #2670)
         Assert.False(plugin.Launch.SupportsStudioMode);
         Assert.True(plugin.Driver.Capabilities.HasFlag(DriverCapabilities.Cancel));
         Assert.True(plugin.Driver.Capabilities.HasFlag(DriverCapabilities.ClearContext));
@@ -196,15 +196,18 @@ public sealed class AgentPluginRegistryTests
         var resume = plugin.BuildLaunchSpec(new AgentPluginLaunchRequest(
             options,
             UserArgs: null,
-            ResumeSessionId: "pi-resume-ignored",
+            ResumeSessionId: "8be79bf8-7db0-46c2-b19e-73857c9a7159",
             StudioMode: false));
 
         Assert.IsType<PiAgent>(agent);
         Assert.Equal("pi-custom", agent.ExecutablePath);
-        Assert.Equal("--model local", newSession.Arguments);
-        Assert.Null(newSession.PreassignedSessionId);
-        Assert.Equal("", resume.Arguments);
-        Assert.Null(resume.PreassignedSessionId);
+        // Every launch names its session (issue #2670): a minted id for a new session, the session's own
+        // id for a reopen, which is also how pi resumes it. Studio mode is not a pi feature and is ignored.
+        Assert.NotNull(newSession.PreassignedSessionId);
+        Assert.True(Guid.TryParse(newSession.PreassignedSessionId, out _));
+        Assert.Equal($"--model local --session-id {newSession.PreassignedSessionId}", newSession.Arguments);
+        Assert.Equal("8be79bf8-7db0-46c2-b19e-73857c9a7159", resume.PreassignedSessionId);
+        Assert.Equal("--session-id 8be79bf8-7db0-46c2-b19e-73857c9a7159", resume.Arguments);
     }
 
     [Fact]

@@ -10,16 +10,16 @@ namespace CcDirector.Core.Pi;
 ///   {"type":"message","message":{"role":"assistant","provider":"openai-codex","model":"gpt-5.5", ...}}
 ///
 /// The LAST assistant message wins, so a mid-session model switch is reflected. Null until the
-/// first assistant message exists. The session file for a repo is located by
-/// <see cref="PiContextUsage.LocateNewestForRepo"/> (verified against pi 0.79.4, issue #1637).
+/// first assistant message exists. The session file is the one named by the session's id
+/// (<see cref="PiSessionLocator"/>; format verified against pi 0.79.4, issue #1637).
 /// </summary>
 public static class PiCurrentModel
 {
-    /// <summary>The current model of the newest pi session matching <paramref name="repoPath"/>, or
-    /// null when none matches or it has no assistant message yet.</summary>
-    public static string? ReadForRepo(string repoPath)
+    /// <summary>The current model of the pi session with this id, or null when pi has not written its
+    /// file yet or it has no assistant message yet.</summary>
+    public static string? ReadForSession(string agentSessionId)
     {
-        var file = PiContextUsage.LocateNewestForRepo(repoPath);
+        var file = PiSessionLocator.Resolve(agentSessionId);
         if (file is null)
             return null;
         return ReadFromFile(file);

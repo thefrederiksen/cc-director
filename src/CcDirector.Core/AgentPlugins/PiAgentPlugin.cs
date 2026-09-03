@@ -58,7 +58,7 @@ public sealed class PiAgentPlugin : IAgentPlugin
 
     public AgentPluginHistoryMetadata History => HistoryMetadata;
 
-    public AgentPluginLaunchMetadata Launch { get; } = new(SupportsPreassignedSessionId: false, SupportsStudioMode: false);
+    public AgentPluginLaunchMetadata Launch { get; } = new(SupportsPreassignedSessionId: true, SupportsStudioMode: false);
 
     public AgentPluginFleetMetadata Fleet { get; } = new(
         FleetPreambleStrategy.InstructionFile, FleetPreambleStatus.Wired,
