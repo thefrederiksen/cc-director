@@ -1,0 +1,2 @@
+# Captured screens are kept byte for byte: no line-ending conversion on the way in or out.
+cases/*/screen.txt -text
