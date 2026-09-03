@@ -33,6 +33,10 @@ internal static class SessionRuleWire
         cooldownSeconds = r.CooldownSeconds,
         dailyCap = r.DailyCap,
         state = RuleWireNames.ToWireName(r.State.ToString()),
+        // WHO MADE IT LIVE. Dry run is the bound that puts a person between a standing instruction and its
+        // first real use, and this is the only place the account can find out who that person was. It was
+        // stored and not delivered, which for a reader is the same as not existing.
+        promotedBy = r.PromotedBy,
         createdUtc = r.CreatedUtc,
         updatedUtc = r.UpdatedUtc,
     };
@@ -52,6 +56,10 @@ internal static class SessionRuleWire
         checksRun = f.PrimitiveRuns.Select(p => new { name = p.Name, arguments = p.Arguments, answer = p.Answer }).ToList(),
         typedText = f.TypedText,
         outcome = f.Outcome,
+        // WHAT CHECKING THE STATED REASON AGAINST THE SCREEN FOUND (Architect ruling A12). It is never
+        // blank, and delivering it is the whole point of it: a run in which that check never happened must
+        // not read the same as one in which it ran and found nothing wrong.
+        grounding = f.Grounding,
     };
 
     /// <summary>
@@ -90,16 +98,21 @@ internal static class SessionRuleWire
         return array.EnumerateArray().Select(RuleCallJson.Scalar).ToList();
     }
 
-    /// <summary>The checks, read by the SAME reader the agent's reply goes through - one meaning of a check
-    /// written as JSON in this feature, not two.</summary>
+    /// <summary>
+    /// The checks, read by the SAME reader the agent's reply goes through - one meaning of a check written
+    /// as JSON in this feature, and now really one rather than two.
+    ///
+    /// This used to read them only when the property was an array and to drop any entry that was not an
+    /// object, silently, while the route's own comment claimed both paths used the same reader. A check
+    /// that disappears takes its refusal with it, and a caller could ask for two checks, have one quietly
+    /// removed and receive a rule that runs the other one alone.
+    /// </summary>
+    /// <exception cref="RuleRejectedException">The checks are not a list of checks; the reason says why.</exception>
     internal static IReadOnlyList<RulePrimitiveCall> Calls(JsonElement body)
     {
-        if (!body.TryGetProperty("checks", out var array) || array.ValueKind != JsonValueKind.Array)
-            return Array.Empty<RulePrimitiveCall>();
-        return array.EnumerateArray()
-            .Where(e => e.ValueKind == JsonValueKind.Object)
-            .Select(RuleCallJson.ReadCall)
-            .ToList();
+        var calls = RuleCallJson.ReadChecks(body, "checks", required: true, out var problem);
+        if (calls is null) throw new RuleRejectedException(problem!);
+        return calls;
     }
 
     internal static int Number(JsonElement body, string name) =>
