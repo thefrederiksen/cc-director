@@ -179,9 +179,13 @@ store's gate all being the production code. Only the credential lookup was hand-
 | "When the provider stops working, wait a while and then start the session back up." | A rule: watches for provider / rate limit / 429 / service unavailable / connection refused / ECONNREFUSED / ETIMEDOUT / overloaded / quota exceeded, 120 seconds apart, 15 a day |
 | "If a session is sitting there asking me whether it can edit a file inside the repository it is already working in, just say yes." | A rule: watches for edit / allow / permission / modify / approve, 5 seconds apart, 50 a day |
 
-The multi-turn conversation is proven live and not only against a canned answer: the question came
-back, the answer went in, and the second turn produced a storable rule whose instruction is the
-person's own words.
+The multi-turn conversation was driven ONCE against the live hosted model by the hand-wired probe
+described above: the question came back, the answer went in, and the second turn produced a storable
+rule whose instruction is the person's own words. That is one observed run, not a gate: nobody has
+watched it through the page or the command line against a running Gateway, and the "what is not
+proven" list below says so. An earlier version of this report said "proven live" here and "untested
+against a real model" below, which cannot both be true; fix round D (ruling D10) corrected it to this
+one statement.
 
 ### The defect this found: about half of these calls run out of time
 
@@ -268,8 +272,10 @@ without a second copy of it.
   ordinary words on a coding session's screen.
 - **Nothing ran hosted, against Postgres, or over HTTP.** The draft route is covered by unit tests over
   its reader and its author, not by a request through the live middleware.
-- **The multi-turn conversation is untested against a real model.** A question coming back is proven as
-  a reading; nobody has watched a model actually ask one and then answer it.
+- **The multi-turn conversation has ONE observed live run, through the hand-wired probe, and none
+  through the page or the command line against a running Gateway.** A question coming back is proven
+  as a reading in the suite; the single live run above is the only time a real model was watched asking
+  one and then answering it, and one run is an observation, not a gate.
 - **Trigger-word quality is unbounded.** Nothing stops a model proposing a word so common the rule costs
   a model call on every screen. The read-back is what a person would catch it with, and that relies on
   the person reading it.

@@ -1,3 +1,4 @@
+using System.Text.Json;
 using CcDirector.Core.Tenancy;
 using CcDirector.Gateway.Rules;
 using CcDirector.Gateway.Tests.Data;
@@ -217,6 +218,68 @@ public sealed class SessionRuleStoreTests : IDisposable
         Assert.Equal(RuleState.Live, promoted.State);
         Assert.Equal(Now.AddHours(1), promoted.UpdatedUtc);
         Assert.Equal(RuleState.Live, new SessionRuleStore(_h.Open()).Get(created.Id)!.State);
+    }
+
+    // ---- fix round D, ruling D6: the ceilings have real bounds ----------------------------------------
+
+    /// <summary>
+    /// "GREATER THAN ZERO" IS NOT A SAFETY BOUND. Inspection D found that a daily cap of 2,147,483,647
+    /// and a one-second cooldown both passed the gate, which makes the ceiling a formality. These are the
+    /// Architect's numbers, chosen so a live rule cannot type more than a hundred times a day, and the
+    /// owner can widen them: cooldown at least 60 seconds and at most 24 hours; daily cap at least 1 and
+    /// at most 100. Each edge is asserted on both sides, so the bound is a real line and not a sign.
+    /// </summary>
+    [Theory]
+    [InlineData(59, 5)]
+    [InlineData(86401, 5)]
+    [InlineData(600, 101)]
+    [InlineData(1, 2147483647)]
+    public void A_ceiling_outside_the_bounds_is_refused_naming_the_value_and_the_bound(int cooldown, int cap)
+    {
+        var store = NewStore();
+        var ex = Assert.Throws<RuleRejectedException>(() => store.Create(
+            TheSentence, "a screen", new[] { "limit" }, GoodCalls(),
+            RuleScope.AllSessions, cooldown, cap, Now));
+
+        var outOfBounds = cooldown is < 60 or > 86400 ? cooldown : cap;
+        Assert.Contains(outOfBounds.ToString(), ex.Reason, StringComparison.Ordinal);
+        Assert.Contains(cooldown is < 60 or > 86400 ? "24 hours" : "100", ex.Reason, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData(60, 1)]
+    [InlineData(86400, 100)]
+    public void A_ceiling_on_the_bound_itself_is_accepted(int cooldown, int cap)
+    {
+        var store = NewStore();
+        var rule = store.Create(
+            TheSentence, "a screen", new[] { "limit" }, GoodCalls(),
+            RuleScope.AllSessions, cooldown, cap, Now);
+
+        Assert.Equal(cooldown, rule.CooldownSeconds);
+        Assert.Equal(cap, rule.DailyCap);
+    }
+
+    // ---- fix round D, ruling D5: the acknowledgement is persisted ----------------------------------
+
+    /// <summary>
+    /// A RECORD THAT CANNOT SHOW WHAT WAS AGREED TO IS NOT A RECORD OF AN AGREEMENT. The grant carried
+    /// the sentence and the store kept only who said it; the client contract said the acknowledgement is
+    /// what the record shows. Read back through the wire projection, which is what the account gets.
+    /// </summary>
+    [Fact]
+    public void Promoting_persists_what_the_person_agreed_to_and_serves_it_back()
+    {
+        var store = NewStore();
+        var created = CreateTheRule(store);
+
+        store.Promote(created.Id, GrantFor(created.Id), Now.AddHours(1));
+
+        var served = JsonDocument.Parse(JsonSerializer.Serialize(
+            CcDirector.Gateway.Api.SessionRuleWire.Project(new SessionRuleStore(_h.Open()).Get(created.Id)!))).RootElement;
+        Assert.True(served.TryGetProperty("acknowledgement", out var said),
+            "the served rule does not carry the acknowledgement, so the record cannot show what was agreed to.");
+        Assert.Equal("I have read this rule's dry-run record and I am making it live.", said.GetString());
     }
 
     [Fact]

@@ -626,6 +626,14 @@ public sealed class RuleEvaluatorTests
         Assert.DoesNotContain("zz-distinctive-repository-name", prompt, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("2031", prompt, StringComparison.Ordinal);
         Assert.DoesNotContain("SOREN_NORTH", prompt, StringComparison.Ordinal);
+
+        // THE ONE SESSION FACT THAT IS ALLOWED IN, and why it is not a breach of A11: the agent does not
+        // decide whether the instruction applies - the scope filter already removed every other agent's
+        // session before this question was asked - it decides how the screen is READ. The same trouble
+        // prints different words on different agents. This was added on 3 September 2026 when the owner
+        // ruled rules are agent-specific by default, and it stopped at the agent because this test said
+        // the machine stays out.
+        Assert.Contains("running the agent", prompt, StringComparison.Ordinal);
     }
 
     // ---- ruling A12: an act's reason has to be grounded in the screen it was given ------------------

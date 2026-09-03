@@ -60,8 +60,12 @@ describe("Cockpit left rail", () => {
       "Directors",
       "Schedule",
       "Workflows",
-      // Skills sits immediately after Workflows on purpose: two lists on one shelf (the central
-      // skill library, devthrottle_internal issue 995). Nothing else moved.
+      // Workflows, Rules and Skills sit together on purpose: the shelf of things you DEFINE and the
+      // fleet then works by. A workflow governs how a mission is run (the central catalog), a rule
+      // is a standing instruction that watches a session's screen and acts on it, and a skill is a
+      // capability an agent reaches for mid-task (the central skill library,
+      // devthrottle_internal issue 995). Nothing else moved.
+      "Rules",
       "Skills",
       "Dictionary",
       "Voice Recorder",

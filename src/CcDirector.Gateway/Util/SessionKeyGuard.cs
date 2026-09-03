@@ -10,6 +10,25 @@ public readonly record struct SessionKeyVerdict(bool Allowed, string Reason)
 }
 
 /// <summary>
+/// The ruling on ONE route of the session-rules surface: a session key may call it, may not call it on
+/// purpose, or nobody has classified it at all. The third state is the whole point of this type - see
+/// <see cref="SessionKeyGuard.ClassifyRuleRoute"/>.
+/// </summary>
+public enum RuleRouteRuling
+{
+    /// <summary>Nobody has ruled on this route. The guard denies it, because it is an allow list - but that
+    /// denial is the default falling through, not a decision anybody made, and the two are indistinguishable
+    /// from the outside. The route census test over the built application fails on this state.</summary>
+    Unclassified = 0,
+
+    /// <summary>A session key may call it.</summary>
+    Allowed = 1,
+
+    /// <summary>A session key may not call it, and somebody decided that rather than forgetting it.</summary>
+    RefusedOnPurpose = 2,
+}
+
+/// <summary>
 /// What a SESSION KEY may call on the Gateway (Remove-the-network-port mission, phase 1b).
 ///
 /// This began as the Gateway twin of the Director's ControlApiGuard.CheckSessionChild (deleted with the Director's listener; this guard is the surviving one), and it is written the same way and
@@ -29,7 +48,9 @@ public readonly record struct SessionKeyVerdict(bool Allowed, string Reason)
 /// spawn one, take a mission or a role, mark itself done, and read and publish the fleet's shared skills and
 /// workflows. Plus CONFIGURATION, in both directions: a Director's settings, the application's own settings
 /// (the closed <c>/gateway</c> set in <see cref="IsApplicationSetting"/>), and handovers - which are content
-/// agents produce, and which moving a session needs.
+/// agents produce, and which moving a session needs. Plus the SESSION RULES surface bar exactly one route:
+/// an agent may draft, store, read and delete a rule, and may not move one out of dry run. See
+/// <see cref="IsRuleRoute"/> for the owner's ruling and why that one exception cannot be a prefix rule.
 ///
 /// WHO IS ALLOWED IN - refused. Device registration, enrollment and revocation, because a credential that
 /// can admit a NEW device is not configuring the product, it IS the boundary, and an agent holding one could
@@ -67,15 +88,19 @@ public static class SessionKeyGuard
         var p = (path ?? "").TrimEnd('/');
         if (p.Length == 0) p = "/";
 
-        // Matched lower-cased, because ASP.NET routing matches a path case-insensitively and a guard that
-        // did not would be bypassed by /Sessions. Only the STRUCTURE is compared - the identifier segments
-        // ({sid}, {id}) are never read here - so folding their case cannot change a decision.
-        var segments = p.Split('/', StringSplitOptions.RemoveEmptyEntries);
-        for (var i = 0; i < segments.Length; i++)
-            segments[i] = segments[i].ToLowerInvariant();
+        var segments = Segments(p);
 
         if (IsAllowed(verb, segments))
             return SessionKeyVerdict.Allow;
+
+        // A route the session-rules switch refuses ON PURPOSE answers with the reason that is actually true
+        // of it. The general sentence below talks about the admission surface, which promoting a rule is
+        // not, and an agent handed the wrong reason goes hunting the wrong problem.
+        if (RuleRoute(verb, segments) == RuleRouteRuling.RefusedOnPurpose)
+            return SessionKeyVerdict.Refuse(
+                $"a session key may not call {verb} {p}; an agent may draft, store, read and delete rules, " +
+                "but moving one out of dry run is a person's act - it is the moment a rule may start typing " +
+                "into a session");
 
         return SessionKeyVerdict.Refuse(
             $"a session key may not call {verb} {p}; it may run the fleet's agent routes and configure the " +
@@ -83,8 +108,38 @@ public static class SessionKeyGuard
             "identity, Director registration, or force-killing a Director");
     }
 
+    /// <summary>
+    /// How this guard has ruled on ONE route of the session-rules surface, for a caller that needs to tell
+    /// "refused because somebody decided to refuse it" apart from "refused because nobody has looked at it
+    /// yet". <see cref="Check"/> cannot: both are a 403 with a sentence, and that indistinguishability is
+    /// exactly how the entire rules surface shipped refused by accident with every suite green.
+    ///
+    /// A path outside <c>/gateway/rules</c> answers <see cref="RuleRouteRuling.Unclassified"/> as well -
+    /// this method rules on one surface and says nothing at all about any other.
+    /// </summary>
+    public static RuleRouteRuling ClassifyRuleRoute(string? method, string? path)
+        => RuleRoute((method ?? "").ToUpperInvariant(), Segments((path ?? "").TrimEnd('/')));
+
+    /// <summary>
+    /// The path split into segments and lower-cased, because ASP.NET routing matches a path
+    /// case-insensitively and a guard that did not would be bypassed by /Sessions. Only the STRUCTURE is
+    /// ever compared - the identifier segments ({sid}, {id}) are never read - so folding their case cannot
+    /// change a decision.
+    /// </summary>
+    private static string[] Segments(string p)
+    {
+        var segments = p.Split('/', StringSplitOptions.RemoveEmptyEntries);
+        for (var i = 0; i < segments.Length; i++)
+            segments[i] = segments[i].ToLowerInvariant();
+        return segments;
+    }
+
     private static bool IsAllowed(string verb, string[] s)
     {
+        // The session-rules surface, ruled on in ONE place ahead of the verb branches rather than split
+        // across four of them, so that "has this route been classified?" has a single switch to read.
+        if (IsRuleRoute(verb, s)) return true;
+
         // ---------- Reads ----------
         if (verb is "GET" or "HEAD")
         {
@@ -267,6 +322,75 @@ public static class SessionKeyGuard
 
         return false;
     }
+
+    /// <summary>
+    /// The session-rules surface: <c>/gateway/rules</c> and everything under it.
+    ///
+    /// THE OWNER'S RULING, 2026-09-03: an agent credential may do everything with rules EXCEPT move one out
+    /// of dry run. Drafting, storing, reading and deleting a rule are the product BEHAVING, which the ruling
+    /// of 2026-08-03 puts in an agent's hands - and a stored rule is in dry run by the store's own shape,
+    /// which takes no state parameter at all, so it watches and records and types nothing. Promotion is the
+    /// moment a rule may start typing into a session, and that is a person's act.
+    ///
+    /// A LITERAL SWITCH, NOT A PREFIX - AND THIS SURFACE IS THE EXACT CASE THE REST OF THIS FILE WARNS
+    /// ABOUT. <c>promote</c> sits under the very segment being opened, one path parameter deep, so a prefix
+    /// rule on <c>/gateway/rules</c> would hand it over on the same day it handed over the list, silently
+    /// and with nothing written down that said so. The refusal is therefore spelled out here beside the
+    /// allowances: written down, it survives the next person who widens this surface, and a switch arm
+    /// somebody deletes is a visible act rather than an omission.
+    ///
+    /// WHY THIS RETURNS THREE STATES AND NOT A BOOLEAN. An allow list denies a route it has never heard of,
+    /// which is the right default and a terrible signal: from outside, a route nobody classified looks
+    /// exactly like a route somebody refused. That is what happened here - every rule route was refused with
+    /// HTTP 403 because none of them had ever been added, and every suite stayed green, because the guard's
+    /// own tests are written against the guard's own list. The third state gives the route census test in
+    /// <c>Gateway.Tests</c> something to fail on: it reads the mapped <c>/gateway/rules</c> routes off the
+    /// built application and requires every one of them to be Allowed or RefusedOnPurpose, so the next route
+    /// added to this surface cannot be forgotten - only classified.
+    /// </summary>
+    private static RuleRouteRuling RuleRoute(string verb, string[] s)
+    {
+        if (s.Length < 2 || s.Length > 4 || s[0] != "gateway" || s[1] != "rules")
+            return RuleRouteRuling.Unclassified;
+
+        // The shape, with the identifier segment written as {id} so the switch below reads the way the
+        // route table does. The identifier is never inspected - only its position is.
+        var shape = s.Length switch
+        {
+            2 => "gateway/rules",
+            3 when s[2] == "draft" => "gateway/rules/draft",
+            3 => "gateway/rules/{id}",
+            _ => "gateway/rules/{id}/" + s[3],
+        };
+
+        return (verb, shape) switch
+        {
+            // Read the account's own sentences: the list, one rule, and the record of every time it fired -
+            // including the times it looked and declined, which is most of what the record is for.
+            ("GET", "gateway/rules") => RuleRouteRuling.Allowed,
+            ("GET", "gateway/rules/{id}") => RuleRouteRuling.Allowed,
+            ("GET", "gateway/rules/{id}/firings") => RuleRouteRuling.Allowed,
+
+            // Work a rule out and hand it back to look at. Stores nothing.
+            ("POST", "gateway/rules/draft") => RuleRouteRuling.Allowed,
+
+            // Store one. It lands in dry run whatever the caller sends, because there is no state parameter.
+            ("POST", "gateway/rules") => RuleRouteRuling.Allowed,
+
+            // Remove one. The firings outlive it, so the record is not lost with the rule.
+            ("DELETE", "gateway/rules/{id}") => RuleRouteRuling.Allowed,
+
+            // REFUSED, deliberately and permanently. Arming a rule is the one real exposure on this surface.
+            ("POST", "gateway/rules/{id}/promote") => RuleRouteRuling.RefusedOnPurpose,
+
+            _ => RuleRouteRuling.Unclassified,
+        };
+    }
+
+    /// <summary>Whether a session key may call this route of the session-rules surface. See
+    /// <see cref="RuleRoute"/> for the ruling and for why the refusal is written out beside it.</summary>
+    private static bool IsRuleRoute(string verb, string[] s)
+        => RuleRoute(verb, s) == RuleRouteRuling.Allowed;
 
     /// <summary>
     /// The automation-browser shapes under <c>/directors/{id}/browsers</c>.

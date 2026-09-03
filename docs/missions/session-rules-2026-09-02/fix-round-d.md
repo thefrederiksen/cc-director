@@ -216,3 +216,35 @@ future route change moves the boundary without anybody noticing.
 
 Test it directly - construct a promotion attempt carrying a session-key identity and assert the
 refusal - so it does not depend on the route guard being correct in order to pass.
+
+### Correction to D11's stated reason, made on evidence 2026-09-03
+
+**D11 stands. Its justification above was wrong, and the truth is worse.**
+
+D11 was written from the guard fix report's claim that `RulePromotionGrant` would ACCEPT a session
+key, which would have meant an agent credential could arm a rule if it ever reached the grant. That
+claim is false. The fix round D Manager found, and the Architect then confirmed independently by
+reading the two constants rather than by taking either report on trust, that the grant refused
+**everyone**:
+
+- `RulePromotionGrant` reads the request item `DeviceKeyId`.
+- `AuthMiddleware` writes `cc.auth.DeviceKey` (`DeviceKeyItemKey`).
+- They are different strings, nothing anywhere writes `DeviceKeyId`, and the middleware sets no
+  authenticated principal - it carries identity on `ctx.Items`.
+
+So `CallerOf` returned null on every real request and every promotion over HTTP threw "this request
+has no caller the Gateway authenticated".
+
+**Promotion has been shipped broken on `main` since fix round A hardened it.** The promote route in a
+released feature could never have worked for any account. The only promotion this mission ever
+demonstrated happened on 2026-09-02 under the OLD id-and-timestamp shape - before the hardening that
+introduced the bug - and `qa-report.md` is honest that the call "no longer works as written". Nobody
+read that sentence as literally as it turned out to be true.
+
+**This goes in the QA report as a user-facing defect the mission found and fixed**, not as an
+internal note. It is also the mission's own law demonstrated on the mission itself: a fix round is new
+writing and carries a new writer's risk, and fix round A's hardening was not gated as hard as the
+first draft was.
+
+D11 is now defence in depth on a grant that actually works, rather than the only correct check on one
+that did not.

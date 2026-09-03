@@ -113,5 +113,14 @@ public static class SpokenPaths
             + "run, and the exact text to TYPE INTO A TERMINAL. Nothing it produces is spoken. The text it "
             + "yields is a keystroke, not prose, so translating it would change what is typed - the reply "
             + "is machine-read from end to end and an unreadable one is recorded as a refusal.",
+        ["RuleDraftContract.BuildDraftPrompt"] =
+            "Turns what somebody said into a standing instruction and returns JSON that code validates: a "
+            + "screen description, trigger words, checks, a scope and two ceilings. Nothing it produces is "
+            + "ever spoken. Two of its fields ARE read by a person - the question it may ask back and the "
+            + "read-back it offers for confirmation - and they are shown on a screen rather than heard, so "
+            + "the spoken contract is the wrong instrument for them; when the rule surface is built and "
+            + "those two fields have somewhere to appear, the account's language belongs on them and this "
+            + "entry should be revisited rather than left as an exemption that has quietly stopped being "
+            + "true.",
     };
 }

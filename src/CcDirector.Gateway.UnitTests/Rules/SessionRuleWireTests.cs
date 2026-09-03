@@ -94,6 +94,65 @@ public sealed class SessionRuleWireTests
         Assert.Equal("live", wire.GetProperty("state").GetString());
     }
 
+    // ---- fix round D, ruling D8: the Gateway stamps the finished labels; clients render them ----------
+
+    /// <summary>
+    /// THE CLIENT IS DUMB (repository rule 7). Both clients were composing "every session" and "10
+    /// minutes" for themselves, from different code, so the two could disagree about the same rule. The
+    /// served rule carries the finished scope label and wait label, and the clients render the strings.
+    /// </summary>
+    [Fact]
+    public void A_served_rule_carries_the_finished_scope_label_and_wait_label()
+    {
+        var wire = AsWire(SessionRuleWire.Project(ALiveRule("device-9f2c")));
+
+        Assert.True(wire.TryGetProperty("scopeLabel", out var scope),
+            "the served rule carries no scope label, so every client has to compose one for itself.");
+        Assert.Equal("every session", scope.GetString());
+        Assert.True(wire.TryGetProperty("waitLabel", out var wait),
+            "the served rule carries no wait label, so every client has to compose one for itself.");
+        Assert.Equal("5 minutes", wait.GetString());
+    }
+
+    [Fact]
+    public void A_narrow_scope_is_labelled_by_the_parts_that_are_set()
+    {
+        var rule = ALiveRule("device-9f2c") with { Scope = new RuleScope("Codex", null, "SOREN_NORTH", null) };
+
+        var wire = AsWire(SessionRuleWire.Project(rule));
+
+        Assert.Equal("agent Codex, machine SOREN_NORTH", wire.GetProperty("scopeLabel").GetString());
+    }
+
+    // ---- fix round D, ruling D7: a number that cannot be read is a refusal, never a 500 ---------------
+
+    /// <summary>
+    /// The write route's number reader called the 32-bit accessor on any JSON number, so a decimal or an
+    /// out-of-range integer threw past the route's catch and became a server error with the reason lost.
+    /// A write that cannot be read is refused with a sentence that names the field and the value.
+    /// </summary>
+    [Theory]
+    [InlineData("600.5")]
+    [InlineData("99999999999")]
+    [InlineData("-1e3")]
+    public void A_number_that_is_not_a_whole_number_in_range_is_refused_with_a_sentence(string written)
+    {
+        var body = JsonDocument.Parse("{ \"cooldownSeconds\": " + written + " }").RootElement;
+
+        var ex = Assert.Throws<RuleRejectedException>(() => SessionRuleWire.Number(body, "cooldownSeconds"));
+
+        Assert.Contains("cooldownSeconds", ex.Reason, StringComparison.Ordinal);
+        Assert.Contains(written, ex.Reason, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void A_whole_number_in_range_is_read_as_itself()
+    {
+        var body = JsonDocument.Parse("{ \"cooldownSeconds\": 600 }").RootElement;
+
+        Assert.Equal(600, SessionRuleWire.Number(body, "cooldownSeconds"));
+    }
+
     [Fact]
     public void A_firing_still_carries_everything_it_carried_before()
     {

@@ -62,6 +62,12 @@ public sealed class SessionRuleEntity : GatewayMintedKeyEntity
     /// accountable for.</summary>
     public string PromotedBy { get; set; } = "";
 
+    /// <summary>What the person who promoted this rule said they were agreeing to, verbatim. Empty while
+    /// the rule is in dry run. The promotion grant always carried this sentence; until fix round D the
+    /// store kept only who said it, while the client contract said the record shows what was agreed to.
+    /// Persisting it is what makes that sentence true.</summary>
+    public string Acknowledgement { get; set; } = "";
+
     public DateTime CreatedUtc { get; set; }
     public DateTime UpdatedUtc { get; set; }
 }

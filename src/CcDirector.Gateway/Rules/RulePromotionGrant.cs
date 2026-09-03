@@ -1,3 +1,5 @@
+using CcDirector.Gateway.Pairing;
+using CcDirector.Gateway.Util;
 using Microsoft.AspNetCore.Http;
 
 namespace CcDirector.Gateway.Rules;
@@ -32,6 +34,19 @@ namespace CcDirector.Gateway.Rules;
 ///    from ordinary rules code, and the guard named it.
 ///  - A grant names ONE rule and is SINGLE USE. It is consumed by the promotion it was obtained for, so a
 ///    grant cannot be captured and replayed, and cannot be turned on a different instruction.
+///  - A SESSION KEY IS REFUSED HERE, ON THE CREDENTIAL ITSELF (fix round D, ruling D11). The route guard
+///    already refuses the promote route to an agent's credential; this is the second, deliberately
+///    redundant refusal at the destination, for the day a route change moves that boundary without
+///    anybody noticing. Authentication is not authorization: the route list saying "not through this
+///    door" is one decision, and this is the destination asking "who is this?" for itself.
+///
+/// AND ONE THING THIS TYPE GOT WRONG A THIRD TIME, found in fix round D while writing the direct tests:
+/// it read the device off an item named "DeviceKeyId" that nothing in the Gateway ever wrote, and the
+/// middleware never sets a principal - so every real device-key request reaching the promote route was
+/// refused as having no caller, while the unit tests, whose helper set the same made-up item, were green.
+/// The caller is now read through the middleware's OWN constants and identity types, and the test helper
+/// marks a request the way the middleware does, so the two can no longer agree with each other and with
+/// nothing else.
 ///
 /// WHAT IT DOES NOT ENFORCE. It is not proof that a human being was at a keyboard - nothing inside a
 /// process can be. Within one assembly, access modifiers cannot make a capability physically unreachable
@@ -89,6 +104,16 @@ public sealed class RulePromotionGrant
     internal static RulePromotionGrant FromAuthenticatedRequest(
         Guid ruleId, HttpContext? http, string? acknowledgement, DateTime askedUtc)
     {
+        // THE ONE CALLER THAT IS REFUSED FOR WHAT IT IS, before anything else is read off the request. A
+        // session key is an agent's credential. Moving a rule out of dry run is the one act the owner
+        // named as a person's alone, and it is refused here whether or not the route guard let the request
+        // through - and refused BEFORE a device identity beside it could name somebody.
+        if (AuthMiddleware.CallingSession(http) is not null)
+            throw new RuleRejectedException(
+                "this request was made with a session key, which is an agent's credential. A rule is moved " +
+                "out of dry run by a person: an agent may draft, store, read and delete rules, and may not " +
+                "make one live. Nothing was promoted.");
+
         var actor = CallerOf(http);
         if (actor is null)
             throw new RuleRejectedException(
@@ -118,13 +143,13 @@ public sealed class RulePromotionGrant
         if (identity is { IsAuthenticated: true } && !string.IsNullOrWhiteSpace(identity.Name))
             return identity.Name!.Trim();
 
-        if (http.Items.TryGetValue(DeviceKeyItem, out var device) && device is string deviceId
-            && !string.IsNullOrWhiteSpace(deviceId))
-            return deviceId.Trim();
+        // The device the device-key middleware authenticated, read by ITS constant and ITS identity type -
+        // never by a string of this file's own, which is how this read named nobody for a whole release.
+        if (http.Items.TryGetValue(AuthMiddleware.AuthenticatedDeviceItemKey, out var device)
+            && device is DeviceCredentialIdentity authenticated
+            && !string.IsNullOrWhiteSpace(authenticated.DeviceId))
+            return authenticated.DeviceId.Trim();
 
         return null;
     }
-
-    /// <summary>Where the device-key middleware leaves the device it authenticated.</summary>
-    internal const string DeviceKeyItem = "DeviceKeyId";
 }

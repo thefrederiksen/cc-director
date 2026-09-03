@@ -353,4 +353,94 @@ public sealed class SessionKeyGuardTests
         Assert.False(SessionKeyGuard.Check("GET", "/").Allowed);
         Assert.False(SessionKeyGuard.Check(null, "/sessions").Allowed);
     }
+
+    // ---------- The session-rules surface ----------
+    //
+    // The owner's ruling of 2026-09-03: an agent credential may do everything with rules EXCEPT move one
+    // out of dry run.
+    //
+    // WHERE THESE ROWS COME FROM, WHICH IS THE ONLY REASON THEY ARE WORTH ANYTHING. Every one is read off
+    // the OTHER side - the route table in SessionRuleEndpoints, and the client's own RuleClient - and not
+    // off the guard. The whole surface was refused with HTTP 403 on every call for the same reason the
+    // catalogue and schedule surfaces were before it: nobody had told the guard the routes existed, and
+    // the guard's tests are written against the guard, so they agreed with it and stayed green. A test
+    // written from the implementation cannot disagree with the implementation.
+    //
+    // These rows are a hand-kept list and cannot catch the NEXT route added here. That is the job of the
+    // census test over the built application in Gateway.Tests, which fails on any mapped /gateway/rules
+    // route the guard has not classified either way.
+
+    private const string RuleId = "6b2f4b1e-6d5a-4a2f-9f5f-9d7c0f3a1b2c";
+
+    [Theory]
+    [InlineData("GET", "/gateway/rules")]
+    [InlineData("GET", "/gateway/rules/" + RuleId)]
+    [InlineData("GET", "/gateway/rules/" + RuleId + "/firings")]
+    [InlineData("POST", "/gateway/rules/draft")]
+    [InlineData("POST", "/gateway/rules")]
+    [InlineData("DELETE", "/gateway/rules/" + RuleId)]
+    public void An_agent_may_draft_store_read_and_delete_a_rule(string method, string path)
+        => Assert.True(SessionKeyGuard.Check(method, path).Allowed,
+            $"{method} {path} is what the rule command line sends; refusing it returns 403 to every agent");
+
+    [Fact]
+    public void An_agent_may_not_move_a_rule_out_of_dry_run()
+    {
+        var verdict = SessionKeyGuard.Check("POST", $"/gateway/rules/{RuleId}/promote");
+
+        // The one real exposure on this surface, and the owner's ruling. Promotion is the moment a rule may
+        // start typing into a session. Note that it sits one path parameter under the routes opened above,
+        // which is exactly why the guard spells it out rather than opening /gateway/rules by prefix.
+        Assert.False(verdict.Allowed);
+
+        // A refusal that does not say why sends the agent hunting a credential problem it does not have.
+        Assert.Contains("POST", verdict.Reason);
+        Assert.Contains("/promote", verdict.Reason);
+        Assert.Contains("dry run", verdict.Reason);
+    }
+
+    [Theory]
+    // Shapes under /gateway/rules that the Gateway does not route. Authorizing one is latent widening: it
+    // is invisible today, because the router answers 404, and it is open to every session key on the day
+    // somebody maps a route there.
+    [InlineData("PUT", "/gateway/rules/" + RuleId)]
+    [InlineData("POST", "/gateway/rules/" + RuleId)]
+    [InlineData("DELETE", "/gateway/rules")]
+    [InlineData("PUT", "/gateway/rules")]
+    [InlineData("GET", "/gateway/rules/draft")]
+    [InlineData("POST", "/gateway/rules/" + RuleId + "/firings")]
+    [InlineData("GET", "/gateway/rules/" + RuleId + "/promote")]
+    [InlineData("DELETE", "/gateway/rules/" + RuleId + "/promote")]
+    // Deeper than anything mapped, and a sibling nobody has classified.
+    [InlineData("GET", "/gateway/rules/" + RuleId + "/firings/latest")]
+    [InlineData("POST", "/gateway/rules/" + RuleId + "/arm")]
+    public void A_rule_shape_the_gateway_does_not_route_is_not_authorized(string method, string path)
+        => Assert.False(SessionKeyGuard.Check(method, path).Allowed,
+            $"{method} {path} is not a mapped route; authorizing it is latent widening");
+
+    [Fact]
+    public void The_classifier_tells_a_deliberate_refusal_apart_from_one_nobody_decided()
+    {
+        // Check() answers 403 for both, which is why the whole surface could be refused by accident with
+        // every suite green. This is the distinction the census test in Gateway.Tests fails on.
+        Assert.Equal(RuleRouteRuling.Allowed, SessionKeyGuard.ClassifyRuleRoute("GET", "/gateway/rules"));
+        Assert.Equal(RuleRouteRuling.RefusedOnPurpose,
+            SessionKeyGuard.ClassifyRuleRoute("POST", $"/gateway/rules/{RuleId}/promote"));
+        Assert.Equal(RuleRouteRuling.Unclassified,
+            SessionKeyGuard.ClassifyRuleRoute("POST", $"/gateway/rules/{RuleId}/arm"));
+
+        // It rules on one surface and says nothing about any other - including routes that ARE allowed
+        // elsewhere in the guard, so a caller cannot read this as a second opinion on them.
+        Assert.Equal(RuleRouteRuling.Unclassified, SessionKeyGuard.ClassifyRuleRoute("GET", "/sessions"));
+        Assert.Equal(RuleRouteRuling.Unclassified, SessionKeyGuard.ClassifyRuleRoute("POST", "/account/sign-in"));
+    }
+
+    [Fact]
+    public void Case_and_a_trailing_slash_do_not_open_or_close_a_rule_route()
+    {
+        Assert.True(SessionKeyGuard.Check("GET", "/Gateway/Rules/").Allowed);
+        Assert.False(SessionKeyGuard.Check("POST", $"/Gateway/Rules/{RuleId}/Promote/").Allowed);
+        Assert.Equal(RuleRouteRuling.RefusedOnPurpose,
+            SessionKeyGuard.ClassifyRuleRoute("POST", $"/Gateway/Rules/{RuleId}/Promote/"));
+    }
 }

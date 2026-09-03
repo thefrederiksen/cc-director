@@ -52,15 +52,13 @@ internal static class SessionRuleRecordRules
                 "a rule needs at least one word to watch for, or it would cost a model call on every " +
                 "screen. The words are worked out from the instruction, not chosen by hand.");
 
-        if (rule.CooldownSeconds <= 0)
-            throw new RuleRejectedException(
-                "a rule has to say how long to wait before acting on the same session again. " +
-                "The ceiling is what makes a rule in a loop finite.");
+        // THE CEILINGS HAVE BOUNDS, NOT JUST A SIGN (fix round D, ruling D6). The bounds and their
+        // words live in one place, RuleCeilings, which the question to the model quotes as well.
+        var cooldownProblem = RuleCeilings.WhyCooldownIsOut(rule.CooldownSeconds);
+        if (cooldownProblem is not null) throw new RuleRejectedException(cooldownProblem);
 
-        if (rule.DailyCap <= 0)
-            throw new RuleRejectedException(
-                "a rule has to say how many times a day it may act on one session. " +
-                "The ceiling is what makes a rule in a loop finite.");
+        var capProblem = RuleCeilings.WhyDailyCapIsOut(rule.DailyCap);
+        if (capProblem is not null) throw new RuleRejectedException(capProblem);
 
         var validation = RuleCallValidator.ValidateAll(rule.Calls, registry);
         if (!validation.IsValid) throw new RuleRejectedException(validation.Reason);

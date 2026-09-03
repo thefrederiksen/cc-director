@@ -54,6 +54,20 @@ public sealed class CensusRouteTenancyProbeTests : IAsyncLifetime
     private HttpClient _http = null!;
     private string _keyA = "";
     private string _keyB = "";
+    private CcDirector.Core.Tenancy.TenantId _tenantA;
+    private CcDirector.Core.Tenancy.TenantId _tenantB;
+
+    /// <summary>The one session each tenant has, and the screen it shows. Tenant A's session exists ONLY
+    /// in tenant A and tenant B's only in tenant B - a session id is a tenant-scoped fact, exactly like
+    /// a rule id, and the draft route has to look it up in the CALLER'S tenant.</summary>
+    private const string SessionA = "sess-a-fix-round-d";
+    private const string SessionB = "sess-b-fix-round-d";
+    private const string TheScreen = "> carry on\n\nAPI Error: 529 overloaded. Claude usage limit reached.\n\n>";
+
+    /// <summary>What the fake model was asked as, per call: the tenant the Gateway resolved. Asserted at
+    /// the far side of the draft route, which is the only place a tenant constant would show.</summary>
+    private readonly List<CcDirector.Core.Tenancy.TenantId> _modelAskedAs = new();
+    private readonly List<(CcDirector.Core.Tenancy.TenantId Tenant, string Session)> _screenReadAs = new();
 
     private readonly string _instancesDir =
         Path.Combine(Path.GetTempPath(), "cc-census-" + Guid.NewGuid().ToString("N"));
@@ -73,6 +87,27 @@ public sealed class CensusRouteTenancyProbeTests : IAsyncLifetime
             snoozePath: Path.Combine(_instancesDir, "snooze", "snooze.json"),
             missionsPath: Path.Combine(_instancesDir, "missions", "missions.json"),
             streamMode: true);
+
+        // THE AUTHORING SEAMS, stood in so the draft route and the write gate can run over real HTTP
+        // through the real middleware with two real tenants and no model or Director behind them. The
+        // fake roster is KEYED BY TENANT: a session is found only when the tenant the Gateway resolved
+        // from the caller's key is the tenant that owns it. That is the property the probe below asserts.
+        _gateway.RuleAuthoringAskForTests = (tenant, _, _) =>
+        {
+            _modelAskedAs.Add(tenant);
+            return Task.FromResult<string?>(ADraftReply);
+        };
+        _gateway.RuleScreenReaderForTests = (tenant, sid, _) =>
+        {
+            _screenReadAs.Add((tenant, sid));
+            var owned = (tenant == _tenantA && sid == SessionA) || (tenant == _tenantB && sid == SessionB);
+            return Task.FromResult(owned
+                ? CcDirector.Gateway.Rules.RuleScreenResult.Read(new CcDirector.Gateway.Rules.RuleScreenReading(
+                    sid, new CcDirector.Gateway.Rules.RuleSessionOrigin("ClaudeCode", "PROBE"), TheScreen))
+                : CcDirector.Gateway.Rules.RuleScreenResult.Refused(
+                    $"session {sid} is not on this account's roster, so its screen cannot be read and no rule can be written against it."));
+        };
+
         await _gateway.StartAsync();
         _http = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{_gateway.Port}/") };
 
@@ -80,6 +115,8 @@ public sealed class CensusRouteTenancyProbeTests : IAsyncLifetime
         var deviceB = HostedTestEnrollment.Enroll(_gateway, "sub-census-b", "census-b@example.com", "dev-cb", "MCB");
         _keyA = deviceA.DeviceKey;
         _keyB = deviceB.DeviceKey;
+        _tenantA = deviceA.Tenant;
+        _tenantB = deviceB.Tenant;
 
         Assert.True(_gateway.TenantBoundary.IsHosted, "The harness must be running the HOSTED tenant boundary.");
         Assert.NotEqual(deviceA.Tenant.Value, deviceB.Tenant.Value);
@@ -169,6 +206,321 @@ public sealed class CensusRouteTenancyProbeTests : IAsyncLifetime
         var survivingBAgain = await Json(await Send("GET", $"missions/{idB}", _keyB, null),
             HttpStatusCode.OK, "AFTER   GET /missions/{B} (after A cleared its own)");
         Assert.Equal(whyB, Str(survivingBAgain, "why"));
+    }
+
+    // =============================================== session rules (session_rules, session_rule_firings)
+
+    /// <summary>
+    /// GET and DELETE /gateway/rules/{id:guid} - both context-less (SessionRuleEndpoints.cs, handlers
+    /// <c>(Guid id)</c>), scoped ONLY by the ambient request scope and the entity global query filter,
+    /// exactly like the workflow and skill families this file's companion proved.
+    ///
+    /// WHY THE FAMILY NEEDED THIS. The rules routes shipped in the Session Rules mission and were never
+    /// entered in the context-less census, so this suite was RED on main and nobody saw it: the suite is
+    /// parked and, on the mission's own record, had not run all day. A route family reachable on the
+    /// multi-tenant deployment with no written verdict and no executed probe is exactly what the census
+    /// exists to prevent.
+    ///
+    /// A rule id is Gateway-minted (both tables derive from <c>GatewayMintedKeyEntity</c>), so a caller
+    /// cannot present one - which makes the sharpest available probe the one below: tenant A is HANDED
+    /// tenant B's real id and still cannot read it, and cannot delete it either.
+    ///
+    /// WHAT THIS DOES NOT COVER, stated rather than inferred: <c>GET /gateway/rules/{id}/firings</c> is
+    /// the third context-less route in the family and is NOT cross-probed here, because no route can
+    /// write a firing - only the evaluator does - so both tenants would read an empty list and two empty
+    /// lists prove nothing about a partition. Its verdict is the same store and the same filter as the
+    /// two proved below, and that is a code-read verdict, not an executed one.
+    /// </summary>
+    [Fact]
+    public async Task SessionRules_AreNotReachableAcrossTenantsEvenHoldingTheOtherTenantsRuleId()
+    {
+        var createdA = await Json(await Send("POST", "gateway/rules", _keyA, RuleBody("tenant-A-rule-probe", SessionA)),
+            HttpStatusCode.OK, "SEED    POST /gateway/rules (tenant A)");
+        var createdB = await Json(await Send("POST", "gateway/rules", _keyB, RuleBody("tenant-B-rule-probe", SessionB)),
+            HttpStatusCode.OK, "SEED    POST /gateway/rules (tenant B)");
+        var idA = Str(Obj(createdA, "rule"), "id");
+        var idB = Str(Obj(createdB, "rule"), "id");
+        Assert.NotEqual(idA, idB);
+
+        // OWNER CONTROLS, asserting the EXACT SEEDED FINGERPRINT rather than a bare 200: a wrong route,
+        // a catch-all or a failed seed answering empty would all pass a status-only check.
+        var ownA = await Json(await Send("GET", $"gateway/rules/{idA}", _keyA, null),
+            HttpStatusCode.OK, "READ    GET /gateway/rules/{A} (tenant A)");
+        Assert.Equal("tenant-A-rule-probe", Str(Obj(ownA, "rule"), "instruction"));
+
+        var ownB = await Json(await Send("GET", $"gateway/rules/{idB}", _keyB, null),
+            HttpStatusCode.OK, "READ    GET /gateway/rules/{B} (tenant B)");
+        Assert.Equal("tenant-B-rule-probe", Str(Obj(ownB, "rule"), "instruction"));
+
+        // Each tenant's LIST holds exactly its own rule - so a leak would show as a second row even if
+        // the by-id read were somehow refused.
+        Assert.Equal(1, Arr(await Json(await Send("GET", "gateway/rules", _keyA, null),
+            HttpStatusCode.OK, "READ    GET /gateway/rules (tenant A)"), "rules").GetArrayLength());
+
+        // CROSS-TENANT: A holds B's real id and gets the same answer as for an id that does not exist,
+        // so the id cannot be probed for existence either.
+        var crossRead = await Send("GET", $"gateway/rules/{idB}", _keyA, null);
+        Assert.Equal(HttpStatusCode.NotFound, crossRead.StatusCode);
+
+        var crossDelete = await Send("DELETE", $"gateway/rules/{idB}", _keyA, null);
+        Assert.Equal(HttpStatusCode.OK, crossDelete.StatusCode);
+        Assert.False(Bool(await Json(crossDelete, HttpStatusCode.OK, "CROSS   DELETE /gateway/rules/{B} (tenant A)"),
+            "deleted"));
+
+        // ...and the refused delete changed nothing: B's rule is still there, byte-for-byte.
+        var survivingB = await Json(await Send("GET", $"gateway/rules/{idB}", _keyB, null),
+            HttpStatusCode.OK, "AFTER   GET /gateway/rules/{B} (after A tried to delete it)");
+        Assert.Equal("tenant-B-rule-probe", Str(Obj(survivingB, "rule"), "instruction"));
+
+        // DESTRUCTIBILITY CONTROL: B can perform the SAME delete on its own rule. Without this, the
+        // refusal above could be an inert route rather than a partitioned one.
+        Assert.True(Bool(await Json(await Send("DELETE", $"gateway/rules/{idB}", _keyB, null),
+            HttpStatusCode.OK, "CONTROL DELETE /gateway/rules/{B} (tenant B, its OWN rule)"), "deleted"));
+        Assert.Equal(HttpStatusCode.NotFound,
+            (await Send("GET", $"gateway/rules/{idB}", _keyB, null)).StatusCode);
+
+        // ...and A's rule is untouched by any of it.
+        var stillA = await Json(await Send("GET", $"gateway/rules/{idA}", _keyA, null),
+            HttpStatusCode.OK, "AFTER   GET /gateway/rules/{A}");
+        Assert.Equal("tenant-A-rule-probe", Str(Obj(stillA, "rule"), "instruction"));
+    }
+
+    /// <summary>A rule the write gate accepts: every part a rule has to have, said out loud, and the
+    /// session it is grounded in (fix round D, ruling D2 - the write gate reads that session's screen
+    /// again and every trigger word has to be on it).</summary>
+    private static string RuleBody(string instruction, string sessionId, string triggerWord = "API Error",
+        object? cooldown = null) =>
+        System.Text.Json.JsonSerializer.Serialize(new
+        {
+            instruction,
+            sessionId,
+            allAgents = true,
+            screenDescription = "The session has stopped on a provider error.",
+            triggerWords = new[] { triggerWord },
+            checks = Array.Empty<object>(),
+            scope = "all-sessions",
+            cooldownSeconds = cooldown ?? 900,
+            dailyCap = 6,
+        });
+
+    /// <summary>What the fake model answers the draft route: a rule whose trigger words are on
+    /// <see cref="TheScreen"/>, so the draft succeeds whenever the screen could be read.</summary>
+    private const string ADraftReply = """
+    {
+      "answer": "propose",
+      "screen_description": "The session has stopped on a provider error.",
+      "trigger_words": ["API Error", "overloaded"],
+      "checks": [],
+      "scope": "all-sessions",
+      "cooldown_seconds": 900,
+      "daily_cap": 6,
+      "read_back": "When one of your sessions stops on a provider error I will wait fifteen minutes and tell it to carry on."
+    }
+    """;
+
+    private static string DraftBody(string sessionId, bool allAgents = true) =>
+        System.Text.Json.JsonSerializer.Serialize(new
+        {
+            turns = new[] { new { who = "person", text = "when the provider stops working, wait and carry on" } },
+            sessionId,
+            allAgents,
+        });
+
+    // ============================================ the draft route and the write gate (fix round D, D2 and D9)
+
+    /// <summary>
+    /// THE DRAFT ROUTE, TWO TENANTS, OVER HTTP, ASSERTED AT THE FAR SIDE (fix round D, ruling D9). The
+    /// authoring report admitted the draft route had never run over HTTP and the census excluded it; a
+    /// tenant constant in the route, the author or the screen reader would have left every unit test
+    /// green. Here each tenant drafts against ITS OWN session and the fake seams record which tenant the
+    /// Gateway resolved from the caller's key - so the two calls have to arrive as two different tenants
+    /// at the model AND at the roster, and each has to be the tenant that owns the key.
+    /// </summary>
+    [Fact]
+    public async Task SessionRuleDraft_ReachesTheModelAndTheRosterAsTheCallersOwnTenant_ForTwoTenants()
+    {
+        _modelAskedAs.Clear();
+        _screenReadAs.Clear();
+
+        var draftedA = await Json(await Send("POST", "gateway/rules/draft", _keyA, DraftBody(SessionA)),
+            HttpStatusCode.OK, "DRAFT   POST /gateway/rules/draft (tenant A, its own session)");
+        Assert.Equal(SessionA, Str(Obj(draftedA, "rule"), "sessionId"));
+        Assert.Contains("API Error", Arr(Obj(draftedA, "rule"), "triggerWords").EnumerateArray().Select(w => w.GetString()));
+
+        var draftedB = await Json(await Send("POST", "gateway/rules/draft", _keyB, DraftBody(SessionB)),
+            HttpStatusCode.OK, "DRAFT   POST /gateway/rules/draft (tenant B, its own session)");
+        Assert.Equal(SessionB, Str(Obj(draftedB, "rule"), "sessionId"));
+
+        // THE FAR SIDE: two calls, two tenants, in order, and each is the caller's own.
+        Assert.Equal(new[] { _tenantA, _tenantB }, _modelAskedAs);
+        Assert.Equal(new[] { (_tenantA, SessionA), (_tenantB, SessionB) }, _screenReadAs);
+        Assert.NotEqual(_tenantA, _tenantB);
+    }
+
+    /// <summary>
+    /// CROSS-TENANT: A names B's session id on the draft route and is refused - the session is looked up
+    /// in A's tenant, where it does not exist - and the model is never asked. The refusal is asserted by
+    /// its sentence, not its status alone, so a routing miss cannot pass as a tenant refusal.
+    /// </summary>
+    [Fact]
+    public async Task SessionRuleDraft_CannotGroundInAnotherTenantsSession()
+    {
+        _modelAskedAs.Clear();
+
+        var cross = await Send("POST", "gateway/rules/draft", _keyA, DraftBody(SessionB));
+        var body = await cross.Content.ReadAsStringAsync();
+        _out.WriteLine($"CROSS   POST /gateway/rules/draft (tenant A, tenant B's session) -> {(int)cross.StatusCode} {body}");
+
+        Assert.Equal(HttpStatusCode.BadRequest, cross.StatusCode);
+        Assert.Contains($"session {SessionB} is not on this account's roster", ErrorOf(body));
+        Assert.Empty(_modelAskedAs);
+
+        // DESTRUCTIBILITY CONTROL: the same request with A's OWN session is a draft, so the refusal above
+        // is the tenant lookup and not an inert route.
+        await Json(await Send("POST", "gateway/rules/draft", _keyA, DraftBody(SessionA)),
+            HttpStatusCode.OK, "CONTROL POST /gateway/rules/draft (tenant A, its own session)");
+    }
+
+    /// <summary>The draft route with no session is refused, over HTTP, with the sentence - authoring from
+    /// memory is not a mode (ruling D2), and the model is never asked.</summary>
+    [Fact]
+    public async Task SessionRuleDraft_WithNoSessionIsRefusedAndTheModelIsNeverAsked()
+    {
+        _modelAskedAs.Clear();
+
+        var noSession = await Send("POST", "gateway/rules/draft", _keyA, DraftBody(""));
+        var body = await noSession.Content.ReadAsStringAsync();
+        _out.WriteLine($"REFUSE  POST /gateway/rules/draft (no session) -> {(int)noSession.StatusCode} {body}");
+
+        Assert.Equal(HttpStatusCode.BadRequest, noSession.StatusCode);
+        Assert.Contains("named no session", ErrorOf(body));
+        Assert.Empty(_modelAskedAs);
+    }
+
+    /// <summary>
+    /// THE WRITE GATE GROUNDS AGAIN (ruling D2, item 5), over HTTP. A body posted straight to create -
+    /// no draft at all - with a trigger word that is not on the session's screen is refused with the
+    /// sentence; the same body with a word that IS on the screen is stored. And B's session named by A
+    /// is a refusal at the write gate too.
+    /// </summary>
+    [Fact]
+    public async Task SessionRuleCreate_ReadsTheSessionsScreenAgainAndRefusesAnUngroundedWord()
+    {
+        var invented = await Send("POST", "gateway/rules", _keyA, RuleBody("write-gate-probe", SessionA, triggerWord: "ECONNREFUSED"));
+        var inventedBody = await invented.Content.ReadAsStringAsync();
+        _out.WriteLine($"REFUSE  POST /gateway/rules (word not on screen) -> {(int)invented.StatusCode} {inventedBody}");
+        Assert.Equal(HttpStatusCode.BadRequest, invented.StatusCode);
+        Assert.Contains("ECONNREFUSED", ErrorOf(inventedBody));
+        Assert.Contains("Nothing was stored", ErrorOf(inventedBody));
+
+        var cross = await Send("POST", "gateway/rules", _keyA, RuleBody("write-gate-probe", SessionB));
+        var crossBody = await cross.Content.ReadAsStringAsync();
+        _out.WriteLine($"CROSS   POST /gateway/rules (tenant A, tenant B's session) -> {(int)cross.StatusCode} {crossBody}");
+        Assert.Equal(HttpStatusCode.BadRequest, cross.StatusCode);
+        Assert.Contains($"session {SessionB} is not on this account's roster", ErrorOf(crossBody));
+
+        // CONTROL: the grounded body IS stored - the gate is a gate and not a wall.
+        var stored = await Json(await Send("POST", "gateway/rules", _keyA, RuleBody("write-gate-probe", SessionA)),
+            HttpStatusCode.OK, "CONTROL POST /gateway/rules (word on screen)");
+        Assert.Equal("write-gate-probe", Str(Obj(stored, "rule"), "instruction"));
+        Assert.Equal("every session", Str(Obj(stored, "rule"), "scopeLabel"));
+        Assert.Equal("15 minutes", Str(Obj(stored, "rule"), "waitLabel"));
+
+        // And nothing was stored by the two refusals: the list holds exactly the control.
+        var list = await Json(await Send("GET", "gateway/rules", _keyA, null), HttpStatusCode.OK, "READ    GET /gateway/rules (tenant A)");
+        var mine = Arr(list, "rules").EnumerateArray().Select(r => Str(r, "instruction")).Where(i => i == "write-gate-probe").ToList();
+        Assert.Single(mine);
+
+        // Leave tenant A as it was found: the tests in this class share one database for the run, and the
+        // rules probe above asserts an EXACT count of tenant A's rules.
+        Assert.True(Bool(await Json(await Send("DELETE", $"gateway/rules/{Str(Obj(stored, "rule"), "id")}", _keyA, null),
+            HttpStatusCode.OK, "CLEAN   DELETE /gateway/rules/{stored} (tenant A)"), "deleted"));
+    }
+
+    /// <summary>
+    /// A NUMBER THAT CANNOT BE READ IS A REFUSAL, NEVER A 500 (fix round D, ruling D7) - on the write
+    /// route, over HTTP, through the real middleware. A decimal ceiling and an out-of-range one each come
+    /// back as a 400 whose sentence names the field and the value; before this round they threw past the
+    /// route's catch.
+    /// </summary>
+    [Theory]
+    [InlineData("600.5")]
+    [InlineData("99999999999")]
+    public async Task SessionRuleCreate_RefusesACeilingItCannotReadWithASentence(string written)
+    {
+        var body = RuleBody("number-probe", SessionA).Replace("\"cooldownSeconds\":900", "\"cooldownSeconds\":" + written);
+        Assert.Contains(written, body);
+
+        var resp = await Send("POST", "gateway/rules", _keyA, body);
+        var text = await resp.Content.ReadAsStringAsync();
+        _out.WriteLine($"REFUSE  POST /gateway/rules (cooldownSeconds {written}) -> {(int)resp.StatusCode} {text}");
+
+        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+        Assert.Contains("cooldownSeconds", ErrorOf(text));
+        Assert.Contains(written, ErrorOf(text));
+    }
+
+    /// <summary>
+    /// PROMOTION OVER HTTP, BY THE CREDENTIAL THE COCKPIT ACTUALLY SENDS (fix round D, rulings D5 and
+    /// D11). The promotion grant names the caller off the request; this is the first test that sends a
+    /// real device-key request through the real middleware to the promote route. It asserts the promoted
+    /// rule is served LIVE, naming the device the middleware authenticated, and carrying the acknowledgement
+    /// verbatim - the record showing what was agreed to, which ruling D5 requires.
+    /// </summary>
+    [Fact]
+    public async Task SessionRulePromote_ByADeviceKey_IsNamedAfterTheDeviceAndKeepsTheAcknowledgement()
+    {
+        var created = await Json(await Send("POST", "gateway/rules", _keyA, RuleBody("promote-probe", SessionA)),
+            HttpStatusCode.OK, "SEED    POST /gateway/rules (tenant A)");
+        var id = Str(Obj(created, "rule"), "id");
+        const string said = "I have read this rule's dry-run record: 0 firings. I am making it live.";
+
+        var promoted = await Json(await Send("POST", $"gateway/rules/{id}/promote", _keyA,
+                System.Text.Json.JsonSerializer.Serialize(new { acknowledgement = said })),
+            HttpStatusCode.OK, "PROMOTE POST /gateway/rules/{A}/promote (tenant A, device key)");
+
+        Assert.Equal("live", Str(Obj(promoted, "rule"), "state"));
+        Assert.Equal(said, Str(Obj(promoted, "rule"), "acknowledgement"));
+        Assert.Equal("dev-ca", Str(Obj(promoted, "rule"), "promotedBy"));
+
+        // Re-read: the record shows it, not only the response to the promotion.
+        var again = await Json(await Send("GET", $"gateway/rules/{id}", _keyA, null),
+            HttpStatusCode.OK, "READ    GET /gateway/rules/{A} (after promotion)");
+        Assert.Equal(said, Str(Obj(again, "rule"), "acknowledgement"));
+        Assert.Equal("dev-ca", Str(Obj(again, "rule"), "promotedBy"));
+
+        // And B cannot promote A's rule even holding its id - the same 400 as a rule that does not exist.
+        var cross = await Send("POST", $"gateway/rules/{id}/promote", _keyB,
+            System.Text.Json.JsonSerializer.Serialize(new { acknowledgement = said }));
+        Assert.Equal(HttpStatusCode.BadRequest, cross.StatusCode);
+
+        // Leave tenant A as it was found - see the write-gate probe for why.
+        Assert.True(Bool(await Json(await Send("DELETE", $"gateway/rules/{id}", _keyA, null),
+            HttpStatusCode.OK, "CLEAN   DELETE /gateway/rules/{A} (tenant A)"), "deleted"));
+    }
+
+    /// <summary>The same on the DRAFT route: the fake model answers a decimal ceiling, and the route
+    /// answers a 400 with the sentence rather than a 500.</summary>
+    [Fact]
+    public async Task SessionRuleDraft_RefusesAModelAnswerWhoseCeilingItCannotReadWithASentence()
+    {
+        var priorAsk = _gateway.RuleAuthoringAskForTests;
+        _gateway.RuleAuthoringAskForTests = (_, _, _) =>
+            Task.FromResult<string?>(ADraftReply.Replace("\"cooldown_seconds\": 900", "\"cooldown_seconds\": 900.5"));
+        try
+        {
+            var resp = await Send("POST", "gateway/rules/draft", _keyA, DraftBody(SessionA));
+            var text = await resp.Content.ReadAsStringAsync();
+            _out.WriteLine($"REFUSE  POST /gateway/rules/draft (model wrote 900.5) -> {(int)resp.StatusCode} {text}");
+
+            Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+            Assert.Contains("cooldown_seconds", ErrorOf(text));
+            Assert.Contains("900.5", ErrorOf(text));
+        }
+        finally
+        {
+            _gateway.RuleAuthoringAskForTests = priorAsk;
+        }
     }
 
     private static string MissionBody(string missionName) =>
