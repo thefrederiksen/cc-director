@@ -1,0 +1,37 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- THE SCREEN HARNESS (Session Rules mission, phase 0). A console program that puts every case of the
+       corpus beside it - real captured terminal screens with the right answer written down - through the
+       REAL rule engine on each model under test, and reports per model and per case: the answer, whether it
+       was right, and the time. It calls a live model, so it is run by hand and is deliberately NOT part of
+       scripts/test-local.ps1. The corpus tests and the guard test over this assembly live in
+       CcDirector.Gateway.UnitTests/Rules and ARE part of the gate.
+
+       IT NEVER BUILDS A PROMPT AND NEVER READS A REPLY. It constructs the production RuleEvaluator with an
+       environment whose reads come from the case and whose model call is the production
+       HostedInferenceBrain, and calls EvaluateAsync. A runner that built its own question would prove
+       something about the runner; ScreenHarnessGuardTests asserts against the built assembly that this
+       one does not. -->
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <RootNamespace>CcDirector.Rules.ScreenHarness</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- The REAL evaluator, the REAL free checks, the REAL prompt contract and the REAL hosted brain all
+         live in the Gateway assembly. Nothing here is a copy of any of them. -->
+    <ProjectReference Include="..\CcDirector.Gateway\CcDirector.Gateway.csproj" />
+    <ProjectReference Include="..\CcDirector.Core\CcDirector.Core.csproj" />
+    <ProjectReference Include="..\CcDirector.AgentBrain\CcDirector.AgentBrain.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+</Project>
