@@ -2435,38 +2435,17 @@ public sealed class GatewayHost : IAsyncDisposable
     }
 
     /// <summary>
-    /// The screen a rule is written against, READ BY THE GATEWAY (fix round D, ruling D2): the session is
-    /// located on the pushed roster IN THE CALLER'S TENANT, its owning Director is resolved in that same
-    /// tenant, the screen is read through the evaluator's own read, and the agent and machine are the
-    /// roster's facts about the session. Nothing here is taken from the request. A session that is not on
-    /// the roster, or whose machine is not connected, is a stated refusal - unreadable is not evidence.
+    /// The screen a rule is written against, READ BY THE GATEWAY (fix round D, ruling D2): the production
+    /// composition lives in <see cref="Rules.GatewayRuleScreenReader"/>, which is tested with this exact
+    /// join in the path (fix round E, ruling E3). This method only supplies the two seams - the session
+    /// located on the pushed roster IN THE CALLER'S TENANT, and the screen read through the evaluator's
+    /// own read from the Director resolved in that same tenant. Nothing here is taken from the request.
     /// </summary>
-    private async Task<Rules.RuleScreenResult> ReadRuleScreenAsync(TenantId tenant, string sessionId, CancellationToken ct)
-    {
-        var located = PushedSessions.TryLocate(tenant, sessionId, _streamStaleAfter + Api.GatewayEndpoints.LocateGrace);
-        if (located is null)
-        {
-            FileLog.Write($"[GatewayHost] rule screen: session {sessionId} is not on this tenant's roster");
-            return Rules.RuleScreenResult.Refused(
-                $"session {sessionId} is not on this account's roster, so its screen cannot be read and no " +
-                "rule can be written against it.");
-        }
-
-        var (directorId, session) = located.Value;
-        var rows = await BuildRuleEnvironment().ReadScreenRowsAsync(tenant, directorId, sessionId, ct).ConfigureAwait(false);
-        if (rows is null)
-        {
-            FileLog.Write($"[GatewayHost] rule screen: session {sessionId} on director {directorId} could not be read");
-            return Rules.RuleScreenResult.Refused(
-                $"the screen of session {sessionId} could not be read - the machine running it may not be " +
-                "connected - and unreadable is not evidence.");
-        }
-
-        return Rules.RuleScreenResult.Read(new Rules.RuleScreenReading(
-            sessionId,
-            new Rules.RuleSessionOrigin(session.Agent ?? "", session.MachineName ?? ""),
-            string.Join("\n", rows.Select(r => (r ?? "").TrimEnd()))));
-    }
+    private Task<Rules.RuleScreenResult> ReadRuleScreenAsync(TenantId tenant, string sessionId, CancellationToken ct) =>
+        new Rules.GatewayRuleScreenReader(
+                locate: (t, sid) => PushedSessions.TryLocate(t, sid, _streamStaleAfter + Api.GatewayEndpoints.LocateGrace),
+                readRows: (t, directorId, sid, token) => BuildRuleEnvironment().ReadScreenRowsAsync(t, directorId, sid, token))
+            .ReadAsync(tenant, sessionId, ct);
 
     /// <summary>TEST SEAM: stands in for the authoring model. Null in production.</summary>
     internal Func<TenantId, string, CancellationToken, Task<string?>>? RuleAuthoringAskForTests { get; set; }
