@@ -1,13 +1,15 @@
 using CcDirector.Rules.ScreenHarness;
 
 // THE SCREEN HARNESS. Usage:
-//   dotnet run --project src/CcDirector.Rules.ScreenHarness -- [--models wingman,wingman-fast] [--corpus <dir>] [--out <dir>] [--case <id>]
+//   dotnet run --project src/CcDirector.Rules.ScreenHarness -- [--models wingman,wingman-fast] [--corpus <dir>] [--out <dir>] [--case <id>[,<id>...]]
+//   dotnet run --project src/CcDirector.Rules.ScreenHarness -- --merge <parent dir of batch runs>
 // It calls a live model and is run by hand; it is not part of the local gate.
 
 var modelNames = HarnessRun.DefaultModels.ToList();
 string? corpus = null;
 string? output = null;
-string? onlyCase = null;
+List<string>? onlyCases = null;
+string? merge = null;
 
 for (var i = 0; i < args.Length; i++)
 {
@@ -33,12 +35,15 @@ for (var i = 0; i < args.Length; i++)
             output = Path.GetFullPath(Value("--out"));
             break;
         case "--case":
-            onlyCase = Value("--case");
+            onlyCases = Value("--case").Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList();
+            break;
+        case "--merge":
+            merge = Path.GetFullPath(Value("--merge"));
             break;
         case "--help":
         case "-h":
             Console.WriteLine("usage: dotnet run --project src/CcDirector.Rules.ScreenHarness -- " +
-                              "[--models wingman,wingman-fast] [--corpus <dir>] [--out <dir>] [--case <id>]");
+                              "[--models wingman,wingman-fast] [--corpus <dir>] [--out <dir>] [--case <id>[,<id>...]] | --merge <parent dir>");
             return 0;
         default:
             Console.Error.WriteLine("usage error: unknown argument '" + args[i] + "'. Try --help.");
@@ -56,11 +61,13 @@ var options = new HarnessOptions(
     ModelNames: modelNames,
     CorpusDirectory: corpus ?? RepositoryRoot.DefaultCorpus(),
     OutputDirectory: output ?? RepositoryRoot.DefaultOutput(),
-    OnlyCase: onlyCase);
+    OnlyCases: onlyCases);
 
 try
 {
-    return await HarnessRun.RunAsync(options, Console.Out, CancellationToken.None);
+    return merge is not null
+        ? await HarnessRun.MergeAsync(merge, Console.Out, CancellationToken.None)
+        : await HarnessRun.RunAsync(options, Console.Out, CancellationToken.None);
 }
 catch (ArgumentException ex)
 {

@@ -91,7 +91,7 @@ public sealed record HarnessOptions(
     IReadOnlyList<string> ModelNames,
     string CorpusDirectory,
     string OutputDirectory,
-    string? OnlyCase);
+    IReadOnlyList<string>? OnlyCases);
 
 /// <summary>
 /// THE RUN: every case through the real <see cref="RuleEvaluator"/> on every model named, cases one at a
@@ -121,11 +121,14 @@ public static class HarnessRun
 
         var rules = ScreenCorpus.ReadRules(options.CorpusDirectory);
         var cases = ScreenCorpus.ReadCases(options.CorpusDirectory);
-        if (options.OnlyCase is not null)
+        if (options.OnlyCases is { Count: > 0 } wanted)
         {
-            cases = cases.Where(c => string.Equals(c.Id, options.OnlyCase, StringComparison.Ordinal)).ToList();
-            if (cases.Count == 0)
-                throw new InvalidOperationException("no case named '" + options.OnlyCase + "' in " + options.CorpusDirectory);
+            // A NAMED CASE THAT IS NOT THERE IS AN ERROR, not a silent run of the rest: a batch that quietly
+            // skipped a misspelt case would report numbers for a corpus smaller than the one asked for.
+            var missing = wanted.Where(w => !cases.Any(c => string.Equals(c.Id, w, StringComparison.Ordinal))).ToList();
+            if (missing.Count > 0)
+                throw new InvalidOperationException("no case named '" + string.Join("', '", missing) + "' in " + options.CorpusDirectory);
+            cases = cases.Where(c => wanted.Contains(c.Id, StringComparer.Ordinal)).ToList();
         }
         if (cases.Count == 0)
             throw new InvalidOperationException("the corpus at " + options.CorpusDirectory + " has no cases, so there is nothing to run.");
@@ -171,7 +174,7 @@ public static class HarnessRun
             .ConfigureAwait(false);
         await File.WriteAllTextAsync(
             Path.Combine(options.OutputDirectory, "results.json"),
-            JsonSerializer.Serialize(new { summaries, rows }, ResultsJson), utf8, ct).ConfigureAwait(false);
+            JsonSerializer.Serialize(new ResultsFile(summaries, rows), ResultsJson), utf8, ct).ConfigureAwait(false);
 
         console.WriteLine();
         console.WriteLine(RenderSummaries(summaries));
@@ -183,6 +186,61 @@ public static class HarnessRun
             : ": a negative was answered with an act, or a case was never asked. Read the report."));
         return exitCode;
     }
+
+    /// <summary>
+    /// Merge the results of several runs into one report. A whole corpus on the thinking model does not fit
+    /// one foreground window (a call may take up to its 60-second deadline, and a run is never backgrounded),
+    /// so it is run in batches of cases, each into its own directory beneath one parent, and this reads every
+    /// <c>results.json</c> beneath the parent and renders the SAME summary and table the single-run path
+    /// renders - one implementation of the numbers, not a script that re-counts them. Returns the same exit
+    /// code the single-run path would.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">No results were found, or a case appears twice for one model.</exception>
+    public static async Task<int> MergeAsync(string parentDirectory, TextWriter console, CancellationToken ct)
+    {
+        var files = Directory.GetDirectories(parentDirectory)
+            .Select(d => Path.Combine(d, "results.json"))
+            .Where(File.Exists)
+            .OrderBy(f => f, StringComparer.Ordinal)
+            .ToList();
+        if (files.Count == 0)
+            throw new InvalidOperationException("no <batch>/results.json beneath " + parentDirectory + ", so there is nothing to merge.");
+
+        var rows = new List<CaseResult>();
+        foreach (var file in files)
+        {
+            var text = await File.ReadAllTextAsync(file, ct).ConfigureAwait(false);
+            var batch = JsonSerializer.Deserialize<ResultsFile>(text, ResultsJson)
+                        ?? throw new InvalidOperationException(file + " did not read as a results file.");
+            rows.AddRange(batch.Rows);
+            console.WriteLine("merged " + batch.Rows.Count + " row(s) from " + file);
+        }
+
+        var duplicate = rows.GroupBy(r => (r.Model, r.CaseId)).FirstOrDefault(g => g.Count() > 1);
+        if (duplicate is not null)
+            throw new InvalidOperationException(
+                "case '" + duplicate.Key.CaseId + "' on model '" + duplicate.Key.Model + "' appears in more than one batch; " +
+                "a merged report must count every case once.");
+
+        var models = rows.Select(r => r.Model).Distinct().ToList();
+        var summaries = models.Select(m => Summarise(m, rows.Where(r => r.Model == m).ToList())).ToList();
+        var report = RenderReport(summaries, rows);
+        var utf8 = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
+        await File.WriteAllTextAsync(Path.Combine(parentDirectory, "report.md"), report, utf8, ct).ConfigureAwait(false);
+        await File.WriteAllTextAsync(
+            Path.Combine(parentDirectory, "results.json"),
+            JsonSerializer.Serialize(new ResultsFile(summaries, rows), ResultsJson), utf8, ct).ConfigureAwait(false);
+
+        console.WriteLine();
+        console.WriteLine(RenderSummaries(summaries));
+        console.WriteLine("report: " + Path.Combine(parentDirectory, "report.md"));
+        var exitCode = summaries.All(s => s.NotAsked.Count == 0 && s.WrongOnNegatives == 0) ? 0 : 1;
+        console.WriteLine("exit code " + exitCode);
+        return exitCode;
+    }
+
+    /// <summary>The shape of results.json, written by a run and read back by a merge.</summary>
+    public sealed record ResultsFile(IReadOnlyList<ModelSummary> Summaries, IReadOnlyList<CaseResult> Rows);
 
     private static async Task<List<CaseResult>> RunModelAsync(
         string modelName,

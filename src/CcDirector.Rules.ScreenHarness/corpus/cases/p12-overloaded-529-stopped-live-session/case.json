@@ -3,7 +3,7 @@
   "expected": "act",
   "expectedRuleId": "3e9a6d4c-7b21-4f58-8c0d-5e1f2a3b4c02",
   "kind": "positive",
-  "reason": "After pushing a branch the agent's turn ended on its own notice 'API Error: 529 Overloaded. This is a server-side issue, usually temporary - try again in a moment. If it persists, check https://status.claude.com.' with 'Brewed for 6m 34s - done 9:30 AM'. The session is stopped on the provider's outage notice, not on finished work, which is what the outage rule watches for. (The owner did type continue a minute later, and it recovered - that keystroke is deliberately not in this window, because the screen the rule would have judged is the one before it.)",
+  "reason": "After pushing a branch the agent's turn ended on its own notice 'API Error: 529 Overloaded. This is a server-side issue, usually temporary - try again in a moment.' (the line goes on to name the provider's status page) with 'Brewed for 6m 34s - done 9:30 AM'. The session is stopped on the provider's outage notice, not on finished work, which is what the outage rule watches for. (The owner did type continue a minute later, and it recovered - that keystroke is deliberately not in this window, because the screen the rule would have judged is the one before it.)",
   "facts": {
     "agent": "ClaudeCode",
     "repositoryPath": "D:\\ReposFred\\devthrottle_internal",

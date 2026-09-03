@@ -2,7 +2,7 @@
   "id": "n06-diff-adding-a-limit-screen-test-constant",
   "expected": "decline",
   "kind": "negative-code",
-  "reason": "The line 'Claude usage limit reached. Your limit will reset at 11:50pm.' is inside a diff the session is showing (line 40, prefixed '+'), where it is a string constant in a test being written. The session itself is working normally on its own code. The allowance rule's words could not be more exactly present, and the right answer is still to decline, because they are code, not this session's state.",
+  "reason": "The line ending 'usage limit reached. Your limit will reset at 11:50pm.' (the agent's own limit notice, quoted in full on the screen) is inside a diff the session is showing (line 40, prefixed '+'), where it is a string constant in a test being written. The session itself is working normally on its own code. The allowance rule's words could not be more exactly present, and the right answer is still to decline, because they are code, not this session's state.",
   "facts": {
     "agent": "ClaudeCode",
     "repositoryPath": "D:/ReposFred/devthrottle-rules-fixd",

@@ -2,7 +2,7 @@
   "id": "n13-summary-report-of-a-spawn-timeout-fix",
   "expected": "decline",
   "kind": "negative-report",
-  "reason": "'the shared 2s Director client timed out on claude.exe spawns' is item 3 of a commit summary the agent wrote about fixes it made, ending with 'Approve this commit?'. 'timed out' is a trigger word of the outage rule; here it describes a bug in code, reported after the fact, while the session waits for approval. Decline.",
+  "reason": "'the shared 2s Director client timed out on ... spawns' (the agent's executable is named in the line) is item 3 of a commit summary the agent wrote about fixes it made, ending with 'Approve this commit?'. 'timed out' is a trigger word of the outage rule; here it describes a bug in code, reported after the fact, while the session waits for approval. Decline.",
   "facts": {
     "agent": "ClaudeCode",
     "repositoryPath": "",
