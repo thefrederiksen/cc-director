@@ -241,3 +241,45 @@ Three defects this mission has now found share ONE shape - a decision proven by 
 directly rather than by driving the real request: the session-key guard (a route nobody classified),
 this grant (a caller nobody wrote), and inspection finding 9 (a tenant that could be a constant). That
 is a finding about the SUITE, not three separate slips, and the QA report should say so.
+
+---
+
+## THE LANDING PLAN, verified 2026-09-03. Follow this order.
+
+Several branches are stacked and it is not obvious from the outside which contains what. This is the
+map, checked by diffing rather than assumed.
+
+| Branch | Contains | Cut from |
+| --- | --- | --- |
+| `mission/rules-authoring-gateway` (pull request 2671) | Authoring Gateway half + the session-key guard fix | `origin/main` |
+| `rule-authoring-by-conversation` (pull request 2672) | The above + both clients + the whole mission record | 2671 |
+| `mission/rules-fix-d` | The above + fix round D + fix round E | 2671, then merged 2672 |
+| `mission/rules-p0` | The harness and its 32-case corpus | `origin/main` |
+| `mission/rules-p1` | `p0` + `fix-d` + phase 1 | `p0`, then merged `fix-d` |
+
+**Land in this order, each on its own pull request:**
+
+1. **`mission/rules-fix-d`** - the authoring feature as corrected. **Close 2671 and 2672 as superseded**
+   rather than merging them: their content is inside this branch, and merging them first would put the
+   version two inspections rejected onto `main` and then fix it, which there is no reason to do.
+2. **`mission/rules-p0`** - the harness. Independent of the above.
+3. **`mission/rules-p1`** - phase 1. Its diff against `main` shrinks to just phase 1 once 1 and 2 land.
+4. Phase 2 (the clock), then the demonstrations.
+
+**Conflicts to expect, and they are only documents.** Diffing `p0` against `fix-d` shows **zero source
+files in common** - the only overlap is sixteen files in
+`docs/missions/session-rules-2026-09-02/`, because every branch was seeded with the mission record from
+`rule-authoring-by-conversation` at a different moment. Resolve those by taking the union, preferring
+the most recent version of each file. No source merge is expected and a source conflict is a signal
+that something has moved, not a thing to resolve quickly.
+
+**The full parked `Gateway.Tests` suite is the Architect's to run, ONCE, on the final merged tree**
+(ruling E4). No seat runs it - four seats queueing on one machine-wide serialised lock is what starved
+inspection E's own run and left a placeholder in a gate table.
+
+## Why Phase 2 is not seated yet, and it is deliberate
+
+Phase 2 (the clock) is on the critical path for scenario A and nobody is on it. That is a decision, not
+an oversight: Phase 2 adds a wake field and a migration, Phase 1 adds `TextToType` and a migration, and
+both touch the evaluator. Running them at once collides on the migration slot and on the same file.
+**Seat Phase 2 when Phase 1 reports**, on top of it.
