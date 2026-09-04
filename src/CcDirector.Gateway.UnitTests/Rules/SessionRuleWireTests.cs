@@ -201,6 +201,28 @@ public sealed class SessionRuleWireTests
         Assert.Empty(SessionRuleWire.Calls(Body("""{ "checks": [] }""")));
     }
 
+    // ---- fix round F, ruling F3: the label stamper never invents a scope ----------------------------
+
+    /// <summary>
+    /// AN ABSENT SCOPE IS NOT "EVERY SESSION" IN THE LABEL EITHER. The stamped labels are what a client
+    /// renders verbatim (ruling D8), so a stamper that answered "every session" for a scope that was
+    /// never said would put the widest possible sentence in front of a person - the same habit this round
+    /// swept for. Every session is still a scope a rule can have; it just has to be a scope, said out
+    /// loud, which is what the four-parts-blank control below stands for.
+    /// </summary>
+    [Fact]
+    public void A_scope_that_is_not_there_at_all_is_a_fault_and_never_the_widest_label()
+    {
+        Assert.Throws<ArgumentNullException>(() => RuleLabels.Scope(null!));
+    }
+
+    [Fact]
+    public void A_scope_that_says_every_session_out_loud_is_labelled_every_session()
+    {
+        Assert.Equal("every session", RuleLabels.Scope(RuleScope.AllSessions));
+        Assert.Equal("agent ClaudeCode", RuleLabels.Scope(new RuleScope("ClaudeCode", null, null, null)));
+    }
+
     [Fact]
     public void A_write_with_real_checks_reads_them()
     {

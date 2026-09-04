@@ -11,11 +11,20 @@ namespace CcDirector.Gateway.Rules;
 /// </summary>
 internal static class RuleLabels
 {
-    /// <summary>Which sessions a rule acts on, in the words a person reads. Every session is the honest
-    /// answer when no part is set.</summary>
-    internal static string Scope(RuleScope? scope)
+    /// <summary>
+    /// Which sessions a rule acts on, in the words a person reads. Every session is the honest answer
+    /// when no part is set - because a scope with no part set IS every session, said out loud.
+    ///
+    /// AN ABSENT SCOPE IS A FAULT, NOT A LABEL (fix round F, ruling F3). This used to answer "every
+    /// session" for a null scope as well, which is the same habit the store, the wire reader and both
+    /// clients each had to have taken out of them: an absent value becoming the widest one it could
+    /// mean. A client renders this string verbatim, so that default would have put the widest sentence
+    /// there is in front of a person on the strength of a scope nobody ever said.
+    /// </summary>
+    /// <exception cref="ArgumentNullException">There is no scope. Nothing labels one.</exception>
+    internal static string Scope(RuleScope scope)
     {
-        if (scope is null) return "every session";
+        if (scope is null) throw new ArgumentNullException(nameof(scope));
         var parts = new List<string>();
         if (!string.IsNullOrWhiteSpace(scope.Agent)) parts.Add("agent " + scope.Agent);
         if (!string.IsNullOrWhiteSpace(scope.Repository)) parts.Add("repository " + scope.Repository);
