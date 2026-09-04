@@ -1,0 +1,222 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The turn end - research plan</title>
+<style>
+  :root {
+    --ink:#1a1c1f; --dim:#5b6067; --line:#d8dbe0; --bg:#fbfbfa; --panel:#fff;
+    --good:#1f6f43; --bad:#a52222; --accent:#1f4f8f; --shade:#f2f4f7; --amber:#8a5a00;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+       font:16px/1.6 "Charter","Georgia","Iowan Old Style",serif}
+  .wrap{max-width:900px;margin:0 auto;padding:52px 28px 120px}
+  h1{font-size:30px;line-height:1.2;margin:0 0 6px;letter-spacing:-.01em}
+  .sub{color:var(--dim);font-size:15px;margin:0 0 22px}
+  h2{font-size:20px;margin:46px 0 10px;padding-top:16px;border-top:1px solid var(--line)}
+  h3{font-size:16.5px;margin:26px 0 6px}
+  p{margin:0 0 13px}
+  code{font-family:"Cascadia Mono","Consolas",monospace;font-size:13.5px;
+       background:var(--shade);padding:1px 5px;border-radius:3px}
+  table{border-collapse:collapse;width:100%;margin:16px 0;font-size:14.5px}
+  th,td{border:1px solid var(--line);padding:7px 10px;text-align:left;vertical-align:top}
+  th{background:var(--shade);font-weight:600}
+  td.n{text-align:right;font-family:"Cascadia Mono","Consolas",monospace}
+  .yes{color:var(--good);font-weight:600}
+  .no{color:var(--bad);font-weight:600}
+  .part{color:var(--amber);font-weight:600}
+  .decide{background:#fff;border:2px solid var(--accent);border-radius:5px;padding:22px 26px;margin:24px 0 28px}
+  .decide h4{margin:0 0 12px;font-size:13px;text-transform:uppercase;letter-spacing:.09em;
+             color:var(--accent);font-weight:700}
+  .decide .one{font-size:19px;line-height:1.4;margin:0 0 14px}
+  .decide p{margin:0 0 11px}
+  .decide p:last-child{margin-bottom:0}
+  .area{background:var(--panel);border:1px solid var(--line);border-left:4px solid var(--accent);
+        border-radius:3px;padding:16px 20px;margin:18px 0}
+  .area h3{margin:0 0 8px;font-size:17px}
+  .area .q{color:var(--dim);font-style:italic;margin:0 0 10px}
+  .area p:last-child{margin-bottom:0}
+  .area.first{border-left-color:var(--good);border-left-width:6px}
+  .tag{display:inline-block;font:600 11px/1 system-ui,sans-serif;letter-spacing:.07em;
+       text-transform:uppercase;padding:4px 8px;border-radius:3px;background:var(--shade);
+       color:var(--dim);vertical-align:2px;margin-left:8px}
+  .tag.now{background:#e6f2ea;color:var(--good)}
+  li{margin-bottom:7px}
+  footer{margin-top:56px;padding-top:16px;border-top:1px solid var(--line);color:var(--dim);font-size:14px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>The turn end: what happens when a session goes quiet</h1>
+<p class="sub">Research plan, 4 September 2026. Written after the owner asked to stop patching the rules
+engine and look at the whole moment as one thing. Every number here was measured today from the running
+hosted Gateway, not estimated.</p>
+
+<div class="decide">
+  <h4>What happens first</h4>
+  <p class="one"><strong>Build the logging harness. Record every real turn end on the fleet - the screen,
+  what each judgement would have decided, and what should have happened - and tune against that instead
+  of against argument.</strong></p>
+  <p>Everything else in this plan is a question that harness answers. We currently reason from 32 screens
+  captured once in June. The fleet produces about 400 turn ends a day, and none of them are being kept.</p>
+  <p><strong>Cost is settled and is no longer an argument.</strong> The smart model on every single turn
+  end costs us about $12 a month at today's rate, $19 at list, for the heaviest account on the fleet. It
+  is an included service, so we absorb it - and it becomes part of Pro.</p>
+</div>
+
+<h2>What is built, and what is not</h2>
+
+<p>This was genuinely unclear and it is the reason this plan exists. Checked today against the running
+service.</p>
+
+<table>
+<thead><tr><th>Thing</th><th>State</th><th>Evidence</th></tr></thead>
+<tbody>
+<tr><td><strong>Session supervisor</strong> - spots a stuck session, waits, types <code>continue</code></td>
+    <td class="yes">Built, shipped, RUNNING, working</td>
+    <td>24 faults caught in 2 days, 8 continues typed, 19 recoveries observed, 4 escalations</td></tr>
+<tr><td><strong>Rules engine</strong> - runs an account's standing instructions</td>
+    <td class="part">Built, shipped, running - and EMPTY</td>
+    <td>407 evaluations today, every one "this account has no rules"</td></tr>
+<tr><td><strong>Authoring</strong> - the ability to create a rule at all</td>
+    <td class="no">Not shipped</td>
+    <td>On a branch, three inspections, never merged - which is why the engine is empty</td></tr>
+<tr><td><strong>"Does this session need me"</strong> judgement</td>
+    <td class="part">Built, NOT currently running</td>
+    <td>774 rich records exist - all from June. Zero generated today</td></tr>
+<tr><td><strong>The clock</strong> - wait until the limit resets, then continue</td>
+    <td class="no">Not built</td>
+    <td>-</td></tr>
+<tr><td><strong>A judgement safe to leave unattended</strong></td>
+    <td class="no">Not achieved</td>
+    <td>7 wrong keystrokes in 60 on the frozen corpus</td></tr>
+<tr><td><strong>Logging of real turns</strong></td>
+    <td class="no">Not built</td>
+    <td>The June sample is retained; nothing current is kept</td></tr>
+</tbody>
+</table>
+
+<h2>What the owner has settled</h2>
+
+<ul>
+  <li><strong>Cost is not the blocker.</strong> ~$12 to $19 a month per heavy account, absorbed by us.</li>
+  <li><strong>This is a Pro feature.</strong></li>
+  <li><strong>The rules engine goes keyword-first.</strong> If a rule watches for something searchable,
+  search for it; wake a model only when the words are actually on the screen.</li>
+  <li><strong>"Does this session need me" cannot be keyword-gated, and we pay for it anyway.</strong>
+  There is no word to search for - a session quietly waiting on you looks exactly like one that finished.
+  This is the judgement that takes load off the owner's head, and it is worth the money.</li>
+  <li><strong>Retry cadence and give-up:</strong> try every 15 minutes, give up after 6 hours, expressed
+  as a duration rather than a count (ruling G1). The shipped supervisor independently arrived at the same
+  15 minutes.</li>
+</ul>
+
+<h2>The five research areas</h2>
+
+<div class="area first">
+<h3>A. The logging harness <span class="tag now">Do this first</span></h3>
+<p class="q">What actually happens at the end of a real turn, at a scale where the answer means something?</p>
+<p>Record every turn end on the fleet: the screen at that moment, which judgements ran, what each
+decided, how long it took, what it cost - and, crucially, <strong>what should have happened</strong>, so
+the record can be replayed as a test set that grows by itself.</p>
+<p>This replaces a 32-case corpus captured once with roughly 400 real cases a day. Every other question
+below is answered by replaying it. Retention is already ruled: short, and scoped to the account, the
+same as turns.</p>
+</div>
+
+<div class="area">
+<h3>B. When is a turn actually over, and when does the session wake?</h3>
+<p class="q">Ten seconds of quiet works well. So why can a snooze never outlast half an hour?</p>
+<p>Some agents tap a byte into the terminal every thirty minutes. We read that as activity and wake out
+of a snooze for nothing. That is agent-specific knowledge, and it belongs in the driver that wraps each
+agent rather than in generic code.</p>
+<p><strong>The boundary to hold:</strong> the driver should produce better FACTS - this agent is genuinely
+idle, that byte was a heartbeat and not work. The Gateway keeps doing the RULING. An edge that starts
+deciding things renders what is plausible rather than what is true.</p>
+</div>
+
+<div class="area">
+<h3>C. The cheap gate</h3>
+<p class="q">How much can be decided for nothing, before any model is involved?</p>
+<p>The supervisor already does this and the numbers are stark: <strong>10 model calls in two days against
+about 1,200 turn ends</strong>, because a word table decides almost everything for free. Its table is not
+naive - it looks only at the last few lines of real content, and it requires an error marker beside
+ambiguous words, so a session merely discussing a log is never typed into.</p>
+<p>Those are exactly the confusions that beat our model. <strong>Run that classifier against the 32-case
+corpus and find out how much of our problem it already solves.</strong> That is a harness run, and the
+harness exists.</p>
+</div>
+
+<div class="area">
+<h3>D. One call or several, and how small can the question be?</h3>
+<p class="q">Can the judgements share a prompt, and must we really send forty lines of screen?</p>
+<p>We currently send the last 40 real lines - a measured median of 3,940 characters, about 1,100 tokens.
+The owner's question is whether a much smaller slice would do.</p>
+<p><strong>The caution, learned this week:</strong> a question that asks two things returns one answer and
+you cannot tell which it answered. That fault is already in the round A design and it is why n11 and n18,
+the same shape of screen, got different verdicts. So if judgements share a call, they must return
+<em>separately named, separately auditable</em> answers - never one blurred verdict.</p>
+<p><strong>And they gate differently.</strong> The rules question can be word-gated; the needs-me question
+cannot. Merging them drags the cheap one up to the expensive one's frequency.</p>
+</div>
+
+<div class="area">
+<h3>E. What the judgement should be, now that the supervisor exists</h3>
+<p class="q">If a working feature already recovers stuck sessions, what are rules FOR?</p>
+<p>The supervisor recovers from faults <em>the product</em> knows about - its signatures are ours, its
+text is always <code>continue</code>, and an account cannot change any of it. Rules let an <em>account</em>
+say in its own words what to watch for and what to type.</p>
+<p>They share the whole spine: the turn-end trigger, the screen read, the fault gate, the wait, the
+re-read before typing, the menu refusal, the ceiling, the recorded log. Rules rebuilt a thinner version of
+each. The question is whether rules should become the account-authored layer <em>on top of</em> the
+supervisor rather than a parallel machine beside it.</p>
+</div>
+
+<h2>The numbers this plan rests on</h2>
+
+<table>
+<thead><tr><th>Measured today, 4 September, from the hosted log</th><th></th></tr></thead>
+<tbody>
+<tr><td>Turn ends</td><td class="n">407</td></tr>
+<tr><td>Successful fast-model calls (<code>wingman-fast</code> = Qwen2.5-72B)</td><td class="n">484</td></tr>
+<tr><td>Thinking-model calls (<code>wingman</code> = GLM-5.2)</td><td class="n">1</td></tr>
+<tr><td>Turn briefs generated</td><td class="n">0</td></tr>
+<tr><td>Supervisor model calls, over TWO days</td><td class="n">10</td></tr>
+<tr><td>Input tokens per rules question (measured)</td><td class="n">~1,700</td></tr>
+</tbody>
+</table>
+
+<table>
+<thead><tr><th>Our cost, at 407 turn ends a day</th><th>Per day</th><th>Per month</th></tr></thead>
+<tbody>
+<tr><td>Smart model on every turn, list</td><td class="n">$0.62</td><td class="n">$18.74</td></tr>
+<tr><td>Smart model on every turn, today's 35% discount</td><td class="n">$0.40</td><td class="n">$12.18</td></tr>
+<tr><td>Fast model on every turn</td><td class="n">$0.27</td><td class="n">$8.07</td></tr>
+<tr><td>Smart model, word-gated like the supervisor</td><td class="n">$0.01</td><td class="n">$0.23</td></tr>
+</tbody>
+</table>
+
+<p><strong>Word-gating still wins by about eighty to one - but the reason has changed.</strong> At these
+prices it is no longer a cost argument. It is a correctness argument: every screen we never show a model
+is a screen it cannot misjudge, and misjudging is the actual problem we have.</p>
+
+<h2>One thing still to confirm</h2>
+
+<p>The owner has said "transcription" several times. Transcription is a voice turned into text - a
+different provider, audio in, text out - and it cannot share a prompt with a judgement about a screen. The
+turn <em>summary</em>, the short description of what a session just did, absolutely can, because it reads
+the same screen. This plan assumes the summary was meant.</p>
+
+<footer>
+Backing evidence: <code>finding-g3-the-supervisor-already-does-this.md</code> (the production log, the
+cost) &middot; <code>run-time-judgement-architecture.html</code> (the model measurement and the timeout
+finding) &middot; <code>ruling-g1-retry-ceilings.md</code> &middot;
+<code>ruling-g2-phase-1-residual.md</code>
+</footer>
+
+</div>
+</body>
+</html>
