@@ -269,3 +269,61 @@ scenario C exists, and why a fixed word list could never do this job.
 strongest available answer to "why does this need a model at all", and it is also the honest statement
 of where the feature's safety actually rests: on one judgement, with ceilings and dry run behind it, and
 NOT on grounding.
+
+---
+
+# THE MEASUREMENT, AND THE OWNER'S DECISION - 2026-09-04
+
+Frozen 32-case corpus, new yes-or-no contract, both models, three runs each: 192 answers.
+
+| | wingman (thinking) | wingman-fast |
+| --- | --- | --- |
+| Negative CASES answered act on all three runs | 0 | **5 of 20** |
+| Wrong negative ANSWERS, of 60 | **0** | 15 |
+| Stopped by the grounding check | n/a | **0 of 15** |
+| Positives right on every run | 3 of 12 | **11 of 12** |
+| Median model call | 21.3 s | **3.3 s** |
+| No answer inside the 60s deadline, of 96 | 20 | **0** |
+| Flip rate (a different answer across runs) | 10 of 32, 31% | **0 of 32** |
+
+## The two things this settles
+
+**The timeout is a property of the MODEL, not the contract.** The thinking model's median barely moved
+- 21.3 seconds against 21.0 in phase 0 - even though the contract now asks for a yes-or-no and one
+copied line instead of 600 characters of JSON. The premise the owner's original decision rested on is
+therefore false, and his choice is open on the negatives alone.
+
+**Grounding's collapse is now complete and measured.** In phase 0 it stopped all seven of the fast
+model's wrong acts, which made the design look like it had defence in depth. On the new contract it
+stopped **zero of fifteen** - because the model now supplies a real, faithful quote, and the words
+genuinely are on the screen. They just describe another session. Every one of those fifteen would have
+typed `continue` into a session that had not stopped.
+
+## The decision, made by the owner on these numbers
+
+**Neither model ships as it stands**, and the deliverable itself is what makes that clear: with the fast
+model **scenario C fails outright** - a live rule would act on a report about another session - and with
+the thinking model scenarios A and B barely work at 3 of 12.
+
+**He chose to try one targeted fix first**, rather than shipping either. The fast model's failure is not
+general unreliability: it is one confusion, between a session's own state and a report about something
+else, and that is precisely the class scenario C exists to test. So: a second cheap question, asked ONLY
+when the first answer is act, about whether the screen is this session's own report of its own state -
+about three seconds on the positives and nothing on a decline - then re-measured against the same frozen
+corpus.
+
+**The gate is zero wrong negatives with the positives not regressing. If it is not met, STOP** and fall
+back to the thinking model, reporting the feature honestly as safe but rarely acting. **Do not tune
+until it passes.**
+
+## One case note, and the trap inside it
+
+`p09` is the fast model's ONLY positive failure and it is not a judgement error - it is a one-space
+citation mismatch caused by a terminal redraw joining two lines. On judgement the fast model is
+effectively twelve of twelve; what failed is the citation COMPARISON.
+
+Collapsing runs of whitespace is permitted, **through one function applied to BOTH the quote and the
+screen excerpt**, and to nothing broader than whitespace, with a test proving an invented phrase still
+fails afterwards. **If whitespace alone does not fix it, leave it failing and report it.** Widening the
+comparison further so a positive passes is exactly how a false act gets in, and a false act is the
+failure this entire phase is gated on.
