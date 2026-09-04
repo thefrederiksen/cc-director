@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import {
   setDailyReportCadence,
+  setMentorReportEnabled,
   setSnoozePresets,
   setTimeZone,
   type ReportCadence,
@@ -29,6 +30,7 @@ export function NotificationsTab() {
       <TimeZoneCard />
       <NotificationsCard />
       <DailyReportCard />
+      <MentorReportCard />
     </>
   );
 }
@@ -426,6 +428,65 @@ export function DailyReportCard() {
             onChange={() => choose("off")}
           />
           Do not send it
+        </label>
+      </div>
+      {msg !== "" && <div className="settings-msg">{msg}</div>}
+    </section>
+  );
+}
+
+// ---- the Development Mentor report (devthrottle_internal#1661) ------------------------------------
+//
+// The second email about you that arrives on a rhythm, so it sits beside the daily report rather than on a
+// tab of its own. Everything else in this file is about how a session that needs you reaches you; these two
+// are about what the product sends you when nothing needs you at all.
+//
+// It is a CHECKBOX and not a pair of radios, which is the opposite of the card above it. The daily report
+// answers "how often" and has a third answer waiting; this one answers "do you want this at all", and a
+// question with two answers is not made clearer by drawing it as a list.
+//
+// The Gateway does not send this report - the mentor harness does, and it reads this setting straight out of
+// the database when it runs. So the hint says the change applies to the next report rather than naming an
+// hour, and it is written not to promise a rhythm the owner has not committed to publicly.
+export function MentorReportCard() {
+  const { settings, setSettings, error, busy, msg, runSave } = useGatewaySettings();
+
+  if (error !== null) {
+    return <div className="settings-error">Could not load the mentor report setting: {error}</div>;
+  }
+  if (settings === null) {
+    return <p className="settings-loading">Loading...</p>;
+  }
+
+  const toggle = (enabled: boolean) => {
+    if (busy || enabled === settings.mentorReportEnabled) return;
+    void runSave(async () => {
+      const applied = await setMentorReportEnabled(enabled);
+      setSettings({ ...settings, mentorReportEnabled: applied });
+      return applied
+        ? "On. Your next mentor report will be sent."
+        : "Off. No more mentor reports will be sent, and your prompts will not be read to write one.";
+    });
+  };
+
+  return (
+    <section className="settings-card">
+      <CardHead title="Mentor report" scope={ACCOUNT_SCOPE} />
+      <p className="settings-hint">
+        Feedback on how you prompt: what you asked for over the week, where the asking cost you time, and
+        what to try next. It is written by AI from your own prompts - no person reads them to produce it -
+        and it goes to your account&apos;s email address. Turn it off here and no report is made for you and
+        your prompts are not read to write one.
+      </p>
+      <div className="settings-field">
+        <label className="settings-check">
+          <input
+            type="checkbox"
+            checked={settings.mentorReportEnabled}
+            disabled={busy}
+            onChange={(e) => toggle(e.target.checked)}
+          />
+          Send me the mentor report
         </label>
       </div>
       {msg !== "" && <div className="settings-msg">{msg}</div>}

@@ -286,6 +286,26 @@ public sealed class TenantSettingsResolver
             : ReportCadences.Default;
 
     /// <summary>
+    /// Whether this account receives the Development Mentor report (devthrottle_internal#1661). Defaults to
+    /// <see cref="MentorReportEnabledDefault"/> - ON - when the account has expressed no choice, which is what
+    /// every account received before the setting existed.
+    ///
+    /// AN UNREADABLE VALUE ALSO READS AS ON, matching <see cref="DailyReportCadence"/> and for its reason: a
+    /// report somebody silenced arrives visibly and carries its own way out, while a report somebody wants
+    /// going silent is invisible to them. It also keeps a Gateway rollback safe.
+    ///
+    /// THIS READ IS NOT THE GATE. Nothing in this process sends the mentor report - it is produced and sent by
+    /// the harness in devthrottle_internal, which reads this same row out of the database directly. The harness
+    /// refuses on an unreadable value rather than defaulting to ON, and the difference is deliberate rather
+    /// than an inconsistency: this read answers "what does the card show", where being wrong costs a wrong
+    /// checkbox, and that one answers "does an email quoting this person's prompts go out", where being wrong
+    /// costs the send an opt-out was supposed to stop.
+    /// </summary>
+    public bool MentorReportEnabled(TenantId tenant)
+        => ParseBool(_store.Get(tenant, TenantSettingKeys.MentorReportEnabled))
+           ?? MentorReportEnabledDefault;
+
+    /// <summary>
     /// The language this tenant is SPOKEN TO in (issue #1008) - the single source every spoken path
     /// reads, so a language reaches all of them or none of them. Defaults to English when the tenant has
     /// expressed no choice, which is what every account got before the setting existed.
@@ -458,6 +478,12 @@ public sealed class TenantSettingsResolver
     public void SetDailyReportCadence(TenantId tenant, ReportCadence cadence, DateTime nowUtc)
         => _store.Set(tenant, TenantSettingKeys.DailyReportCadence, ReportCadences.Name(cadence), nowUtc);
 
+    /// <summary>Set whether this account receives the Development Mentor report. ON is stored EXPLICITLY
+    /// rather than by clearing the override, so "turn it back on" is a choice this account made and a later
+    /// look at the store can tell it apart from an account that never touched the setting.</summary>
+    public void SetMentorReportEnabled(TenantId tenant, bool enabled, DateTime nowUtc)
+        => _store.Set(tenant, TenantSettingKeys.MentorReportEnabled, enabled ? "true" : "false", nowUtc);
+
     /// <summary>
     /// Set the language this tenant is spoken to in. English is stored EXPLICITLY rather than by
     /// clearing the override, so "back to English" is a choice this account made and a later look at
@@ -569,6 +595,12 @@ public sealed class TenantSettingsResolver
     /// ON. The suggestions feature exists to help people who never open Settings, so the one place it reaches
     /// them when they are not in the app has to be on by default.</summary>
     public const bool SuggestionsInDailyEmailDefault = true;
+
+    /// <summary>The default for <see cref="MentorReportEnabled"/> when an account has expressed no choice: ON.
+    /// The same reasoning as the daily report's default - an account that never opens Settings goes on
+    /// receiving what it received before the setting existed, and the report itself carries the way out in its
+    /// footer, so nobody has to find this page to be told the setting is here.</summary>
+    public const bool MentorReportEnabledDefault = true;
 
     /// <summary>The "this account has chosen no voice for any language" answer. One shared instance, so the
     /// common read allocates nothing.</summary>

@@ -267,4 +267,91 @@ public sealed class TenantSettingsResolverTests
 
         Assert.Equal(ReportCadences.DailyName, store.Get(TenantA, TenantSettingKeys.DailyReportCadence));
     }
+
+    // ---- the mentor report switch (devthrottle_internal#1661) ----------------------------------------
+    //
+    // This Gateway does not SEND the mentor report - the harness does, reading this same row out of the
+    // database. So what these prove is that the row an account writes here is the row that harness will
+    // read: stored under the documented key, in the documented "true"/"false" spelling, per tenant.
+
+    [Fact]
+    public void MentorReportEnabled_NoChoice_IsOn()
+    {
+        using var h = new GatewayDbTestHarness();
+        var r = NewResolver(h);
+
+        // What every account received before this setting existed. Defaulting to OFF would silently stop
+        // the report for everybody the moment the setting shipped, and nobody would have asked for that.
+        Assert.True(r.MentorReportEnabled(TenantA));
+    }
+
+    [Fact]
+    public void MentorReportEnabled_Off_RoundTrips()
+    {
+        using var h = new GatewayDbTestHarness();
+        var r = NewResolver(h);
+
+        r.SetMentorReportEnabled(TenantA, false, Now);
+
+        Assert.False(r.MentorReportEnabled(TenantA));
+    }
+
+    [Fact]
+    public void MentorReportEnabled_OneTenantsOptOut_DoesNotSilenceAnother()
+    {
+        using var h = new GatewayDbTestHarness();
+        var r = NewResolver(h);
+
+        r.SetMentorReportEnabled(TenantA, false, Now);
+
+        Assert.False(r.MentorReportEnabled(TenantA));
+        Assert.True(r.MentorReportEnabled(TenantB));
+    }
+
+    [Fact]
+    public void MentorReportEnabled_UnreadableValue_ReadsAsOn_NotAsSilence()
+    {
+        using var h = new GatewayDbTestHarness();
+        var store = new TenantSettingsStore(h.Open());
+        var r = new TenantSettingsResolver(store);
+
+        foreach (var junk in new[] { "", "   ", "off", "no", "0" })
+        {
+            store.Set(TenantA, TenantSettingKeys.MentorReportEnabled, junk, Now);
+            Assert.True(r.MentorReportEnabled(TenantA));
+        }
+    }
+
+    [Fact]
+    public void MentorReportEnabled_IsStoredUnderTheDocumentedKey_InTheSpellingTheHarnessReads()
+    {
+        using var h = new GatewayDbTestHarness();
+        var store = new TenantSettingsStore(h.Open());
+        var r = new TenantSettingsResolver(store);
+
+        // The harness parses this row itself, in Python, out of gateway.tenant_settings. It accepts exactly
+        // "true" and "false" and REFUSES anything else rather than guessing, so the spelling written here is
+        // not a detail: a value this assertion let drift would stop that account's report with an error
+        // instead of sending it.
+        r.SetMentorReportEnabled(TenantA, false, Now);
+        Assert.Equal("false", store.Get(TenantA, TenantSettingKeys.MentorReportEnabled));
+
+        r.SetMentorReportEnabled(TenantA, true, Now);
+        Assert.Equal("true", store.Get(TenantA, TenantSettingKeys.MentorReportEnabled));
+    }
+
+    [Fact]
+    public void MentorReportEnabled_TurningItBackOn_IsStoredRatherThanLeftAbsent()
+    {
+        using var h = new GatewayDbTestHarness();
+        var store = new TenantSettingsStore(h.Open());
+        var r = new TenantSettingsResolver(store);
+
+        r.SetMentorReportEnabled(TenantA, false, Now);
+        r.SetMentorReportEnabled(TenantA, true, Now);
+
+        // "Back on" is a choice this account made, and a later look at the store can tell it apart from an
+        // account that never touched the setting.
+        Assert.Equal("true", store.Get(TenantA, TenantSettingKeys.MentorReportEnabled));
+    }
 }

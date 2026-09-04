@@ -131,6 +131,7 @@ public sealed class HostedOwnerSettingsSelfHostControlTests : IAsyncLifetime
                              "gateway/settings",
                              "gateway/snooze-default",
                              "gateway/daily-report",
+                             "gateway/mentor-report",
                              "gateway/injected-text",
                              "gateway/snooze-presets",
                              "gateway/time-zone",
@@ -181,7 +182,9 @@ public sealed class HostedOwnerSettingsSelfHostControlTests : IAsyncLifetime
                 {
                     "snoozeDefaultMinutes", "snoozePresets",
                     "snoozeMaxPresets", "timeZone", "timeZoneMachineDefault", "dailyReportCadence",
+                    "mentorReportEnabled",
                 }, properties);
+                Assert.True(root.GetProperty("mentorReportEnabled").GetBoolean());
                 Assert.Equal(ReportCadences.DailyName, root.GetProperty("dailyReportCadence").GetString());
                 Assert.True(root.GetProperty("snoozePresets").GetArrayLength() > 0);
                 Assert.Equal(SnoozePresetsConfig.MaxPresets, root.GetProperty("snoozeMaxPresets").GetInt32());
@@ -198,6 +201,14 @@ public sealed class HostedOwnerSettingsSelfHostControlTests : IAsyncLifetime
                 // mailing everyone who has an address, exactly as it did before the setting existed.
                 Assert.Equal(new[] { "cadence" }, properties);
                 Assert.Equal(ReportCadences.DailyName, root.GetProperty("cadence").GetString());
+                break;
+
+            case "gateway/mentor-report":
+                // Whether this account receives the mentor report (devthrottle_internal#1661). Its
+                // independently knowable value is the documented default - ON - because a Gateway nobody has
+                // configured must answer the way every account was treated before the setting existed.
+                Assert.Equal(new[] { "enabled" }, properties);
+                Assert.True(root.GetProperty("enabled").GetBoolean());
                 break;
 
             case "gateway/injected-text":
@@ -261,6 +272,8 @@ public sealed class HostedOwnerSettingsSelfHostControlTests : IAsyncLifetime
                 // "off" is the value that is distinguishable from the default, so the re-read proves a write
                 // rather than a no-op.
                 data.Add(hosted, "PUT", "gateway/daily-report", "{\"cadence\":\"off\"}", "daily-report", "off");
+                // false is the value distinguishable from the default, so the re-read proves a write.
+                data.Add(hosted, "PUT", "gateway/mentor-report", "{\"enabled\":false}", "mentor-report", "false");
                 // transcription-mode is NOT here - it needs a seeded starting value to be distinguishable
                 // from a no-op, so it has its own test below.
                 data.Add(hosted, "PUT", "gateway/tts-voice", "{\"voice\":\"shimmer\"}", "tts-voice", "shimmer");
@@ -294,6 +307,9 @@ public sealed class HostedOwnerSettingsSelfHostControlTests : IAsyncLifetime
         "snooze-presets" => string.Join(",", _gateway.TenantSettingsResolver.SnoozePresets(TenantId.Local)),
         "time-zone" => _gateway.TenantSettingsResolver.TimeZone(TenantId.Local),
         "daily-report" => ReportCadences.Name(_gateway.TenantSettingsResolver.DailyReportCadence(TenantId.Local)),
+        // Lower-cased on purpose: it is compared against the literal the theory row carries, and the
+        // spelling the harness parses out of the store is "true"/"false".
+        "mentor-report" => _gateway.TenantSettingsResolver.MentorReportEnabled(TenantId.Local) ? "true" : "false",
         "transcription-mode" => TranscriptionModeConfig.Get().ToConfigString(),
         "tts-voice" => _gateway.TenantSettingsResolver.TtsVoice(TenantId.Local, TranscriptionModeConfig.Get()),
         "wingman-model" => _gateway.TenantSettingsResolver.WingmanModel(TenantId.Local, TranscriptionModeConfig.Get(), WingmanModelRole.Thinking).Value,

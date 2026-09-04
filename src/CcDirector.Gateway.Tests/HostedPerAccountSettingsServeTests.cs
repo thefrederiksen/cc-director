@@ -121,6 +121,8 @@ public sealed class HostedPerAccountSettingsServeTests : IAsyncLifetime
         ("PUT", "gateway/tts-voice",                "{\"voice\":\"shimmer\"}"),
         ("GET", "gateway/daily-report",             null),
         ("PUT", "gateway/daily-report",             "{\"cadence\":\"off\"}"),
+        ("GET", "gateway/mentor-report",            null),
+        ("PUT", "gateway/mentor-report",            "{\"enabled\":false}"),
         ("GET", "gateway/injected-text",            null),
         ("PUT", "gateway/injected-text",            "{\"use_yours\":true,\"yours\":\"words for one account only\"}"),
         // Issue #1360: these three setters REFUSE any id that is not a devthrottle/ included
@@ -222,6 +224,42 @@ public sealed class HostedPerAccountSettingsServeTests : IAsyncLifetime
         Assert.Equal("daily", await ReadString(_httpB, "gateway/daily-report", "cadence"));
     }
 
+    /// <summary>
+    /// ISOLATED - the mentor report switch (devthrottle_internal#1661). A turns the mentor off; B still has
+    /// it on. The same property that matters most for the daily report matters more here: what an account is
+    /// turning off is a model reading that account's own prompts, so one person's opt-out leaking onto
+    /// somebody else's row would silence a report nobody asked to stop - and leaking the other way would keep
+    /// reading the prompts of somebody who asked us not to.
+    /// </summary>
+    [Fact]
+    public async Task Mentor_report_turned_off_by_one_tenant_does_not_silence_another_on_hosted()
+    {
+        (await OwnerSettingsRoutes.SendAsync(_httpA, "PUT", "gateway/mentor-report", "{\"enabled\":false}"))
+            .EnsureSuccessStatusCode();
+
+        Assert.False(await ReadBool(_httpA, "gateway/mentor-report", "enabled"));
+        Assert.True(await ReadBool(_httpB, "gateway/mentor-report", "enabled"));
+        // And the snapshot the Settings page actually renders agrees with the route it writes through.
+        Assert.False(await ReadBool(_httpA, "gateway/settings", "mentorReportEnabled"));
+        Assert.True(await ReadBool(_httpB, "gateway/settings", "mentorReportEnabled"));
+    }
+
+    /// <summary>
+    /// A body with no "enabled" is REFUSED, not read as either answer. Guessing would answer "saved" for a
+    /// choice nobody made, and one of the two guesses keeps reading the prompts of somebody who asked us to
+    /// stop.
+    /// </summary>
+    [Fact]
+    public async Task Mentor_report_write_without_a_value_is_refused_and_changes_nothing()
+    {
+        var before = await ReadBool(_httpA, "gateway/mentor-report", "enabled");
+
+        var response = await OwnerSettingsRoutes.SendAsync(_httpA, "PUT", "gateway/mentor-report", "{}");
+
+        Assert.Equal(System.Net.HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal(before, await ReadBool(_httpA, "gateway/mentor-report", "enabled"));
+    }
+
     /// <summary>ISOLATED - the text-to-speech voice. A picks a distinctive voice; B is unaffected.</summary>
     [Fact]
     public async Task Tts_voice_written_by_one_tenant_is_invisible_to_another_on_hosted()
@@ -302,6 +340,12 @@ public sealed class HostedPerAccountSettingsServeTests : IAsyncLifetime
     {
         using var doc = await ReadJson(http, path);
         return doc.RootElement.GetProperty(property).GetString();
+    }
+
+    private static async Task<bool> ReadBool(HttpClient http, string path, string property)
+    {
+        using var doc = await ReadJson(http, path);
+        return doc.RootElement.GetProperty(property).GetBoolean();
     }
 
     private static async Task<int> ReadInt(HttpClient http, string path, string property)

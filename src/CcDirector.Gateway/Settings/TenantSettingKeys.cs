@@ -90,6 +90,20 @@ public static class TenantSettingKeys
     public const string DailyReportCadence = "daily_report_cadence";
 
     /// <summary>
+    /// Whether this account receives the Development Mentor report - the weekly written-and-spoken feedback on
+    /// how the person prompts (devthrottle_internal#1661). Stored as "true"/"false". Like
+    /// <see cref="VoiceModeAll"/> there is no operator global default to fall back to: it is one account's
+    /// choice about one account's mail, and its default is ON.
+    ///
+    /// A BOOLEAN and not a cadence name, which is the opposite of the call
+    /// <see cref="DailyReportCadence"/> made, on purpose. That setting answers "how often" and had a third
+    /// answer already waiting. This one answers "do you want this at all": the mentor reads a person's own
+    /// prompts to write it, and the question somebody asks about that is whether it happens, never how often.
+    /// A rhythm the account cannot choose is not a rhythm it should be offered a name for.
+    /// </summary>
+    public const string MentorReportEnabled = "mentor_report_enabled";
+
+    /// <summary>
     /// The language this account is SPOKEN TO in, stored as the short code (<c>en</c>/<c>fr</c>/<c>es</c>)
     /// - issue #1008. Like <see cref="VoiceModeAll"/> there is no operator global default to fall back
     /// to: which language a person wants to be spoken to in is that person's own choice and nobody
@@ -150,7 +164,7 @@ public static class TenantSettingKeys
         WingmanModel, WingmanFastModel, TtsModel, TtsVoice,
         CarModeModel, CarModeEndPhrase, SnoozePresets, SnoozeDefaultMinutes, TimeZone, InjectedText,
         VoiceModeAll, DictationSuggestionsInDailyEmail, DictationEmailCadence, DailyReportCadence,
-        SpokenLanguage, SpokenVoiceByLanguage,
+        MentorReportEnabled, SpokenLanguage, SpokenVoiceByLanguage,
         SessionSupervisorEnabled, SessionSupervisorFirstRetrySeconds, SessionSupervisorRetryCadenceMinutes,
         SessionSupervisorMaxLongRetries, SessionSupervisorModelFallbackEnabled,
     };
