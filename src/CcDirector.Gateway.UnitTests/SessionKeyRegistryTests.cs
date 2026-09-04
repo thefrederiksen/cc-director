@@ -221,6 +221,43 @@ public sealed class SessionKeyRegistryTests : IDisposable
     }
 
     [Fact]
+    public void An_unchanged_roster_refresh_does_not_rewrite_a_long_lived_key()
+    {
+        var now = new DateTime(2026, 9, 4, 12, 0, 0, DateTimeKind.Utc);
+        var registry = Registry(() => now);
+        var session = Guid.NewGuid();
+        var hash = GatewaySessionKey.Hash(GatewaySessionKey.Mint());
+        Assert.True(registry.Register(Account, "director-1", session.ToString(), hash, now + SessionKeyRegistry.MaxSessionKeyLifetime));
+
+        now = now.AddSeconds(10);
+        Assert.True(registry.Register(Account, "director-1", session.ToString(), hash, now + SessionKeyRegistry.MaxSessionKeyLifetime));
+
+        using var ctx = _harness.Open().CreateUnscopedContext();
+        var row = ctx.SessionKeys.Single();
+        Assert.Equal(new DateTime(2026, 9, 4, 12, 0, 0, DateTimeKind.Utc), row.IssuedAtUtc);
+        Assert.Equal(new DateTime(2026, 9, 5, 0, 0, 0, DateTimeKind.Utc), row.ExpiresAtUtc);
+    }
+
+    [Fact]
+    public void An_unchanged_key_is_refreshed_before_half_its_lifetime_remains()
+    {
+        var started = new DateTime(2026, 9, 4, 12, 0, 0, DateTimeKind.Utc);
+        var now = started;
+        var registry = Registry(() => now);
+        var session = Guid.NewGuid();
+        var hash = GatewaySessionKey.Hash(GatewaySessionKey.Mint());
+        Assert.True(registry.Register(Account, "director-1", session.ToString(), hash, now + SessionKeyRegistry.MaxSessionKeyLifetime));
+
+        now = started + SessionKeyRegistry.RefreshWhenRemaining + TimeSpan.FromSeconds(1);
+        Assert.True(registry.Register(Account, "director-1", session.ToString(), hash, now + SessionKeyRegistry.MaxSessionKeyLifetime));
+
+        using var ctx = _harness.Open().CreateUnscopedContext();
+        var row = ctx.SessionKeys.Single();
+        Assert.Equal(now, row.IssuedAtUtc);
+        Assert.Equal(now + SessionKeyRegistry.MaxSessionKeyLifetime, row.ExpiresAtUtc);
+    }
+
+    [Fact]
     public void The_gateway_caps_an_expiry_computed_on_the_directors_clock()
     {
         // The expiry arrives from the Director, so it is only as trustworthy as the Director's clock. A

@@ -29,8 +29,10 @@ public static class GatewayEntryPoint
         // Gateway containers at once and they share one storage mount.
         //
         //  - Its own log file. The default discriminator is the process id, which is 1 in EVERY container,
-        //    so both containers computed the same path on the SMB mount and clobbered each other's records
-        //    mid-line. Must be set before FileLog.Start().
+        //    so both containers computed the same path on the Server Message Block mount and clobbered each
+        //    other's records mid-line. The file now lives on the container's temporary disk as well: process
+        //    logging is not durable workload state, and putting it on the shared mount turns every routine
+        //    line into billed network storage traffic. Both settings must be applied before FileLog.Start().
         //  - Standard output as a second sink. The platform captures it per container, and it has no queue
         //    in front of it, so it survives a stalled file share - the failure that erased the startup
         //    record of three deploys and left "no listening ports were detected" with nothing to explain it.
@@ -40,7 +42,7 @@ public static class GatewayEntryPoint
         // containers are running and the logging matters most.
         if (GatewayHostedMode.IsHostedImage)
         {
-            FileLog.UseUniqueInstanceId();
+            FileLog.UseUniqueInstanceId(ResolveHostedLogDirectory(Path.GetTempPath()));
             FileLog.MirrorToConsole = true;
         }
 
@@ -142,5 +144,18 @@ public static class GatewayEntryPoint
 
         FileLog.Stop();
         return 0;
+    }
+
+    /// <summary>
+    /// Locate a hosted process log beneath the container's temporary root. Azure App Service keeps paths
+    /// outside <c>/home</c> and explicitly mounted storage on local host disk, so this path cannot fall back
+    /// into the Gateway's durable data share. The root is supplied to make that boundary directly testable.
+    /// </summary>
+    internal static string ResolveHostedLogDirectory(string temporaryRoot)
+    {
+        if (string.IsNullOrWhiteSpace(temporaryRoot))
+            throw new ArgumentException("A temporary root is required.", nameof(temporaryRoot));
+
+        return Path.Combine(Path.GetFullPath(temporaryRoot), "devthrottle", "logs", "director");
     }
 }

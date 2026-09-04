@@ -54,6 +54,14 @@ public sealed class SessionKeyRegistry
     /// </summary>
     public static readonly TimeSpan MaxSessionKeyLifetime = TimeSpan.FromHours(12);
 
+    /// <summary>
+    /// An unchanged key with more than this much life remaining does not need another database write.
+    /// Directors re-send their live keys with every ten-second roster refresh so a lost registration heals,
+    /// but the credential itself lives for twelve hours. Rewriting the same row and logging the same success
+    /// on every roster refresh produced most of the hosted Gateway's process log without changing authority.
+    /// </summary>
+    internal static readonly TimeSpan RefreshWhenRemaining = MaxSessionKeyLifetime / 2;
+
     private readonly GatewayDatabase _db;
     private readonly Func<DateTime> _clock;
     private readonly bool _isHosted;
@@ -70,14 +78,15 @@ public sealed class SessionKeyRegistry
 
     /// <summary>
     /// Register (or rotate) one session's key. The row is keyed by session id, so a Director that
-    /// re-registers a live session on a tunnel reseed replaces its own row and extends its expiry rather
-    /// than adding a second credential.
+    /// re-registers a live session on a tunnel reseed refreshes its own row when the key is nearing the
+    /// second half of its lifetime rather than adding a second credential. Identical early refreshes are
+    /// accepted without rewriting the row.
     ///
     /// A REVOKED session is NOT resurrected. Revocation is deliberate and final - the session was reaped -
     /// and a reseed that raced the revocation must not undo it. The attempt is refused and logged, never
     /// silently applied.
     /// </summary>
-    /// <returns>True when the row was written; false when the session is revoked or the write was refused.</returns>
+    /// <returns>True when the registration was accepted; false when it was refused.</returns>
     public bool Register(TenantId tenant, string directorId, string sessionId, string keyHash, DateTime expiresAtUtc)
     {
         if (!tenant.IsValid)
@@ -123,21 +132,6 @@ public sealed class SessionKeyRegistry
                 return false;
             }
 
-            // A hash already owned by ANOTHER session is refused rather than stolen. The unique index would
-            // refuse it anyway; catching it here names the reason in the log instead of surfacing a bare
-            // database constraint violation.
-            if (ctx.SessionKeys.AsNoTracking().Any(s => s.KeyHash == hash && s.SessionId != id))
-            {
-                FileLog.Write($"[SessionKeyRegistry] Register REFUSED: the presented key hash is already registered to another session (session={id})");
-                return false;
-            }
-
-            if (row is null)
-            {
-                row = new SessionKeyEntity { SessionId = id };
-                ctx.SessionKeys.Add(row);
-            }
-
             var issued = _clock();
 
             // THE EXPIRY IS THE GATEWAY'S TO DECIDE, NOT THE DIRECTOR'S. It arrives computed from the
@@ -149,6 +143,36 @@ public sealed class SessionKeyRegistry
             var effectiveExpiry = expiresAtUtc > ceiling ? ceiling : expiresAtUtc;
             if (effectiveExpiry != expiresAtUtc)
                 FileLog.Write($"[SessionKeyRegistry] Register: session={id} asked for expiry {expiresAtUtc:O}, capped to {effectiveExpiry:O} by the Gateway's own clock");
+
+            // A roster refresh re-sends every live key every ten seconds. When the identity is unchanged and
+            // the existing expiry is still comfortably ahead, accepting it needs no database change:
+            // IssuedAtUtc and ExpiresAtUtc would only churn the database and emit another success record. A
+            // shorter requested expiry is never coalesced, and a changed hash still rotates immediately.
+            if (row is not null
+                && string.Equals(row.KeyHash, hash, StringComparison.Ordinal)
+                && string.Equals(row.DirectorId, directorId?.Trim() ?? "", StringComparison.OrdinalIgnoreCase)
+                && effectiveExpiry >= row.ExpiresAtUtc
+                && row.ExpiresAtUtc - issued > RefreshWhenRemaining)
+            {
+                transaction.Commit();
+                return true;
+            }
+
+            // A hash already owned by ANOTHER session is refused rather than stolen. The unique index would
+            // refuse it anyway; catching it here names the reason in the log instead of surfacing a bare
+            // database constraint violation. An unchanged registration returned above, so this query runs
+            // only for a new session or a real key rotation.
+            if (ctx.SessionKeys.AsNoTracking().Any(s => s.KeyHash == hash && s.SessionId != id))
+            {
+                FileLog.Write($"[SessionKeyRegistry] Register REFUSED: the presented key hash is already registered to another session (session={id})");
+                return false;
+            }
+
+            if (row is null)
+            {
+                row = new SessionKeyEntity { SessionId = id };
+                ctx.SessionKeys.Add(row);
+            }
 
             row.TenantId = tenant.Value;
             row.DirectorId = directorId?.Trim() ?? "";
