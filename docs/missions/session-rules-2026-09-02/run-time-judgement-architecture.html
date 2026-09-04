@@ -36,7 +36,16 @@
   .pipe { background: var(--panel); border: 1px solid var(--line); border-radius: 4px;
           padding: 16px 18px; margin: 20px 0; font-family: "Cascadia Mono", "Consolas", monospace;
           font-size: 12.8px; line-height: 1.85; overflow-x: auto; white-space: pre; }
-  .lede { font-size: 17.5px; }
+  .lede { font-size: 16.5px; color: var(--dim); font-style: italic; }
+  .decide { background: #fff; border: 2px solid var(--accent); border-radius: 5px;
+            padding: 22px 26px; margin: 26px 0 30px; }
+  .decide h4 { margin: 0 0 12px; font-size: 13px; text-transform: uppercase;
+               letter-spacing: 0.09em; color: var(--accent); font-weight: 700; }
+  .decide .one { font-size: 20px; line-height: 1.4; margin: 0 0 16px; }
+  .decide p { margin: 0 0 12px; }
+  .decide .ask { border-top: 1px solid var(--line); padding-top: 14px; margin-top: 16px;
+                 margin-bottom: 10px; }
+  .decide .risk { color: var(--bad); margin-bottom: 0; }
   li { margin-bottom: 8px; }
   .scroll { overflow-x: auto; }
   footer { margin-top: 60px; padding-top: 18px; border-top: 1px solid var(--line);
@@ -50,13 +59,33 @@
 <p class="sub">Written by the Architect, 4 September 2026, after Phase 1 round A missed its gate.
 Every number here is read off the committed harness reports, not recalled.</p>
 
-<p class="lede">The owner asked for this document before any further code: lay out what we are doing,
-how we detect the problem, how we verify it is a problem, and how we solve it - then step back and ask
-whether the approach is right at all, rather than hacking another thing onto it.</p>
+<div class="decide">
+  <h4>What I recommend we do</h4>
+  <p class="one"><strong>Stop making the fast model smarter. Give the careful model enough time to
+  answer, and let it make the decision.</strong></p>
+  <p>The careful model is not bad at this. It is being cut off. Every one of its apparent failures is
+  a timeout at exactly 60.0 seconds, not a wrong answer. Counting only the times we let it finish, it
+  is right <strong>60 of 60</strong> on the screens it should refuse and <strong>18 of 19</strong> on
+  the screens it should act on - including the exact ones that beat the fast model.</p>
+  <p>The 60 seconds was never chosen for this. It is a shared default borrowed from the voice feature,
+  where a person is waiting for a reply. Here nobody is waiting: the session has already stopped and
+  will sit there for hours. <strong>We optimised for speed in the one place speed is worthless, and
+  paid for it in wrong keystrokes.</strong></p>
+  <p>So: keep the fast model as a cheap first filter - it has never once wrongly refused a real limit
+  screen - and put the real judgement on the careful model with a deadline set by how long it actually
+  needs.</p>
+  <p class="ask"><strong>What I need from you:</strong> approval to run one measurement of that, on the
+  same frozen 32 screens, against the same bar as before - zero wrong keystrokes. Roughly half a day of
+  machine time and none of yours.</p>
+  <p class="risk"><strong>The catch, stated up front:</strong> every timed-out result reads 60.0
+  seconds because that is where we cut it. We do not know whether those calls would have finished at
+  seventy seconds or never finished at all. That is exactly what the measurement answers. If a real
+  share still never answers, this fails, and I will tell you so rather than tune it again.</p>
+</div>
 
-<p>I did that, and the answer is that the approach is <strong>partly wrong, and wrong in a way three
-rounds of work has been quietly walking away from</strong>. The detail is in section 6. This document
-does not ask for approval of a patch; it argues for changing the thing we have been optimising.</p>
+<p class="lede">Everything below is the backing for that recommendation - what the feature has to
+decide, how we detect and verify a problem, and the measurement that changed the diagnosis. You asked
+for the step back rather than another patch; section 6 is where it happens.</p>
 
 <h2>1. What the feature actually has to decide</h2>
 
