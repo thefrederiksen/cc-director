@@ -88,16 +88,26 @@ public sealed class RuleGroundingEvidence
     /// The ONLY way to obtain evidence: from a screen the Gateway read, for words that were all found on
     /// it. Internal, and structurally asserted to be called only by <see cref="RuleAuthor"/>, which is the
     /// one type that reads a screen through the Gateway and runs the check.
+    ///
+    /// IT RUNS THE ONE GROUNDING CHECK, NOT A SECOND COPY OF IT (fix round F). This used to call
+    /// <see cref="RuleTriggerWords.NotOn"/> itself, so the feature's central invariant was checked in two
+    /// places - here, and in <see cref="RuleTriggerWords.WhyNotGrounded"/>, which the draft route and the
+    /// write gate both call. Two copies of one check that agree today is exactly the shape ruling D2 was
+    /// written to remove: the draft reader and the store once had two functions for normalising a trigger
+    /// word that happened to agree on every word with no padding, and they disagreed on the first word
+    /// that had some. It showed here immediately - when the definition learned that a rule watching for
+    /// nothing is not grounded, this copy did not, and went on minting evidence for an empty set. That it
+    /// could not be REACHED with one was a fact about the callers of the day, not about this type.
     /// </summary>
     internal static RuleGroundingEvidence Minted(RuleScreenReading screen, IEnumerable<string> words)
     {
         if (screen is null) throw new ArgumentNullException(nameof(screen));
         var normalised = RuleTriggerWords.NormaliseAll(words);
-        var notOn = RuleTriggerWords.NotOn(normalised, screen.Excerpt);
-        if (notOn.Count > 0)
+        var notGrounded = RuleTriggerWords.WhyNotGrounded(normalised, screen, "the screen it was read from");
+        if (notGrounded is not null)
             throw new InvalidOperationException(
-                "evidence was asked for words that are not on the screen: " + string.Join(", ", notOn) +
-                ". The check has to run before evidence is minted, never after.");
+                "evidence cannot be minted for words that are not grounded: " + notGrounded +
+                " The check has to run before evidence is minted, never after.");
         return new RuleGroundingEvidence(screen.SessionId, normalised);
     }
 }
