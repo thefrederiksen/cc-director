@@ -205,29 +205,82 @@ production callers (`SessionRuleWire.Project`, twice) pass a non-nullable proper
 latent fail-open rather than a live one.** It is fixed because the default was wrong, not because it
 was firing.
 
-**One site that is correct in effect and wrong in shape, NOT changed - and this is the Architect's
-call, not mine.**
+**One site the sweep found, referred to the Architect, and then FIXED on his ruling.** Commits
+`aa44c1c84` (red) and `1eda859bf` (fix).
 
-`RuleTriggerWords.WhyNotGrounded` answers **"grounded"** for an EMPTY list of trigger words. `NotOn`
-over an empty list returns an empty list, so nothing is missing from the screen, so the check passes.
-The grounding invariant - the feature's central claim - therefore says yes to a rule that watches for
-nothing.
+`RuleTriggerWords.WhyNotGrounded` answered **"grounded"** for an EMPTY list of trigger words. The check
+asks whether every trigger word is on the screen; over no words that question has no work to do, so it
+passed. That is a check answering its own absence, sitting in the one function that defines what
+grounding means for the whole feature.
 
-This is not asserted from reading the code. It is executed today, in the suite: `Grounded.For(...)`
-mints evidence through a real `RuleAuthor`, and it THROWS if grounding refuses; the existing test
-`A_rule_with_no_trigger_words_is_refused_because_it_would_cost_a_model_call_every_time` calls
-`Grounded.For(Array.Empty<string>())` and passes, which is only possible because `GroundAsync` grounded
-the empty set.
+I reported it and recommended deferring it, because closing it breaks a round E store test and the
+round was told not to grow. **The Architect overruled that, and the reasoning is the part worth
+keeping:** the argument for leaving it was that two later gates refuse a wordless rule anyway, and that
+is the argument this mission has now watched fail twice in two days - grounding was itself believed to
+be the backstop behind the model's judgement until phase 1 measured it waving a confident wrong act
+through, and the structural guard was believed to protect the evidence token until an inspector edited
+a valid one straight past it. A backstop is worth what it is worth on the day the thing in front of it
+fails, and the definition of grounding is the last place to be relying on one. He also set the test
+that made it cheap: an empty trigger-word list is never legitimate, because a rule with no words could
+never fire and the store already demands at least one, so refusing it costs nothing real.
 
-Nothing is stored, because two independent later gates refuse it: `SessionRuleRecordRules.CheckRule`
-(reached from the store AND from the context's write gate) demands at least one non-blank word. So the
-effect is safe. The SHAPE is the class: a check whose pass condition is an absence.
+**The fix is one function.** `WhyNotGrounded` normalises the words once and refuses an empty list with
+its own sentence, before it looks at the screen at all.
 
-**I did not change it, deliberately, and the reason is scope.** Making `WhyNotGrounded` refuse an empty
-set would make `Grounded.For(Array.Empty<string>())` throw, which forces a rewrite of an existing
-load-bearing store test and moves what that test proves. The round was told not to grow, and rewriting
-another round's regression test is exactly growth. **Recommendation: refuse the empty set in
-`WhyNotGrounded` and re-point that test at the author's refusal, in a round that has room for it.**
+**Red first, and the defect executed rather than inferred:**
+
+```
+dotnet test src/CcDirector.Gateway.UnitTests --filter "FullyQualifiedName~watches_for_nothing"
+  RuleAuthorTests.The_write_gate_refuses_a_rule_that_watches_for_nothing [FAIL]
+    Assert.NotNull() Failure: Value is null
+  SessionRuleStoreTests.A_rule_that_watches_for_nothing_cannot_be_grounded_so_it_never_reaches_the_store [FAIL]
+    Assert.Throws() Failure: No exception was thrown
+    Expected: typeof(System.InvalidOperationException)
+```
+
+"Value is null" is the author returning NO refusal at all for a rule that watches for nothing.
+
+**Mutation probes, each reverted before the next:**
+
+```
+35cceacd9  grounding answers yes for an empty word list again
+  RuleAuthorTests.The_write_gate_refuses_a_rule_that_watches_for_nothing [FAIL]
+  SessionRuleStoreTests.A_rule_that_watches_for_nothing_cannot_be_grounded_so_it_never_reaches_the_store [FAIL]
+  Failed: 2, Passed: 326      reverted by 2954e9115, diff against 1eda859bf empty
+a41fe9bbf  the store no longer asks what a rule watches for
+  RuleAuthorTests.A_rule_the_store_would_refuse_is_not_offered_and_says_the_stores_reason [FAIL]
+  Failed: 1, Passed: 0        reverted by 7d12486e6, diff empty
+```
+
+**TWO tests broke, not one, and the ruling asked for the reason in each case before changing it.**
+
+1. `SessionRuleStoreTests.A_rule_with_no_trigger_words_is_refused_because_it_would_cost_a_model_call_every_time`
+   **depended on the defect without asserting it.** Its subject is the store's own "at least one word"
+   rule, and the only way to reach that rule through the store's public door was to hand it evidence
+   covering an empty set - which `Grounded.For(Array.Empty<string>())` could produce only because
+   grounding waved the empty set through. It could not simply be given words, because having no words
+   is its subject. So it is repointed at the gate that now refuses first, and renamed
+   `A_rule_that_watches_for_nothing_cannot_be_grounded_so_it_never_reaches_the_store`. **The store's own
+   rule is still covered where it is still reachable** - a rule written straight through the context,
+   which does not pass grounding at all:
+   `RulesWriteGateTests.A_rule_written_straight_through_the_context_still_has_to_be_a_rule` with its
+   "trigger words" case. No coverage was lost; it moved.
+2. `RuleAuthorTests.A_rule_the_store_would_refuse_is_not_offered_and_says_the_stores_reason` broke for
+   the same reason. It is NOT the round E test, so it is reported separately rather than folded in. Its
+   subject is that the store's validator is asked early, so the store's OWN sentence is what a person
+   reads. Its example was a drafted rule with no trigger words, which grounding now catches first. The
+   example is now a drafted rule that does not say what it watches FOR - a store rule nothing upstream
+   pre-empts - so the test goes on proving the thing it was written for. It was watched red under the
+   second probe above, so the repointed version is not decoration.
+
+**One thing this fix does NOT close, named rather than left.** `RuleGroundingEvidence.Minted` runs its
+own copy of the check (`NotOn` directly, not `WhyNotGrounded`), so the TYPE would still mint evidence
+for an empty set if it were reached with one. It cannot be reached with one: `Minted` is internal, a
+structural test asserts `RuleAuthor` is its only production caller, and that caller now refuses the
+empty set immediately upstream in the same method. I left it alone because the ruling said one function
+and nothing else. **It is the remaining place, and the file's own comment names the hazard - "a check
+that exists twice is a check that can be different twice" - so unifying `Minted` on `WhyNotGrounded` is
+recommended for a round that has room.**
 
 **Everything else was read and is correct.** The ones worth naming, because each LOOKS like the class:
 
@@ -273,12 +326,13 @@ another round's regression test is exactly growth. **Recommendation: refuse the 
 
 | Suite | Result |
 | --- | --- |
-| `.\scripts\test-local.ps1` (9 projects) at `69ec67e83` | green. Every outcome Completed; 4,927 total, 0 failed, 2 skipped |
+| `.\scripts\test-local.ps1` (9 projects) at `7d12486e6` | green. Every outcome Completed; 4,928 total, 0 failed, 2 skipped. **Run twice, and the first run is reported as well as the second:** the first flagged OVER BUDGET and printed FAIL and NO-TRX for `Gateway.UnitTests`, which took 2 minutes 18 seconds against the 120-second ceiling. That suite had in fact passed - its result file reads `outcome=Completed total=3635 passed=3633 failed=0` - and the verdict read the file before it was flushed. The re-run came back inside budget at 1 minute 1 second with every outcome Completed. It is a budget flag under load, the same one round E reported at 2 minutes 8 seconds, and it is the Architect's to decide |
 | `Gateway.Tests` filtered to `CensusRouteTenancyProbeTests`, `ContextLessRouteCensusTests`, `SessionRuleRouteGuardCensusTests` | 18 passed, 0 failed, 33 seconds |
 | `Gateway.Tests`, full parked suite | NOT run by this seat (ruling E4). It is the Architect's, once, on the final merged tree |
 | `npm run typecheck` (4 workspaces) | clean |
 | Every web workspace | client-core 997, cockpit 298, mobile 14, cc-assistant 106 - all green |
 | `pytest tools/cc-devthrottle/tests/` | 279 passed |
+| `Gateway.UnitTests` rules filter, run on its own after each change | 328 passed, 0 failed |
 
 The local gate reported the coverage gap it always reports here: `Core.Tests` and `Gateway.Tests` are
 parked and did not run. That is ruling E4 operating as intended, not an unnoticed hole.
@@ -290,6 +344,10 @@ These passed but were never observed failing, so they are decoration until somet
 - `A_scope_that_says_every_session_out_loud_is_labelled_every_session` - the control beside the label
   fix. It would fail if the stamper refused everything, which is what it is there for, but that was not
   executed.
+- `RulesWriteGateTests.A_rule_written_straight_through_the_context_still_has_to_be_a_rule` with its
+  "trigger words" case. It is now the ONLY place the store's own no-words rule is proven, and this round
+  did not watch it fail - it was already green and was not touched. Named because its importance went up
+  in this round while its evidence did not.
 - `rules: a scope child of the wrong type is an error naming it` (browser) and
   `test_a_scope_child_of_the_wrong_type_is_an_error_naming_it` (command line). **Both passed on the
   UNFIXED tree.** They are controls, not regressions: the existing readers already refused a child of
