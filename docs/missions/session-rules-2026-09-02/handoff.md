@@ -283,3 +283,66 @@ Phase 2 (the clock) is on the critical path for scenario A and nobody is on it. 
 an oversight: Phase 2 adds a wake field and a migration, Phase 1 adds `TextToType` and a migration, and
 both touch the evaluator. Running them at once collides on the migration slot and on the same file.
 **Seat Phase 2 when Phase 1 reports**, on top of it.
+
+---
+
+## Where the mission stands, 2026-09-04
+
+**Three fix rounds and three inspections have happened**, each one finding real defects in the round
+before it. That is the machinery working, not the mission going backwards - but it is worth writing
+down what the trend actually is, because it is the strongest evidence about the code's state:
+
+| Round | Inspection | Found |
+| --- | --- | --- |
+| The authoring slice | D | 10 findings: 1 blocker, 4 high, 5 medium |
+| Fix round D | E | 4 findings: 1 high, 2 medium, 1 low |
+| Fix round E | F | 2 findings: 1 high, 1 medium |
+
+**No more separate inspection rounds. The next inspection is of the TREE THAT WILL LAND**, after phase
+1 merges - inspecting the thing that actually ships rather than each increment of it. Three rounds of
+increment-inspection has reached diminishing returns, and an inspection of the merged tree also catches
+what merging itself introduced, which no increment inspection can see.
+
+## The recurring defect class, and it is now the mission's headline technical finding
+
+**Five times in one feature, an absent or unreadable value became a permissive or positive one.**
+
+| Where | Absence became | Closed by |
+| --- | --- | --- |
+| A write with no scope | Every session | Fix round A |
+| A draft with an empty screen | Grounding skipped entirely | Ruling D2 |
+| A present-but-null `rules` field | "No rules yet" | Ruling E2 |
+| A missing `scope.agent` | `agent: null`, unrestricted | Ruling F2 |
+| An EMPTY trigger-word list | "grounded" | Fix round F, on the Architect's call |
+
+The fifth is the sharpest: `WhyNotGrounded` answered GROUNDED for a rule with no words at all, inside
+the single function that defines what grounding means. It was caught by a sweep that derived its 39
+files from the feature guard's own predicate rather than a hand-kept list, read all 383
+absence-to-value sites, and made a second pass over 21 vacuous-truth forms - the first sweep in this
+mission that is itself evidence rather than a claim.
+
+**This belongs in the QA report as a finding about how this code was written**, not as five bullet
+points. It is one habit, and the sweep is the thing that found it rather than a sixth inspection.
+
+## A second class, found twice, and it is about the TESTS
+
+Three defects share one shape: **a decision proven by constructing an object directly rather than by
+driving the real request.**
+
+- The session-key guard: a route nobody had classified. Every suite green.
+- The promotion grant: a caller nobody wrote. Shipped broken in a release. Every suite green.
+- Inspection D finding 9: a tenant that could be replaced by a constant.
+
+And a fourth, related: the round E store test **depended on the empty-word-list defect without
+asserting it** - minting evidence for an empty set was the only way to reach the store's own no-words
+refusal through its public door. A test can rest on a defect without ever mentioning it.
+
+## Instrument faults seen, so a later reader does not chase them
+
+- **The local gate has reported FAILED with NO-TRX on a fully green run.** In fix round F it printed
+  FAIL for `Gateway.UnitTests` at 2m18s against the 120-second budget ceiling while that suite had in
+  fact passed 3,633 tests with zero failures; a re-run came back at 1m01s. It is a budget-ceiling
+  artefact, not a test failure.
+- **The full parked `Gateway.Tests` cannot be run by a seat** - a ten-minute tool cap kills it and four
+  seats queueing on one machine-wide lock starves it. Ruling E4: the Architect runs it once, on the
+  final merged tree.
