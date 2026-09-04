@@ -284,7 +284,7 @@ public sealed class SessionRuleStoreTests : IDisposable
         // lands - and the assertions below hold the line in both cases.
         if (evidence.Words is IList<string> { IsReadOnly: false } writable) writable[0] = NeverOnTheScreen;
 
-        // PROBE: the snapshot assertion is lifted so the write half of the test is reached.
+        Assert.Equal(new[] { "limit" }, evidence.Words);
 
         var ex = Assert.Throws<RuleRejectedException>(() => store.Create(
             TheSentence, "a screen", new[] { NeverOnTheScreen }, GoodCalls(),
