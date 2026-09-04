@@ -224,8 +224,25 @@ public sealed record TurnLogConversation
     /// reply together.</summary>
     [JsonPropertyName("full_turns_requested")] public int FullTurnsRequested { get; init; }
 
-    /// <summary>True when the front of the conversation was cut off to honour that request.</summary>
+    /// <summary>True when the front of the conversation was cut off - by the turn count, by the size
+    /// ceiling, or by both.</summary>
     [JsonPropertyName("truncated")] public bool Truncated { get; init; }
+
+    /// <summary>
+    /// How many whole turns were dropped to get under the size ceiling, beyond any the turn count already
+    /// cut. Zero means the ceiling was never reached.
+    ///
+    /// It is recorded rather than left implicit because the two reasons a conversation is short mean
+    /// different things: a session that has only had three turns, and a session whose turns were so large
+    /// that we could not keep ten. Reading the second as the first would understate how much context the
+    /// judgements actually had.
+    /// </summary>
+    [JsonPropertyName("turns_dropped_for_size")] public int TurnsDroppedForSize { get; init; }
+
+    /// <summary>The ceiling in force when this record was written, in bytes. Stored per record because it
+    /// is a tuning decision that will change, and a corpus spanning a change to it is otherwise
+    /// uninterpretable.</summary>
+    [JsonPropertyName("size_ceiling_bytes")] public int SizeCeilingBytes { get; init; }
 
     /// <summary>
     /// When the computer that owns this session last pushed its conversation.

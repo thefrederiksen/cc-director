@@ -42,6 +42,23 @@ public sealed class TurnLogRecorder : IDisposable
     public const int ScrollbackLinesCaptured = 2000;
 
     /// <summary>
+    /// The ceiling on ONE record's conversation, in bytes of serialized JSON.
+    ///
+    /// Ten full turns is the rule, and it stays the rule - but a "turn" in an agent session is a person's
+    /// prompt plus every tool call and tool result that followed it, and those run to hundreds of messages.
+    /// Measured on the first live records: a median conversation of 271 KB inside a 616 KB record, which at
+    /// four hundred turn ends a day is tens of gigabytes a year in a repository. The corpus is only useful
+    /// if we can actually keep it.
+    ///
+    /// OLDEST TURNS GO FIRST, AND THEY GO WHOLE. Trimming from the front keeps the turns nearest the screen
+    /// - the ones a judgement about THIS turn end would actually read - and dropping whole turns rather
+    /// than messages preserves the property that made the ten-turn rule worth having: no agent reply
+    /// arrives without the prompt that caused it. A record that hits the ceiling says so, and says how many
+    /// turns it lost.
+    /// </summary>
+    public const int MaxConversationBytes = 128 * 1024;
+
+    /// <summary>
     /// The ceiling on one capture. Not a correctness bound - nothing downstream waits on this - but an
     /// unreachable Director must not leave a capture task hanging on to a session's state for the rest of
     /// the day, and a fleet's worth of those would be a leak rather than a log.
@@ -200,6 +217,15 @@ public sealed class TurnLogRecorder : IDisposable
                 });
             }
         }
+        if (conversation.TurnsDroppedForSize > 0)
+        {
+            gaps.Add(new TurnLogGap
+            {
+                Part = "conversation",
+                Reason = $"{conversation.TurnsDroppedForSize} older turn(s) were dropped to stay under the "
+                       + $"{MaxConversationBytes / 1024} KB conversation ceiling - the turns nearest this screen were kept",
+            });
+        }
         overall.Stop();
 
         var record = new TurnLogRecord
@@ -304,16 +330,51 @@ public sealed class TurnLogRecorder : IDisposable
             break;
         }
 
+        var cutByTurnCount = startIndex > 0;
+
+        // THE SIZE CEILING, applied after the turn count and never instead of it. Drop the oldest WHOLE
+        // turn and measure again, until it fits or one turn is left. A single turn over the ceiling is kept
+        // rather than sliced: half a turn teaches the corpus something that never happened, and the record
+        // says plainly that it is oversized.
+        var droppedForSize = 0;
+        while (Serialized(all, startIndex) > MaxConversationBytes)
+        {
+            var next = NextHumanTurn(all, startIndex + 1);
+            if (next < 0) break;   // one turn left - keep it whole and let the record be large
+            startIndex = next;
+            droppedForSize++;
+        }
+
         return new TurnLogConversation
         {
             IsSupported = stored.IsSupported,
             Generation = stored.Generation,
             TotalMessageCount = all.Count,
             FullTurnsRequested = FullTurnsCaptured,
-            Truncated = startIndex > 0,
+            Truncated = cutByTurnCount || droppedForSize > 0,
+            TurnsDroppedForSize = droppedForSize,
+            SizeCeilingBytes = MaxConversationBytes,
             LastPushedAtUtc = stored.LastPushedUtc,
             Messages = all.Skip(startIndex).ToList(),
         };
+    }
+
+    /// <summary>The serialized size of the messages from <paramref name="from"/> onward - what the record
+    /// will actually cost, measured rather than estimated from message counts, because one tool result can
+    /// be larger than a hundred prompts.</summary>
+    private static int Serialized(IReadOnlyList<HistoryMessageDto> all, int from)
+    {
+        var window = from == 0 ? all : all.Skip(from).ToList();
+        return System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(window).Length;
+    }
+
+    /// <summary>The index of the next human turn at or after <paramref name="from"/>, or -1 when there is
+    /// none - which is what stops the trim from cutting into the last turn it holds.</summary>
+    private static int NextHumanTurn(IReadOnlyList<HistoryMessageDto> all, int from)
+    {
+        for (var i = Math.Max(0, from); i < all.Count; i++)
+            if (IsHumanTurn(all[i])) return i;
+        return -1;
     }
 
     /// <summary>
