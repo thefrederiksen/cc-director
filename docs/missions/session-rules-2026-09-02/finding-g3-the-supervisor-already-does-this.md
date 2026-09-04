@@ -197,3 +197,77 @@ the same thing:
 runs rules shipped; the half that lets a person write one is still sitting on a branch. That is why the
 feature looks like nothing at all from the outside - and it is the single clearest statement of where
 this mission actually stands.
+
+---
+
+# THE COST, MEASURED - what the Gateway actually calls today, 4 September 2026
+
+Read from the hosted Gateway's own log, not estimated.
+
+## What we pay today
+
+| Today, 4 September | Count |
+| --- | --- |
+| Turn ends (rule evaluations) | **407** |
+| Fast-model calls that succeeded (`devthrottle/wingman-fast`) | **484** |
+| Fast-model calls that timed out | 2 |
+| **Thinking-model calls (`devthrottle/wingman`)** | **1** (and it timed out) |
+| Turn briefs generated | **0** |
+
+Two things fall out of that table and both matter.
+
+**The thinking tier is essentially unused today - ONE call in a day.** So "run the smart model on every
+turn end" is not a marginal increase on the expensive tier. It is 407 where there is currently 1.
+
+**The turn brief is NOT running.** Section 3 above said the brief already answers "does this session
+need me". That is true of the RECORDS - 774 of them - but those are from June. Zero briefs were
+generated today. The capability exists and is not currently switched on. The earlier section overstated
+it and this corrects it.
+
+## What each option would add, per day
+
+Measured prompt size: the rules question carries the last 40 real lines of the screen, which across the
+32 corpus screens is a median of **3,940 characters - about 1,100 tokens** - plus roughly 500 tokens of
+fixed instructions and the rule text. Call it **1,600 input tokens per call**.
+
+| Option | Model calls added per day | Effect |
+| --- | --- | --- |
+| Rules on every turn, FAST model | +407 | Roughly DOUBLES the Gateway's model calls (484 today) |
+| Rules on every turn, THINKING model | +407 | The expensive tier goes from **1 call a day to 407** |
+| Rules gated by a word table, like the supervisor | **about +5** | The supervisor made 10 model calls in TWO DAYS across ~1,200 turn ends |
+| Both questions on every turn (today's design, live) | +407 to +814 | The second question is asked whenever the first says act |
+
+At 407 turn ends a day and 1,600 input tokens a call, running on every turn is roughly **650,000 input
+tokens a day, about 20 million a month.** The word-gated shape is about one percent of that.
+
+**The dollar figure is NOT derivable from this repository.** `devthrottle/wingman` is an internal alias
+the hosted proxy maps to an upstream model; the mapping and the rate live on the hosted side. The
+governance spend routes (`/gateway/governance/hosted-ai-spend`) exist but a SESSION KEY may not call
+them - correctly refused with `session_key_out_of_scope`. Getting the rate needs a device key or the
+hosted database.
+
+## Why the supervisor "runs occasionally" - it does not
+
+This was the owner's question and the premise is worth correcting: **the supervisor runs on EVERY turn
+end, exactly like the rules engine.** What is occasional is the MODEL.
+
+On every turn end it reads the screen once - free - and runs the word table - free. It stops there
+unless the screen carries a fault signature the table does not recognise. That happened ten times in
+two days.
+
+So the two features differ in ONE decision, not in when they wake:
+
+| | Wakes on | First move | Model calls |
+| --- | --- | --- | --- |
+| Supervisor | every turn end | word table | ~5 a day |
+| Rules engine | every turn end | ask a model | up to 407 a day |
+
+## The one thing that genuinely cannot be word-gated
+
+The owner's own observation, and it is correct: **"does this session actually need me" has no keyword.**
+A session quietly asking a question you would care about looks, in words, like a session that finished
+normally. No table can separate them, so that judgement really would have to run on every turn.
+
+That makes it the expensive one - and it is a DIFFERENT question from the rules question, which can be
+word-gated. Collapsing them into "one call at turn end" would drag the cheap question up to the
+expensive one's frequency. **The gating differs, so the calls should differ.**
