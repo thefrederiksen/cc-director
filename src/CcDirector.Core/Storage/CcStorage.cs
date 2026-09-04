@@ -106,6 +106,18 @@ public static class CcStorage
     public static string Logs() => Path.Combine(Base(), "logs");
 
     /// <summary>
+    /// The turn-log corpus: base/turn-log/&lt;day&gt;/&lt;account&gt;/&lt;machine&gt;/. One self-contained
+    /// record per turn end, written only where an administrator has switched capture on, and pulled from
+    /// here into the internal repository that keeps the corpus.
+    ///
+    /// Deliberately NOT under <see cref="Logs"/>. Logs are diagnostic exhaust that anything may rotate away;
+    /// this is a test asset whose whole value is that it accumulates, and putting it where a log sweep can
+    /// reach it would eventually delete the corpus for tidiness. Composes the path without touching disk -
+    /// a Gateway with capture switched off leaves no directory behind.
+    /// </summary>
+    public static string TurnLog() => Path.Combine(Base(), "turn-log");
+
+    /// <summary>
     /// Durable activity-state transition logs: base/state-changes/&lt;sessionId&gt;.jsonl. The caller creates
     /// the directory, so this composes the path without touching disk. Resolved here rather than in
     /// <see cref="Wingman.StateChangeLog"/> so it honors CC_DIRECTOR_ROOT like every other path: that class

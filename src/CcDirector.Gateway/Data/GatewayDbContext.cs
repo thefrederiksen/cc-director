@@ -330,6 +330,15 @@ public sealed class GatewayDbContext : DbContext
     /// </summary>
     public DbSet<TrialExtensionEntity> TrialExtensions => Set<TrialExtensionEntity>();
 
+    /// <summary>
+    /// The turn-log switches (<c>turn_log_switches</c>) - which accounts and machines have turn-end capture
+    /// switched on, and who decided that. GLOBAL rather than tenant-scoped: an administrator switches capture
+    /// on for an account that is not their own, and the recorder reads the switch before it is inside any
+    /// account's partition, so a tenant filter here would make the setting unwritable by the person entitled
+    /// to write it and unreadable by the only thing that consumes it.
+    /// </summary>
+    public DbSet<TurnLogSwitchEntity> TurnLogSwitches => Set<TurnLogSwitchEntity>();
+
     /// <summary>The durable per-device-key credential records (<c>device_credentials</c>, MTR-14) - the per-row
     /// replacement for the shared <c>devices.json</c> file. A GLOBAL table (no <c>tenant_id</c> query filter):
     /// a presented key is resolved by its hash before any tenant is known, and the tenant is read off the
@@ -963,6 +972,23 @@ public sealed class GatewayDbContext : DbContext
             b.HasIndex(e => e.Subject);
         });
 
+        modelBuilder.Entity<TurnLogSwitchEntity>(b =>
+        {
+            b.ToTable("turn_log_switches");
+            b.HasKey(e => e.Id);
+            b.Property(e => e.Id).HasColumnName("id").ValueGeneratedNever();
+            b.Property(e => e.Account).HasColumnName("account").IsRequired();
+            b.Property(e => e.Machine).HasColumnName("machine").IsRequired();
+            b.Property(e => e.Enabled).HasColumnName("enabled").IsRequired();
+            b.Property(e => e.Actor).HasColumnName("actor").IsRequired();
+            b.Property(e => e.Reason).HasColumnName("reason").IsRequired();
+            b.Property(e => e.RecordedUtc).HasColumnName("recorded_utc").IsRequired();
+            // One decision per scope. Without this, two rows could disagree about the same account and
+            // machine and which one applied would depend on row order - a setting that changes meaning when
+            // the table is re-packed. GLOBAL, so deliberately NOT passed to ApplyTenantScope below.
+            b.HasIndex(e => new { e.Account, e.Machine }).IsUnique();
+        });
+
         modelBuilder.Entity<DeviceCredentialEntity>(b =>
         {
             b.ToTable("device_credentials");
@@ -1136,6 +1162,14 @@ public sealed class GatewayDbContext : DbContext
             // exactly the identity the trial row is keyed on, or an extension could be recorded against a
             // subject that Postgres considers equal and SQLite does not.
             modelBuilder.Entity<TrialExtensionEntity>().Property(e => e.Subject).UseCollation("C");
+
+            // turn_log_switches.(account, machine) is a UNIQUE scope key matched for exact equality by the
+            // recorder on every turn end. Pinned to "C" for the same reason as the keys above: if Postgres
+            // considered two account ids equal that SQLite does not, the unique index would refuse a second
+            // scope on one provider and admit it on the other, and capture would silently be on for an
+            // account somebody switched off.
+            modelBuilder.Entity<TurnLogSwitchEntity>().Property(e => e.Account).UseCollation("C");
+            modelBuilder.Entity<TurnLogSwitchEntity>().Property(e => e.Machine).UseCollation("C");
 
             // The device_credentials natural-key columns (MTR-14): the DeviceId primary key and the
             // DeviceKeyHash lookup index both rely on byte-ordinal equality/ordering, same as the keys above -

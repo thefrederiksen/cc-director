@@ -145,6 +145,16 @@ public sealed class TenantScopeGuardTests : IDisposable
         //    comes from a client: it is written from the tenant the registering Director's tunnel bound to at
         //    Hello, which came from that Director's authenticated device key - so a session key only ever
         //    resolves to its OWN account, and both mutations (register, revoke) are scoped by that tenant.
+        //
+        //  - TurnLogSwitchEntity is the turn-log capture switch (the turn-end research plan, area A), and it
+        //    is an OPERATOR setting rather than tenant data. An administrator switches capture on for an
+        //    account that is not their own, so a row scoped to the account it names could not be written by
+        //    the person entitled to write it; and the recorder reads it at a turn-end boundary to decide
+        //    whether to record at all, which is before it is inside any account's partition - so scoping it
+        //    would be circular in the same way the auth-resolution tables are. It carries no tenant content:
+        //    an account identifier, a machine identifier, a boolean, and who decided. It is written only by
+        //    the administrator surface, which holds a service token - never by a tenant - so there is no
+        //    tenant whose rows another tenant could reach through it.
         var allowedGlobalTables = new HashSet<Type>
         {
             typeof(TenantEntity),
@@ -154,6 +164,7 @@ public sealed class TenantScopeGuardTests : IDisposable
             typeof(DeviceCredentialEntity),
             typeof(DeviceImportMarkerEntity),
             typeof(SessionKeyEntity),
+            typeof(TurnLogSwitchEntity),
         };
 
         var model = Model();

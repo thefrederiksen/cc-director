@@ -15,8 +15,16 @@ namespace CcDirector.Gateway.Briefing;
 /// true only for a live Working -> Waiting boundary (a genuinely new turn the user is now waiting on); it is
 /// false when a session is FIRST seen already waiting (a startup catch-up of a turn that ended earlier).
 /// Voice generation uses it to show the yellow "wingman reading" hold only for a new turn and stay quiet on
-/// a catch-up refresh (issue #1322).</summary>
-public sealed record TurnEndSignal(string SessionId, string DirectorId, TenantId Tenant, bool IsNewTurn = false);
+/// a catch-up refresh (issue #1322). <paramref name="PreviousActivityState"/> is the state this session was
+/// remembered in immediately before the boundary, or null when it had never been seen - the same fact
+/// <paramref name="IsNewTurn"/> is derived from, carried in full for the turn log, which records what the
+/// detector SAW rather than only what it concluded. Nothing in the product branches on it.</summary>
+public sealed record TurnEndSignal(
+    string SessionId,
+    string DirectorId,
+    TenantId Tenant,
+    bool IsNewTurn = false,
+    string? PreviousActivityState = null);
 
 /// <summary>
 /// The brief agent's turn-boundary tracker (issues #185/#186). PUSH-fed since #186:
@@ -134,7 +142,7 @@ public sealed class TurnEndWatcher : IDisposable
             // A live boundary (previous state was Working) is a genuinely new turn; a first sighting
             // of an already-waiting session (no previous state) is a catch-up of an earlier turn.
             var isNewTurn = hadPrev && prev == "Working";
-            _onTurnEnd(new TurnEndSignal(sessionId, directorId, tenant, isNewTurn));
+            _onTurnEnd(new TurnEndSignal(sessionId, directorId, tenant, isNewTurn, hadPrev ? prev : null));
         }
     }
 
