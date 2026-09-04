@@ -141,8 +141,6 @@ public sealed class SessionKeyRegistry
             // Director asking for less authority than the maximum is never a problem.
             var ceiling = issued + MaxSessionKeyLifetime;
             var effectiveExpiry = expiresAtUtc > ceiling ? ceiling : expiresAtUtc;
-            if (effectiveExpiry != expiresAtUtc)
-                FileLog.Write($"[SessionKeyRegistry] Register: session={id} asked for expiry {expiresAtUtc:O}, capped to {effectiveExpiry:O} by the Gateway's own clock");
 
             // A roster refresh re-sends every live key every ten seconds. When the identity is unchanged and
             // the existing expiry is still comfortably ahead, accepting it needs no database change:
@@ -185,7 +183,10 @@ public sealed class SessionKeyRegistry
             ctx.SaveChanges();
             transaction.Commit();
 
-            FileLog.Write($"[SessionKeyRegistry] Register: session={id}, director={row.DirectorId}, expires={expiresAtUtc:O} (key value never received)");
+            if (effectiveExpiry != expiresAtUtc)
+                FileLog.Write($"[SessionKeyRegistry] Register: session={id} asked for expiry {expiresAtUtc:O}, capped to {effectiveExpiry:O} by the Gateway's own clock");
+
+            FileLog.Write($"[SessionKeyRegistry] Register: session={id}, director={row.DirectorId}, expires={effectiveExpiry:O} (key value never received)");
             return true;
         }
         catch (Exception ex) when (IsDatabaseFailure(ex))

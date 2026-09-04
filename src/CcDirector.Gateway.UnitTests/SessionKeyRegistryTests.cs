@@ -1,5 +1,6 @@
 using CcDirector.Core.Security;
 using CcDirector.Core.Tenancy;
+using CcDirector.Core.Utilities;
 using CcDirector.Gateway.Pairing;
 using CcDirector.Gateway.Tests.Data;
 using Xunit;
@@ -229,13 +230,19 @@ public sealed class SessionKeyRegistryTests : IDisposable
         var hash = GatewaySessionKey.Hash(GatewaySessionKey.Mint());
         Assert.True(registry.Register(Account, "director-1", session.ToString(), hash, now + SessionKeyRegistry.MaxSessionKeyLifetime));
 
-        now = now.AddSeconds(10);
-        Assert.True(registry.Register(Account, "director-1", session.ToString(), hash, now + SessionKeyRegistry.MaxSessionKeyLifetime));
+        IReadOnlyList<string> refreshLines;
+        using (var log = FileLog.RedirectForTests())
+        {
+            now = now.AddSeconds(10);
+            Assert.True(registry.Register(Account, "director-1", session.ToString(), hash, now + TimeSpan.FromDays(1)));
+            refreshLines = log.DrainAndReadLines();
+        }
 
         using var ctx = _harness.Open().CreateUnscopedContext();
         var row = ctx.SessionKeys.Single();
         Assert.Equal(new DateTime(2026, 9, 4, 12, 0, 0, DateTimeKind.Utc), row.IssuedAtUtc);
         Assert.Equal(new DateTime(2026, 9, 5, 0, 0, 0, DateTimeKind.Utc), row.ExpiresAtUtc);
+        Assert.Empty(refreshLines);
     }
 
     [Fact]
@@ -255,6 +262,26 @@ public sealed class SessionKeyRegistryTests : IDisposable
         var row = ctx.SessionKeys.Single();
         Assert.Equal(now, row.IssuedAtUtc);
         Assert.Equal(now + SessionKeyRegistry.MaxSessionKeyLifetime, row.ExpiresAtUtc);
+    }
+
+    [Fact]
+    public void A_shorter_expiry_on_the_same_key_is_written_immediately()
+    {
+        var started = new DateTime(2026, 9, 4, 12, 0, 0, DateTimeKind.Utc);
+        var now = started;
+        var registry = Registry(() => now);
+        var session = Guid.NewGuid();
+        var hash = GatewaySessionKey.Hash(GatewaySessionKey.Mint());
+        Assert.True(registry.Register(Account, "director-1", session.ToString(), hash, now + SessionKeyRegistry.MaxSessionKeyLifetime));
+
+        now = started.AddSeconds(10);
+        var shorterExpiry = started.AddHours(1);
+        Assert.True(registry.Register(Account, "director-1", session.ToString(), hash, shorterExpiry));
+
+        using var ctx = _harness.Open().CreateUnscopedContext();
+        var row = ctx.SessionKeys.Single();
+        Assert.Equal(now, row.IssuedAtUtc);
+        Assert.Equal(shorterExpiry, row.ExpiresAtUtc);
     }
 
     [Fact]
