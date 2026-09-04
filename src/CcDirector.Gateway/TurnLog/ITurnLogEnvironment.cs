@@ -53,4 +53,14 @@ public interface ITurnLogEnvironment
 /// one.</param>
 /// <param name="Messages">Every message the store held for that generation, oldest first. The recorder does
 /// the cutting, so the cut is one decision in one place.</param>
-public sealed record StoredConversationSnapshot(bool IsSupported, string? Generation, IReadOnlyList<HistoryMessageDto> Messages);
+/// <param name="LastPushedUtc">When the computer that owns this session last pushed its conversation. The
+/// Director announces a state change BEFORE it pushes the turn that caused it, so a capture can arrive
+/// between the two and read a conversation that stops one turn short of the screen it is stored beside.
+/// Carrying the push time makes that detectable instead of invisible - without it a stale conversation is
+/// indistinguishable from a complete one, and the record would quietly claim to describe a turn it does not
+/// contain.</param>
+public sealed record StoredConversationSnapshot(
+    bool IsSupported,
+    string? Generation,
+    IReadOnlyList<HistoryMessageDto> Messages,
+    DateTime? LastPushedUtc = null);

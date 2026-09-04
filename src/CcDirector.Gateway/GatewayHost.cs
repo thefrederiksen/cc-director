@@ -2153,7 +2153,11 @@ public sealed class GatewayHost : IAsyncDisposable
         return new TurnLog.StoredConversationSnapshot(
             stored.Value.Head.IsSupported,
             stored.Value.Head.GenerationSource,
-            stored.Value.Messages);
+            stored.Value.Messages,
+            // When this session's computer last pushed. Carried so a capture that landed between the state
+            // change and the push that followed it can be SEEN to have stored a conversation one turn short,
+            // rather than passing that off as the whole thing.
+            DateTime.SpecifyKind(stored.Value.Head.UpdatedAtUtc, DateTimeKind.Utc));
     }
 
     /// <summary>
@@ -2594,6 +2598,9 @@ public sealed class GatewayHost : IAsyncDisposable
         // silent in exactly that case. Constructed unconditionally and cheap when off - with no switch row
         // for a machine it reads one cached boolean per turn end and returns.
         _turnLogSwitches ??= new TurnLog.TurnLogSwitchStore(_gatewayDb);
+        // Prime the decisions and keep them fresh in the background. The recorder's switch check then costs
+        // a memory read, so a Gateway with capture off puts NOTHING blocking on the turn-end path.
+        _turnLogSwitches.Start();
         _turnLogRecorder ??= new TurnLog.TurnLogRecorder(new TurnLog.GatewayTurnLogEnvironment(
             switches: _turnLogSwitches,
             writer: new TurnLog.TurnLogWriter(Core.Storage.CcStorage.TurnLog()),
@@ -2611,7 +2618,11 @@ public sealed class GatewayHost : IAsyncDisposable
             // wrong account.
             conversation: ReadTurnLogConversation,
             settings: _tenantSettingsResolver,
-            isVoiceSession: (tenant, sessionId) => _voiceService?.IsVoiceSession(tenant, sessionId) ?? false));
+            isVoiceSession: (tenant, sessionId) => _voiceService?.IsVoiceSession(tenant, sessionId) ?? false),
+            // Every read the capture makes is partitioned, exactly as the supervisor's are. Without this the
+            // capture runs with no tenant in scope, every read is denied, and the corpus fills with records
+            // whose screen and conversation are permanently missing.
+            enterTenantScope: tenant => _tenantBoundary.EnterScope(tenant));
         FileLog.Write("[GatewayHost] StartAsync: turn log armed (records nothing unless an administrator has switched a machine on)");
 
         _turnEndWatcher = new TurnEndWatcher(
@@ -4743,6 +4754,8 @@ public sealed class GatewayHost : IAsyncDisposable
         _voiceSweepTimer = null;
         try { _turnLogRecorder?.Dispose(); } catch (Exception ex) { FileLog.Write($"[GatewayHost] turn log dispose error: {ex.Message}"); }
         _turnLogRecorder = null;
+        try { _turnLogSwitches?.Dispose(); } catch (Exception ex) { FileLog.Write($"[GatewayHost] turn log switch dispose error: {ex.Message}"); }
+        _turnLogSwitches = null;
         try { _turnEndWatcher?.Dispose(); } catch (Exception ex) { FileLog.Write($"[GatewayHost] watcher dispose error: {ex.Message}"); }
         // Issue #915: cancel any recovery wait in flight, so a Gateway shutdown does not leave a background
         // ladder holding a token and re-sending into a fleet this process no longer owns.

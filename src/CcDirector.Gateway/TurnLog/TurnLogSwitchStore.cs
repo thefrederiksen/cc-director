@@ -13,30 +13,46 @@ namespace CcDirector.Gateway.TurnLog;
 /// is the property the whole instrument rests on: an observer that changes what it observes is not measuring
 /// the product, it is measuring itself.
 ///
-/// THE MOST SPECIFIC SCOPE WINS. A decision about one machine beats a decision about its account, which
-/// beats a decision about the fleet. That ordering is what makes it possible to capture a whole account
-/// except one machine, and to capture one machine inside an account that is otherwise left alone.
+/// IT READS THROUGH AN UNSCOPED CONTEXT, AND THAT IS NOT A DETAIL. This table is deliberately global: an
+/// administrator writes it for an account that is not their own, and the recorder reads it at a turn-end
+/// boundary where no tenant is in scope yet. A tenant-scoped context THROWS when the ambient tenant is
+/// missing, which on the hosted Gateway is every administrator request and every turn end - and because the
+/// read below cannot be allowed to fail open, that throw would have been swallowed into "capture is off".
+/// The feature would have looked switched on and recorded nothing, on the one deployment that matters. Use
+/// <see cref="GatewayDatabase.CreateUnscopedContext"/> here, always.
 ///
-/// A FALSE ROW IS A DECISION AND BEATS A WIDER TRUE ONE. Turning a scope off writes a row saying off rather
-/// than deleting the row that said on, so "we decided not to capture this" survives as a fact instead of
-/// decaying into "nobody has ever considered it".
+/// AN "OFF" DECISION ANYWHERE WINS. Rather than ranking scopes against each other - is a rule about one
+/// machine more specific than a rule about one account? - the resolution is simply that any matching
+/// decision saying off beats every decision saying on. For a switch that starts copying somebody's terminal,
+/// the direction of any ambiguity has to be "stop", and a person who switches a scope off must never have to
+/// work out which other row silently outranks theirs.
+///
+/// A FALSE ROW IS A DECISION AND IS STORED AS ONE. Turning a scope off writes a row saying off rather than
+/// deleting the row that said on, so "we decided not to capture this" survives as a fact instead of decaying
+/// into "nobody has ever considered it".
 /// </summary>
-public sealed class TurnLogSwitchStore
+public sealed class TurnLogSwitchStore : IDisposable
 {
     /// <summary>
-    /// How long a read of the switch table is reused before it is taken again. The recorder asks this
-    /// question on every turn end - a few hundred times a day - and the answer changes when a person clicks
-    /// something, which is to say almost never. Half a minute keeps a database round trip off a path that is
-    /// supposed to cost the product nothing, and it bounds how long capture keeps running after somebody
-    /// switches it off, which is the direction that matters.
+    /// How often the cached decisions are re-read in the BACKGROUND. The recorder asks this question on
+    /// every turn end - a few hundred times a day - and it must never wait on a database to do it, so the
+    /// answer is always served from memory and refreshed on a timer. Half a minute bounds how long capture
+    /// keeps running after somebody switches it off, which is the direction that matters.
     /// </summary>
-    public static readonly TimeSpan CacheFor = TimeSpan.FromSeconds(30);
+    public static readonly TimeSpan RefreshEvery = TimeSpan.FromSeconds(30);
 
     private readonly GatewayDatabase _db;
     private readonly Func<DateTime> _nowUtc;
     private readonly object _gate = new();
-    private List<TurnLogSwitchEntity>? _cached;
-    private DateTime _cachedAtUtc = DateTime.MinValue;
+    private Timer? _timer;
+    private bool _disposed;
+
+    /// <summary>
+    /// The decisions, as last read. Starts EMPTY, which means off - so a Gateway that has not yet managed
+    /// its first read captures nothing. That is the safe direction: the cost of being late is a few missing
+    /// records, and the cost of being wrong the other way is recording somebody who was switched off.
+    /// </summary>
+    private volatile IReadOnlyList<TurnLogSwitchEntity> _cached = Array.Empty<TurnLogSwitchEntity>();
 
     public TurnLogSwitchStore(GatewayDatabase db, Func<DateTime>? nowUtc = null)
     {
@@ -45,50 +61,61 @@ public sealed class TurnLogSwitchStore
     }
 
     /// <summary>
-    /// Is capture on for this account and machine? Answers the most specific decision that covers them.
+    /// Read the decisions now, and keep them fresh in the background. Safe to call more than once; a
+    /// failure to prime is logged and leaves capture off until a later refresh succeeds.
+    /// </summary>
+    public void Start()
+    {
+        if (_disposed) return;
+        Refresh();
+        lock (_gate)
+        {
+            _timer ??= new Timer(_ => Refresh(), null, RefreshEvery, RefreshEvery);
+        }
+        FileLog.Write($"[TurnLogSwitchStore] Start: {_cached.Count} decision(s) on record, refreshing every {RefreshEvery.TotalSeconds:F0}s");
+    }
+
+    /// <summary>
+    /// Is capture on for this account and machine?
     ///
-    /// A failure to read the table answers FALSE. An instrument that cannot tell whether it is allowed to
-    /// record must not record: the alternative is capturing an account's terminal because a query timed out.
+    /// PURE MEMORY, NO INPUT OR OUTPUT, NO LOCK THE TURN-END PATH CAN QUEUE ON. This is called from the
+    /// turn-end callback before anything is spawned, so it has to be free. A database read here - even a
+    /// cached one that occasionally misses - would put blocking work on the path the supervisor, the rules
+    /// engine and the voice refresh all run on, which is precisely the harm this instrument promised not to
+    /// do.
     /// </summary>
     public bool IsEnabled(string account, string machine)
     {
         if (string.IsNullOrWhiteSpace(account) || string.IsNullOrWhiteSpace(machine)) return false;
-        try
-        {
-            var rows = Rows();
-            if (rows.Count == 0) return false;
 
-            var any = TurnLogSwitchEntity.Any;
-            // Most specific first; the first scope with a row decides, whichever way that row points.
-            foreach (var (a, m) in new[]
-                     {
-                         (account, machine),
-                         (account, any),
-                         (any, machine),
-                         (any, any),
-                     })
-            {
-                var match = rows.FirstOrDefault(r =>
-                    string.Equals(r.Account, a, StringComparison.Ordinal) &&
-                    string.Equals(r.Machine, m, StringComparison.Ordinal));
-                if (match is not null) return match.Enabled;
-            }
-            return false;
-        }
-        catch (Exception ex)
+        var rows = _cached;
+        if (rows.Count == 0) return false;
+
+        var any = TurnLogSwitchEntity.Any;
+        var on = false;
+        foreach (var row in rows)
         {
-            FileLog.Write($"[TurnLogSwitchStore] IsEnabled FAILED - capture stays off: {ex.Message}");
-            return false;
+            var accountMatches = string.Equals(row.Account, account, StringComparison.Ordinal)
+                                 || string.Equals(row.Account, any, StringComparison.Ordinal);
+            var machineMatches = string.Equals(row.Machine, machine, StringComparison.Ordinal)
+                                 || string.Equals(row.Machine, any, StringComparison.Ordinal);
+            if (!accountMatches || !machineMatches) continue;
+
+            // Off wins outright, so there is no need to finish the scan for a stronger "on".
+            if (!row.Enabled) return false;
+            on = true;
         }
+        return on;
     }
 
-    /// <summary>Every decision on record, for an administrator screen to show. Ordered so the widest scopes
-    /// read last, matching how they are applied.</summary>
+    /// <summary>Every decision on record, for an administrator screen to show. Reads the database rather
+    /// than the cache: a screen showing a stale answer about whose terminal is being recorded is worse than
+    /// a screen that takes a moment.</summary>
     public IReadOnlyList<TurnLogSwitchEntity> All()
     {
         lock (_gate)
         {
-            using var ctx = _db.CreateContext();
+            using var ctx = _db.CreateUnscopedContext();
             return ctx.TurnLogSwitches.AsNoTracking()
                 .OrderBy(r => r.Account).ThenBy(r => r.Machine)
                 .ToList();
@@ -110,7 +137,7 @@ public sealed class TurnLogSwitchStore
 
         lock (_gate)
         {
-            using var ctx = _db.CreateContext();
+            using var ctx = _db.CreateUnscopedContext();
             var existing = ctx.TurnLogSwitches
                 .FirstOrDefault(r => r.Account == account && r.Machine == machine);
             if (existing is null)
@@ -133,23 +160,44 @@ public sealed class TurnLogSwitchStore
                 existing.RecordedUtc = _nowUtc();
             }
             ctx.SaveChanges();
-            // Drop the cache rather than patch it: a switch somebody just threw must take effect now, and
-            // the read that refills it is one query.
-            _cached = null;
         }
+
+        // Take effect NOW rather than at the next tick. Someone who switches capture off is entitled to
+        // have it stop, not to wait out a refresh interval they cannot see.
+        Refresh();
         FileLog.Write($"[TurnLogSwitchStore] capture {(enabled ? "ON" : "OFF")} for machine={machine} (scope recorded)");
     }
 
-    private List<TurnLogSwitchEntity> Rows()
+    /// <summary>
+    /// Re-read the decisions. A failure leaves the previous answer standing and is logged loudly - it must
+    /// not silently switch capture off, which would leave a corpus with a hole nobody decided on, nor
+    /// silently switch it on.
+    /// </summary>
+    public void Refresh()
     {
+        if (_disposed) return;
+        try
+        {
+            lock (_gate)
+            {
+                using var ctx = _db.CreateUnscopedContext();
+                _cached = ctx.TurnLogSwitches.AsNoTracking().ToList();
+            }
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[TurnLogSwitchStore] Refresh FAILED - the previous decisions still stand: {ex.Message}");
+        }
+    }
+
+    public void Dispose()
+    {
+        if (_disposed) return;
+        _disposed = true;
         lock (_gate)
         {
-            var now = _nowUtc();
-            if (_cached is not null && now - _cachedAtUtc < CacheFor) return _cached;
-            using var ctx = _db.CreateContext();
-            _cached = ctx.TurnLogSwitches.AsNoTracking().ToList();
-            _cachedAtUtc = now;
-            return _cached;
+            try { _timer?.Dispose(); } catch (ObjectDisposedException) { }
+            _timer = null;
         }
     }
 }

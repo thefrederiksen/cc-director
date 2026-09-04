@@ -1,4 +1,5 @@
 using System.IO.Compression;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -107,19 +108,32 @@ public sealed class TurnLogWriter
     }
 
     /// <summary>
-    /// A path segment safe on both operating systems the Gateway runs on. An account or machine name is
-    /// caller-supplied text that reaches the file system, so it is reduced to a known-safe alphabet rather
-    /// than merely having the obvious separators removed - "..", a drive letter and a leading separator all
-    /// stop being expressible.
+    /// A path segment safe on both operating systems the Gateway runs on, and UNIQUE to the value it came
+    /// from. An account or machine name is caller-supplied text that reaches the file system, so it is
+    /// reduced to a known-safe alphabet rather than merely having the obvious separators removed - "..", a
+    /// drive letter and a leading separator all stop being expressible.
+    ///
+    /// THE SUFFIX IS NOT DECORATION. Reducing to a safe alphabet is many-to-one: "a/b" and "a" both
+    /// backslash both become the same dash, two names differing only in case collide on Windows, and two
+    /// long identifiers sharing a prefix collide once the length is cut. Any of those would append two
+    /// accounts' records into one bundle, so two different accounts' terminals would land in one file - a
+    /// failure of the isolation this feature has to keep rather than a tidiness problem. A short hash of the
+    /// ORIGINAL value, ordinal and case-sensitive, makes the mapping one-to-one again while the readable
+    /// stem keeps a human able to find the directory they want.
     /// </summary>
     internal static string Sanitize(string value)
     {
         if (string.IsNullOrWhiteSpace(value)) return "unknown";
+
         var builder = new StringBuilder(value.Length);
         foreach (var ch in value)
             builder.Append(char.IsLetterOrDigit(ch) || ch is '-' or '_' ? ch : '-');
         var cleaned = builder.ToString().Trim('-');
-        if (cleaned.Length == 0) return "unknown";
-        return cleaned.Length <= 64 ? cleaned : cleaned[..64];
+        if (cleaned.Length > 48) cleaned = cleaned[..48];
+        if (cleaned.Length == 0) cleaned = "unnamed";
+
+        var digest = Convert.ToHexString(
+            SHA256.HashData(Encoding.UTF8.GetBytes(value)), 0, 4).ToLowerInvariant();
+        return cleaned + "-" + digest;
     }
 }

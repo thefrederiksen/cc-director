@@ -49,13 +49,23 @@ public sealed class TurnLogRecorder : IDisposable
     public static readonly TimeSpan CaptureTimeout = TimeSpan.FromSeconds(30);
 
     private readonly ITurnLogEnvironment _env;
+    private readonly Func<TenantId, IDisposable>? _enterTenantScope;
     private readonly Func<DateTime> _nowUtc;
     private readonly CancellationTokenSource _stopping = new();
     private bool _disposed;
 
-    public TurnLogRecorder(ITurnLogEnvironment env, Func<DateTime>? nowUtc = null)
+    /// <param name="enterTenantScope">Enters the owning account's storage scope for the duration of a
+    /// capture. Required on the hosted Gateway and inert on a self-hosted one, which has a single partition.
+    /// Without it every read the capture makes runs with no tenant in scope and is DENIED, and because a
+    /// denied read is written down as a gap rather than thrown, the corpus would fill with records whose
+    /// screen and conversation were always missing - a feature that looks switched on and captures nothing.</param>
+    public TurnLogRecorder(
+        ITurnLogEnvironment env,
+        Func<TenantId, IDisposable>? enterTenantScope = null,
+        Func<DateTime>? nowUtc = null)
     {
         _env = env ?? throw new ArgumentNullException(nameof(env));
+        _enterTenantScope = enterTenantScope;
         _nowUtc = nowUtc ?? (() => DateTime.UtcNow);
     }
 
@@ -81,7 +91,11 @@ public sealed class TurnLogRecorder : IDisposable
             {
                 using var timeout = CancellationTokenSource.CreateLinkedTokenSource(_stopping.Token);
                 timeout.CancelAfter(CaptureTimeout);
-                await CaptureAsync(signal, timeout.Token).ConfigureAwait(false);
+                // The scope is entered HERE, inside the task, and not by the caller. It is an async-local,
+                // so a scope the turn-end callback entered would not survive into this continuation - the
+                // same reason the supervisor enters its own.
+                using (_enterTenantScope?.Invoke(signal.Tenant))
+                    await CaptureAsync(signal, timeout.Token).ConfigureAwait(false);
             }
             catch (OperationCanceledException)
             {
@@ -163,6 +177,20 @@ public sealed class TurnLogRecorder : IDisposable
             gaps.Add(new TurnLogGap { Part = "conversation", Reason = "nothing has been stored for this session yet" });
 
         var conversation = BuildConversation(stored);
+
+        // A CONVERSATION OLDER THAN THE TURN IS A GAP, not a conversation. The Director announces the state
+        // change before it pushes the turn that caused it, so a capture can land between the two and store a
+        // conversation that stops one turn short of the screen it sits beside. Left unsaid, that record
+        // would quietly claim to contain the turn it is describing.
+        if (stored is not null && stored.LastPushedUtc is { } pushed && pushed < startedAt)
+        {
+            gaps.Add(new TurnLogGap
+            {
+                Part = "conversation",
+                Reason = $"the conversation was last pushed at {pushed:O}, before this capture began at {startedAt:O} - "
+                       + "it may stop one turn short of the screen stored beside it",
+            });
+        }
         overall.Stop();
 
         var record = new TurnLogRecord
@@ -189,15 +217,15 @@ public sealed class TurnLogRecorder : IDisposable
                 LastOwnerTurnAtUtc = session?.LastOwnerTurnAtUtc,
                 ScreenReadMs = screenTimer.ElapsedMilliseconds,
                 ScrollbackReadMs = scrollbackTimer.ElapsedMilliseconds,
-                CaptureMs = overall.ElapsedMilliseconds,
+                GatherMs = overall.ElapsedMilliseconds,
             },
             Session = session,
             Terminal = BuildTerminal(grid, scrollback),
             Conversation = conversation,
             Observed = new TurnLogObserved
             {
-                SupervisorEnabled = Safely(() => _env.SupervisorEnabled(signal.Tenant)),
-                VoiceSession = Safely(() => _env.IsVoiceSession(signal.Tenant, signal.SessionId)),
+                SupervisorEnabled = Safely(() => _env.SupervisorEnabled(signal.Tenant), "supervisor-enabled", gaps),
+                VoiceSession = Safely(() => _env.IsVoiceSession(signal.Tenant, signal.SessionId), "voice-session", gaps),
                 StateLabel = session?.StateLabel,
                 TriageBucket = session?.TriageBucket,
                 NeedsYouSinceUtc = session?.NeedsYouSince,
@@ -239,10 +267,17 @@ public sealed class TurnLogRecorder : IDisposable
     /// <summary>
     /// Cut the stored conversation down to the last <see cref="FullTurnsCaptured"/> full turns.
     ///
-    /// A FULL TURN STARTS AT A USER MESSAGE, on the owner's definition that a turn is both sides together.
-    /// So the cut walks back through the messages counting user messages and keeps everything from the tenth
-    /// one onward - which keeps each kept turn WHOLE, rather than slicing a fixed number of messages and
-    /// handing the corpus an agent reply whose prompt was cut off.
+    /// A FULL TURN STARTS AT A HUMAN MESSAGE, on the owner's definition that a turn is both sides together.
+    /// So the cut walks back counting those and keeps everything from the tenth one onward, which keeps each
+    /// kept turn WHOLE rather than slicing a fixed number of messages and handing the corpus an agent reply
+    /// whose prompt was cut off.
+    ///
+    /// A TOOL RESULT IS NOT A HUMAN TURN, even though it arrives with the user's role. Codex records every
+    /// <c>function_call_output</c> as a User message carrying a single ToolResult part
+    /// (<c>CodexTranscriptReader</c>), so counting bare roles would let ten tool calls inside ONE human turn
+    /// consume the whole window - and the conversation we stored would begin in the middle of a turn, with
+    /// the prompt that started it cut off, which is the exact failure keeping whole turns exists to prevent.
+    /// A human turn is a user message carrying something a person actually wrote.
     /// </summary>
     internal static TurnLogConversation BuildConversation(StoredConversationSnapshot? stored)
     {
@@ -250,12 +285,12 @@ public sealed class TurnLogRecorder : IDisposable
 
         var all = stored.Messages;
         var startIndex = 0;
-        var userTurns = 0;
+        var humanTurns = 0;
         for (var i = all.Count - 1; i >= 0; i--)
         {
-            if (!string.Equals(all[i].Role, "User", StringComparison.OrdinalIgnoreCase)) continue;
-            userTurns++;
-            if (userTurns < FullTurnsCaptured) continue;
+            if (!IsHumanTurn(all[i])) continue;
+            humanTurns++;
+            if (humanTurns < FullTurnsCaptured) continue;
             startIndex = i;
             break;
         }
@@ -267,17 +302,42 @@ public sealed class TurnLogRecorder : IDisposable
             TotalMessageCount = all.Count,
             FullTurnsRequested = FullTurnsCaptured,
             Truncated = startIndex > 0,
+            LastPushedAtUtc = stored.LastPushedUtc,
             Messages = all.Skip(startIndex).ToList(),
         };
     }
 
-    /// <summary>A read whose failure must not cost the whole record. Answers null and says so.</summary>
-    private static bool? Safely(Func<bool?> read)
+    /// <summary>
+    /// Whether this message is a person taking a turn, as opposed to the transcript's own bookkeeping
+    /// wearing the user's role.
+    ///
+    /// A user message counts when it carries at least one part that is not a tool result. That admits an
+    /// ordinary prompt and excludes a bare <c>function_call_output</c>; a message with no parts at all is
+    /// not a turn either, because nothing was said.
+    /// </summary>
+    private static bool IsHumanTurn(HistoryMessageDto message)
+    {
+        if (!string.Equals(message.Role, "User", StringComparison.OrdinalIgnoreCase)) return false;
+        var parts = message.Parts;
+        if (parts is null || parts.Count == 0) return false;
+        return parts.Any(p => !string.Equals(p.Kind, "ToolResult", StringComparison.OrdinalIgnoreCase));
+    }
+
+    /// <summary>
+    /// A read whose failure must not cost the whole record. Answers null AND writes a gap.
+    ///
+    /// The gap is the point. A null with no gap is indistinguishable from a value that is genuinely unknown,
+    /// so a record could report "we do not know whether the supervisor was on" for a fault that was ours -
+    /// and a corpus mined later would read those as sessions with no supervisor rather than as sessions we
+    /// failed to ask about.
+    /// </summary>
+    private static bool? Safely(Func<bool?> read, string part, List<TurnLogGap> gaps)
     {
         try { return read(); }
         catch (Exception ex)
         {
-            FileLog.Write($"[TurnLogRecorder] an observed-state read FAILED: {ex.Message}");
+            FileLog.Write($"[TurnLogRecorder] an observed-state read FAILED ({part}): {ex.Message}");
+            gaps.Add(new TurnLogGap { Part = part, Reason = ex.Message });
             return null;
         }
     }

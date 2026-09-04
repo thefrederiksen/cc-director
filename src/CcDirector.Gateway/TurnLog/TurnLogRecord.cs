@@ -150,10 +150,18 @@ public sealed record TurnLogMoment
     /// <summary>How long the scrollback read took.</summary>
     [JsonPropertyName("scrollback_read_ms")] public long ScrollbackReadMs { get; init; }
 
-    /// <summary>How long the whole capture took, end to end. This is the number that shows the log is not
-    /// the reason a turn is slow: the capture happens off the turn-end path, so it can be large without
-    /// costing the product anything, and we want to SEE that rather than assume it.</summary>
-    [JsonPropertyName("capture_ms")] public long CaptureMs { get; init; }
+    /// <summary>
+    /// How long GATHERING took - from the start of the capture to the assembled record, covering the session
+    /// lookup, the screen, the scrollback, the conversation and the observed state.
+    ///
+    /// It deliberately does NOT include serializing, compressing and writing the file, because those happen
+    /// after this value is stamped into the record and a number cannot contain the cost of writing itself.
+    /// The write cost is real but bounded and identical for every record; the gathering cost is the one that
+    /// varies with how reachable a computer is, and it is the one worth having per turn. Either way the
+    /// whole thing is off the turn-end path, so it can be large without costing the product anything - which
+    /// is what we want to SEE rather than assume.
+    /// </summary>
+    [JsonPropertyName("gather_ms")] public long GatherMs { get; init; }
 }
 
 /// <summary>The terminal, whole and raw.</summary>
@@ -218,6 +226,17 @@ public sealed record TurnLogConversation
 
     /// <summary>True when the front of the conversation was cut off to honour that request.</summary>
     [JsonPropertyName("truncated")] public bool Truncated { get; init; }
+
+    /// <summary>
+    /// When the computer that owns this session last pushed its conversation.
+    ///
+    /// Read it against the record's capture time. The Director announces a state change BEFORE it pushes the
+    /// turn that caused it, so a capture can land between the two and store a conversation that stops one
+    /// turn short of the screen beside it. A push time earlier than the capture is the signal for that, and
+    /// the recorder also writes a gap when the two disagree - so a stale conversation is visible rather than
+    /// silently passing as a complete one.
+    /// </summary>
+    [JsonPropertyName("last_pushed_at_utc")] public DateTime? LastPushedAtUtc { get; init; }
 
     /// <summary>
     /// The messages themselves, in order, oldest first, from BOTH sides, with their parts intact rather

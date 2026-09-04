@@ -183,6 +183,107 @@ public sealed class TurnLogRecorderTests
         Assert.False(built.IsSupported);
     }
 
+    [Fact]
+    public void BuildConversation_ToolResultsAreNotHumanTurns()
+    {
+        // Codex records every tool result as a USER message carrying one ToolResult part. Counting bare
+        // roles would let the tool calls inside ONE human turn consume the whole window, and the stored
+        // conversation would begin mid-turn with the prompt that caused it cut off.
+        var messages = new List<HistoryMessageDto>();
+        messages.Add(Message("User", "the prompt that started everything"));
+        for (var i = 0; i < 30; i++)
+        {
+            messages.Add(ToolCall($"call-{i}"));
+            messages.Add(ToolResult($"call-{i}"));
+        }
+        messages.Add(Message("Assistant", "done"));
+
+        var built = TurnLogRecorder.BuildConversation(
+            new StoredConversationSnapshot(true, "transcript-1", messages));
+
+        // One human turn, so nothing is cut and the prompt survives at the front.
+        Assert.False(built.Truncated);
+        Assert.Equal("the prompt that started everything", built.Messages[0].Parts[0].Text);
+    }
+
+    [Fact]
+    public void BuildConversation_AUserMessageWithNoPartsIsNotATurn()
+    {
+        var messages = new List<HistoryMessageDto> { new() { Role = "User", Parts = new List<HistoryPartDto>() } };
+
+        var built = TurnLogRecorder.BuildConversation(
+            new StoredConversationSnapshot(true, "transcript-1", messages));
+
+        Assert.False(built.Truncated);
+        Assert.Single(built.Messages);
+    }
+
+    [Fact]
+    public async Task CaptureAsync_AConversationPushedBeforeTheCapture_IsNamedAsAGap()
+    {
+        // The Director announces the state change BEFORE pushing the turn that caused it, so a capture can
+        // land between the two and store a conversation one turn short of the screen beside it. Unsaid, the
+        // record would claim to contain the turn it describes.
+        var env = new FakeEnvironment
+        {
+            Conversation = new StoredConversationSnapshot(
+                true, "transcript-1", Array.Empty<HistoryMessageDto>(),
+                LastPushedUtc: new DateTime(2026, 9, 4, 11, 0, 0, DateTimeKind.Utc)),
+        };
+        var recorder = new TurnLogRecorder(env, nowUtc: () => new DateTime(2026, 9, 4, 12, 0, 0, DateTimeKind.Utc));
+
+        await recorder.CaptureAsync(Signal(), CancellationToken.None);
+
+        var record = Assert.Single(env.Written);
+        Assert.Contains(record.Gaps, g => g.Part == "conversation" && g.Reason.Contains("one turn short"));
+        Assert.Equal(new DateTime(2026, 9, 4, 11, 0, 0, DateTimeKind.Utc), record.Conversation.LastPushedAtUtc);
+    }
+
+    [Fact]
+    public async Task CaptureAsync_AnObservedStateReadThatThrows_IsNamedAsAGapRatherThanASilentNull()
+    {
+        // A null with no gap reads later as "this session had no supervisor", when what actually happened is
+        // that we failed to ask.
+        var env = new FakeEnvironment { SupervisorEnabledThrows = new InvalidOperationException("settings unavailable") };
+        var recorder = new TurnLogRecorder(env);
+
+        await recorder.CaptureAsync(Signal(), CancellationToken.None);
+
+        var record = Assert.Single(env.Written);
+        Assert.Null(record.Observed.SupervisorEnabled);
+        Assert.Contains(record.Gaps, g => g.Part == "supervisor-enabled" && g.Reason.Contains("settings unavailable"));
+    }
+
+    [Fact]
+    public async Task CaptureAsync_EntersTheOwningAccountsScopeForEveryRead()
+    {
+        // Without the scope every read is denied on the hosted Gateway, and because a denied read is written
+        // down as a gap rather than thrown, capture would look switched on and record nothing but holes.
+        var entered = new List<TenantId>();
+        var env = new FakeEnvironment();
+        using var recorder = new TurnLogRecorder(env, enterTenantScope: t => { entered.Add(t); return new NoScope(); });
+
+        recorder.OnTurnEnd(Signal());
+        for (var i = 0; i < 100 && env.Written.Count == 0; i++) await Task.Delay(20);
+
+        Assert.Single(env.Written);
+        Assert.Equal(Tenant, Assert.Single(entered));
+    }
+
+    private sealed class NoScope : IDisposable { public void Dispose() { } }
+
+    private static HistoryMessageDto ToolCall(string id) => new()
+    {
+        Role = "Assistant",
+        Parts = new List<HistoryPartDto> { new() { Kind = "ToolUse", Text = "{}", ToolName = "Bash", ToolId = id } },
+    };
+
+    private static HistoryMessageDto ToolResult(string id) => new()
+    {
+        Role = "User",
+        Parts = new List<HistoryPartDto> { new() { Kind = "ToolResult", Text = "output", ToolId = id } },
+    };
+
     private static HistoryMessageDto Message(string role, string text) => new()
     {
         Role = role,
@@ -199,6 +300,7 @@ public sealed class TurnLogRecorderTests
         public StoredConversationSnapshot? Conversation { get; set; }
             = new(true, "transcript-1", Array.Empty<HistoryMessageDto>());
         public Exception? ScreenThrows { get; set; }
+        public Exception? SupervisorEnabledThrows { get; set; }
 
         public int ScreenReads { get; private set; }
         public int ScrollbackReads { get; private set; }
@@ -228,7 +330,11 @@ public sealed class TurnLogRecorderTests
             return Conversation;
         }
 
-        public bool? SupervisorEnabled(TenantId tenant) => true;
+        public bool? SupervisorEnabled(TenantId tenant)
+        {
+            if (SupervisorEnabledThrows is not null) throw SupervisorEnabledThrows;
+            return true;
+        }
 
         public bool? IsVoiceSession(TenantId tenant, string sessionId) => false;
 

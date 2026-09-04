@@ -80,13 +80,46 @@ public sealed class TurnLogWriterTests : IDisposable
     }
 
     [Theory]
-    [InlineData("../../etc", "etc")]
-    [InlineData("C:\\Windows", "C--Windows")]
-    [InlineData("a/b/c", "a-b-c")]
-    [InlineData("   ", "unknown")]
-    [InlineData("", "unknown")]
-    public void Sanitize_ReducesAPathSegmentToSomethingThatCannotClimb(string input, string expected)
-        => Assert.Equal(expected, TurnLogWriter.Sanitize(input));
+    [InlineData("../../etc", "etc-")]
+    [InlineData("C:\\Windows", "C--Windows-")]
+    [InlineData("a/b/c", "a-b-c-")]
+    public void Sanitize_ReducesAPathSegmentToSomethingThatCannotClimb(string input, string expectedStem)
+    {
+        var result = TurnLogWriter.Sanitize(input);
+        Assert.StartsWith(expectedStem, result);
+        Assert.DoesNotContain("..", result);
+        Assert.DoesNotContain("/", result);
+        Assert.DoesNotContain("\\", result);
+        Assert.DoesNotContain(":", result);
+    }
+
+    [Theory]
+    [InlineData("   ")]
+    [InlineData("")]
+    public void Sanitize_ABlankName_IsNamedRatherThanEmpty(string input)
+        => Assert.Equal("unknown", TurnLogWriter.Sanitize(input));
+
+    [Theory]
+    // Every one of these pairs collapsed to the SAME segment before the digest was added, which would have
+    // appended two accounts' records into one bundle - two different accounts' terminals in one file.
+    [InlineData("a/b", @"a\b")]
+    [InlineData("Account-One", "account-one")]
+    [InlineData(
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-first",
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-second")]
+    public void Sanitize_TwoDifferentNames_NeverShareASegment(string left, string right)
+        => Assert.NotEqual(TurnLogWriter.Sanitize(left), TurnLogWriter.Sanitize(right));
+
+    [Fact]
+    public void Append_TwoAccountsThatSanitizeAlike_StillGetSeparateBundles()
+    {
+        var writer = new TurnLogWriter(_root, writerId: "writer01");
+        writer.Append(NewRecord("sid-1", "a/b", "SOREN-NORTH"));
+        writer.Append(NewRecord("sid-2", @"a\b", "SOREN-NORTH"));
+
+        var bundles = Directory.GetFiles(_root, "*.jsonl.gz", SearchOption.AllDirectories);
+        Assert.Equal(2, bundles.Length);
+    }
 
     [Fact]
     public void Append_AnAccountNameWithSeparators_StaysInsideTheRoot()
