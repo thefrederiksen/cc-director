@@ -57,6 +57,11 @@ public static class RulePassOutcomes
     /// so the act was refused (Architect ruling A12). Recorded, with what was cited and that it was not there.</summary>
     public const string Ungrounded = "ungrounded";
 
+    /// <summary>The reply decided to ACT and its citation is on the screen, but the second question said
+    /// that line is something the session is DISPLAYING rather than the session reporting its own state -
+    /// or that question could not be answered at all. The act was refused. Recorded, with the reason.</summary>
+    public const string NotItsOwnState = "not-its-own-state";
+
     /// <summary>Every rule in play was stored before rules carried the text they type, so none of them
     /// could act and none was asked about. Each has a recorded refusal naming it as needing to be
     /// re-authored (phase 1). Never a fallback to composing text at run time, and never silence.</summary>
@@ -356,6 +361,35 @@ public sealed class RuleEvaluator
                 grounding.Statement));
             FileLog.Write($"[RuleEvaluator] sid={sessionId}: act REFUSED, {grounding.Statement}");
             return new RulePass(RulePassOutcomes.Ungrounded, grounding.Statement, refusedForReauthoring.Append(ungrounded).ToList());
+        }
+
+        // THE SECOND QUESTION, AND ONLY HERE: whose state does the cited line report? Asked after the two
+        // free refusals above, so a decline and an ungrounded act cost nothing extra and only an act that
+        // is about to happen pays for it.
+        //
+        // The phase 1 measurement (phase-1-report-runtime.md) is why it exists. The fast model was right on
+        // eleven of the twelve real limit screens and wrong on five of the twenty negatives, and all five
+        // were one confusion: a screen that TALKS ABOUT a limit read as a screen where this session has
+        // stopped on one. The citation cannot catch that - in every one of those cases the line really was
+        // on the screen - so this asks the thing the first question is measurably worst at, on its own.
+        //
+        // A REFUSAL STOPS THE ACT. Only an explicit "own" lets it through; an unreadable answer or no
+        // answer at all leaves it refused, because a check that passes on an absence certifies nothing.
+        var ownStateRaw = await _env
+            .AskAgentAsync(tenant, RuleOwnStateContract.BuildPrompt(reply.Quote, excerpt, facts), ct)
+            .ConfigureAwait(false);
+        var ownState = RuleOwnStateContract.Read(ownStateRaw);
+
+        if (!ownState.CanCarryAnAct)
+        {
+            var why = ownState.Refusal ?? ownState.Reason;
+            var notItsOwn = Record(tenant, new RuleFiringDraft(
+                chosen.Id, sessionId, screen, "", RuleDecisions.Refused, why,
+                checks.Runs, "",
+                "nothing was typed: the line cited for acting is not this session reporting its own state.",
+                grounding.Statement));
+            FileLog.Write($"[RuleEvaluator] sid={sessionId}: act REFUSED, the cited line is not this session's own state");
+            return new RulePass(RulePassOutcomes.NotItsOwnState, why, refusedForReauthoring.Append(notItsOwn).ToList());
         }
 
         if (checks.Problem is not null)

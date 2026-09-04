@@ -23,6 +23,11 @@ public static class CaseAnswers
     /// contain. The MODEL was still wrong, so this counts against it.</summary>
     public const string ActUngrounded = "act (ungrounded)";
 
+    /// <summary>The model said act, the line it cited IS on the screen, and the second question said that
+    /// line is something the session is displaying rather than the session reporting its own state - so the
+    /// engine refused it. The MODEL was still wrong, so like an ungrounded act this counts against it.</summary>
+    public const string ActNotOwnState = "act (not its own state)";
+
     /// <summary>A staked check failed and the act was given up.</summary>
     public const string Abandoned = "abandoned";
 
@@ -37,7 +42,9 @@ public static class CaseAnswers
 
     /// <summary>Whether an answer is an act in either form - the two answers that count as wrong on a negative.</summary>
     public static bool IsAnAct(string answer) =>
-        string.Equals(answer, Act, StringComparison.Ordinal) || string.Equals(answer, ActUngrounded, StringComparison.Ordinal);
+        string.Equals(answer, Act, StringComparison.Ordinal) ||
+        string.Equals(answer, ActUngrounded, StringComparison.Ordinal) ||
+        string.Equals(answer, ActNotOwnState, StringComparison.Ordinal);
 
     /// <summary>The answer given, read off the pass and the environment. See the phase 0 task for the table.</summary>
     public static string For(RulePass pass, CaseRuleEnvironment environment) => pass.What switch
@@ -45,6 +52,7 @@ public static class CaseAnswers
         RulePassOutcomes.DryRun => Act,
         RulePassOutcomes.Declined => Decline,
         RulePassOutcomes.Ungrounded => ActUngrounded,
+        RulePassOutcomes.NotItsOwnState => ActNotOwnState,
         RulePassOutcomes.Abandoned => Abandoned,
         RulePassOutcomes.Refused => environment.ModelFailure is not null ? NoAnswer : Refused,
         RulePassOutcomes.NoCandidates => NotAsked,
@@ -71,7 +79,8 @@ public sealed record CaseResult(
     string? Failure,
     IReadOnlyList<RuleFiringDraft> Firings,
     string? RawReply = null,
-    int Run = 1);
+    int Run = 1,
+    string? FollowUpReply = null);
 
 /// <summary>
 /// The numbers the phase is judged on, per model. Every count is over ALL RUNS of every case - a case run
@@ -86,6 +95,7 @@ public sealed record ModelSummary(
     int WrongOnNegatives,
     int WrongOnNegativesThatReachedAct,
     int WrongOnNegativesStoppedByGrounding,
+    int WrongOnNegativesStoppedByTheSecondQuestion,
     int Timeouts,
     int OtherNoAnswers,
     int WrongOnPositives,
@@ -346,7 +356,8 @@ public static class HarnessRun
             Failure: failure is null ? null : failure.GetType().Name + ": " + failure.Message,
             Firings: firings,
             RawReply: environment.RawReply,
-            Run: run);
+            Run: run,
+            FollowUpReply: environment.FollowUpReply);
     }
 
     /// <summary>The numbers for one model, over every answer of every run. See <see cref="ModelSummary"/>.</summary>
@@ -369,6 +380,7 @@ public static class HarnessRun
             WrongOnNegatives: wrongNegatives.Count,
             WrongOnNegativesThatReachedAct: wrongNegatives.Count(r => r.Answer == CaseAnswers.Act),
             WrongOnNegativesStoppedByGrounding: wrongNegatives.Count(r => r.Answer == CaseAnswers.ActUngrounded),
+            WrongOnNegativesStoppedByTheSecondQuestion: wrongNegatives.Count(r => r.Answer == CaseAnswers.ActNotOwnState),
             Timeouts: rows.Count(r => r.TimedOut),
             OtherNoAnswers: rows.Count(r => r.Answer == CaseAnswers.NoAnswer && !r.TimedOut),
             WrongOnPositives: positives.Count(r => !r.Right),
@@ -429,6 +441,8 @@ public static class HarnessRun
                           s.NegativeCasesWrongInAnyRun + " negative case(s) wrong on at least one run)");
             sb.AppendLine("  - of those, reached act (would have typed): " + s.WrongOnNegativesThatReachedAct);
             sb.AppendLine("  - of those, act (ungrounded) - the grounding check stopped it: " + s.WrongOnNegativesStoppedByGrounding);
+            sb.AppendLine("  - of those, act - the second question stopped it (not this session's own state): " +
+                          s.WrongOnNegativesStoppedByTheSecondQuestion);
             sb.AppendLine("- FLIPS: " + s.Flips + " of " + s.Cases + " cases did not give the same answer on every run" +
                           (s.Flips == 0 ? "" : " - " + string.Join(", ", s.FlippedCases ?? Array.Empty<string>())));
             sb.AppendLine("- timeouts: " + s.Timeouts + "; other no-answers: " + s.OtherNoAnswers);

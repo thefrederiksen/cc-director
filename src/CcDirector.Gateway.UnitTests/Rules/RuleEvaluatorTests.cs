@@ -76,6 +76,21 @@ public sealed class RuleEvaluatorTests
         public int AgentCalls { get; private set; }
         public string? LastPrompt { get; private set; }
 
+        /// <summary>How many times the SECOND question was asked - whose state the cited line reports. It
+        /// is counted apart from <see cref="AgentCalls"/> so a test can say what an act costs and what a
+        /// decline costs, and so the tests written before the second question existed keep their meaning:
+        /// <see cref="AgentCalls"/> is still the number of JUDGEMENT calls.</summary>
+        public int OwnStateCalls { get; private set; }
+
+        /// <summary>The second question as it was asked, or null when it never was.</summary>
+        public string? LastOwnStatePrompt { get; private set; }
+
+        /// <summary>What the model answers the SECOND question with. It answers "own" by default, which is
+        /// the answer that lets a correct act through, so every test about the rest of the act path keeps
+        /// testing the rest of the act path. The tests below set it to say otherwise.</summary>
+        public string? OwnStateReply { get; set; } =
+            $$"""{ "{{RuleOwnStateContract.Field}}": "own", "reason": "The agent printed this line about itself." }""";
+
         /// <summary>THE SEND SEAM. Every keystroke this feature can produce goes through here.</summary>
         public List<string> Typed { get; } = new();
         public RuleSendResult SendResult { get; set; } = RuleSendResult.Confirmed();
@@ -137,6 +152,16 @@ public sealed class RuleEvaluatorTests
 
         public Task<string?> AskAgentAsync(TenantId tenant, string prompt, CancellationToken ct)
         {
+            // WHICH QUESTION IS THIS? The two run-time questions go through the one seam, so the fake tells
+            // them apart by the field only the second one asks for - the same constant the prompt is built
+            // from, so a renamed field cannot leave this fake silently answering the wrong question.
+            if (prompt is not null && prompt.Contains(RuleOwnStateContract.Field, StringComparison.Ordinal))
+            {
+                OwnStateCalls++;
+                LastOwnStatePrompt = prompt;
+                return Task.FromResult(OwnStateReply);
+            }
+
             AgentCalls++;
             LastPrompt = prompt;
             return Task.FromResult(AgentReply);
@@ -969,5 +994,150 @@ public sealed class RuleEvaluatorTests
         Assert.DoesNotContain("matches_any", prompt, StringComparison.Ordinal);
         // And the excerpt it carries is the one the quote is checked against - one function, one text.
         Assert.Contains(RuleScreenExcerpt.Of(string.Join("\n", BlockedScreen)), prompt, StringComparison.Ordinal);
+    }
+
+    // ---- the second question: whose state does the cited line report? --------------------------------
+    //
+    // The phase 1 measurement found the fast model's five wrong negatives were all one confusion - a screen
+    // that TALKS ABOUT a limit read as a screen where this session has stopped on one - and the citation
+    // cannot catch it, because in every one of those cases the cited line really is on the screen. So an
+    // act pays for one short second question, and a decline pays nothing.
+
+    private static string OwnStateReply(string verdict, string reason) => $$"""
+        {
+          "{{RuleOwnStateContract.Field}}": "{{verdict}}",
+          "reason": "{{reason}}"
+        }
+        """;
+
+    [Fact]
+    public async Task An_act_is_refused_when_the_line_it_cited_is_not_this_sessions_own_state()
+    {
+        var rule = Rule(state: RuleState.Live);
+        var env = EnvironmentWith(rule);
+        env.AgentReply = ActReply(rule.Id);
+        env.OwnStateReply = OwnStateReply(
+            RuleOwnState.Elsewhere, "It is a report about another session that hit its limit.");
+
+        var pass = await Run(env);
+
+        Assert.Equal(RulePassOutcomes.NotItsOwnState, pass.What);
+        Assert.Empty(env.Typed);
+        Assert.Equal(1, env.AgentCalls);
+        Assert.Equal(1, env.OwnStateCalls);
+
+        // The refusal is a RECORD, with the second answer's reason on it, so a reader can see which of the
+        // two questions stopped it. A pass that stopped here must not look like a pass that never ran.
+        var firing = Assert.Single(env.Recorded);
+        Assert.Equal(RuleDecisions.Refused, firing.Decision);
+        Assert.Contains("report about another session", firing.Reason, StringComparison.Ordinal);
+        Assert.Contains("its own state", firing.Outcome, StringComparison.Ordinal);
+        Assert.Equal("", firing.TypedText);
+    }
+
+    [Fact]
+    public async Task An_own_answer_lets_the_act_through_and_the_rules_own_text_is_typed()
+    {
+        var rule = Rule(state: RuleState.Live);
+        var env = EnvironmentWith(rule);
+        env.AgentReply = ActReply(rule.Id);
+        env.OwnStateReply = OwnStateReply(RuleOwnState.Own, "This session's own agent printed it about itself.");
+
+        var pass = await Run(env);
+
+        Assert.Equal(RulePassOutcomes.Acted, pass.What);
+        Assert.Equal(TheStoredText, Assert.Single(env.Typed));
+        Assert.Equal(1, env.OwnStateCalls);
+    }
+
+    /// <summary>A DECLINE PAYS NOTHING. The second question is on the expensive side only, which is the
+    /// whole reason it is affordable - proved by the count, not by reading the code.</summary>
+    [Fact]
+    public async Task A_decline_never_pays_for_the_second_question()
+    {
+        var rule = Rule(state: RuleState.Live);
+        var env = EnvironmentWith(rule);
+        env.AgentReply = DeclineReply(rule.Id, "the screen is only talking about a limit.");
+
+        var pass = await Run(env);
+
+        Assert.Equal(RulePassOutcomes.Declined, pass.What);
+        Assert.Equal(1, env.AgentCalls);
+        Assert.Equal(0, env.OwnStateCalls);
+        Assert.Null(env.LastOwnStatePrompt);
+    }
+
+    /// <summary>An act whose citation is not on the screen is already refused, so the second question is
+    /// never bought for it either. The cheap check runs first.</summary>
+    [Fact]
+    public async Task An_act_whose_citation_is_not_on_the_screen_never_pays_for_the_second_question()
+    {
+        var rule = Rule(state: RuleState.Live);
+        var env = EnvironmentWith(rule);
+        env.AgentReply = ActWithQuote(rule.Id, "a sentence that was never anywhere on this screen");
+
+        var pass = await Run(env);
+
+        Assert.Equal(RulePassOutcomes.Ungrounded, pass.What);
+        Assert.Equal(0, env.OwnStateCalls);
+        Assert.Empty(env.Typed);
+    }
+
+    /// <summary>THE PASS CONDITION IS A PRESENCE. A second question that was asked and not answered leaves
+    /// the act refused - never through on the absence of an objection.</summary>
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("I would rather not say.")]
+    [InlineData("{ \"whose_state\": \"perhaps\", \"reason\": \"neither\" }")]
+    public async Task A_second_question_that_was_not_answered_refuses_the_act(string? unreadable)
+    {
+        var rule = Rule(state: RuleState.Live);
+        var env = EnvironmentWith(rule);
+        env.AgentReply = ActReply(rule.Id);
+        env.OwnStateReply = unreadable;
+
+        var pass = await Run(env);
+
+        Assert.Equal(RulePassOutcomes.NotItsOwnState, pass.What);
+        Assert.Empty(env.Typed);
+        Assert.Equal(RuleDecisions.Refused, Assert.Single(env.Recorded).Decision);
+    }
+
+    /// <summary>The second question is about the LINE THE FIRST ANSWER CITED, on the SAME excerpt, and it
+    /// does not carry the account's instruction - it is not a second opinion on the first question.</summary>
+    [Fact]
+    public async Task The_second_question_carries_the_cited_line_and_the_same_screen_but_not_the_instruction()
+    {
+        var rule = Rule(state: RuleState.Live);
+        var env = EnvironmentWith(rule);
+        env.AgentReply = ActReply(rule.Id);
+
+        await Run(env);
+
+        var asked = env.LastOwnStatePrompt;
+        Assert.NotNull(asked);
+        Assert.Contains(TheNotice, asked!, StringComparison.Ordinal);
+        Assert.Contains(RuleScreenExcerpt.Of(string.Join("\n", BlockedScreen)), asked, StringComparison.Ordinal);
+        Assert.DoesNotContain(TheSentence, asked, StringComparison.Ordinal);
+        Assert.DoesNotContain(rule.Id.ToString(), asked, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>A dry run pays for the second question too, and is refused by it in the same way - the
+    /// point of a dry run is to show what the rule WOULD do, and a rule that would have been stopped must
+    /// not be reported as a rule that would have typed.</summary>
+    [Fact]
+    public async Task A_dry_run_is_refused_by_the_second_question_rather_than_reported_as_a_keystroke()
+    {
+        var rule = Rule(state: RuleState.DryRun);
+        var env = EnvironmentWith(rule);
+        env.AgentReply = ActReply(rule.Id);
+        env.OwnStateReply = OwnStateReply(RuleOwnState.Elsewhere, "It is a banner, not a stop.");
+
+        var pass = await Run(env);
+
+        Assert.Equal(RulePassOutcomes.NotItsOwnState, pass.What);
+        Assert.Empty(env.Typed);
+        Assert.DoesNotContain(env.Recorded, f => f.Decision == RuleDecisions.Act);
     }
 }

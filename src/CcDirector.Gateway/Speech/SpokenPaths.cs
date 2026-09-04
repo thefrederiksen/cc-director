@@ -113,6 +113,12 @@ public static class SpokenPaths
             + "run, and the exact text to TYPE INTO A TERMINAL. Nothing it produces is spoken. The text it "
             + "yields is a keystroke, not prose, so translating it would change what is typed - the reply "
             + "is machine-read from end to end and an unreadable one is recorded as a refusal.",
+        ["RuleOwnStateContract.BuildPrompt"] =
+            "Asks whose state ONE cited line of a terminal screen reports - this session's own, or "
+            + "something it is merely displaying - and returns JSON that code reads to decide whether an "
+            + "act may go ahead. Nothing it produces is spoken or shown. The answer is one word from a "
+            + "closed set that a parser matches, and an unreadable reply is deliberately recorded as a "
+            + "refusal to act rather than guessed at.",
         ["RuleDraftContract.BuildDraftPrompt"] =
             "Turns what somebody said into a standing instruction and returns JSON that code validates: a "
             + "screen description, trigger words, checks, a scope and two ceilings. Nothing it produces is "

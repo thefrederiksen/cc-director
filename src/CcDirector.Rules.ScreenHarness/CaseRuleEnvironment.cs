@@ -61,19 +61,28 @@ public sealed class CaseRuleEnvironment : IRuleEnvironment
     /// <summary>Every firing the evaluator wrote, completed where it completed one.</summary>
     public IReadOnlyList<RecordedFiring> Firings => _firings;
 
-    /// <summary>How long the one model call took, or null when the model was never asked.</summary>
+    /// <summary>How long the model calls of this pass took IN TOTAL, or null when the model was never
+    /// asked. From the phase 1 targeted fix a pass can make TWO calls - the judgement, and, only when the
+    /// answer is act, the second question about whose state the cited line reports - and what a firing
+    /// costs is both of them, so this is their sum. A decline still makes one call and this is still that
+    /// one call's time.</summary>
     public TimeSpan? ModelCallTime { get; private set; }
 
     /// <summary>What the model call threw, or null when it answered (or was never asked).</summary>
     public Exception? ModelFailure { get; private set; }
 
-    /// <summary>How many times the model was asked. The evaluator asks once per pass.</summary>
+    /// <summary>How many times the model was asked in this pass: one for a decline, two for an act.</summary>
     public int ModelCalls { get; private set; }
 
     /// <summary>What the model said, verbatim, or null when it was never asked or threw. Kept so a refusal
     /// in the report can be argued with: "the agent gave no reason" is a fact about the reply, and the
     /// reply is the evidence.</summary>
     public string? RawReply { get; private set; }
+
+    /// <summary>What the model said to the SECOND question, verbatim, or null when it was never asked -
+    /// which is every decline. Kept beside <see cref="RawReply"/> so a refusal on the second question can
+    /// be argued with the same way as one on the first.</summary>
+    public string? FollowUpReply { get; private set; }
 
     /// <inheritdoc />
     public DateTime NowUtc => DateTime.UtcNow;
@@ -95,6 +104,10 @@ public sealed class CaseRuleEnvironment : IRuleEnvironment
     /// <inheritdoc />
     public async Task<string?> AskAgentAsync(TenantId tenant, string prompt, CancellationToken ct)
     {
+        // WHICH QUESTION IS THIS? Told apart by the field only the second question asks for - the same
+        // constant its prompt is built from, so a renamed field cannot leave this recording the wrong reply
+        // under the wrong name.
+        var isFollowUp = prompt.Contains(RuleOwnStateContract.Field, StringComparison.Ordinal);
         ModelCalls++;
         var sw = Stopwatch.StartNew();
         try
@@ -106,14 +119,14 @@ public sealed class CaseRuleEnvironment : IRuleEnvironment
                 temperature: RuleAgentContract.JudgementTemperature);
             var result = await brain.AskAsync(prompt, ct).ConfigureAwait(false);
             sw.Stop();
-            ModelCallTime = sw.Elapsed;
-            RawReply = result?.Text;
+            ModelCallTime = (ModelCallTime ?? TimeSpan.Zero) + sw.Elapsed;
+            if (isFollowUp) FollowUpReply = result?.Text; else RawReply = result?.Text;
             return result?.Text;
         }
         catch (Exception ex)
         {
             sw.Stop();
-            ModelCallTime = sw.Elapsed;
+            ModelCallTime = (ModelCallTime ?? TimeSpan.Zero) + sw.Elapsed;
             ModelFailure = ex;
             _log("[CaseRuleEnvironment] case " + _case.Id + " model " + _model.Value +
                  ": the agent could not be asked: " + ex.GetType().Name + ": " + ex.Message);

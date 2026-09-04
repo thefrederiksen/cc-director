@@ -66,8 +66,19 @@ public sealed class RuleEvaluatorAgainstTheRealStoreTests : IDisposable
             TenantId tenant, string directorId, string sessionId, CancellationToken ct) =>
             Task.FromResult<IReadOnlyList<string>?>(Screen);
 
+        /// <summary>What the model answers the SECOND question with - whose state the cited line reports.
+        /// It answers "own" by default, the answer that lets a correct act through, so these tests keep
+        /// testing what they are about: what the REAL STORE does with a firing.</summary>
+        public string? OwnStateReply { get; set; } =
+            $$"""{ "{{RuleOwnStateContract.Field}}": "own", "reason": "The agent printed this line about itself." }""";
+
         public Task<string?> AskAgentAsync(TenantId tenant, string prompt, CancellationToken ct)
         {
+            // The two run-time questions share one seam; they are told apart by the field only the second
+            // one asks for, using the same constant the prompt is built from.
+            if (prompt is not null && prompt.Contains(RuleOwnStateContract.Field, StringComparison.Ordinal))
+                return Task.FromResult(OwnStateReply);
+
             WhileTheModelIsBeingAsked?.Invoke();
             return Task.FromResult(AgentReply);
         }
