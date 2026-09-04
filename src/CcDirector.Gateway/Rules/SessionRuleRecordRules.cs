@@ -43,9 +43,6 @@ internal static class SessionRuleRecordRules
             throw new RuleRejectedException(
                 "a rule is the sentence you said, so it cannot be empty - the instruction is the authority.");
 
-        if (string.IsNullOrWhiteSpace(rule.ScreenDescription))
-            throw new RuleRejectedException(
-                "a rule has to say, in plain words, what it is watching for on the screen.");
 
         if (rule.TriggerWords is null || !rule.TriggerWords.Any(w => !string.IsNullOrWhiteSpace(w)))
             throw new RuleRejectedException(
