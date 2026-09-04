@@ -21,6 +21,7 @@ export type NavIconName =
   | "directors"
   | "schedule"
   | "workflows"
+  | "rules"
   | "skills"
   | "dictionary"
   | "voice-recorder"
@@ -43,6 +44,16 @@ const PAINT: Record<NavIconName, JSX.Element> = {
       <path d="M14.1 5.55a2 2 0 0 1-1.79 0L8.1 3.45a2 2 0 0 0-1.79 0L3.55 4.83A1 1 0 0 0 3 5.72v12.76a1 1 0 0 0 1.45.9l2.86-1.43a2 2 0 0 1 1.79 0l4.21 2.11a2 2 0 0 0 1.79 0l3.66-1.83a1 1 0 0 0 .55-.9V4.62a1 1 0 0 0-1.45-.9z" />
       <path d="M9 3.24v15" />
       <path d="M15 5.76v15" />
+    </>
+  ),
+  // An eye over a horizontal rule: a standing instruction WATCHING a screen. The eye is what makes
+  // it distinct from the document-shaped glyphs around it - a rule is not another list you read, it
+  // is something that looks at your sessions while you are not.
+  rules: (
+    <>
+      <path d="M2 11s3.5-5 10-5 10 5 10 5-3.5 5-10 5-10-5-10-5z" />
+      <circle cx="12" cy="11" r="2.2" />
+      <path d="M5 20h14" />
     </>
   ),
   // A speech bubble with text lines: the fleet-level chat + voice assistant. Rounded outline keeps

@@ -23,6 +23,7 @@ import { ScheduleView } from "./schedule/ScheduleView";
 import { WorkflowsView } from "./workflows/WorkflowsView";
 import { WorkflowDetail } from "./workflows/WorkflowDetail";
 import { SkillsView } from "./skills/SkillsView";
+import { RulesView } from "./rules/RulesView";
 import { DictionaryView } from "./dictionary/DictionaryView";
 import { TranscriptsView } from "./transcripts/TranscriptsView";
 import { YourThrottleView } from "./throttle/YourThrottleView";
@@ -41,6 +42,7 @@ import "./history/history.css";
 import "./missions/missions.css";
 import "./schedule/schedule.css";
 import "./workflows/workflows.css";
+import "./rules/rules.css";
 import "./dictionary/dictionary.css";
 import "./transcripts/transcripts.css";
 import "./throttle/throttle.css";
@@ -168,6 +170,11 @@ const router = createBrowserRouter(
             // only ever rendered an idle "Disabled" snapshot. "Wingman" now means only the live voice
             // narration (the phone/Cockpit Voice mode), not a fleet pipeline surface.
             { path: "/schedule", element: <ScheduleView /> },
+            // The Rules page (Session Rules mission, phase 3): the standing instructions this
+            // account has given about its sessions, and the record of every time one fired. It is
+            // also where a rule is MADE - you say what you want and the Gateway drafts the rule and
+            // hands it back to be read before anything is stored (POST /gateway/rules/draft).
+            { path: "/rules", element: <RulesView /> },
             // The Workflows page (issue #1617): the shapes of work the fleet knows how to run - which
             // agent starts a step, which reviews it, where the human is asked. Reads the Gateway's
             // workflow catalog (GET /workflows) through client-core; the Gateway is the home for these,

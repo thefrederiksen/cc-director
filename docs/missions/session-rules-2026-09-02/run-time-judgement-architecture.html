@@ -1,0 +1,386 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Session Rules - the run-time judgement, and a rethink</title>
+<style>
+  :root {
+    --ink: #1a1c1f; --dim: #5b6067; --line: #d8dbe0; --bg: #fbfbfa; --panel: #ffffff;
+    --good: #1f6f43; --bad: #a52222; --accent: #1f4f8f; --shade: #f2f4f7;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+         font: 16px/1.65 "Charter", "Georgia", "Iowan Old Style", serif; }
+  .wrap { max-width: 880px; margin: 0 auto; padding: 56px 28px 120px; }
+  h1 { font-size: 31px; line-height: 1.2; margin: 0 0 6px; letter-spacing: -0.01em; }
+  .sub { color: var(--dim); font-size: 15px; margin: 0 0 22px; }
+  h2 { font-size: 21px; margin: 52px 0 12px; padding-top: 18px; border-top: 1px solid var(--line); }
+  h3 { font-size: 17px; margin: 30px 0 8px; }
+  p { margin: 0 0 14px; }
+  code { font-family: "Cascadia Mono", "Consolas", monospace; font-size: 13.5px;
+         background: var(--shade); padding: 1px 5px; border-radius: 3px; }
+  table { border-collapse: collapse; width: 100%; margin: 18px 0; font-size: 14.5px; }
+  th, td { border: 1px solid var(--line); padding: 7px 10px; text-align: left; vertical-align: top; }
+  th { background: var(--shade); font-weight: 600; }
+  td.n { text-align: right; font-family: "Cascadia Mono", "Consolas", monospace; }
+  .good { color: var(--good); font-weight: 600; }
+  .bad { color: var(--bad); font-weight: 600; }
+  .box { background: var(--panel); border: 1px solid var(--line); border-left: 4px solid var(--accent);
+         padding: 14px 18px; margin: 20px 0; border-radius: 3px; }
+  .box.hot { border-left-color: var(--bad); }
+  .box.ok { border-left-color: var(--good); }
+  .box h4 { margin: 0 0 8px; font-size: 14px; text-transform: uppercase; letter-spacing: 0.06em;
+            color: var(--dim); font-weight: 700; }
+  .box p:last-child { margin-bottom: 0; }
+  .pipe { background: var(--panel); border: 1px solid var(--line); border-radius: 4px;
+          padding: 16px 18px; margin: 20px 0; font-family: "Cascadia Mono", "Consolas", monospace;
+          font-size: 12.8px; line-height: 1.85; overflow-x: auto; white-space: pre; }
+  .lede { font-size: 16.5px; color: var(--dim); font-style: italic; }
+  .decide { background: #fff; border: 2px solid var(--accent); border-radius: 5px;
+            padding: 22px 26px; margin: 26px 0 30px; }
+  .decide h4 { margin: 0 0 12px; font-size: 13px; text-transform: uppercase;
+               letter-spacing: 0.09em; color: var(--accent); font-weight: 700; }
+  .decide .one { font-size: 20px; line-height: 1.4; margin: 0 0 16px; }
+  .decide p { margin: 0 0 12px; }
+  .decide .ask { border-top: 1px solid var(--line); padding-top: 14px; margin-top: 16px;
+                 margin-bottom: 10px; }
+  .decide .risk { color: var(--bad); margin-bottom: 0; }
+  li { margin-bottom: 8px; }
+  .scroll { overflow-x: auto; }
+  footer { margin-top: 60px; padding-top: 18px; border-top: 1px solid var(--line);
+           color: var(--dim); font-size: 14px; line-height: 1.9; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>Session Rules: the run-time judgement, and a rethink</h1>
+<p class="sub">Written by the Architect, 4 September 2026, after Phase 1 round A missed its gate.
+Every number here is read off the committed harness reports, not recalled.</p>
+
+<div class="decide">
+  <h4>What I recommend we do</h4>
+  <p class="one"><strong>Stop making the fast model smarter. Give the careful model enough time to
+  answer, and let it make the decision.</strong></p>
+  <p>The careful model is not bad at this. It is being cut off. Every one of its apparent failures is
+  a timeout at exactly 60.0 seconds, not a wrong answer. Counting only the times we let it finish, it
+  is right <strong>60 of 60</strong> on the screens it should refuse and <strong>18 of 19</strong> on
+  the screens it should act on - including the exact ones that beat the fast model.</p>
+  <p>The 60 seconds was never chosen for this. It is a shared default borrowed from the voice feature,
+  where a person is waiting for a reply. Here nobody is waiting: the session has already stopped and
+  will sit there for hours. <strong>We optimised for speed in the one place speed is worthless, and
+  paid for it in wrong keystrokes.</strong></p>
+  <p>So: keep the fast model as a cheap first filter - it has never once wrongly refused a real limit
+  screen - and put the real judgement on the careful model with a deadline set by how long it actually
+  needs.</p>
+  <p class="ask"><strong>What I need from you:</strong> approval to run one measurement of that, on the
+  same frozen 32 screens, against the same bar as before - zero wrong keystrokes. Roughly half a day of
+  machine time and none of yours.</p>
+  <p class="risk"><strong>The catch, stated up front:</strong> every timed-out result reads 60.0
+  seconds because that is where we cut it. We do not know whether those calls would have finished at
+  seventy seconds or never finished at all. That is exactly what the measurement answers. If a real
+  share still never answers, this fails, and I will tell you so rather than tune it again.</p>
+</div>
+
+<p class="lede">Everything below is the backing for that recommendation - what the feature has to
+decide, how we detect and verify a problem, and the measurement that changed the diagnosis. You asked
+for the step back rather than another patch; section 6 is where it happens.</p>
+
+<h2>1. What the feature actually has to decide</h2>
+
+<p>A coding session goes quiet. Something has to answer one question about the last screen it printed:</p>
+
+<div class="box">
+<h4>The question</h4>
+<p><strong>Is this session, right now, stuck in the exact situation the account's instruction
+describes - such that typing the instruction's words into it is the right thing to do?</strong></p>
+</div>
+
+<p>That question has three parts which we have repeatedly failed to keep separate, and keeping them
+separate is most of what this document is about:</p>
+
+<ol>
+  <li><strong>Subject matter.</strong> Is this screen about the thing the instruction names - a usage
+  allowance, a provider error?</li>
+  <li><strong>Ownership.</strong> Is the screen this session reporting <em>itself</em>, or displaying
+  something about a different session, a document, a test fixture, a log?</li>
+  <li><strong>Circumstance.</strong> Is the session actually <em>stopped and blocked</em> by it - or
+  merely warned about it while carrying on perfectly well?</li>
+</ol>
+
+<p>A screen can pass 1 and 2 and fail 3. "Eighty-six percent of your weekly limit used" is about the
+allowance, it is genuinely this session's own state, and the session is <em>fine</em>. That single
+combination is what is left broken today.</p>
+
+<h2>2. The steps we take, as built</h2>
+
+<p>This is the current pipeline, in order. The ordering is deliberate: everything free happens before
+anything expensive, so the ordinary case - a session that simply finished its work - costs one screen
+read and never reaches a model at all.</p>
+
+<div class="pipe">  session goes idle
+        |
+   [1]  one pass at a time per session        free    a lock; without it the ceilings are walk-throughs
+        |
+   [2]  screen unchanged? stop                free
+        |
+   [3]  rule scope: agent, repository         free
+        |
+   [4]  cooldown and daily cap                free    counted off the firing record
+        |
+   [5]  QUESTION ONE - fast model                     "is this screen the situation the instruction names?"
+        |                                             answers act or decline, plus one line copied off the screen
+        |
+   [6]  grounding: is that line really there? free    deterministic
+        |
+   [7]  QUESTION TWO - fast model                     "whose state does that line report?"   (added in round A)
+        |                                             answers own or elsewhere
+        |
+   [8]  the rule's stored checks run                  e.g. retry_delay_from(screen_text, now)
+        |
+   [9]  re-read the screen before typing              a session that moved on is abandoned
+        |
+  [10]  dry run? record it and type nothing
+        |
+  [11]  type the rule's OWN stored text               nothing here composes a keystroke
+        |
+        every outcome above is written down as a firing, including every decline</div>
+
+<p>Two properties of that pipeline are load-bearing and are <em>not</em> in question here, because they
+have been independently inspected and they hold: <strong>no generated code ever runs</strong> - an
+answer names a stored check and typed argument values, never a program - and <strong>a draft cannot
+promote itself</strong>, so a new rule types nothing until a person promotes it.</p>
+
+<h2>3. How we detect a problem</h2>
+
+<p>Not by opinion, and not by writing a unit test that agrees with us. Phase 0 built a harness, and it
+is the most valuable thing this mission has produced.</p>
+
+<ul>
+  <li><strong>32 real captured screens</strong> from the owner's own sessions - not synthesised, not
+  paraphrased. 12 where the right answer is <em>act</em>, 20 where it is <em>decline</em>.</li>
+  <li>The negatives are adversarial: the trigger words are <em>present on every one of them</em>.
+  Documentation about rate limits. A diff adding a limit-screen test constant. A report about a
+  sub-agent that hit its spend limit. A commit hash that happens to contain 529.</li>
+  <li>Every case runs through <strong>the real evaluator</strong>, not a copy of it, and the answer is
+  read off the recorded firing rather than off a return value.</li>
+  <li>Every case runs <strong>three times on each model</strong>, because a judgement that changes
+  between runs is a dice roll, and the flip rate is reported as its own number.</li>
+</ul>
+
+<div class="box hot">
+<h4>The number the phase is judged on</h4>
+<p><strong>Wrong answers on the negatives that would have caused typing.</strong> Not overall accuracy.
+A feature that is right ninety percent of the time and types into your session the other ten percent is
+not ninety percent good. It is unusable, because you cannot leave it switched on.</p>
+</div>
+
+<h2>4. How we verify it is really a problem</h2>
+
+<p>Four disciplines, each of which exists because something got past us without it:</p>
+
+<ul>
+  <li><strong>The corpus is frozen.</strong> The same 32 cases before and after. A fix that changes the
+  test set has proven nothing.</li>
+  <li><strong>The real engine, the real recorded firing.</strong> Three defects on this mission were
+  proven only by driving a real request; every one of them had a green test suite behind it.</li>
+  <li><strong>Both models, every round.</strong> The comparison is the evidence, and section 6 exists
+  entirely because we kept it.</li>
+  <li><strong>The pass condition is a presence, never an absence.</strong> An unreadable answer, a
+  missing field, a model that never replied - all stop the act. A check that passes when something is
+  merely absent certifies runs that never happened, and that habit has been found five times in this
+  one feature.</li>
+</ul>
+
+<h2>5. What the measurement says</h2>
+
+<p>Round A added question two - "whose state does that line report?" - asked only when question one
+says act, so a decline costs nothing extra. Here is the whole result.</p>
+
+<div class="scroll">
+<table>
+<thead><tr>
+  <th>Over 96 answers (32 cases, 3 runs)</th>
+  <th>Fast, before round A</th>
+  <th>Fast, after round A</th>
+  <th>Thinking model</th>
+</tr></thead>
+<tbody>
+<tr><td>Wrong on negatives, would have typed</td>
+    <td class="n bad">15 of 60</td><td class="n bad">7 of 60</td><td class="n good">0 of 60</td></tr>
+<tr><td>Negative cases that would type at least once</td>
+    <td class="n">5</td><td class="n">3</td><td class="n good">0</td></tr>
+<tr><td>Positives right on every run</td>
+    <td class="n">11 of 12</td><td class="n">11 of 12</td><td class="n bad">3 of 12</td></tr>
+<tr><td>Timeouts</td>
+    <td class="n good">0</td><td class="n good">0</td><td class="n bad">18 of 96</td></tr>
+<tr><td>Cases that disagreed with themselves across runs</td>
+    <td class="n">-</td><td class="n">1 of 32</td><td class="n bad">7 of 32</td></tr>
+<tr><td>Median time to decide "act"</td>
+    <td class="n">3.3s</td><td class="n">7.5s</td><td class="n">44.1s</td></tr>
+</tbody>
+</table>
+</div>
+
+<p>Read the way we have been reading it for three rounds, that table says: the fast model is close but
+not safe, and the thinking model is hopeless - three of twelve.</p>
+
+<p><strong>That reading is wrong, and it is the reason for this document.</strong></p>
+
+<h2>6. The step back: we have been measuring the wrong thing</h2>
+
+<h3>6.1 The thinking model is not inaccurate. It is being cut off.</h3>
+
+<p>Go to the per-case rows rather than the summary. Every one of the thinking model's failures on the
+positives reads the same way:</p>
+
+<div class="pipe">p06-monthly-spend-limit-with-task-list       act   no answer x3          60.0s   TimeoutException
+p07-monthly-spend-limit-and-session-banner  act   no answer x3          60.0s   TimeoutException
+p09-monthly-spend-limit-with-spend-dialog   act   no answer x3          60.0s   TimeoutException
+p04-session-limit-hundred-percent-banner    act   act x2, no answer x1  60.0s   TimeoutException</div>
+
+<p>Not a wrong judgement. <strong>No judgement at all, cut off at exactly 60.0 seconds.</strong>
+Separate the answers it actually returned from the ones it was never allowed to finish:</p>
+
+<div class="box ok">
+<h4>The thinking model, counting only answers it was allowed to give</h4>
+<p><strong>60 of 60 correct on the negatives. 18 of 19 correct on the positives. 78 of 79 overall.</strong>
+One genuine mistake in the entire corpus.</p>
+<p>And it is right on precisely the cases that defeat the fast model. On the eighty-six percent banner
+it said: <em>"the session is still actively running, not a session that has stopped because its usage
+allowance is used up."</em> That is exactly the distinction section 1 calls circumstance, and it drew it
+unprompted.</p>
+</div>
+
+<h3>6.2 Where the sixty seconds came from</h3>
+
+<p>It is <code>HostedInferenceBrain.DefaultCallTimeout</code> - a general default for model calls,
+shared with the voice path, where a person is sitting there waiting for a reply. It is injectable. It
+was never chosen for this decision.</p>
+
+<p>So the whole of Phase 1 - move to the fast model, then bolt a second question on to compensate -
+rests on treating a borrowed latency budget as a fact about the world.</p>
+
+<div class="box hot">
+<h4>The mistake, stated plainly</h4>
+<p><strong>We optimised for latency in the one situation where latency does not matter.</strong></p>
+<p>This judgement happens because a session has <em>stopped</em>. In the owner's headline case it
+stopped at three in the morning against a limit that resets at eleven at night. It is going to sit
+there for hours. Nobody is waiting on the answer. We spent three rounds making the answer arrive in
+seven seconds instead of forty-four, and paid for it in the only currency that matters here: it types
+into sessions it should not.</p>
+</div>
+
+<h3>6.3 The second question asks two things at once</h3>
+
+<p>Its own documentation says it is deliberately <em>not</em> a re-judgement of the situation - it asks
+only whose state the line reports. But its prompt text says:</p>
+
+<div class="pipe">Answer "own" only when the line is this session's OWN agent reporting
+THIS session's OWN state right now - this session is itself stopped, blocked or waiting
+because of what the line says.
+...
+Answer "elsewhere" when the line is ... a status banner about an allowance that has
+not actually stopped this session.</div>
+
+<p>That second clause is a <em>circumstance</em> test smuggled into an <em>ownership</em> question. The
+evidence that it does not work is in the results: on n11 the model quoted that very clause back while
+declining, and on n18 - the same shape of screen - it answered "own" and let the act through.</p>
+
+<p>A question that asks two things gets one answer, and you cannot tell which one it answered. That is
+a design fault, not a wording problem, and a third question in the same style would repeat it.</p>
+
+<h3>6.4 What I am not going to do</h3>
+
+<p>I am not adding a third question to the fast model. Each question added is another call, another
+chance to be wrong, and another place where two concerns get mixed. We would be tuning a model into a
+judgement it is measurably bad at, while a model that already makes that judgement correctly sits
+behind a timeout we set ourselves for an unrelated purpose.</p>
+
+<h2>7. What I propose instead</h2>
+
+<p>Keep the pipeline. Change what stages 5 and 7 are, and change the deadline.</p>
+
+<div class="pipe">  [5]  CHEAP FILTER - fast model, question unchanged
+       |     Purpose: throw away the obvious no, for almost nothing.
+       |     Evidence: in 96 answers it NEVER wrongly declined a real limit screen.
+       |     It is over-eager, which is exactly what a first-stage filter should be.
+       |
+  [6]  grounding, unchanged - free and deterministic
+       |
+  [7]  THE JUDGEMENT - thinking model, the FULL question, generous deadline
+             Purpose: the actual decision, made by the thing that makes it correctly.
+             Evidence: 78 of 79 answers correct, including every case that defeats the fast model.
+             Cost: reached only for screens the filter flagged. Nobody is waiting.</div>
+
+<p>Three things follow from that shape, and each is a saving rather than a cost:</p>
+
+<ul>
+  <li><strong>The expensive call is rare.</strong> Most idle transitions never reach a model at all -
+  the free checks at stages 1 to 4 kill them. Of those that do, the filter removes the plain no.</li>
+  <li><strong>The two-question tangle disappears.</strong> One question, asked once, by one model,
+  covering subject matter, ownership and circumstance together - which is how a person reads a screen,
+  and demonstrably how the thinking model already reads it.</li>
+  <li><strong>The safety story becomes sayable.</strong> Today it is "a fast judgement, plus a second
+  fast judgement about the first one, plus ceilings". That is what a reader currently has to trust.</li>
+</ul>
+
+<h3>The one thing this proposal has not proven, and it is the whole risk</h3>
+
+<div class="box hot">
+<h4>Unproven</h4>
+<p>Every timed-out row reads <code>60.0s</code> because that is where we cut it off. <strong>We do not
+know how long those calls would have taken.</strong> They might finish in seventy seconds; they might
+never finish.</p>
+<p>So the proposal is not "raise the timeout and we are done". It is a measurement: run the frozen 32
+cases on the thinking model with a deadline generous enough that the model's own speed, not ours,
+decides the outcome - and find out. If a real share still never answers, this rethink fails and we say
+so in those words.</p>
+</div>
+
+<p>Two smaller things, worth doing either way and independent of the model choice:</p>
+
+<ul>
+  <li><strong>p09 fails on grounding over a single space.</strong> The model cited a real line and our
+  own citation check refused it on whitespace. That is a defect in our deterministic code, and it costs
+  us a genuine positive.</li>
+  <li><strong>The flip rate stays in the report</strong> for whichever model wins - it is the honest
+  reliability number. Temperature is already pinned at zero; whether the hosted endpoint honours that
+  is measured, not assumed.</li>
+</ul>
+
+<h2>8. The thing I deliberately did not change</h2>
+
+<p>The Gateway already knows whether a session is working or idle - <code>ActivityState</code> sits on
+the facts record and is deliberately kept out of the question. Ruling A11 says the screen is the only
+input to the decision, because the screen is the evidence a person can go back and check on the firing
+record, and a hidden signal nobody can see is not.</p>
+
+<p>It is tempting to reach for it, since "is it actually stopped" is exactly the failing distinction. I
+am not reaching for it, for two reasons: a session showing an eighty-six percent banner between turns
+may well read as idle anyway, so it may not even separate these cases; and if section 7 works, it is
+not needed. If section 7 fails, this is the next thing to put on the table - with the owner, because it
+changes what the record can prove.</p>
+
+<h2>9. What I am asking for</h2>
+
+<p>One measurement round, on the frozen corpus, same gate as before - zero wrong negatives with the
+positives not regressing - testing the proposal in section 7 rather than a third question.</p>
+
+<p>If it passes, the feature is safe to switch on and the demonstrations proceed. If it fails, we stop,
+and the report says the feature works under supervision and cannot be left running unattended - which
+is a true sentence, and a better outcome than a fourth round of tuning.</p>
+
+<footer>
+Sources, all committed and re-readable:
+<code>phase-1-harness-report-round-a.md</code> (the tables) &middot;
+<code>phase-0-harness-report.md</code> (the before) &middot;
+<code>RuleAgentContract.cs</code> and <code>RuleOwnStateContract.cs</code> (the two questions, verbatim) &middot;
+<code>HostedInferenceBrain.cs</code> line 51 (the sixty seconds) &middot;
+<code>RuleEvaluator.cs</code> (the pipeline)
+</footer>
+
+</div>
+</body>
+</html>

@@ -637,7 +637,7 @@ Merged to `main` on 3 September 2026, pull request 2665, commit `d447736c1`.
 
 | Row | Status |
 | --- | --- |
-| 1. A rule created from plain English | **NOT PROVEN** - authoring by conversation is not built |
+| 1. A rule created from plain English | **BUILT** on 3 September - see `phase-3-authoring-report.md`. Proven in the suite against canned model answers; NOT yet proven against a live model |
 | 2. Words on a screen, something happens because a rule said so | **PROVEN**, on a real session |
 | 3. A real provider limit recovers with nobody watching | **NOT PROVEN** - see below, and not faked |
 | 4. The negative control - the boundary | **PROVEN**, both halves |
@@ -651,8 +651,11 @@ STOPPED by the 120-second parallel budget rather than failing; run alone it is *
 
 ### What is NOT proven, plainly
 
-- **You cannot yet create a rule by talking to it.** A rule's trigger words and screen description are
-  written by hand today. This is the heart of the design and it is the next thing to build.
+- ~~**You cannot yet create a rule by talking to it.**~~ **CLOSED, 3 September 2026.** A rule's trigger
+  words and screen description are now worked out from your sentence by a model, which hands the rule
+  back with a plain-English read-back before anything is stored. See `phase-3-authoring-report.md`,
+  which also carries what that phase does NOT prove - chiefly that no rule has been drafted against a
+  real live model, and that there is still no Rules page.
 - **No session genuinely out of model allowance was ever recovered.** No real limit occurred during
   the run, and a printed line is not a real block - confusing the two would prove the opposite of what
   it claims. The mechanism is proven end to end by row 2; the recovery itself is not.

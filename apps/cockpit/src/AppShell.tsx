@@ -74,6 +74,10 @@ const NAV_MAIN: ReadonlyArray<NavItem> = [
   { to: "/directors", label: "Directors", icon: "directors" },
   { to: "/schedule", label: "Schedule", icon: "schedule" },
   { to: "/workflows", label: "Workflows", icon: "workflows" },
+  // Rules sits with Workflows and Skills: the three things you DEFINE and the fleet then works by.
+  // A workflow governs how a mission is run, a skill is a capability an agent reaches for, and a
+  // rule is a standing instruction that watches a session's screen and acts on it without you.
+  { to: "/rules", label: "Rules", icon: "rules" },
   // Skills sits beside Workflows: two lists on one shelf. A workflow governs how a whole mission is
   // run; a skill is a capability an agent reaches for mid-task (devthrottle_internal issue 995).
   { to: "/skills", label: "Skills", icon: "skills" },
