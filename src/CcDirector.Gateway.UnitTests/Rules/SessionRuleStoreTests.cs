@@ -314,6 +314,37 @@ public sealed class SessionRuleStoreTests : IDisposable
         Assert.Empty(store.All());
     }
 
+    /// <summary>
+    /// THE FACTORY REFUSES ON ITS OWN, NOT BY ITS CALLER'S GRACE (fix round F, the Architect's closing
+    /// ruling). Grounding was checked in TWO places inside the feature's central invariant: the one
+    /// function that defines it, and a second copy inside this factory that called <c>NotOn</c> directly.
+    /// Two copies of one check that agree today is the defect class ruling D2 was written to remove - it
+    /// is how the check and the prompt came to read different text in the first place. "Unreachable,
+    /// because the only production caller refuses upstream" is a statement about today's callers.
+    ///
+    /// This test reaches the factory DIRECTLY, which the <see cref="Grounded"/> helper deliberately does
+    /// not. That is not a second door into evidence: two of the three cases assert a REFUSAL, and the
+    /// third is the control that stops the first two passing on a factory that refuses everything. The
+    /// evidence it produces is read and discarded, never handed to a store.
+    /// </summary>
+    [Fact]
+    public void The_evidence_factory_runs_the_one_grounding_check_itself()
+    {
+        var screen = new RuleScreenReading(
+            "sid-minted", new RuleSessionOrigin("ClaudeCode", "TEST"), "> carry on\nlimit\n>");
+
+        var watchesForNothing = Assert.Throws<InvalidOperationException>(
+            () => RuleGroundingEvidence.Minted(screen, Array.Empty<string>()));
+        Assert.Contains("watches for nothing", watchesForNothing.Message, StringComparison.Ordinal);
+
+        var notOnTheScreen = Assert.Throws<InvalidOperationException>(
+            () => RuleGroundingEvidence.Minted(screen, new[] { "never on the checked screen" }));
+        Assert.Contains("never on the checked screen", notOnTheScreen.Message, StringComparison.Ordinal);
+
+        // THE CONTROL. A factory that threw at everything would pass both refusals above and mean nothing.
+        Assert.Equal(new[] { "limit" }, RuleGroundingEvidence.Minted(screen, new[] { " limit " }).Words);
+    }
+
     /// <summary>Evidence for one set of words cannot be spent on another - a word more, a word fewer, or a
     /// different word is a different set.</summary>
     [Theory]
