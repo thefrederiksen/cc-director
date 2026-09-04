@@ -219,24 +219,45 @@ public sealed class TurnLogRecorderTests
     }
 
     [Fact]
-    public async Task CaptureAsync_AConversationPushedBeforeTheCapture_IsNamedAsAGap()
+    public async Task CaptureAsync_AConversationPushedBeforeTheTurnEnded_IsNamedAsAGap()
     {
-        // The Director announces the state change BEFORE pushing the turn that caused it, so a capture can
-        // land between the two and store a conversation one turn short of the screen beside it. Unsaid, the
-        // record would claim to contain the turn it describes.
+        // The bad case: the last push predates the session's last activity, so the stored conversation stops
+        // short of the turn the screen beside it is showing.
         var env = new FakeEnvironment
         {
             Conversation = new StoredConversationSnapshot(
                 true, "transcript-1", Array.Empty<HistoryMessageDto>(),
                 LastPushedUtc: new DateTime(2026, 9, 4, 11, 0, 0, DateTimeKind.Utc)),
         };
+        env.Session!.LastActivityAt = new DateTime(2026, 9, 4, 11, 30, 0, DateTimeKind.Utc);
         var recorder = new TurnLogRecorder(env, nowUtc: () => new DateTime(2026, 9, 4, 12, 0, 0, DateTimeKind.Utc));
 
         await recorder.CaptureAsync(Signal(), CancellationToken.None);
 
         var record = Assert.Single(env.Written);
         Assert.Contains(record.Gaps, g => g.Part == "conversation" && g.Reason.Contains("one turn short"));
-        Assert.Equal(new DateTime(2026, 9, 4, 11, 0, 0, DateTimeKind.Utc), record.Conversation.LastPushedAtUtc);
+    }
+
+    [Fact]
+    public async Task CaptureAsync_AConversationPushedAFTERTheTurnEnded_IsNotAGap()
+    {
+        // THE HEALTHY CASE, and the one the first version got backwards. A push that landed after the turn
+        // ended is a conversation that CONTAINS the turn - exactly what we want. Flagging it fired on every
+        // record in the first minutes of live capture, and a gap that marks good records as suspect teaches
+        // everyone to ignore the field.
+        var env = new FakeEnvironment
+        {
+            Conversation = new StoredConversationSnapshot(
+                true, "transcript-1", Array.Empty<HistoryMessageDto>(),
+                LastPushedUtc: new DateTime(2026, 9, 4, 11, 45, 0, DateTimeKind.Utc)),
+        };
+        env.Session!.LastActivityAt = new DateTime(2026, 9, 4, 11, 30, 0, DateTimeKind.Utc);
+        var recorder = new TurnLogRecorder(env, nowUtc: () => new DateTime(2026, 9, 4, 12, 0, 0, DateTimeKind.Utc));
+
+        await recorder.CaptureAsync(Signal(), CancellationToken.None);
+
+        var record = Assert.Single(env.Written);
+        Assert.DoesNotContain(record.Gaps, g => g.Part == "conversation");
     }
 
     [Fact]

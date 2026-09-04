@@ -178,18 +178,27 @@ public sealed class TurnLogRecorder : IDisposable
 
         var conversation = BuildConversation(stored);
 
-        // A CONVERSATION OLDER THAN THE TURN IS A GAP, not a conversation. The Director announces the state
-        // change before it pushes the turn that caused it, so a capture can land between the two and store a
-        // conversation that stops one turn short of the screen it sits beside. Left unsaid, that record
-        // would quietly claim to contain the turn it is describing.
-        if (stored is not null && stored.LastPushedUtc is { } pushed && pushed < startedAt)
+        // A CONVERSATION OLDER THAN THE TURN IS A GAP - but the comparison has to be against the TURN, not
+        // against this capture, and getting that backwards was the first thing the live corpus caught.
+        //
+        // The Director announces the state change before it pushes the turn that caused it, so the risk is a
+        // conversation that stops one turn short of the screen stored beside it. The evidence for that is a
+        // last push older than the session's last activity - the turn ending. Comparing against the capture
+        // instead flags the HEALTHY case, because a push that landed before we read is exactly what we want,
+        // and it fired on every record in the first minutes of real capture. A gap that marks good records
+        // as suspect is worse than no gap: it teaches everyone reading the corpus to ignore the field.
+        if (stored is not null && stored.LastPushedUtc is { } pushed && session?.LastActivityAt is { } lastActivity)
         {
-            gaps.Add(new TurnLogGap
+            var turnEnded = DateTime.SpecifyKind(lastActivity, DateTimeKind.Utc);
+            if (pushed < turnEnded)
             {
-                Part = "conversation",
-                Reason = $"the conversation was last pushed at {pushed:O}, before this capture began at {startedAt:O} - "
-                       + "it may stop one turn short of the screen stored beside it",
-            });
+                gaps.Add(new TurnLogGap
+                {
+                    Part = "conversation",
+                    Reason = $"the conversation was last pushed at {pushed:O}, before this session's last activity at "
+                           + $"{turnEnded:O} - it may stop one turn short of the screen stored beside it",
+                });
+            }
         }
         overall.Stop();
 
