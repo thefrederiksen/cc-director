@@ -258,7 +258,13 @@ def _read_rule(what: str, value: Any) -> Dict[str, Any]:
     # when the key existed, so a response omitting scope.agent came through whole. The key has to be
     # there; then, and only then, null means "any".
     for part in ("agent", "repository", "machine", "mission"):
-        if part in scope and scope[part] is not None and not isinstance(scope[part], str):
+        if part not in scope:
+            raise GatewayError(
+                f"{what} answered without a 'scope.{part}', so nothing can be said about which sessions "
+                "this rule acts on. That is not an unrestricted rule; it is an answer this command "
+                "cannot read."
+            )
+        if scope[part] is not None and not isinstance(scope[part], str):
             raise GatewayError(
                 f"{what} answered with 'scope.{part}' as {_kind(scope[part])} where a string or null was expected."
             )
