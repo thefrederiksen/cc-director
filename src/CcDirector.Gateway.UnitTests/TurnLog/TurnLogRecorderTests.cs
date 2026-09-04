@@ -305,6 +305,94 @@ public sealed class TurnLogRecorderTests
         Parts = new List<HistoryPartDto> { new() { Kind = "ToolResult", Text = "output", ToolId = id } },
     };
 
+    [Fact]
+    public void BuildConversation_AConversationOverTheCeiling_DropsTheOLDESTTurnsAndSaysHowMany()
+    {
+        // Three fat turns, each well over the ceiling on its own tool output. The turns nearest the screen
+        // are the ones a judgement about THIS turn end would read, so they are the ones that must survive.
+        var big = new string('x', 90_000);
+        var messages = new List<HistoryMessageDto>();
+        foreach (var n in new[] { 1, 2, 3 })
+        {
+            messages.Add(Message("User", $"prompt {n}"));
+            messages.Add(ToolResultWith($"call-{n}", big));
+            messages.Add(Message("Assistant", $"answer {n}"));
+        }
+
+        var built = TurnLogRecorder.BuildConversation(
+            new StoredConversationSnapshot(true, "transcript-1", messages));
+
+        Assert.True(built.Truncated);
+        Assert.True(built.TurnsDroppedForSize > 0);
+        Assert.Equal(TurnLogRecorder.MaxConversationBytes, built.SizeCeilingBytes);
+        // The FRONT went, not the back: the newest prompt and its answer are still here.
+        Assert.Equal("User", built.Messages[0].Role);
+        Assert.Equal("prompt 3", built.Messages[0].Parts[0].Text);
+        Assert.Equal("answer 3", built.Messages[^1].Parts[0].Text);
+    }
+
+    [Fact]
+    public void BuildConversation_ATurnsKeptWholeEvenWhenOneTurnAloneExceedsTheCeiling()
+    {
+        // Half a turn would teach the corpus something that never happened - an agent reply with no prompt.
+        // One oversized turn is kept whole and the record is simply large.
+        var messages = new List<HistoryMessageDto>
+        {
+            Message("User", "the only prompt"),
+            ToolResultWith("call-1", new string('y', 400_000)),
+            Message("Assistant", "the only answer"),
+        };
+
+        var built = TurnLogRecorder.BuildConversation(
+            new StoredConversationSnapshot(true, "transcript-1", messages));
+
+        Assert.Equal(3, built.Messages.Count);
+        Assert.Equal("the only prompt", built.Messages[0].Parts[0].Text);
+        Assert.Equal(0, built.TurnsDroppedForSize);
+    }
+
+    [Fact]
+    public void BuildConversation_AnOrdinaryConversation_IsNotTrimmedForSizeAtAll()
+    {
+        var messages = new List<HistoryMessageDto> { Message("User", "hello"), Message("Assistant", "hi") };
+
+        var built = TurnLogRecorder.BuildConversation(
+            new StoredConversationSnapshot(true, "transcript-1", messages));
+
+        Assert.Equal(0, built.TurnsDroppedForSize);
+        Assert.False(built.Truncated);
+        Assert.Equal(2, built.Messages.Count);
+    }
+
+    [Fact]
+    public async Task CaptureAsync_WhenTheCeilingTrimsTurns_TheRecordSaysSoAsAGap()
+    {
+        var big = new string('x', 90_000);
+        var messages = new List<HistoryMessageDto>();
+        foreach (var n in new[] { 1, 2, 3 })
+        {
+            messages.Add(Message("User", $"prompt {n}"));
+            messages.Add(ToolResultWith($"call-{n}", big));
+            messages.Add(Message("Assistant", $"answer {n}"));
+        }
+        var env = new FakeEnvironment
+        {
+            Conversation = new StoredConversationSnapshot(true, "transcript-1", messages),
+        };
+        var recorder = new TurnLogRecorder(env);
+
+        await recorder.CaptureAsync(Signal(), CancellationToken.None);
+
+        var record = Assert.Single(env.Written);
+        Assert.Contains(record.Gaps, g => g.Part == "conversation" && g.Reason.Contains("dropped to stay under"));
+    }
+
+    private static HistoryMessageDto ToolResultWith(string id, string text) => new()
+    {
+        Role = "User",
+        Parts = new List<HistoryPartDto> { new() { Kind = "ToolResult", Text = text, ToolId = id } },
+    };
+
     private static HistoryMessageDto Message(string role, string text) => new()
     {
         Role = role,
