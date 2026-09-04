@@ -232,6 +232,13 @@ public sealed class PostgresProviderProofTests
             // account_trials.subject at the top of this list is: they are the SAME identity, and the ledger
             // has to group by exactly the value the trial row is keyed on.
             ("trial_extensions", "subject"),
+            // The turn-log capture switch's scope key. The pair is a UNIQUE index matched for exact equality
+            // by the recorder on every turn end, so it has to mean the same thing on both providers: if
+            // Postgres considered two account identifiers equal that SQLite does not, the unique index would
+            // refuse a second scope on one provider and admit it on the other, and capture would silently be
+            // on for an account somebody switched off.
+            ("turn_log_switches", "account"),
+            ("turn_log_switches", "machine"),
             ("workflow_tenant_overrides", "WorkflowId"),
         };
         Assert.Equal(expected, withExplicitC.ToArray());

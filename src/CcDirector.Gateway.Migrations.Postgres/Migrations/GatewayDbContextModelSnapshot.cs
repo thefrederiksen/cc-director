@@ -1675,6 +1675,50 @@ namespace CcDirector.Gateway.Migrations.Postgres.Migrations
                     b.ToTable("trial_extensions", "gateway");
                 });
 
+            modelBuilder.Entity("CcDirector.Gateway.Data.Entities.TurnLogSwitchEntity", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<string>("Account")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("account")
+                        .UseCollation("C");
+
+                    b.Property<string>("Actor")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("actor");
+
+                    b.Property<bool>("Enabled")
+                        .HasColumnType("boolean")
+                        .HasColumnName("enabled");
+
+                    b.Property<string>("Machine")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("machine")
+                        .UseCollation("C");
+
+                    b.Property<string>("Reason")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("reason");
+
+                    b.Property<DateTime>("RecordedUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("recorded_utc");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("Account", "Machine")
+                        .IsUnique();
+
+                    b.ToTable("turn_log_switches", "gateway");
+                });
+
             modelBuilder.Entity("CcDirector.Gateway.Data.Entities.WingmanInstructionEntity", b =>
                 {
                     b.Property<Guid>("Id")

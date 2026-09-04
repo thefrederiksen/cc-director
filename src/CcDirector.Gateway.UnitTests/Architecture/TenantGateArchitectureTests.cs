@@ -76,6 +76,13 @@ public sealed class TenantGateArchitectureTests
         // TenantId is a plain data column (whose account this session belongs to), and it is what the auth
         // gate then enters as the caller's scope for the rest of the request.
         nameof(SessionKeyEntity),
+        // The turn-log capture switch (the turn-end research plan, area A). An OPERATOR setting, not tenant
+        // data: an administrator switches capture on for an account that is not their own, so a tenant-scoped
+        // row could not be written by the person entitled to write it, and the recorder reads it at the
+        // turn-end boundary to decide whether to record at all - before it is inside any account's partition.
+        // It holds an account identifier, a machine identifier, a boolean, and who decided and why; it is
+        // written only by the service-token administrator surface, never by a tenant.
+        nameof(TurnLogSwitchEntity),
     };
 
     // ----------------------------------------------------------------------------------------------------

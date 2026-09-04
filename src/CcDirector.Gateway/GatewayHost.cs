@@ -798,6 +798,14 @@ public sealed class GatewayHost : IAsyncDisposable
     // supervisor does, so a working session is out of its reach by construction rather than by a rule
     // somebody has to remember.
     private Rules.RuleTurnEndLauncher? _ruleLauncher;
+
+    // The turn log: one self-contained record per turn end, on the machines an administrator has switched
+    // capture on for. It rides the SAME boundary as the supervisor and the rules engine but is deliberately
+    // NOT part of either - the turns worth capturing most are the ones they never acted on, and a log living
+    // inside a judgement writes nothing exactly when that judgement does nothing. Off unless switched on;
+    // when off, nothing here runs and a turn ends identically.
+    private TurnLog.TurnLogRecorder? _turnLogRecorder;
+    private TurnLog.TurnLogSwitchStore? _turnLogSwitches;
     private Wingman.WingmanVoiceService? _voiceService;
     // Voice mode is a standing intent, not a one-time action: a tenant that is in voice mode wants EVERY one
     // of its sessions narrating, including the ones that do not exist yet. This timer is how that intent
@@ -2123,6 +2131,36 @@ public sealed class GatewayHost : IAsyncDisposable
     }
 
     /// <summary>
+    /// One session's stored conversation for the turn log: the whole contiguous prefix of its current
+    /// generation, both sides, with the parts intact. Null when nothing has been stored for it - which the
+    /// record writes down as a named gap rather than as an empty conversation, because "the push has not
+    /// arrived" and "this session has said nothing" are different facts.
+    ///
+    /// The tenant scope is entered HERE, synchronously, and a finished snapshot is handed back, for the same
+    /// reason <see cref="ReadStoredConversation"/> does it: the recorder runs fire-and-forget from a
+    /// turn-end callback, and an ambient scope does not survive into an asynchronous continuation.
+    ///
+    /// It deliberately hands over EVERY message rather than the last ten turns. The cut belongs to the
+    /// recorder, so there is exactly one place that decides what a full turn is and how many of them a
+    /// record keeps.
+    /// </summary>
+    private TurnLog.StoredConversationSnapshot? ReadTurnLogConversation(TenantId tenant, string sessionId)
+    {
+        if (!tenant.IsValid || string.IsNullOrEmpty(sessionId)) return null;
+        using var scope = _tenantBoundary?.EnterScope(tenant);
+        var stored = _sessionTurns.ReadCurrent(sessionId);
+        if (stored is null) return null;
+        return new TurnLog.StoredConversationSnapshot(
+            stored.Value.Head.IsSupported,
+            stored.Value.Head.GenerationSource,
+            stored.Value.Messages,
+            // When this session's computer last pushed. Carried so a capture that landed between the state
+            // change and the push that followed it can be SEEN to have stored a conversation one turn short,
+            // rather than passing that off as the whole thing.
+            DateTime.SpecifyKind(stored.Value.Head.UpdatedAtUtc, DateTimeKind.Utc));
+    }
+
+    /// <summary>
     /// Whether the computer that owns this session is CONNECTED but running a build that cannot send its
     /// conversation - the single reason the Gateway's store will never fill for it, and therefore the single
     /// reason a wingman narration is never coming without someone updating that machine.
@@ -2554,6 +2592,39 @@ public sealed class GatewayHost : IAsyncDisposable
             enterTenantScope: tenant => _tenantBoundary.EnterScope(tenant));
         FileLog.Write("[GatewayHost] StartAsync: rule evaluator armed (standing instructions, dry run unless promoted)");
 
+        // The turn log (the turn-end research plan, area A). It hangs off the same boundary as the two
+        // judgements above and is deliberately independent of both: the whole reason it exists is to make a
+        // turn end VISIBLE that nothing acted on, and a log that lived inside the supervisor would fall
+        // silent in exactly that case. Constructed unconditionally and cheap when off - with no switch row
+        // for a machine it reads one cached boolean per turn end and returns.
+        _turnLogSwitches ??= new TurnLog.TurnLogSwitchStore(_gatewayDb);
+        // Prime the decisions and keep them fresh in the background. The recorder's switch check then costs
+        // a memory read, so a Gateway with capture off puts NOTHING blocking on the turn-end path.
+        _turnLogSwitches.Start();
+        _turnLogRecorder ??= new TurnLog.TurnLogRecorder(new TurnLog.GatewayTurnLogEnvironment(
+            switches: _turnLogSwitches,
+            writer: new TurnLog.TurnLogWriter(Core.Storage.CcStorage.TurnLog()),
+            route: (tenant, directorId) =>
+            {
+                var director = Registry.Get(tenant, directorId);
+                if (director is null) return null;
+                Api.DirectorCommandRouter.SendDirectorCommandAsync sendCommand = SendCommandAsync;
+                return new Api.SessionVerbClient(director, sendCommand);
+            },
+            locate: (tenant, sessionId) => PushedSessions.TryLocate(tenant, sessionId, _streamStaleAfter)?.Session,
+            // The tenant scope is entered inside this reader, synchronously, for the same reason the
+            // narration path does it there: the recorder runs on a background task and an ambient scope does
+            // not survive into an asynchronous continuation, which is how a read ends up answering for the
+            // wrong account.
+            conversation: ReadTurnLogConversation,
+            settings: _tenantSettingsResolver,
+            isVoiceSession: (tenant, sessionId) => _voiceService?.IsVoiceSession(tenant, sessionId) ?? false),
+            // Every read the capture makes is partitioned, exactly as the supervisor's are. Without this the
+            // capture runs with no tenant in scope, every read is denied, and the corpus fills with records
+            // whose screen and conversation are permanently missing.
+            enterTenantScope: tenant => _tenantBoundary.EnterScope(tenant));
+        FileLog.Write("[GatewayHost] StartAsync: turn log armed (records nothing unless an administrator has switched a machine on)");
+
         _turnEndWatcher = new TurnEndWatcher(
             onTurnEnd: signal =>
             {
@@ -2567,6 +2638,15 @@ public sealed class GatewayHost : IAsyncDisposable
                     FileLog.Write($"[GatewayHost] turn-end: invalid tenant on signal for director {signal.DirectorId} sid={signal.SessionId} - skipped");
                     return;
                 }
+
+                // The turn log goes FIRST, and the order is load-bearing rather than tidy. The supervisor
+                // below can type "continue" into this session, and the rules engine can act on it; either
+                // changes the screen. A capture started after them would record the screen AFTER we
+                // intervened while the record says it is the screen the turn ended on - the corpus would
+                // then teach us that faults recover themselves. Starting first does not make the capture
+                // instantaneous, but it puts the read ahead of our own keystroke rather than behind it.
+                // Returns immediately; nothing below waits on it.
+                _turnLogRecorder?.OnTurnEnd(signal);
 
                 // Governance capture (issue #1771, spine item 3): record this session's cumulative spend at
                 // turn-end from the pushed roster snapshot. Runs for EVERY session (not just voice), and is
@@ -3550,6 +3630,11 @@ public sealed class GatewayHost : IAsyncDisposable
         // device key - and carries its own bearer service token (ADMIN_SERVICE_TOKEN), deliberately a
         // different secret from the read-only report token.
         AdminTrialEndpoint.Map(_app, TrialRegistry);
+        // The turn-log switch. The store is created here if the turn-end wiring has not run yet, so the
+        // route is never mapped against a null - a switch screen that answers 503 because the routes were
+        // mapped in the wrong order would read as a broken feature rather than as an ordering mistake.
+        _turnLogSwitches ??= new TurnLog.TurnLogSwitchStore(_gatewayDb);
+        AdminTurnLogEndpoint.Map(_app, _turnLogSwitches);
 
         // "DevThrottle emails me" relay (issue #1318 consumer): POST /account/email. A session or scheduled
         // run passes a subject + body (+ optional attachments); the Gateway injects its own stored account
@@ -4667,6 +4752,10 @@ public sealed class GatewayHost : IAsyncDisposable
         // supervisor's dispose gracefully stops the hosted claude.exe (never leaked).
         try { _voiceSweepTimer?.Dispose(); } catch (Exception ex) { FileLog.Write($"[GatewayHost] voice sweep dispose error: {ex.Message}"); }
         _voiceSweepTimer = null;
+        try { _turnLogRecorder?.Dispose(); } catch (Exception ex) { FileLog.Write($"[GatewayHost] turn log dispose error: {ex.Message}"); }
+        _turnLogRecorder = null;
+        try { _turnLogSwitches?.Dispose(); } catch (Exception ex) { FileLog.Write($"[GatewayHost] turn log switch dispose error: {ex.Message}"); }
+        _turnLogSwitches = null;
         try { _turnEndWatcher?.Dispose(); } catch (Exception ex) { FileLog.Write($"[GatewayHost] watcher dispose error: {ex.Message}"); }
         // Issue #915: cancel any recovery wait in flight, so a Gateway shutdown does not leave a background
         // ladder holding a token and re-sending into a fleet this process no longer owns.

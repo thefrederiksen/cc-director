@@ -189,6 +189,11 @@ internal static class AuthMiddleware
         // only /gateway/admin/trials/extend is exempt, it names exactly one account, and the only direction
         // it can move that account's date is LATER.
         Api.AdminTrialEndpoint.Path,
+        // The administrator turn-log switch, exempt for exactly the same reason and carrying exactly the
+        // same gate - the website's admin API is a server with no device key. It moves a boolean and lists
+        // the decisions behind it; it never reads or returns captured terminal content, so an exempted route
+        // here cannot be used to dredge anybody's screen out of the corpus.
+        Api.AdminTurnLogEndpoint.Path,
     };
 
     /// <summary>
