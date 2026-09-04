@@ -76,8 +76,10 @@ service.</p>
 <thead><tr><th>Thing</th><th>State</th><th>Evidence</th></tr></thead>
 <tbody>
 <tr><td><strong>Session supervisor</strong> - spots a stuck session, waits, types <code>continue</code></td>
-    <td class="yes">Built, shipped, RUNNING, working</td>
-    <td>24 faults caught in 2 days, 8 continues typed, 19 recoveries observed, 4 escalations</td></tr>
+    <td class="part">Built, shipped, running - WORKS ONLY SOMETIMES</td>
+    <td>24 faults caught in 2 days, 8 continues typed, 19 recoveries. <strong>The misses are not
+    counted and cannot be</strong> - a session it never noticed writes no log line. The owner's own
+    experience is that it works only sometimes, and this evidence could never have contradicted him</td></tr>
 <tr><td><strong>Rules engine</strong> - runs an account's standing instructions</td>
     <td class="part">Built, shipped, running - and EMPTY</td>
     <td>407 evaluations today, every one "this account has no rules"</td></tr>
@@ -163,16 +165,27 @@ the same shape of screen, got different verdicts. So if judgements share a call,
 cannot. Merging them drags the cheap one up to the expensive one's frequency.</p>
 </div>
 
-<div class="area">
-<h3>E. What the judgement should be, now that the supervisor exists</h3>
-<p class="q">If a working feature already recovers stuck sessions, what are rules FOR?</p>
-<p>The supervisor recovers from faults <em>the product</em> knows about - its signatures are ours, its
-text is always <code>continue</code>, and an account cannot change any of it. Rules let an <em>account</em>
-say in its own words what to watch for and what to type.</p>
-<p>They share the whole spine: the turn-end trigger, the screen read, the fault gate, the wait, the
-re-read before typing, the menu refusal, the ceiling, the recorded log. Rules rebuilt a thinner version of
-each. The question is whether rules should become the account-authored layer <em>on top of</em> the
-supervisor rather than a parallel machine beside it.</p>
+<div class="area first">
+<h3>E. The supervisor becomes rules <span class="tag now">Owner decision</span></h3>
+<p class="q">Not a question any more. One engine, not two.</p>
+<p><strong>The owner's ruling, 4 September: the supervisor's job should BE the rules engine.</strong>
+What we ship as built-in fault recovery becomes a set of rules we author and ship; what an account
+writes becomes rules alongside them. One trigger, one screen read, one gate, one ceiling, one recorded
+log - not two machines watching the same moment and neither knowing about the other.</p>
+<p><strong>Why this follows from the evidence rather than overriding it.</strong> The supervisor works
+only sometimes - the owner's lived experience, and nothing in our measurement contradicts it, because
+we counted catches and no instrument counts misses. Its word table is fixed, ours, and unchangeable by
+the person watching it fail. Rules are the shape that lets a miss be FIXED by adding one, rather than
+reported and waited on.</p>
+<p><strong>What this makes harder, and it must not be lost.</strong> The supervisor is the more mature
+machine: the episode ceiling that survives the Working flicker a failed continue produces, the activity
+re-read immediately before every send, the menu refusal, the escalation with an owner email, and a
+recovery-log line for every step. The rules engine has thinner versions of each. Folding one into the
+other means the rules engine adopting the supervisor's discipline - not the supervisor being deleted
+and its lessons with it.</p>
+<p><strong>And it raises the stakes on authoring.</strong> The half that lets a person write a rule has
+never merged. Under this decision it stops being one feature's missing half and becomes the only way
+anybody - us included - configures fault recovery at all.</p>
 </div>
 
 <h2>The numbers this plan rests on</h2>
