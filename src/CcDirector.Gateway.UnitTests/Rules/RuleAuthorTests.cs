@@ -478,6 +478,25 @@ public sealed class RuleAuthorTests : IDisposable
         Assert.Contains("Nothing was stored", refusal!, StringComparison.Ordinal);
     }
 
+    /// <summary>
+    /// A RULE THAT WATCHES FOR NOTHING IS NOT GROUNDED (fix round F, ruling F3). Grounding asks whether
+    /// every trigger word is on the screen, and over an empty list that question has no work to do, so
+    /// the check used to answer yes - a pass condition that is an absence, in the one function that
+    /// defines what grounding means for this feature. Two later gates refused the rule anyway, which is
+    /// exactly the backstop this mission has now twice watched fail.
+    /// </summary>
+    [Fact]
+    public async Task The_write_gate_refuses_a_rule_that_watches_for_nothing()
+    {
+        var refusal = await AuthorSaying(AnAllowanceReply).WhyNotGroundedAsync(
+            TenantId.Local, TheSession, Array.Empty<string>(), RuleScope.AllSessions, true,
+            CancellationToken.None);
+
+        Assert.NotNull(refusal);
+        Assert.Contains("watches for nothing", refusal!, StringComparison.Ordinal);
+        Assert.Contains("Nothing was stored", refusal!, StringComparison.Ordinal);
+    }
+
     /// <summary>The write gate names no session: refused, with the same sentence the draft route uses.</summary>
     [Fact]
     public async Task The_write_gate_refuses_a_body_that_names_no_session()

@@ -181,14 +181,32 @@ public sealed class SessionRuleStoreTests : IDisposable
         Assert.NotEqual("", ex.Reason);
     }
 
+    /// <summary>
+    /// A RULE THAT WATCHES FOR NOTHING CANNOT BE GROUNDED, SO IT NEVER REACHES THIS STORE (fix round F,
+    /// ruling F3).
+    ///
+    /// This test used to reach the store's own "at least one word" refusal by minting evidence for an
+    /// EMPTY set of words, and that only worked because the grounding check answered "grounded" for an
+    /// empty list - the check answering its own absence, which is the defect the round F sweep named and
+    /// the Architect then ruled had to be closed. No evidence for an empty set can be obtained now, by
+    /// any route, so the wordless rule is refused a gate earlier than it used to be.
+    ///
+    /// The store's own rule is still covered where it is still reachable - a rule written straight
+    /// through the context, which does not pass grounding at all:
+    /// <c>RulesWriteGateTests.A_rule_written_straight_through_the_context_still_has_to_be_a_rule</c> with
+    /// its "trigger words" case.
+    /// </summary>
     [Fact]
-    public void A_rule_with_no_trigger_words_is_refused_because_it_would_cost_a_model_call_every_time()
+    public void A_rule_that_watches_for_nothing_cannot_be_grounded_so_it_never_reaches_the_store()
     {
         var store = NewStore();
-        var ex = Assert.Throws<RuleRejectedException>(() => store.Create(
-            TheSentence, "a screen", Array.Empty<string>(), GoodCalls(),
-            RuleScope.AllSessions, 60, 3, Now, Grounded.For(Array.Empty<string>())));
-        Assert.NotEqual("", ex.Reason);
+
+        // Grounded.For is the ONLY way a test can obtain evidence, and it goes through a real author
+        // reading a real screen. It now cannot produce evidence for a rule that watches for nothing.
+        var ex = Assert.Throws<InvalidOperationException>(() => Grounded.For(Array.Empty<string>()));
+
+        Assert.Contains("watches for nothing", ex.Message, StringComparison.Ordinal);
+        Assert.Empty(store.All());
     }
 
     [Theory]
