@@ -260,8 +260,9 @@ function needRoot(status: number, what: string, body: unknown): Record<string, u
  * is unrestricted. The key has to be there; then, and only then, null means "any".
  */
 function scopePart(status: number, what: string, scope: Record<string, unknown>, field: string): string | null {
+  if (!(field in scope)) throw broken(status, what, `scope.${field}`, "a string or null", undefined);
   const value = scope[field];
-  if (value === null || value === undefined) return null;
+  if (value === null) return null;
   if (typeof value !== "string") throw broken(status, what, `scope.${field}`, "a string or null", value);
   return value;
 }
