@@ -53,12 +53,12 @@ public sealed class RuleGroundingEvidence
     /// against the screen. Nothing a caller holds reaches it: <see cref="Covers"/> compares against this
     /// field and never against anything that was handed out.
     /// </summary>
-    private readonly ImmutableArray<string> _words;
+    private readonly List<string> _words;
 
     private RuleGroundingEvidence(string sessionId, IEnumerable<string> words)
     {
         SessionId = sessionId;
-        _words = words.ToImmutableArray();
+        _words = words.ToList();
     }
 
     /// <summary>The session whose screen the words were found on.</summary>
