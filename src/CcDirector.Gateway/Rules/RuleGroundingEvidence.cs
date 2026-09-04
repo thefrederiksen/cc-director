@@ -1,3 +1,5 @@
+using System.Collections.Immutable;
+
 namespace CcDirector.Gateway.Rules;
 
 /// <summary>
@@ -25,6 +27,13 @@ namespace CcDirector.Gateway.Rules;
 ///
 ///  - It cannot be constructed: the constructor is private, and a structural test over the built
 ///    assembly asserts that nothing but this type calls it.
+///  - THE WORDS IT HOLDS ARE AN IMMUTABLE SNAPSHOT TAKEN AT MINTING (fix round F, ruling F1). They used
+///    to be a <c>List</c> handed out behind <c>IReadOnlyList</c>, which is a read-only VIEW and not an
+///    immutable collection: an inspection cast the exposed collection back to its list, replaced a word
+///    with one that was never on the screen, and the row was stored - every structural guard staying
+///    green, because the caller neither constructed nor minted a second token, it edited a valid one.
+///    The snapshot is private, the comparison is made against it, and what is exposed cannot be
+///    written to.
 ///  - The only way to obtain one is <see cref="Minted"/>, which is INTERNAL and which the same structural
 ///    test asserts is called by <see cref="RuleAuthor"/> and nothing else in production code.
 ///  - It names the EXACT words that were checked, in their stored form, and the store refuses it for any
@@ -39,25 +48,36 @@ public sealed class RuleGroundingEvidence
 {
     private int _used;
 
-    private RuleGroundingEvidence(string sessionId, IReadOnlyList<string> words)
+    /// <summary>
+    /// THE SNAPSHOT. Private, immutable, and taken at minting from the words that were just checked
+    /// against the screen. Nothing a caller holds reaches it: <see cref="Covers"/> compares against this
+    /// field and never against anything that was handed out.
+    /// </summary>
+    private readonly ImmutableArray<string> _words;
+
+    private RuleGroundingEvidence(string sessionId, IEnumerable<string> words)
     {
         SessionId = sessionId;
-        Words = words;
+        _words = words.ToImmutableArray();
     }
 
     /// <summary>The session whose screen the words were found on.</summary>
     public string SessionId { get; }
 
     /// <summary>The words that were checked, in the form the store keeps them - every one was on the
-    /// screen at the moment of the read.</summary>
-    public IReadOnlyList<string> Words { get; }
+    /// screen at the moment of the read. IMMUTABLE: a caller that casts this gets a collection which
+    /// refuses to be written to, never the store of words this evidence reasons about.</summary>
+    public IReadOnlyList<string> Words => _words;
 
     /// <summary>Whether this evidence is for exactly these words - the same set, in stored form, and no
     /// other. Order does not matter; a word more or a word fewer does.</summary>
     public bool Covers(IEnumerable<string>? words)
     {
         var asked = new HashSet<string>(RuleTriggerWords.NormaliseAll(words), StringComparer.Ordinal);
-        var held = new HashSet<string>(Words, StringComparer.Ordinal);
+        // AGAINST THE SNAPSHOT, never against the exposed property. Comparing the words to be stored
+        // against something a caller can reach is comparing them against the caller's own current
+        // opinion of what the screen said.
+        var held = new HashSet<string>(_words, StringComparer.Ordinal);
         return asked.SetEquals(held);
     }
 
