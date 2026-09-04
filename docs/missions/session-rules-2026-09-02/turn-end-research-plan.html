@@ -62,9 +62,11 @@ hosted Gateway, not estimated.</p>
   of against argument.</strong></p>
   <p>Everything else in this plan is a question that harness answers. We currently reason from 32 screens
   captured once in June. The fleet produces about 400 turn ends a day, and none of them are being kept.</p>
-  <p><strong>Cost is settled and is no longer an argument.</strong> The smart model on every single turn
-  end costs us about $12 a month at today's rate, $19 at list, for the heaviest account on the fleet. It
-  is an included service, so we absorb it - and it becomes part of Pro.</p>
+  <p><strong>Cost is settled and is no longer an argument.</strong> A SEPARATE smart-model call on every
+  turn end would cost us about $12 a month at today's rate, $19 at list, for the heaviest account on the
+  fleet - absorbed, since it is an included service, and it becomes part of Pro. But the real figure is
+  lower still: we ALREADY make a model call on 82 percent of turn ends to write the spoken summary, so
+  the needs-me judgement can ride a call we are already paying for.</p>
 </div>
 
 <h2>What is built, and what is not</h2>
@@ -115,6 +117,30 @@ service.</p>
   as a duration rather than a count (ruling G1). The shipped supervisor independently arrived at the same
   15 minutes.</li>
 </ul>
+
+<h2>The call we are ALREADY making on nearly every turn</h2>
+
+<div class="decide">
+  <h4>This changes the cost answer</h4>
+  <p class="one"><strong>The spoken summary - the thing the wingman reads out loud - is already a
+  model call at the end of nearly every turn. The owner has it on almost all the time.</strong></p>
+  <p>Measured today: <strong>334 spoken summaries generated against 407 turn ends</strong> - about
+  82 percent - each with a matching text-to-speech call. That accounts for the bulk of the day's 484
+  fast-model calls.</p>
+  <p>So the "does this session need me" judgement is <strong>not a new call to pay for</strong>. It is
+  a few extra output tokens on a call that already happens, already reads the same screen, and already
+  produces a written description of the turn. The $12 a month figure was the price of adding a SEPARATE
+  call. Riding the existing one is a fraction of that.</p>
+  <p><strong>And it explains the shape of the whole thing.</strong> Three consumers now wake on the same
+  turn end - the spoken summary, the supervisor, the rules engine - and the spoken summary is the one
+  that was already asking a model to read the screen and say what happened.</p>
+</div>
+
+<p><strong>To be precise about the word "transcription", which caused a real misunderstanding in the
+conversation this plan came from:</strong> the owner means the SPOKEN SUMMARY - the wingman writing a
+short description of the turn, which is then read aloud. That is a screen-reading judgement and it can
+share a call. It is NOT speech-to-text, which is audio in and text out, a different provider, and cannot
+share a prompt with anything here.</p>
 
 <h2>The five research areas</h2>
 
