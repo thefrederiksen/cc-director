@@ -103,11 +103,11 @@ public sealed class RuleGroundingEvidence
     {
         if (screen is null) throw new ArgumentNullException(nameof(screen));
         var normalised = RuleTriggerWords.NormaliseAll(words);
-        var notOn = RuleTriggerWords.NotOn(normalised, screen.Excerpt);
-        if (notOn.Count > 0)
+        var notGrounded = RuleTriggerWords.WhyNotGrounded(normalised, screen, "the screen it was read from");
+        if (notGrounded is not null)
             throw new InvalidOperationException(
-                "evidence was asked for words that are not on the screen: " + string.Join(", ", notOn) +
-                ". The check has to run before evidence is minted, never after.");
+                "evidence cannot be minted for words that are not grounded: " + notGrounded +
+                " The check has to run before evidence is minted, never after.");
         return new RuleGroundingEvidence(screen.SessionId, normalised);
     }
 }
