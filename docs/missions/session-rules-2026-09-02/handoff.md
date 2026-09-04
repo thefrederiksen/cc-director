@@ -346,3 +346,26 @@ refusal through its public door. A test can rest on a defect without ever mentio
 - **The full parked `Gateway.Tests` cannot be run by a seat** - a ten-minute tool cap kills it and four
   seats queueing on one machine-wide lock starves it. Ruling E4: the Architect runs it once, on the
   final merged tree.
+
+## A method note worth keeping, from the fix round F seat's own handover
+
+**"The residual only became provable because it was NAMED in the previous round's report rather than
+closed or dropped. Had I quietly unified it then, the divergence would have been fixed and nobody
+would ever have seen the two copies disagree."**
+
+That is the case for reporting a residual instead of tidying it away, and it is not an abstract one.
+Fix round E's report named a hazard it had deliberately not closed: the evidence factory kept its own
+second copy of the grounding check. Fix round F then changed the grounding DEFINITION to refuse a rule
+that watches for nothing - and **the second copy did not learn**, and went on minting evidence for an
+empty word set. **The two copies disagreed within ONE COMMIT of the definition changing.**
+
+So the divergence a duplicated check invites was not theoretical here, and it was not predicted by
+argument - it was observed, only because the duplicate had been left standing and written down. Had it
+been silently unified in round E, the fix would have been correct and the evidence would not exist.
+
+**The wordless-rule sentence now appears in three places deliberately** - the code comment in
+`RuleGroundingEvidence.Minted`, the F3 section of `fix-round-f-report.md`, and the commit body of
+`a185b9c61` - so quoting any one of them is quoting the evidence rather than a summary of it.
+
+There is now exactly ONE grounding check in this feature, with three callers: the draft route, the
+write gate, and the evidence factory.
