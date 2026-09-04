@@ -111,6 +111,22 @@ public sealed class WingmanVoiceService
         /// precedence in ONE place.
         /// </summary>
         public readonly ConcurrentDictionary<string, ReadFailure> ReadFailed = new();
+
+        /// <summary>
+        /// How many model-leg re-attempts this session's CURRENT unnarrated turn has already been given
+        /// (issue #2676). Counted per turn, not per session lifetime: a new turn, a successful narration
+        /// and switching voice off each reset it, so the budget belongs to the turn that lost its voice.
+        /// </summary>
+        public readonly ConcurrentDictionary<string, int> ModelRetries = new();
+
+        /// <summary>
+        /// The model leg did not answer, every re-attempt in the budget has been spent, and NOTHING further
+        /// is scheduled for this turn (issue #2676). The one fact that separates "still coming" from "not
+        /// coming", and the reason it has to be stored rather than inferred: every other no-audio fact this
+        /// service holds is either a wait or an actionable condition, so a turn nobody is working on any
+        /// more matched the calm "voice on its way" sentence forever.
+        /// </summary>
+        public readonly ConcurrentDictionary<string, byte> NarrationAbandoned = new();
     }
 
     private readonly WingmanTranslator _translator;
@@ -790,6 +806,61 @@ public sealed class WingmanVoiceService
     /// </summary>
     public void NoteRetrying(TenantId tenant, string sid) => StateFor(tenant).Unavailable[sid] = HostedAiState.Retrying;
 
+    /// <summary>
+    /// THE RETRY THE VOICE PATH OWNS (issue #2676). One entry per re-attempt, in order, giving the delay
+    /// before it; the length of the array IS the cap.
+    ///
+    /// It exists because the sentence "the session retries on its own" was not true of anything. A model
+    /// non-answer recorded <see cref="HostedAiState.Retrying"/> and returned, and the only thing that would
+    /// ever come back to that session was the background voice sweep - a shared, three-per-cycle budget that
+    /// belongs to no session in particular and that another account's sessions were consuming whole (issue
+    /// #2675). On 2026-09-04 four model timeouts produced three sessions sitting yellow for eleven, eighteen
+    /// and unlimited minutes, each showing "retrying automatically", with nothing scheduled anywhere.
+    ///
+    /// So the leg that failed schedules its own re-attempt. Backed off because a model that just failed to
+    /// answer within its deadline is the last thing to hammer, and capped because a retry loop with no end
+    /// is how one stalled session quietly spends an account's credit all night. Past the cap the promise
+    /// STOPS - see <see cref="NarrationAbandonedFor"/>; the sweep may still find the session later, but
+    /// nothing tells the reader an arrival is on its way when no attempt is booked.
+    ///
+    /// The three delays cover the shape the evidence showed: a stall that clears in seconds, one that clears
+    /// in a minute, and one that does not clear at all - the last reaching its verdict inside the three
+    /// minutes <see cref="VoiceDisplayFold.GaveUpAfter"/> already allows a wait to run.
+    /// </summary>
+    private static readonly TimeSpan[] DefaultModelRetryBackoff =
+    {
+        TimeSpan.FromSeconds(10),
+        TimeSpan.FromSeconds(30),
+        TimeSpan.FromSeconds(90),
+    };
+
+    private TimeSpan[] _modelRetryBackoff = DefaultModelRetryBackoff;
+
+    /// <summary>Test seam: run the bounded model-leg retry on a schedule a test can wait for. Same code
+    /// path, same cap semantics (the number of delays IS the cap) - only the delays differ.</summary>
+    internal void UseModelRetryBackoffForTest(params TimeSpan[] delays)
+        => _modelRetryBackoff = delays.Length == 0 ? Array.Empty<TimeSpan>() : delays;
+
+    /// <summary>
+    /// True when this turn's narration was ABANDONED: the model leg did not answer, the bounded retry budget
+    /// is spent, and nothing further is scheduled for it. Fed to <see cref="VoiceDisplayFold"/> so the screen
+    /// stops saying the audio is on its way - an absence must not be dressed as progress.
+    ///
+    /// Distinct from the fold's elapsed-time give-up, which says "nothing has arrived in three minutes" while
+    /// work continues. This says the work has STOPPED. Cleared by a new turn, a successful narration, and by
+    /// switching voice off - the same three events that clear every other per-turn voice fact.
+    /// </summary>
+    public bool NarrationAbandonedFor(TenantId tenant, string sid) => StateFor(tenant).NarrationAbandoned.ContainsKey(sid);
+
+    /// <summary>This turn's narration is being attempted again from the start, so neither the spent-retry
+    /// count nor the abandoned verdict describes it any more. Called wherever a turn's voice facts are
+    /// reset.</summary>
+    private static void ClearModelRetryState(TenantVoiceState state, string sid)
+    {
+        state.ModelRetries.TryRemove(sid, out _);
+        state.NarrationAbandoned.TryRemove(sid, out _);
+    }
+
     /// <summary>Test seam: seed a standing ACCOUNT / provider condition (the state a failed synthesis
     /// records) so a test can prove a later read failure does not overwrite it.</summary>
     internal void NoteUnavailableForTest(TenantId tenant, string sid, HostedAiState state)
@@ -839,6 +910,7 @@ public sealed class WingmanVoiceService
         state.NothingToNarrate.TryRemove(sid, out _);   // voice is off, so "nothing to narrate" is moot too
         state.DirectorCannotSend.TryRemove(sid, out _); // ...and so is "update that computer to hear this session"
         state.PreferBackupUntil.TryRemove(sid, out _);  // voice is off, so the backup-routing window is moot too (issue devthrottle_internal#405)
+        ClearModelRetryState(state, sid);               // ...and nobody is owed a re-attempt for a turn nobody wants narrated (issue #2676)
         if (state.Ready.TryRemove(sid, out _))
             DeleteReadyAudio(tenant, sid);   // keep the durable cache in step so a stale tap can't 404
         if (wasVoice)
@@ -860,6 +932,11 @@ public sealed class WingmanVoiceService
         state.Unavailable.TryRemove(sid, out _);        // a fresh turn clears the old unavailable-state (dismissible, issue #939)
         state.ReadFailed.TryRemove(sid, out _);         // ...and re-opens the read: a new turn is a new transcript to try
         state.NothingToNarrate.TryRemove(sid, out _);   // a fresh turn supersedes "nothing to narrate" - re-evaluated on its turn-end
+        // A NEW TURN GETS A NEW RETRY BUDGET (issue #2676). The count and the abandoned verdict are facts
+        // about the turn that lost its voice, not about the session: carrying them forward would let one
+        // stalled turn spend the next turn's re-attempts, and would leave "not narrated" on a screen whose
+        // narration has not even been tried yet.
+        ClearModelRetryState(state, sid);
         if (state.Ready.TryRemove(sid, out _))
         {
             DeleteReadyAudio(tenant, sid);   // issue #553: keep the durable cache in step so a stale tap can't 404
@@ -907,6 +984,7 @@ public sealed class WingmanVoiceService
         state.Ready[sid] = ready;
         state.NothingToNarrate.TryRemove(sid, out _);   // audio exists, so there was something to narrate after all
         state.DirectorCannotSend.TryRemove(sid, out _); // ...and a narration proves that computer CAN send its conversation
+        ClearModelRetryState(state, sid);               // ...and the audio ARRIVED, so no re-attempt is owed and nothing was abandoned (issue #2676)
         SaveReadyAudio(tenant, sid, ready);
     }
 
@@ -933,7 +1011,18 @@ public sealed class WingmanVoiceService
     /// boundary): show the yellow "wingman reading" hold until the summary lands. False for a
     /// background refresh, a startup catch-up, or an idle pre-build sweep: generate silently so a
     /// session a client is already listening to is never flipped yellow.</param>
-    internal async Task GenerateAsync(TenantId tenant, string sid, SessionVerbClient route, CancellationToken ct = default, bool showReadingWindow = true)
+    /// <param name="onProviderReached">
+    /// Invoked at the moment this attempt COMMITS to the shared model and speech legs - after every arm that
+    /// returns having produced nothing and spent nothing (no conversation stored, that computer cannot send
+    /// one, no text reply to read aloud, this reply is already narrated). Optional; only the background sweep
+    /// passes it, to spend its per-cycle budget on attempts that actually cost the serialized brain.
+    ///
+    /// GUARANTEED SYNCHRONOUS, on the caller's thread, before this method's task is handed back: nothing
+    /// before the commit point awaits. That is what lets a caller counting slots in a plain loop see the
+    /// answer in time to decide about the NEXT session, and it is a contract on this method - a new await
+    /// added ahead of the commit point would break it.
+    /// </param>
+    internal async Task GenerateAsync(TenantId tenant, string sid, SessionVerbClient route, CancellationToken ct = default, bool showReadingWindow = true, Action? onProviderReached = null)
     {
         Mark(tenant, sid);
 
@@ -963,7 +1052,7 @@ public sealed class WingmanVoiceService
             return;
         try
         {
-            await GenerateOnceAsync(tenant, sid, route, ct, showReadingWindow);
+            await GenerateOnceAsync(tenant, sid, route, ct, showReadingWindow, onProviderReached);
         }
         catch (WingmanModelRateLimitedException rl)
         {
@@ -992,7 +1081,7 @@ public sealed class WingmanVoiceService
     /// no longer needs the distinction now that the shared rate-limit gate is gone, but it is kept because
     /// it honestly reports whether the provider was reached.
     /// </summary>
-    private async Task<bool> GenerateOnceAsync(TenantId tenant, string sid, SessionVerbClient route, CancellationToken ct, bool showReadingWindow)
+    private async Task<bool> GenerateOnceAsync(TenantId tenant, string sid, SessionVerbClient route, CancellationToken ct, bool showReadingWindow, Action? onProviderReached = null)
     {
         var state = StateFor(tenant);
 
@@ -1109,6 +1198,13 @@ public sealed class WingmanVoiceService
             FileLog.Write($"[WingmanVoiceService] GenerateOnce skip (same reply already narrated): sid={sid}");
             return false;   // nothing to do - the provider was not called, so we know nothing new about it
         }
+        // THE COMMIT POINT (issue #2675). Everything above this line is a no-op arm: it reads what is already
+        // in memory or in the Gateway's own store, decides there is nothing to make, and returns having spent
+        // nothing on the model or the speech provider. From here on the attempt costs the shared, serialized
+        // resources - so this, and not the dispatch of the attempt, is where a caller rationing them should
+        // count a slot. Announced BEFORE the first await, so a caller counting in a loop has the answer in
+        // time (see the parameter's contract on GenerateAsync).
+        onProviderReached?.Invoke();
         // Recent conversation so the wingman can add context to a short/terse latest reply.
         var recentContext = WingmanTranslator.BuildRecentContext(widgets);
         // The LIVE screen goes into the same call (issue devthrottle_internal#1195): the model that writes
@@ -1142,8 +1238,15 @@ public sealed class WingmanVoiceService
                 // A rate-limit (WingmanModelRateLimitedException) is NOT caught here - it stays thrown so
                 // GenerateAsync's handler records THIS session's Retrying state (it does not reach any
                 // other session; the shared cooldown that used to do so is gone).
-                state.Unavailable[sid] = HostedAiState.Retrying;
-                FileLog.Write($"[WingmanVoiceService] model did not answer for sid={sid}: {ex.Message} - Retrying (audio on its way); the session retries on its own");
+                //
+                // AND THE RETRY IS BOOKED HERE, BY THIS LEG (issue #2676). Recording Retrying and returning
+                // is what this arm used to do, and its log line claimed "the session retries on its own" -
+                // which was true of nothing. Nothing on this path scheduled another attempt; the only thing
+                // that would come back was the shared voice sweep, whose whole per-cycle budget another
+                // account's unnarratable sessions were consuming (issue #2675). The leg that failed now owns
+                // the re-attempt, so the promise on the screen is backed by a booked piece of work rather
+                // than by a loop nobody here controls.
+                NoteModelDidNotAnswer(tenant, state, sid, route, ex);
                 return false;   // nothing produced; the provider was not usefully reached
             }
             // Announce a waiting menu AS THE TURN IS READ (issue #2193). A turn that ends on a picker is the
@@ -1178,6 +1281,79 @@ public sealed class WingmanVoiceService
             return true;
         }
         finally { if (showReadingWindow) EndGenerating(tenant, sid); }
+    }
+
+    /// <summary>
+    /// The model leg did not answer for this session's current turn: either book the next re-attempt, or -
+    /// when the budget in <see cref="DefaultModelRetryBackoff"/> is spent - stop promising one (issue #2676).
+    ///
+    /// The two outcomes are deliberately written in one place. They are the two halves of a single decision,
+    /// and the defect this fixes was exactly a codebase that had the optimistic half and not the pessimistic
+    /// one: the screen kept saying "retrying automatically. It should come through shortly" about a turn no
+    /// loop was going to touch again.
+    /// </summary>
+    private void NoteModelDidNotAnswer(TenantId tenant, TenantVoiceState state, string sid, SessionVerbClient route, Exception ex)
+    {
+        var schedule = _modelRetryBackoff;
+        // The count is of re-attempts ALREADY BOOKED, so this call is asking for number (n+1). AddOrUpdate
+        // rather than a read-then-write: the turn-end path and the sweep can both reach here for the same
+        // session, and two racing failures must not each book "retry 1" and double the spend.
+        var booked = state.ModelRetries.AddOrUpdate(sid, 1, (_, n) => n + 1);
+        if (booked <= schedule.Length)
+        {
+            var delay = schedule[booked - 1];
+            state.Unavailable[sid] = HostedAiState.Retrying;
+            state.NarrationAbandoned.TryRemove(sid, out _);
+            ScheduleModelRetry(tenant, sid, route, delay, booked, schedule.Length);
+            FileLog.Write($"[WingmanVoiceService] model did not answer for sid={sid}: {ex.Message} - Retrying (audio on its way); re-attempt {booked} of {schedule.Length} is booked for {delay.TotalSeconds:F0}s from now");
+            return;
+        }
+        // THE BUDGET IS SPENT. The state stays Retrying because Retrying is still the true CAUSE - the model
+        // did not answer, and nothing here is evidence of an outage or an account problem. What changes is
+        // the PROMISE: the abandoned fact rides alongside it and VoiceDisplayFold reads the pair, so the
+        // screen reports a turn that was not narrated instead of an arrival that is not coming. Recorded as a
+        // separate fact rather than as a new HostedAiState because it is not a condition of the hosted
+        // service - the service's answer is unchanged, it is OUR attempts that have run out.
+        state.Unavailable[sid] = HostedAiState.Retrying;
+        state.NarrationAbandoned[sid] = 1;
+        FileLog.Write($"[WingmanVoiceService] model did not answer for sid={sid}: {ex.Message} - all {schedule.Length} re-attempt(s) spent, so THIS TURN WAS NOT NARRATED and nothing further is scheduled; the screen says so instead of promising audio");
+    }
+
+    /// <summary>
+    /// Book one delayed re-attempt at this session's narration, owned by the voice path (issue #2676).
+    ///
+    /// Fire-and-forget on purpose, and it must be: the caller is inside <see cref="GenerateAsync"/>'s
+    /// per-session coalescing marker, so awaiting the delay here would hold that marker for the whole backoff
+    /// and block the one thing that must never be blocked - a genuinely NEW turn arriving and narrating
+    /// itself. Returning immediately releases the marker, and the delayed call takes it again on its own.
+    ///
+    /// It re-enters <see cref="GenerateAsync"/> rather than the inner attempt, so every guard on the ordinary
+    /// path still applies to a retry: coalescing, the identity-aware "already narrated" skip, and the reply
+    /// read itself. A retry is therefore never a replay of the old turn - it narrates whatever the session's
+    /// CURRENT last reply is by then, which is the right answer if the agent has moved on.
+    /// </summary>
+    private void ScheduleModelRetry(TenantId tenant, string sid, SessionVerbClient route, TimeSpan delay, int attempt, int cap)
+    {
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await Task.Delay(delay).ConfigureAwait(false);
+                // Two cheap reasons not to bother, both checked AFTER the wait because both can become true
+                // during it: voice was switched off for this session, or a new turn already narrated it. A
+                // retry that ran anyway would only re-mint a clip somebody may already be playing.
+                if (!IsVoiceSession(tenant, sid)) return;
+                if (HasVoice(tenant, sid)) return;
+                FileLog.Write($"[WingmanVoiceService] model retry {attempt} of {cap} starting for sid={sid} (the voice path's own re-attempt, not the sweep)");
+                await GenerateAsync(tenant, sid, route, CancellationToken.None, showReadingWindow: false).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                // A boundary: this runs on the thread pool with nobody to catch for it, and a narration
+                // retry must never be able to take the Gateway down.
+                FileLog.Write($"[WingmanVoiceService] model retry {attempt} of {cap} FAILED for sid={sid}: {ex.Message}");
+            }
+        });
     }
 
     /// <summary>

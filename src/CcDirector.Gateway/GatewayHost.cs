@@ -1531,6 +1531,9 @@ public sealed class GatewayHost : IAsyncDisposable
                 directorCannotSendConversationFor: sid => _tenantPass.Current is { } t
                     && Wingman.WingmanVoiceService.CanNameVoicePartition(t)
                     && _voiceService?.DirectorCannotSendConversationFor(t, sid) == true,
+                narrationAbandonedFor: sid => _tenantPass.Current is { } t
+                    && Wingman.WingmanVoiceService.CanNameVoicePartition(t)
+                    && _voiceService?.NarrationAbandonedFor(t, sid) == true,
                 voiceWaitingStampFor: (sid, waiting) => _tenantPass.Current is { } t
                     ? _voiceWaitingClock.Stamp(t, sid, waiting)
                     : null),
@@ -2205,6 +2208,26 @@ public sealed class GatewayHost : IAsyncDisposable
             is { IsValid: true } t ? t : (TenantId?)null;
 
     /// <summary>
+    /// How many narrations one sweep cycle may actually START. The wingman brain is one serialized resource,
+    /// so this stays deliberately small and stays GLOBAL across tenants. Unchanged by issue #2675 - what
+    /// changed is what counts against it (an attempt that reaches the model or speech legs, not an attempt
+    /// that is dispatched).
+    /// </summary>
+    private const int MaxVoiceGenerationsPerSweep = 3;
+
+    /// <summary>
+    /// How many sessions one sweep cycle may LOOK AT. Far larger than the generation cap because the arms it
+    /// bounds are cheap - a dictionary lookup and one read of the Gateway's own turn store - and because a
+    /// tight bound here would re-create the starvation issue #2675 removed, just at a higher number.
+    ///
+    /// It is not zero-cost, though, which is why it is a bound at all: the store read is a database query, so
+    /// an unbounded pass over every voice session on a busy hosted Gateway every 45 seconds would be a real
+    /// new cost. Sized to be out of the way of any account a person actually runs, and in the way of a
+    /// pathological one.
+    /// </summary>
+    private const int MaxVoiceAttemptsPerSweep = 60;
+
+    /// <summary>
     /// Pre-build voice for voice sessions that are idle and missing it, so the session list shows
     /// them "voice ready" BEFORE the person enters - including after a gateway restart (the voice-
     /// session set is persisted). Gentle: at most a few per cycle, idle sessions only (a working
@@ -2226,13 +2249,33 @@ public sealed class GatewayHost : IAsyncDisposable
             // resource, so the whole cycle stays gentle no matter how many tenants are live.
             var stale = TimeSpan.FromSeconds(Core.Configuration.GatewayConfig.DefaultStreamStaleAfterSeconds);
             Api.DirectorCommandRouter.SendDirectorCommandAsync? sendCommand = SendCommandAsync;
+            // TWO BUDGETS, BECAUSE THERE ARE TWO COSTS (issue #2675).
+            //
+            // What went wrong with one. The cap is three per cycle and it counted every attempt DISPATCHED,
+            // not every attempt that cost anything. One account's four sessions were owned by a Director too
+            // old to send its conversations, so each of them reached GenerateOnceAsync, found an empty store,
+            // said so, and returned - having touched neither the model nor the speech provider. They still
+            // took a slot each. On 2026-09-04 that account burned 4,356 slots and every other account on the
+            // hosted Gateway got 5, so the one loop that recovers a session whose narration failed never
+            // reached the sessions that needed it (companion issue #2676).
+            //
+            // Not fixed by dropping those sessions from the sweep, deliberately: keeping them is exactly what
+            // makes their recovery free - the moment that computer is updated, the next pass narrates it with
+            // nobody touching the Gateway. What they must stop doing is spending a budget they cost nothing
+            // against. So GENERATIONS counts only attempts that reached the shared model / speech legs
+            // (WingmanVoiceService announces that at its own commit point, which is the one place that knows),
+            // and a second, far larger ATTEMPTS budget keeps the pass itself bounded - a no-op attempt is
+            // cheap, but it is a store read, and an unbounded loop over every voice session on the Gateway
+            // every 45 seconds would be a new cost introduced by fixing this one.
             var generated = 0;
+            var attempted = 0;
             _tenantPass.ForEachTenant(() =>
             {
                 if (_tenantPass.Current is not { } tenant) return;   // deny: no scope in effect -> sweep nothing
                 foreach (var sid in vs.VoiceSessionIds(tenant))
                 {
-                    if (generated >= 3) break;                       // gentle on the serialized brain (global cap)
+                    if (generated >= MaxVoiceGenerationsPerSweep) break;   // gentle on the serialized brain (global cap)
+                    if (attempted >= MaxVoiceAttemptsPerSweep) break;      // and the pass itself stays bounded
                     if (vs.HasVoice(tenant, sid)) continue;          // already cached, nothing to do
                     // A session whose agent exposes NO conversation history will not become readable by being
                     // asked again immediately, and asking is not free: this pass generates at most three per
@@ -2259,8 +2302,13 @@ public sealed class GatewayHost : IAsyncDisposable
                         // A pre-build is not a new turn - generate quietly so an idle session a client
                         // may be listening to is never flipped yellow mid-play (issue #1322). Fire-and-forget.
                         var route = new Api.SessionVerbClient(director, sendCommand);
-                        _ = vs.GenerateAsync(tenant, sid, route, CancellationToken.None, showReadingWindow: false);
-                        generated++;
+                        attempted++;
+                        // The slot is spent by the CALLBACK, not by this line. It fires synchronously, before
+                        // the returned task is handed back, at the point the attempt commits to the model and
+                        // speech legs - so an attempt that returns having produced nothing and spent nothing
+                        // leaves the budget where it was, and the next session in the loop still gets it.
+                        _ = vs.GenerateAsync(tenant, sid, route, CancellationToken.None, showReadingWindow: false,
+                            onProviderReached: () => generated++);
                     }
                 }
             });
@@ -3196,6 +3244,10 @@ public sealed class GatewayHost : IAsyncDisposable
             // be made for this session until it is updated. Feeds the folded VoiceDisplay so the screen says
             // which computer to update instead of counting a wait that would not end (2026-09-02).
             directorCannotSendConversationFor: (tenant, sid) => _voiceService?.DirectorCannotSendConversationFor(tenant, sid) == true,
+            // The model leg did not answer and the voice path's bounded re-attempts for this turn are spent,
+            // so nothing further is scheduled. Feeds the folded VoiceDisplay so the screen reports a turn that
+            // was not narrated instead of an arrival nobody is working on (issue #2676).
+            narrationAbandonedFor: (tenant, sid) => _voiceService?.NarrationAbandonedFor(tenant, sid) == true,
             // TTS fallback: this session's ready clip was made by the backup voice provider (the primary
             // was overloaded and the cloud proxy failed over). Feeds the folded VoiceDisplay so the screen
             // shows the generic backup-voice notice. A success-with-a-note, never an outage state.
@@ -4274,6 +4326,7 @@ public sealed class GatewayHost : IAsyncDisposable
         Func<string, Core.HostedAi.HostedAiState?>? voiceUnavailableFor = null,
         Func<string, bool>? nothingToNarrateFor = null,
         Func<string, bool>? directorCannotSendConversationFor = null,
+        Func<string, bool>? narrationAbandonedFor = null,
         Func<string, bool, DateTime?>? voiceWaitingStampFor = null)
     {
         foreach (var s in sessions)
@@ -4304,6 +4357,7 @@ public sealed class GatewayHost : IAsyncDisposable
                 unavailable: unavailable,
                 nothingToNarrate: nothingToNarrateFor?.Invoke(s.SessionId) ?? false,
                 directorCannotSendConversation: directorCannotSendConversationFor?.Invoke(s.SessionId) ?? false,
+                narrationAbandoned: narrationAbandonedFor?.Invoke(s.SessionId) ?? false,
                 waitingSince: s.VoiceWaitingSince);
         }
         Api.GatewayEndpoints.StampFleetRolesAndFold(sessions, sessions, needsYouStampFor, snoozeRegistry, tenant, handRaises);
