@@ -137,6 +137,29 @@ describe("the rule readers refuse an answer whose field is present but not the s
     await expect(createRule({ ...A_RULE, sessionId: "s", allAgents: false })).rejects.toThrow(/rule/);
   });
 
+  // A REQUIRED CHILD THAT IS ABSENT IS A BROKEN ANSWER, AND IS NEVER FILLED IN (fix round F, ruling F2).
+  // The served contract requires all four scope children and the Gateway projects all four. This client
+  // used to treat `undefined` exactly like a legitimate `null` and hand back `agent: null` - the widest
+  // value that part can have - for a scope child the Gateway never sent. Inventing the permissive value
+  // for a missing field is the worst available guess, and it could contradict the Gateway's own stamped
+  // scopeLabel, which says a rule is narrow while the reconstructed scope says that part is unrestricted.
+
+  it("rules: a rule whose scope is missing a required child is an error naming it", async () => {
+    const { agent: _dropped, ...scopeWithoutAgent } = A_RULE.scope;
+    answering({ rules: [{ ...A_RULE, scope: scopeWithoutAgent }] });
+    await expect(getRules()).rejects.toThrow(/scope\.agent/);
+  });
+
+  it("rules: a scope child of the wrong type is an error naming it", async () => {
+    answering({ rules: [{ ...A_RULE, scope: { ...A_RULE.scope, mission: 7 } }] });
+    await expect(getRules()).rejects.toThrow(/scope\.mission/);
+  });
+
+  it("rules: a scope whose four children are all present is read as what it carries", async () => {
+    answering({ rules: [A_RULE] });
+    expect((await getRules())[0].scope).toEqual(A_RULE.scope);
+  });
+
   it("draft: a proposal whose rule lacks its instruction is an error naming the field", async () => {
     answering({
       readBack: "read back",

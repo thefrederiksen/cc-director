@@ -243,6 +243,59 @@ public sealed class SessionRuleStoreTests : IDisposable
         Assert.Empty(store.All());
     }
 
+    // ---- fix round F, ruling F1: the evidence is an immutable snapshot, not a view of a caller's list --
+
+    /// <summary>
+    /// THE WORDS THE EVIDENCE HOLDS CANNOT BE WRITTEN TO. An inspection cast the exposed collection back
+    /// to the list it was built from, replaced a word with one that was never on the screen, and stored
+    /// the rule - every structural guard staying green, because the caller neither constructed nor minted
+    /// a second token, it edited a valid one. <c>IReadOnlyList</c> is a read-only VIEW; it is not an
+    /// immutable collection, and the difference is the whole invariant.
+    ///
+    /// This asserts the PRESENCE of the refusal rather than the absence of a mutation: the exposed
+    /// collection is asked to accept a write and has to say no.
+    /// </summary>
+    [Fact]
+    public void The_words_the_evidence_exposes_cannot_be_written_to()
+    {
+        var exposed = Grounded.For("limit").Words;
+
+        Assert.True(
+            exposed is IList<string> { IsReadOnly: true },
+            "the evidence exposed " + exposed.GetType().FullName + ", which a caller can write to.");
+        Assert.Throws<NotSupportedException>(() => ((IList<string>)exposed)[0] = "never on the checked screen");
+    }
+
+    /// <summary>
+    /// AND CHANGING IT AFTER MINTING STORES NOTHING. The inspection's own probe, kept: mint evidence for a
+    /// phrase that was on the screen, change the exposed collection to a phrase that never was, and ask
+    /// the store to write that word. Both halves are asserted, because an exception thrown after a write
+    /// is not the same thing as a write that never happened - so the row count is checked as well as the
+    /// refusal, and the evidence's own snapshot is checked to have survived the attempt.
+    /// </summary>
+    [Fact]
+    public void Evidence_changed_after_it_was_minted_refuses_the_changed_word_and_writes_no_row()
+    {
+        var store = NewStore();
+        var evidence = Grounded.For("limit");
+        const string NeverOnTheScreen = "never on the checked screen";
+
+        // The route the inspection walked. It either refuses to be a writable list at all, or the write
+        // lands - and the assertions below hold the line in both cases.
+        if (evidence.Words is IList<string> { IsReadOnly: false } writable) writable[0] = NeverOnTheScreen;
+
+        Assert.Equal(new[] { "limit" }, evidence.Words);
+
+        var ex = Assert.Throws<RuleRejectedException>(() => store.Create(
+            TheSentence, "a screen", new[] { NeverOnTheScreen }, GoodCalls(),
+            RuleScope.AllSessions, 300, 5, Now, evidence));
+
+        // The refusal names what was really on the screen, so the message is the snapshot speaking rather
+        // than the caller's edit read back to it.
+        Assert.Contains("minted for the words \"limit\"", ex.Reason, StringComparison.Ordinal);
+        Assert.Empty(store.All());
+    }
+
     /// <summary>Evidence for one set of words cannot be spent on another - a word more, a word fewer, or a
     /// different word is a different set.</summary>
     [Theory]

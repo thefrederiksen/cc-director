@@ -498,6 +498,30 @@ def test_a_rule_that_is_not_an_object_is_an_error(monkeypatch):
         _client_answering(monkeypatch, {"rule": "stored"}).rule("x")
 
 
+# ---- fix round F, ruling F2: a required child that is absent is a broken answer -----------------------
+# The served contract requires all four scope children and the Gateway projects all four. This reader
+# checked a scope part's type ONLY when the key existed, so a response omitting scope.agent was accepted
+# whole. An absent required child is a broken instrument, never a value - and never one this command
+# fills in for itself.
+
+
+def test_a_rule_whose_scope_is_missing_a_required_child_is_an_error_naming_it(monkeypatch):
+    broken = dict(A_STORED_RULE, scope={k: v for k, v in A_STORED_RULE["scope"].items() if k != "agent"})
+    with pytest.raises(rule_ops.GatewayError, match="scope.agent"):
+        _client_answering(monkeypatch, {"rules": [broken]}).rules()
+
+
+def test_a_scope_child_of_the_wrong_type_is_an_error_naming_it(monkeypatch):
+    broken = dict(A_STORED_RULE, scope=dict(A_STORED_RULE["scope"], mission=7))
+    with pytest.raises(rule_ops.GatewayError, match="scope.mission"):
+        _client_answering(monkeypatch, {"rules": [broken]}).rules()
+
+
+def test_a_scope_with_all_four_children_is_read_as_what_it_carries(monkeypatch):
+    served = _client_answering(monkeypatch, {"rules": [A_STORED_RULE]}).rules()
+    assert served[0]["scope"] == A_STORED_RULE["scope"]
+
+
 def test_list_does_not_print_a_zero_or_none_for_a_field_the_gateway_did_not_send(monkeypatch):
     """The renderer used to supply '', '(none)' and 0 for missing fields. A field the Gateway did not send
     is a broken answer, not a zero - the listing errors and names the field."""
