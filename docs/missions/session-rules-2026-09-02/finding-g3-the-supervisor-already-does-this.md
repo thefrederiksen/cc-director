@@ -124,3 +124,76 @@ voice conversation. The answer to phase 1 was sitting two files away the entire 
 - Whether the brief call and the rules call can share one model call. They differ today: the brief uses
   the FAST role deliberately, the rules judgement needs the thinking role. A shared call is a design
   question, not a merge.
+
+---
+
+# PRODUCTION EVIDENCE, read 2026-09-04 from the hosted Gateway's own log
+
+Section 4 above was read off the code. The owner asked the right question - is it actually running,
+and does it work? - so it was checked against the running service rather than argued. The log was read
+through Kudu on `devthrottle-gw` at `/home/gateway/cc-director/logs/director`.
+
+**Instrument note, confirming a known fault:** today's log is reported by `ls` as **0 bytes** and by
+`wc -c` as **148,922,106 bytes**. Never take the directory listing's size as evidence that a hosted log
+is empty.
+
+## The supervisor is LIVE and it WORKS
+
+101 supervisor lines across 3 and 4 September:
+
+| Event | Count |
+| --- | --- |
+| `supervisor-fault-detected` | 24 |
+| `supervisor-waiting` | 27 |
+| `supervisor-continue-sent` | **8** |
+| `supervisor-recovered` | **19** |
+| `ESCALATED` | 4 |
+
+By cause: `rate-limited` 32, `transient-transport` 22, `non-recoverable` 8, `working-observation` 19
+(the recovery observation), `unknown` 1.
+
+A complete episode, verbatim, in twelve seconds of wall clock:
+
+```
+12:48:41 supervisor-fault-detected  cause=transient-transport
+12:48:41 supervisor-waiting         cause=transient-transport
+12:49:29 supervisor-continue-sent   cause=transient-transport
+12:49:29 supervisor-waiting         cause=transient-transport
+12:49:41 supervisor-recovered       cause=working-observation
+```
+
+**It detected a fault, waited, typed `continue`, and observed the session go back to work.** That is
+this mission's scenario B, in production, on the owner's real fleet, two days ago.
+
+**And it already handles the usage-limit case:** `cause=rate-limited` is the most common cause in the
+window, 32 of the tagged lines.
+
+## The cost, measured rather than estimated
+
+Only TEN model calls in two days - the entire set of `verdict=` lines: `transient_recoverable` 5,
+`needs_human` 4, `healthy_done` 1. Everything else was decided by the word table for nothing.
+
+Against that, the real turn-end rate, taken from the rules engine's own per-turn line: **775 on
+3 September and 403 by mid-afternoon on 4 September.** So the June figure of about 215 a day in
+section 1 was a floor and it was low by roughly three and a half times.
+
+| | Model calls |
+| --- | --- |
+| Supervisor, measured | **10 in two days**, against ~1,200 turn ends |
+| Rules engine, as designed | one per changed screen with a rule in scope, plus a second when the first says act |
+
+That is the cost answer, and it is about two orders of magnitude. It is not a model-choice problem.
+
+## The rules engine is DEPLOYED, RUNNING, and doing nothing
+
+It is armed in production and it evaluates every turn end. Every single evaluation on 4 September says
+the same thing:
+
+```
+403 [RuleEvaluator] no-rules: this account has no rules.
+```
+
+**Nobody has ever created a rule, because the authoring half has never been merged.** The engine that
+runs rules shipped; the half that lets a person write one is still sitting on a branch. That is why the
+feature looks like nothing at all from the outside - and it is the single clearest statement of where
+this mission actually stands.
