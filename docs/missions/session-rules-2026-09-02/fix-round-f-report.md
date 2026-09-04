@@ -273,14 +273,54 @@ a41fe9bbf  the store no longer asks what a rule watches for
    pre-empts - so the test goes on proving the thing it was written for. It was watched red under the
    second probe above, so the repointed version is not decoration.
 
-**One thing this fix does NOT close, named rather than left.** `RuleGroundingEvidence.Minted` runs its
-own copy of the check (`NotOn` directly, not `WhyNotGrounded`), so the TYPE would still mint evidence
-for an empty set if it were reached with one. It cannot be reached with one: `Minted` is internal, a
-structural test asserts `RuleAuthor` is its only production caller, and that caller now refuses the
-empty set immediately upstream in the same method. I left it alone because the ruling said one function
-and nothing else. **It is the remaining place, and the file's own comment names the hazard - "a check
-that exists twice is a check that can be different twice" - so unifying `Minted` on `WhyNotGrounded` is
-recommended for a round that has room.**
+**The residual I named, then closed on the Architect's ruling.** Commits `317ca47a2` (red) and
+`a185b9c61` (fix).
+
+`RuleGroundingEvidence.Minted` ran its own copy of the check, calling `NotOn` directly while the draft
+route and the write gate both called `WhyNotGrounded`. So the feature's central invariant was checked
+in TWO places. I reported it and recommended a later round, on the grounds that it is unreachable with
+an empty set today - the factory is internal, a structural test asserts `RuleAuthor` is its only
+production caller, and that caller now refuses upstream in the same method.
+
+**The Architect closed it, and the reasoning is the same one as the ruling above:** two copies of one
+check that agree today is precisely the defect class ruling D2 exists to remove, and "unreachable
+today" is a statement about today's callers, not about the type.
+
+**The divergence was already real, not theoretical, and that is the part worth recording.** When the
+definition learned that a rule watching for nothing is not grounded, the second copy did not, and went
+on minting evidence for an empty set. The two copies had disagreed within one commit of the definition
+changing - which is exactly what happened under D2, where the draft reader and the store had two
+functions for normalising a trigger word that agreed on every word with no padding and disagreed on
+the first word that had some.
+
+**The fix is one call.** `Minted` now calls `WhyNotGrounded`, the one function, and throws with its
+sentence. Nothing else changed.
+
+**Red first:**
+
+```
+dotnet test ... --filter "FullyQualifiedName~The_evidence_factory_runs_the_one_grounding_check_itself"
+  SessionRuleStoreTests.The_evidence_factory_runs_the_one_grounding_check_itself [FAIL]
+    Assert.Throws() Failure: No exception was thrown
+```
+
+The test reaches the factory DIRECTLY, which the `Grounded` helper deliberately does not, so it says in
+its own comment why that is not a second door into evidence: two of its three cases assert a REFUSAL -
+a wordless rule, and a word that is not on the screen - and the third is the control that stops the
+first two passing on a factory that refuses everything. The evidence the control produces is read and
+discarded, never handed to a store. It proves the factory refuses on its own rather than by its
+caller's grace.
+
+**Mutation probe:**
+
+```
+911d79934  the evidence factory keeps its own second copy of the check again
+  SessionRuleStoreTests.The_evidence_factory_runs_the_one_grounding_check_itself [FAIL]
+  Failed: 1, Passed: 328      reverted by 2b04cce7f, diff against a185b9c61 empty
+```
+
+There is now ONE grounding check in this feature, and three callers of it: the draft route, the write
+gate, and the evidence factory.
 
 **Everything else was read and is correct.** The ones worth naming, because each LOOKS like the class:
 
@@ -326,7 +366,7 @@ recommended for a round that has room.**
 
 | Suite | Result |
 | --- | --- |
-| `.\scripts\test-local.ps1` (9 projects) at `7d12486e6` | green. Every outcome Completed; 4,928 total, 0 failed, 2 skipped. **Run twice, and the first run is reported as well as the second:** the first flagged OVER BUDGET and printed FAIL and NO-TRX for `Gateway.UnitTests`, which took 2 minutes 18 seconds against the 120-second ceiling. That suite had in fact passed - its result file reads `outcome=Completed total=3635 passed=3633 failed=0` - and the verdict read the file before it was flushed. The re-run came back inside budget at 1 minute 1 second with every outcome Completed. It is a budget flag under load, the same one round E reported at 2 minutes 8 seconds, and it is the Architect's to decide |
+| `.\scripts\test-local.ps1` (9 projects) at `2b04cce7f` | green. Every outcome Completed; 4,929 total, 0 failed, 2 skipped |
 | `Gateway.Tests` filtered to `CensusRouteTenancyProbeTests`, `ContextLessRouteCensusTests`, `SessionRuleRouteGuardCensusTests` | 18 passed, 0 failed, 33 seconds |
 | `Gateway.Tests`, full parked suite | NOT run by this seat (ruling E4). It is the Architect's, once, on the final merged tree |
 | `npm run typecheck` (4 workspaces) | clean |
@@ -336,6 +376,26 @@ recommended for a round that has room.**
 
 The local gate reported the coverage gap it always reports here: `Core.Tests` and `Gateway.Tests` are
 parked and did not run. That is ruling E4 operating as intended, not an unnoticed hole.
+
+## An instrument fault, recorded because a later reader will meet it
+
+**The local gate reported FAILED on a suite that had passed.** On one run of `test-local.ps1` during
+this round, the verdict table printed `outcome=NO-TRX total=0` for `CcDirector.Gateway.UnitTests` and
+the run ended `RESULT: OVER BUDGET`. The suite had in fact passed: its own result file reads
+`outcome=Completed total=3635 passed=3633 failed=0`, and its log ends with a normal passing summary.
+The suite had taken **2 minutes 18 seconds** against the script's **120-second** ceiling, and the
+verdict read the result file before it was flushed.
+
+Re-run on the same tree with nothing changed, the same suite came back in **1 minute 1 second** and the
+whole gate printed `RESULT: all projects exited zero`. The final run in the table above took 1 minute
+49 seconds and was also clean.
+
+This is a known instrument fault in this repository rather than anything about this change - the gate
+has reported FAILED on a fully green run before. Both timings are recorded here because the fault is
+load-dependent, so the next seat to meet it needs to know it has been seen, and needs to know that the
+answer is to read the result file rather than to believe the summary line. The underlying budget
+pressure - one suite sitting at or above the ceiling on a loaded machine - is real and is the
+Architect's to decide.
 
 ## Never watched red, stated plainly
 
