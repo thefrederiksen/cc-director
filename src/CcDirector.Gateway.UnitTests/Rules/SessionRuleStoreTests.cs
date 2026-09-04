@@ -306,7 +306,7 @@ public sealed class SessionRuleStoreTests : IDisposable
         Assert.Equal(new[] { "limit" }, evidence.Words);
 
         var ex = Assert.Throws<RuleRejectedException>(() => store.Create(
-            TheSentence, "a screen", new[] { NeverOnTheScreen }, GoodCalls(),
+            TheSentence, "a screen", "/model opus", new[] { NeverOnTheScreen }, GoodCalls(),
             RuleScope.AllSessions, 300, 5, Now, evidence));
 
         // The refusal names what was really on the screen, so the message is the snapshot speaking rather
