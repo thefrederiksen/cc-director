@@ -187,6 +187,7 @@ async function readJson(res: Response, what: string): Promise<unknown> {
 
 /** What a value is, in the words an error names it by. */
 function kindOf(value: unknown): string {
+  if (value === undefined) return "nothing at all";
   if (value === null) return "null";
   if (Array.isArray(value)) return "a list";
   return typeof value === "object" ? "an object" : typeof value;
@@ -247,10 +248,21 @@ function needRoot(status: number, what: string, body: unknown): Record<string, u
   return body;
 }
 
-/** One part of a scope: a string, or null for "any". */
+/**
+ * One part of a scope: a string, or an explicit null for "any".
+ *
+ * A REQUIRED CHILD THAT IS ABSENT IS A BROKEN ANSWER, AND IS NEVER FILLED IN (fix round F, ruling F2).
+ * The served contract requires all four children and the Gateway projects all four, but this used to
+ * read `undefined` exactly like a legitimate `null` - so a response omitting `scope.agent` came back
+ * with `agent: null`, which is the WIDEST value that part can have. Inventing the permissive value for
+ * a field that never arrived is the worst available guess, and it can contradict the Gateway's own
+ * stamped `scopeLabel`, which would say the rule is narrow while the reconstructed scope said that part
+ * is unrestricted. The key has to be there; then, and only then, null means "any".
+ */
 function scopePart(status: number, what: string, scope: Record<string, unknown>, field: string): string | null {
+  if (!(field in scope)) throw broken(status, what, `scope.${field}`, "a string or null", undefined);
   const value = scope[field];
-  if (value === null || value === undefined) return null;
+  if (value === null) return null;
   if (typeof value !== "string") throw broken(status, what, `scope.${field}`, "a string or null", value);
   return value;
 }
