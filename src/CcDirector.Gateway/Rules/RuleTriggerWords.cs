@@ -51,10 +51,6 @@ public static class RuleTriggerWords
     {
         if (screen is null) throw new ArgumentNullException(nameof(screen));
         var asked = NormaliseAll(words);
-        if (asked.Count == 0)
-            return "a rule that watches for nothing is not grounded in " + whichScreen + ": it has no " +
-                   "words to look for, so there is nothing the screen could be shown to say. A rule " +
-                   "watches for at least one word, and refusing no words is not the same as finding them.";
 
         var invented = NotOn(asked, screen.Excerpt);
         if (invented.Count == 0) return null;
