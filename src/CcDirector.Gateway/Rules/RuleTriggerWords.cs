@@ -33,6 +33,15 @@ public static class RuleTriggerWords
     /// Why the words are not grounded in this screen, or null when every one of them is on it. The check
     /// ignores case because the matching it guards ignores case; a guard stricter than the thing it guards
     /// refuses rules that would have worked.
+    ///
+    /// AN EMPTY LIST OF WORDS IS NOT GROUNDED (fix round F, ruling F3). This check asks whether every
+    /// trigger word is on the screen, and over no words that question has no work to do - so it used to
+    /// answer YES, which is this check answering its own absence, in the one function that says what
+    /// grounding means for the whole feature. Two later gates refused a wordless rule anyway, and a
+    /// backstop is worth what it is worth on the day the thing in front of it fails: grounding was itself
+    /// believed to be the backstop behind the model's judgement until phase 1 measured it waving a
+    /// confident wrong act through. So the definition refuses it here, first, and the later gates go on
+    /// being the second answer rather than the only one.
     /// </summary>
     /// <param name="words">The trigger words, in any form; they are normalised here.</param>
     /// <param name="screen">The screen they have to be on.</param>
@@ -41,7 +50,13 @@ public static class RuleTriggerWords
     public static string? WhyNotGrounded(IEnumerable<string>? words, RuleScreenReading screen, string whichScreen)
     {
         if (screen is null) throw new ArgumentNullException(nameof(screen));
-        var invented = NotOn(words, screen.Excerpt);
+        var asked = NormaliseAll(words);
+        if (asked.Count == 0)
+            return "a rule that watches for nothing is not grounded in " + whichScreen + ": it has no " +
+                   "words to look for, so there is nothing the screen could be shown to say. A rule " +
+                   "watches for at least one word, and refusing no words is not the same as finding them.";
+
+        var invented = NotOn(asked, screen.Excerpt);
         if (invented.Count == 0) return null;
         return "the rule watches for words that are not on " + whichScreen + ": " +
                string.Join(", ", invented.Select(w => "\"" + w + "\"")) + ". A rule only ever looks at a " +

@@ -277,18 +277,27 @@ public sealed class RuleAuthorTests : IDisposable
     /// A rule the writing route would refuse is never offered, and the refusal is the STORE'S OWN WORDS.
     /// This is the one implementation of what a rule is being asked the question early, so nobody can
     /// confirm a rule that then turns out not to exist.
+    ///
+    /// The example used to be a drafted rule with NO TRIGGER WORDS, and it stopped working when fix
+    /// round F made grounding refuse a rule that watches for nothing - the wordless rule is now caught a
+    /// gate earlier, by the grounding check, so the store's sentence is no longer what comes back. That
+    /// is the fix operating, not a hole: the wordless case is covered by
+    /// <c>The_write_gate_refuses_a_rule_that_watches_for_nothing</c> below. The example here is now a
+    /// rule that does not say what it watches FOR, which the store refuses and nothing upstream does, so
+    /// this test goes on proving the thing it was written for.
     /// </summary>
     [Fact]
     public async Task A_rule_the_store_would_refuse_is_not_offered_and_says_the_stores_reason()
     {
-        var noTriggerWords = AnAllowanceReply.Replace(
-            "\"trigger_words\": [\"usage limit\", \"out of credits\"],", "\"trigger_words\": [],",
+        var noScreenDescription = AnAllowanceReply.Replace(
+            "\"screen_description\": \"The session has stopped on a notice that the account is out of allowance.\",",
+            "\"screen_description\": \"\",",
             StringComparison.Ordinal);
 
-        var reading = await Draft(AuthorSaying(noTriggerWords), Said(TheAllowanceSentence));
+        var reading = await Draft(AuthorSaying(noScreenDescription), Said(TheAllowanceSentence));
 
         Assert.Null(reading.Proposal);
-        Assert.Contains("at least one word to watch for", reading.Refusal!, StringComparison.Ordinal);
+        Assert.Contains("what it is watching for on the screen", reading.Refusal!, StringComparison.Ordinal);
     }
 
     /// <summary>The same for a ceiling that is not a ceiling. A rule with no cooldown is a rule that can
@@ -478,6 +487,25 @@ public sealed class RuleAuthorTests : IDisposable
         Assert.NotNull(refusal);
         Assert.Contains("ECONNREFUSED", refusal!, StringComparison.Ordinal);
         Assert.Contains("that session's screen right now", refusal!, StringComparison.Ordinal);
+        Assert.Contains("Nothing was stored", refusal!, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// A RULE THAT WATCHES FOR NOTHING IS NOT GROUNDED (fix round F, ruling F3). Grounding asks whether
+    /// every trigger word is on the screen, and over an empty list that question has no work to do, so
+    /// the check used to answer yes - a pass condition that is an absence, in the one function that
+    /// defines what grounding means for this feature. Two later gates refused the rule anyway, which is
+    /// exactly the backstop this mission has now twice watched fail.
+    /// </summary>
+    [Fact]
+    public async Task The_write_gate_refuses_a_rule_that_watches_for_nothing()
+    {
+        var refusal = await AuthorSaying(AnAllowanceReply).WhyNotGroundedAsync(
+            TenantId.Local, TheSession, Array.Empty<string>(), RuleScope.AllSessions, true,
+            CancellationToken.None);
+
+        Assert.NotNull(refusal);
+        Assert.Contains("watches for nothing", refusal!, StringComparison.Ordinal);
         Assert.Contains("Nothing was stored", refusal!, StringComparison.Ordinal);
     }
 

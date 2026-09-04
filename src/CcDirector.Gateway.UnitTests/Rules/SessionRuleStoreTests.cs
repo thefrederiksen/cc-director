@@ -182,14 +182,32 @@ public sealed class SessionRuleStoreTests : IDisposable
         Assert.NotEqual("", ex.Reason);
     }
 
+    /// <summary>
+    /// A RULE THAT WATCHES FOR NOTHING CANNOT BE GROUNDED, SO IT NEVER REACHES THIS STORE (fix round F,
+    /// ruling F3).
+    ///
+    /// This test used to reach the store's own "at least one word" refusal by minting evidence for an
+    /// EMPTY set of words, and that only worked because the grounding check answered "grounded" for an
+    /// empty list - the check answering its own absence, which is the defect the round F sweep named and
+    /// the Architect then ruled had to be closed. No evidence for an empty set can be obtained now, by
+    /// any route, so the wordless rule is refused a gate earlier than it used to be.
+    ///
+    /// The store's own rule is still covered where it is still reachable - a rule written straight
+    /// through the context, which does not pass grounding at all:
+    /// <c>RulesWriteGateTests.A_rule_written_straight_through_the_context_still_has_to_be_a_rule</c> with
+    /// its "trigger words" case.
+    /// </summary>
     [Fact]
-    public void A_rule_with_no_trigger_words_is_refused_because_it_would_cost_a_model_call_every_time()
+    public void A_rule_that_watches_for_nothing_cannot_be_grounded_so_it_never_reaches_the_store()
     {
         var store = NewStore();
-        var ex = Assert.Throws<RuleRejectedException>(() => store.Create(
-            TheSentence, "a screen", "/model opus", Array.Empty<string>(), GoodCalls(),
-            RuleScope.AllSessions, 60, 3, Now, Grounded.For(Array.Empty<string>())));
-        Assert.NotEqual("", ex.Reason);
+
+        // Grounded.For is the ONLY way a test can obtain evidence, and it goes through a real author
+        // reading a real screen. It now cannot produce evidence for a rule that watches for nothing.
+        var ex = Assert.Throws<InvalidOperationException>(() => Grounded.For(Array.Empty<string>()));
+
+        Assert.Contains("watches for nothing", ex.Message, StringComparison.Ordinal);
+        Assert.Empty(store.All());
     }
 
     [Theory]
@@ -242,6 +260,90 @@ public sealed class SessionRuleStoreTests : IDisposable
         Assert.Contains("evidence", ex.Reason, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("screen", ex.Reason, StringComparison.OrdinalIgnoreCase);
         Assert.Empty(store.All());
+    }
+
+    // ---- fix round F, ruling F1: the evidence is an immutable snapshot, not a view of a caller's list --
+
+    /// <summary>
+    /// THE WORDS THE EVIDENCE HOLDS CANNOT BE WRITTEN TO. An inspection cast the exposed collection back
+    /// to the list it was built from, replaced a word with one that was never on the screen, and stored
+    /// the rule - every structural guard staying green, because the caller neither constructed nor minted
+    /// a second token, it edited a valid one. <c>IReadOnlyList</c> is a read-only VIEW; it is not an
+    /// immutable collection, and the difference is the whole invariant.
+    ///
+    /// This asserts the PRESENCE of the refusal rather than the absence of a mutation: the exposed
+    /// collection is asked to accept a write and has to say no.
+    /// </summary>
+    [Fact]
+    public void The_words_the_evidence_exposes_cannot_be_written_to()
+    {
+        var exposed = Grounded.For("limit").Words;
+
+        Assert.True(
+            exposed is IList<string> { IsReadOnly: true },
+            "the evidence exposed " + exposed.GetType().FullName + ", which a caller can write to.");
+        Assert.Throws<NotSupportedException>(() => ((IList<string>)exposed)[0] = "never on the checked screen");
+    }
+
+    /// <summary>
+    /// AND CHANGING IT AFTER MINTING STORES NOTHING. The inspection's own probe, kept: mint evidence for a
+    /// phrase that was on the screen, change the exposed collection to a phrase that never was, and ask
+    /// the store to write that word. Both halves are asserted, because an exception thrown after a write
+    /// is not the same thing as a write that never happened - so the row count is checked as well as the
+    /// refusal, and the evidence's own snapshot is checked to have survived the attempt.
+    /// </summary>
+    [Fact]
+    public void Evidence_changed_after_it_was_minted_refuses_the_changed_word_and_writes_no_row()
+    {
+        var store = NewStore();
+        var evidence = Grounded.For("limit");
+        const string NeverOnTheScreen = "never on the checked screen";
+
+        // The route the inspection walked. It either refuses to be a writable list at all, or the write
+        // lands - and the assertions below hold the line in both cases.
+        if (evidence.Words is IList<string> { IsReadOnly: false } writable) writable[0] = NeverOnTheScreen;
+
+        Assert.Equal(new[] { "limit" }, evidence.Words);
+
+        var ex = Assert.Throws<RuleRejectedException>(() => store.Create(
+            TheSentence, "a screen", new[] { NeverOnTheScreen }, GoodCalls(),
+            RuleScope.AllSessions, 300, 5, Now, evidence));
+
+        // The refusal names what was really on the screen, so the message is the snapshot speaking rather
+        // than the caller's edit read back to it.
+        Assert.Contains("minted for the words \"limit\"", ex.Reason, StringComparison.Ordinal);
+        Assert.Empty(store.All());
+    }
+
+    /// <summary>
+    /// THE FACTORY REFUSES ON ITS OWN, NOT BY ITS CALLER'S GRACE (fix round F, the Architect's closing
+    /// ruling). Grounding was checked in TWO places inside the feature's central invariant: the one
+    /// function that defines it, and a second copy inside this factory that called <c>NotOn</c> directly.
+    /// Two copies of one check that agree today is the defect class ruling D2 was written to remove - it
+    /// is how the check and the prompt came to read different text in the first place. "Unreachable,
+    /// because the only production caller refuses upstream" is a statement about today's callers.
+    ///
+    /// This test reaches the factory DIRECTLY, which the <see cref="Grounded"/> helper deliberately does
+    /// not. That is not a second door into evidence: two of the three cases assert a REFUSAL, and the
+    /// third is the control that stops the first two passing on a factory that refuses everything. The
+    /// evidence it produces is read and discarded, never handed to a store.
+    /// </summary>
+    [Fact]
+    public void The_evidence_factory_runs_the_one_grounding_check_itself()
+    {
+        var screen = new RuleScreenReading(
+            "sid-minted", new RuleSessionOrigin("ClaudeCode", "TEST"), "> carry on\nlimit\n>");
+
+        var watchesForNothing = Assert.Throws<InvalidOperationException>(
+            () => RuleGroundingEvidence.Minted(screen, Array.Empty<string>()));
+        Assert.Contains("watches for nothing", watchesForNothing.Message, StringComparison.Ordinal);
+
+        var notOnTheScreen = Assert.Throws<InvalidOperationException>(
+            () => RuleGroundingEvidence.Minted(screen, new[] { "never on the checked screen" }));
+        Assert.Contains("never on the checked screen", notOnTheScreen.Message, StringComparison.Ordinal);
+
+        // THE CONTROL. A factory that threw at everything would pass both refusals above and mean nothing.
+        Assert.Equal(new[] { "limit" }, RuleGroundingEvidence.Minted(screen, new[] { " limit " }).Words);
     }
 
     /// <summary>Evidence for one set of words cannot be spent on another - a word more, a word fewer, or a
