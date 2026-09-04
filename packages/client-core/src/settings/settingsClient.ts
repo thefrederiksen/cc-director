@@ -32,6 +32,9 @@ export interface GatewaySettings {
   // this device or this machine: the report is one person and one email, which is exactly why the question
   // left the first-run wizard, where it was asked once per install.
   dailyReportCadence: ReportCadence;
+  // Whether this account receives the Development Mentor report (devthrottle_internal#1661). One value for
+  // the account: the mentor reads one person's own prompts and writes to one person.
+  mentorReportEnabled: boolean;
 }
 
 /**
@@ -103,6 +106,10 @@ export async function getGatewaySettings(signal?: AbortSignal): Promise<GatewayS
     // for the same reason: a card that showed Off because it met a value it did not know would tell the
     // account its report is stopped when it is not.
     dailyReportCadence: body.dailyReportCadence === "off" ? "off" : "daily",
+    // Only an explicit false reads as off, for the same reason the cadence above only reads "off" as off: a
+    // card that showed Off because the field was missing - an older Gateway, a shape this client does not
+    // know - would tell the account the mentor is stopped when it is not.
+    mentorReportEnabled: body.mentorReportEnabled !== false,
   };
 }
 
@@ -120,6 +127,19 @@ export async function setDailyReportCadence(
     signal,
   );
   return body.cadence === "off" ? "off" : "daily";
+}
+
+// PUT /gateway/mentor-report { enabled } - turn the Development Mentor report on or off for this account
+// (devthrottle_internal#1661). The Gateway does not send that report; the harness reads this setting out of
+// the database when it runs, so a change applies to the next run. Returns the applied value.
+export async function setMentorReportEnabled(enabled: boolean, signal?: AbortSignal): Promise<boolean> {
+  const body = await putJson<{ enabled?: boolean }>(
+    "/gateway/mentor-report",
+    "PUT /gateway/mentor-report",
+    { enabled },
+    signal,
+  );
+  return body.enabled !== false;
 }
 
 // PUT /gateway/time-zone { timeZone } - set the display time zone (an IANA id) the private dashboards read

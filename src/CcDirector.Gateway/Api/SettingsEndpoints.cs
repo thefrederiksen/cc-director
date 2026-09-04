@@ -22,9 +22,12 @@ namespace CcDirector.Gateway.Api;
 ///
 ///   SERVE ON HOSTED (per-account, resolve the caller tenant, 403 if unresolved):
 ///   GET  /gateway/settings        -> { snoozeDefaultMinutes, snoozePresets, snoozeMaxPresets,
-///                                       timeZone, timeZoneMachineDefault, dailyReportCadence }
+///                                       timeZone, timeZoneMachineDefault, dailyReportCadence,
+///                                       mentorReportEnabled }
 ///   GET+PUT /gateway/snooze-default, /gateway/snooze-presets, /gateway/time-zone
 ///   GET+PUT /gateway/daily-report               (per-account report cadence; issue #1000)
+///   GET+PUT /gateway/mentor-report              (per-account mentor report on/off;
+///                                                devthrottle_internal#1661)
 ///   GET  /gateway/ai-provider     -> { provider, wingmanModel, wingmanFastModel, carModeModel,
 ///                                       carModeEndPhrase, transcriptionModel, ttsModel, ttsVoice, voices[],
 ///                                       catalogAvailable }
@@ -193,7 +196,47 @@ internal static class SettingsEndpoints
                 // answer (weekly) is waiting on the report being able to summarize a range.
                 dailyReportCadence = Settings.ReportCadences.Name(
                     host.TenantSettingsResolver.DailyReportCadence(t.Value)),
+                // Whether this account receives the Development Mentor report
+                // (devthrottle_internal#1661). A boolean and not a cadence name: the question is whether the
+                // mentor reads this person's prompts at all, and that has exactly two answers.
+                mentorReportEnabled = host.TenantSettingsResolver.MentorReportEnabled(t.Value),
             });
+        });
+
+        // Whether this account receives the Development Mentor report (devthrottle_internal#1661). Per
+        // ACCOUNT, because the mentor reads one person's own prompts and writes to one person. The Gateway
+        // does not send that report - the harness does, and it reads this same row out of the database
+        // directly - so this route's only job is to let the person say yes or no somewhere they can find it.
+        app.MapGet("/gateway/mentor-report", (HttpContext ctx) =>
+        {
+            var t = GatewayEndpoints.ResolveReadTenant(ctx, host.TenantBoundary);
+            if (t is null) return TenantRequired();
+            return Results.Json(new { enabled = host.TenantSettingsResolver.MentorReportEnabled(t.Value) });
+        });
+
+        app.MapPut("/gateway/mentor-report", async (HttpContext ctx) =>
+        {
+            var t = GatewayEndpoints.ResolveReadTenant(ctx, host.TenantBoundary);
+            if (t is null) return TenantRequired();
+            try
+            {
+                var body = await JsonSerializer.DeserializeAsync<MentorReportBody>(
+                    ctx.Request.Body, JsonOpts, ctx.RequestAborted);
+                // A missing or non-boolean "enabled" is REFUSED, never read as either answer. Guessing here
+                // would answer "saved" for a choice nobody made, and one of the two guesses silences a report
+                // the account still wants while the other keeps mailing one it asked to stop.
+                if (body?.Enabled is null)
+                    return Results.BadRequest(new { error = "body { \"enabled\": true|false } is required" });
+
+                host.TenantSettingsResolver.SetMentorReportEnabled(t.Value, body.Enabled.Value, DateTime.UtcNow);
+                FileLog.Write($"[SettingsEndpoints] mentor_report_enabled set to {body.Enabled.Value} for tenant={t.Value.ToLogString()}");
+                return Results.Json(new { enabled = body.Enabled.Value });
+            }
+            catch (JsonException ex)
+            {
+                FileLog.Write($"[SettingsEndpoints] PUT /gateway/mentor-report bad JSON: {ex.Message}");
+                return Results.BadRequest(new { error = "invalid JSON" });
+            }
         });
 
         // How often this account wants the daily report email (issue #1000, follow-up to
@@ -793,4 +836,7 @@ internal static class SettingsEndpoints
     private sealed record SnoozePresetsBody(int[]? Presets, int? DefaultMinutes);
     private sealed record TimeZoneBody(string? TimeZone);
     private sealed record DailyReportBody(string? Cadence);
+
+    /// <summary>Nullable on purpose: a body with no "enabled" is refused rather than read as false.</summary>
+    private sealed record MentorReportBody(bool? Enabled);
 }
