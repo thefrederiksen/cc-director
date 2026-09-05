@@ -867,6 +867,13 @@ public sealed class GatewayHost : IAsyncDisposable
     ///
     /// Enters the tenant's scope itself, so a test cannot write one account's firing into another's
     /// partition by forgetting to - the same reason <see cref="SeedStoredConversationForTest"/> does.
+    ///
+    /// WHAT A PROBE BUILT ON THIS DOES NOT COVER, said here so nobody reads more into a green than it
+    /// carries (raised in review). It writes through the REAL store, so the entity mapping, the tenant
+    /// column, the save guard and the read projection are all the production ones - which is what makes it
+    /// evidence about the query filter. It says NOTHING about whether the evaluator enters the right
+    /// ambient tenant before recording a firing of its own; that is the evaluator's own integration
+    /// question and needs its own test.
     /// </summary>
     internal Rules.SessionRuleFiring SeedRuleFiringForTest(
         TenantId tenant, Guid ruleId, string sessionId, string reason, DateTime nowUtc)
@@ -886,10 +893,6 @@ public sealed class GatewayHost : IAsyncDisposable
             grounding: "seeded by a test",
             nowUtc: nowUtc);
     }
-
-    /// <summary>Test-only: the rule store, so a cross-tenant probe can assert against the store the routes
-    /// reach rather than only against what the routes chose to serve.</summary>
-    internal Rules.SessionRuleStore SessionRulesForTest => _sessionRules;
 
     /// <summary>Test-only: the session supervisor (issue #915), so a test can drive a real Working -&gt; idle
     /// transition into the REAL engine. Null until StartAsync builds it.</summary>
