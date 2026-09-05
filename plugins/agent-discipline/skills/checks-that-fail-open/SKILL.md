@@ -102,12 +102,12 @@ A wrong conclusion gets argued with. A right conclusion with false evidence gets
 
 ## Applying it to review, which is where it costs most
 
-- Post findings to the pull request **as you go**, and post a **PASS** there too, naming what you checked AND what you could not reach. A pass with no stated scope cannot be judged by anyone who was not there - and everybody who was there is exactly the population that disappears.
-- **Name the artifact, not just "durably".** The tiers are not equal: a pull request comment beats a pushed file beats a committed file beats a local one beats a message. "Durably" with no named target lets someone pick the weakest rung and believe they complied.
+- State a **PASS** as explicitly as a defect, naming what you checked AND what you could not reach. A pass with no stated scope cannot be judged by anyone who was not there - and everybody who was there is exactly the population that disappears. Report it wherever the review was asked for; if you have been asked to publish it somewhere, publish the same scope there.
+- **Name the artifact, not just "durably".** Where a verdict is recorded decides whether it survives, and the tiers are not equal: a comment on the change beats a pushed file beats a committed file beats a local one beats a message that scrolls away. "Durably" with no named target lets someone pick the weakest rung and believe they complied. Do not write to anywhere you were not asked to write - a review that posts itself somewhere unexpected is its own defect.
 - A verdict on file that covers a commit which is no longer the head **is not a verdict on the head**. A verification has a timestamp.
 - **A comment describing a fix is itself a claim, and goes stale like any other text.** A durability rule manufactures this surface: telling a fleet to write everything down produces comment blocks, inventory rows and defect narratives, all of which read as commentary and none of which is exempt. The rule ships with the leg-hunt attached.
 
-## The COUNT-SHAPED check, and three siblings (2026-08-20, new-studio maps)
+## The COUNT-SHAPED check, and three siblings (2026-08-20)
 
 Four more, in one evening, between two sessions. The first three are one shape and it is not
 covered above: it is not an absence, it is a **comparison of two numbers where BOTH SIDES FILTER
@@ -211,7 +211,7 @@ being right while the check was broken look identical in the report. The second 
 being wrong, because being wrong gets fixed. It is the mirror of the RIGHT-claim-on-WRONG-evidence
 section above, seen from the checker's side rather than the author's.
 
-## An extraction whose END is arbitrary (2026-08-21, new-studio train map)
+## An extraction whose END is arbitrary (2026-08-21)
 
 Different from the range anchored on a heading in the list of eight above, and it is worth
 keeping both: there the range failed to match and yielded nothing, which at least LOOKS empty.
@@ -244,7 +244,7 @@ end that means something. `+14` means "as far as I guessed".
 The general form is the same root as everything else here: the window stood in for the document.
 And the tell is the one below - `+14` is a specific value, so it is a hand-kept list of one.
 
-## The CATEGORY standing in for the ANSWER (2026-08-21, new-studio train map)
+## The CATEGORY standing in for the ANSWER (2026-08-21)
 
 A screen pointed at a wide log returned `HTTP 500`. It was not a crash. The renderer had
 DECLINED, deliberately, above a threshold of `len(model.stations) > 60`, and had written the
@@ -322,7 +322,7 @@ which is the opposite of true.
 own earlier write-up** - especially from your own earlier write-up, because that is the copy you
 trust without noticing you are trusting it.
 
-## SELECTING THE WRONG LINE, which returns something complete and false (2026-08-21, new-studio train map)
+## SELECTING THE WRONG LINE, which returns something complete and false (2026-08-21)
 
 Different from the truncated tail in the eight, and the difference is the whole
 point. That one LOST content - `Delivered to <name> (1 session(s)).` wrapped and
@@ -457,10 +457,11 @@ Exit 0 says nothing failed. It does not say your 812 tests ran.
 
 ### The same shape in the skill cache itself
 
-Checking whether an entry had landed, this skill's own local copy at
-`~/.claude/skills/checks-that-fail-open/SKILL.md` was a version behind. Searching
-it for a section that had just been published returned nothing, and the next step
-would have been to report the section missing - from a v4, about a v5.
+Checking whether an entry had landed, the local copy of a shared document -
+this very skill, cached on disk by the agent that had loaded it - was a version
+behind. Searching it for a section that had just been published returned nothing,
+and the next step would have been to report the section missing: from a v4, about
+a v5.
 
 **A local cache of a shared document is a hand-kept copy that looks
 authoritative and carries no version on its face.** Fetch from the source before

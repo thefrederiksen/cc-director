@@ -19,13 +19,16 @@ this shell is not inside a DevThrottle-launched session.
 ## Find out what exists before you act
 
 ```
-cc-devthrottle actions --json     # every verb this installed version supports
+cc-devthrottle actions --json     # the agent-discoverable actions this version exposes
 cc-devthrottle session whoami     # this session's own id, name, machine and repository
 cc-devthrottle session list       # every session across every attached computer
 ```
 
 Read `actions --json` when mapping a request onto a command rather than guessing at a
-flag. It describes the version that is actually installed.
+flag: it describes the version that is actually installed, rather than the version you
+remember. It is the agent-discoverable set, not an exhaustive list of every command -
+`cc-devthrottle <group> --help` is the complete surface, and some commands documented
+below appear only there.
 
 ## Address a session by id prefix or by name
 

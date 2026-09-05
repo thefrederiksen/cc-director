@@ -98,9 +98,11 @@ not only Claude Code.
 Install guidance and session-to-session messaging. Useful once you have DevThrottle,
 and honestly useless before that, which is why it is the second plugin and not the first.
 
-**Skills never mention the product.** A skill body is loaded straight into your agent as
-instructions; putting a pitch there would be an advert injected into your context, so the
-marketing stays on this page where you chose to read it.
+**The `agent-discipline` skills never mention the product, and no skill here pitches it.**
+A skill body is loaded straight into your agent as instructions, so a pitch there would be
+an advert injected into your context. The two skills above are about DevThrottle because
+documenting it is what they are for -- they tell you how to install it and how to use it,
+and they do not sell it. The selling stays on this page, where you chose to read it.
 
 ---
 

@@ -7,16 +7,12 @@
   },
   "description": "Skills published by DevThrottle: discipline skills about evidence that work anywhere, and the skills for people who run DevThrottle itself.",
   "version": "1.0.0",
-  "metadata": {
-    "pluginRoot": "./plugins"
-  },
   "plugins": [
     {
       "name": "agent-discipline",
       "displayName": "Agent Discipline",
       "source": "./plugins/agent-discipline",
       "description": "Three skills about evidence: checks that pass because nothing ran, proofs that cover something other than what you changed, and destructive sweeps that delete what they could not identify. No product, no setup, no dependencies.",
-      "version": "1.0.0",
       "author": {
         "name": "DevThrottle",
         "url": "https://devthrottle.com"
@@ -32,7 +28,6 @@
       "displayName": "DevThrottle",
       "source": "./plugins/devthrottle",
       "description": "For people running DevThrottle: how to install it, and how a session talks to the other sessions running across your machines.",
-      "version": "1.0.0",
       "author": {
         "name": "DevThrottle",
         "url": "https://devthrottle.com"

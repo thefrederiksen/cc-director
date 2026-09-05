@@ -1,8 +1,7 @@
 # Agent Discipline
 
-Three skills about evidence. They install into any agent that reads `SKILL.md`, they
-name no product, they need no setup, and they work on the first repository you point
-them at.
+Three skills about evidence. They name no product, they need no setup, and they work on
+the first repository you point them at.
 
 ```
 /plugin marketplace add thefrederiksen/devthrottle
@@ -43,7 +42,7 @@ you never look at DevThrottle, they still work.
 ## Portability
 
 Each skill carries only the fields in the [agentskills.io](https://agentskills.io)
-specification - `name`, `description`, `license` - and no host-specific extensions, so
-the same files load under any agent that implements the standard.
+specification - `name`, `description`, `license` - and no host-specific extensions, so the
+same files load under any agent that implements that standard, not only Claude Code.
 
 MIT licensed.

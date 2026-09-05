@@ -66,8 +66,9 @@ comment. Never leave them disagreeing.
    deny-list and it is wrong.
 3. **Take the backup in the same breath as the delete**, not as a separate earlier step. A gap between
    snapshot and sweep is a window another writer can fill.
-4. **Check who else is live in the same place.** Read the registry; never broadcast to ask. A shared
-   working tree with another session in it is not yours to reset.
+4. **Check who else is live in the same place.** Establish it by reading - process lists, lock files,
+   whatever inventory of running work you have - rather than by asking around and taking silence for
+   an answer. A working tree with somebody else's work in it is not yours to reset.
 5. **Prefer reversible.** Push a backup ref, move to a quarantine directory, rename rather than remove.
    Something you can undo tomorrow is worth far more than the disk it costs tonight.
 
