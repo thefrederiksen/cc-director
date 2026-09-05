@@ -138,6 +138,26 @@ public sealed class TurnLogRecorder : IDisposable
         var gaps = new List<TurnLogGap>();
 
         var session = _env.LocateSession(signal.Tenant, signal.SessionId);
+
+        // FILL IN THE MACHINE NAME THE RAW PUSH LEAVES EMPTY. A Director sends its sessions without one and
+        // the Gateway fills it from the Director's registration when it serves the session list; a capture
+        // reads the pushed snapshot, which is one layer earlier, so it sees the blank. Left alone, every
+        // record on the fleet says its computer is "unknown" and the bundles land in a directory of that
+        // name - a corpus that cannot say which machine a turn happened on, while the Gateway knew all
+        // along. The snapshot is the caller's to modify by contract, so nothing else is disturbed.
+        if (session is not null && string.IsNullOrWhiteSpace(session.MachineName))
+        {
+            try
+            {
+                var resolved = _env.ResolveMachineName(signal.Tenant, signal.DirectorId);
+                if (!string.IsNullOrWhiteSpace(resolved)) session.MachineName = resolved!;
+            }
+            catch (Exception ex)
+            {
+                gaps.Add(new TurnLogGap { Part = "machine-name", Reason = ex.Message });
+            }
+        }
+
         if (session is null)
         {
             // We keep going deliberately. A session that has already gone - deleted, or its Director dropped

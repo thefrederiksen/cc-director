@@ -2672,7 +2672,11 @@ public sealed class GatewayHost : IAsyncDisposable
             // wrong account.
             conversation: ReadTurnLogConversation,
             settings: _tenantSettingsResolver,
-            isVoiceSession: (tenant, sessionId) => _voiceService?.IsVoiceSession(tenant, sessionId) ?? false),
+            isVoiceSession: (tenant, sessionId) => _voiceService?.IsVoiceSession(tenant, sessionId) ?? false,
+            // The SAME source the session listing uses to fill this in (see GatewayEndpoints, where a
+            // Director-supplied name wins and an empty one is enriched from the registration). A capture
+            // reads the raw pushed snapshot, which never passes through that step.
+            machineName: (tenant, directorId) => Registry.Get(tenant, directorId)?.MachineName),
             // Every read the capture makes is partitioned, exactly as the supervisor's are. Without this the
             // capture runs with no tenant in scope, every read is denied, and the corpus fills with records
             // whose screen and conversation are permanently missing.

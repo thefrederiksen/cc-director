@@ -32,6 +32,7 @@ internal sealed class GatewayTurnLogEnvironment : ITurnLogEnvironment
     private readonly Func<TenantId, string, StoredConversationSnapshot?> _conversation;
     private readonly TenantSettingsResolver _settings;
     private readonly Func<TenantId, string, bool> _isVoiceSession;
+    private readonly Func<TenantId, string, string?> _machineName;
 
     public GatewayTurnLogEnvironment(
         TurnLogSwitchStore switches,
@@ -40,7 +41,8 @@ internal sealed class GatewayTurnLogEnvironment : ITurnLogEnvironment
         Func<TenantId, string, SessionDto?> locate,
         Func<TenantId, string, StoredConversationSnapshot?> conversation,
         TenantSettingsResolver settings,
-        Func<TenantId, string, bool> isVoiceSession)
+        Func<TenantId, string, bool> isVoiceSession,
+        Func<TenantId, string, string?> machineName)
     {
         _switches = switches ?? throw new ArgumentNullException(nameof(switches));
         _writer = writer ?? throw new ArgumentNullException(nameof(writer));
@@ -49,6 +51,7 @@ internal sealed class GatewayTurnLogEnvironment : ITurnLogEnvironment
         _conversation = conversation ?? throw new ArgumentNullException(nameof(conversation));
         _settings = settings ?? throw new ArgumentNullException(nameof(settings));
         _isVoiceSession = isVoiceSession ?? throw new ArgumentNullException(nameof(isVoiceSession));
+        _machineName = machineName ?? throw new ArgumentNullException(nameof(machineName));
     }
 
     /// <inheritdoc />
@@ -87,6 +90,9 @@ internal sealed class GatewayTurnLogEnvironment : ITurnLogEnvironment
 
     /// <inheritdoc />
     public bool? IsVoiceSession(TenantId tenant, string sessionId) => _isVoiceSession(tenant, sessionId);
+
+    /// <inheritdoc />
+    public string? ResolveMachineName(TenantId tenant, string directorId) => _machineName(tenant, directorId);
 
     /// <inheritdoc />
     public string? Write(TurnLogRecord record)
