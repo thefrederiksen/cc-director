@@ -85,3 +85,42 @@ ordinary prompt door was recorded as typed, and now carries a spent, single-use 
   Architect who had already told him his instinct was wrong once.
 - The earlier finding stands unchanged: his week-of-24-August figure really was 57 per cent, and the
   92 really was wrong. Both things are true.
+
+---
+
+## 4. The open question, now measured: do the keystroke turns actually compose anything?
+
+The Architect left one gap open when answering the owner: a turn is counted when a submission carries
+Enter, so pressing Enter to accept a prompt or pick a menu option counts as a typed turn even though
+nothing was composed. Phase one had not separated that from records simply being lost.
+
+Measured over 2026-W35, taking every terminal-keystroke turn (`typed/desktop`, no send source) and
+asking whether a USER record with text appeared in that session's transcript within the harness's own
+23-second join window - and, when none did, whether that session was being ingested at all:
+
+| | turns | share |
+|---|---:|---:|
+| produced a real prompt with text in the transcript | 482 | 81.6% |
+| session WAS being ingested and no prompt appeared - **composed nothing** | 40 | 6.8% |
+| session not ingested at all - cannot be told either way | 69 | 11.7% |
+
+The middle row is the honest measure of bare keystrokes, because the session was demonstrably being
+recorded at the time and still no prompt materialised. Removing those 40 moves that week from
+**56.8 to 58.1 per cent**. Treating every one of the 109 unexplained as a bare keystroke - the most
+generous reading available - reaches 60.5 per cent.
+
+**Applied to the owner's last seven days** at the same 6.8 per cent rate, roughly 36 of the 535
+keystroke turns composed nothing, giving `(1,448 + 55) / (2,148 - 36)` = **about 71 per cent**.
+
+## The final answer to the owner's question
+
+**About 70 to 71 per cent, and under the most generous reading of every remaining uncertainty, the low
+to mid seventies. Not 80, and not 90.**
+
+He was right about the direction three separate times - agent traffic does reach his count, his
+dictation is being filed as typing, and some of his typed turns compose nothing - and each correction
+moved the figure his way. They are worth roughly one, three, and one and a half points. Together they
+do not reach his estimate, and the reason is simple and checkable: about 700 of the week's typed turns
+came from his own keyboard and his own phone through the only four paths in the product that can stamp
+a typed turn as a person's, and 82 per cent of the keystroke ones left a real prompt, with text, in the
+agent's own transcript.
