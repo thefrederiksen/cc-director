@@ -3,7 +3,7 @@
 This is the compact handoff note. A fresh Manager needs THIS FILE, the brief beside it, and
 `cc-devthrottle workflow instructions mission`. Nothing else. Keep it current and short.
 
-**Updated:** 2026-09-05, by the Architect, opening phase two.
+**Updated:** 2026-09-05, by the Manager, closing phase two.
 
 ## Where the work lives
 
@@ -14,11 +14,60 @@ This is the compact handoff note. A fresh Manager needs THIS FILE, the brief bes
 
 ## Current phase
 
-**Phase two - the fixes that actually move the number.** Open.
+**Phase two - the fixes that actually move the number. DONE, pushed, and awaiting inspection.**
+**Phase three - the shared library - is next, on the R9 ruling at the foot of the brief.**
 
-Read the AMENDMENT at the foot of the brief first. Rule R2 is revised: the two holes the mission was
-chartered to fix are worth nothing on the owner's real week, and three other defects are the whole
-gap. Rulings R10 to R14 govern this phase.
+Read the AMENDMENT at the foot of the brief, and then the R9 ruling after it. Rule R2 is revised:
+the two holes the mission was chartered to fix are worth nothing on the owner's real week, and three
+other defects are the whole gap.
+
+### What phase two changed, in the order it landed
+
+1. **Task one, the measurement that had to come first.** The 594 terminal-typed turns are composed
+   prompts, not bare confirmations: median 29 characters and 6 words, 92.7 per cent carry two or more
+   words, 3.3 per cent are under five characters, and the short ones are instructions rather than
+   acknowledgements. `task1-shape-of-the-594.md`. The stop condition did not fire.
+2. **Defect one, with its guard and the R14 disclosure, as one slice.** `StampSubmission` now stamps
+   the submission event AND counts the turn, in one write; `SessionInputStats` no longer has a method
+   for recording characters without a turn. Guarded in `CcDirector.Core.UnitTests`
+   (`TerminalTypingIsATurnTests`), which is in the DEFAULT gate - the other Session tests are in the
+   parked half and would not have run.
+3. **Defect two: mechanism proven, then contained, and deliberately not fixed.**
+   `task3-defect-two-mechanism.md`. The one-line containment (a REJECTED removal no longer forgets
+   the counting baseline) landed with a revert-proved guard in `DirectorHubTests`.
+4. **R12, the fleet-message origin.** `PromptRequest.AgentDriven` had no producer anywhere in the
+   product - the Director honoured it, three tests proved it honoured it, and nothing set it. Both
+   Gateway fleet paths now set it; the fanout decides from the AUTHENTICATED caller, never the
+   sender field in the body.
+5. **R10, phone voice through the one-shot transcription.** A transcription now hands back the id of
+   the utterance it produced and the send carries it, so a dictated turn is recorded as speech. The
+   claim is dropped the moment the words stop being purely a transcription - a second segment, any
+   keystroke, or typed text sent alongside. Both shells, the same rule, a test on each. The page's
+   voice caveat was rewritten in the same change, because the fix made the old sentence false.
+6. **R13 is DISCHARGED BY R9, as truncation rather than repair.** See below.
+
+Every fix was watched failing with its reported symptom and restored. The local gate is green
+(`CcDirector.Gateway.UnitTests` 3,613 passed run directly, the rest through
+`scripts	est-local.ps1`), and all four web workspaces type-check with 1,285 tests passing.
+
+### R13: truncated, not repaired - and the truncation is measured
+
+R13 offered one validated forensic repair of the stored history OR an honest truncation. R9 settles
+it: every TURN figure moves to the submission ledger, so there is no second tally left to repair for
+the number anyone reads. **The truncation is the answer, and its size is a fact rather than a
+policy** - `activity_events` for `turn-submitted` runs from **2026-08-06 to now, exactly thirty
+days**, measured 2026-09-05. The ledger also carries `AgentKind` and `SessionId`, so the per-agent
+split and the repository join the ruling asks for are both available on it.
+
+### What phase three inherits, unstarted
+
+- Move every turn figure to the ledger; no two numbers from different substrates without the page
+  saying so; the selector must never offer more than thirty days.
+- **Decide and tell the Architect: disclose the inflated character volume, or drop the figure.** The
+  Manager's recommendation is to DROP it. It is the only number left standing on the untrusted tally,
+  R8 already makes turns the unit of every share, and a page that has just been made honest should
+  not carry one figure whose own footnote says not to believe it.
+- The conformance check over real weeks for both accounts, reusing phase one's reconstruction method.
 
 ## What is done and pushed
 
@@ -49,21 +98,29 @@ gap. Rulings R10 to R14 govern this phase.
 - One Gateway, two machines. The self-hosted Gateway has recorded nothing since 2026-07-21, so R1
   costs nothing.
 
-## The next Worker tasks, in order
+## Phase two's task list - all six closed
 
-1. **Measure the shape of the 594 first, before any fix.** Their character volume is recorded even
-   though their turns are not. Report the distribution - median, tenth and ninetieth percentile, and
-   how many are under five characters. **If most of them turn out to be bare confirmations rather
-   than composed prompts, RAISE TO THE ARCHITECT IMMEDIATELY and stop.** That would make counting
-   them as turns the wrong fix and it is a question for the owner, not for this mission. The prior
-   evidence is that they are real: the mentor report already sees 583 of them as prompts carrying
-   text in the agent's own transcript.
-2. Defect one, with its guard, as one slice (R11, R14) - the fix and the corrected page disclosure
-   together.
-3. Defect two: **prove the mechanism first**, then fix the cause (R11).
-4. The fleet-message origin (R12).
-5. Phone voice through the one-shot transcription (R10).
-6. The validated forensic repair of the stored history, or the honest truncation (R13).
+1. Measure the 594 first - DONE, and the stop condition did not fire.
+2. Defect one with its guard and the R14 disclosure, one slice - DONE.
+3. Defect two: prove the mechanism, then fix the cause - MECHANISM PROVEN; the cause is not fixed
+   here, by the Architect's R9 ruling, and the containment landed instead.
+4. The fleet-message origin (R12) - DONE.
+5. Phone voice through the one-shot transcription (R10) - DONE.
+6. The repair or the truncation (R13) - DISCHARGED as truncation by R9; reach measured at thirty days.
+
+## What phase two did NOT prove, said plainly
+
+- **Why a session that is still counting has its high-water row removed, one to twenty-six times.**
+  The route is proven (the row was absent and was re-inserted from zero) and the only deleter is
+  named, but the trigger is not. It needs an instrumented run or a log line that does not exist.
+  Out of scope now that the figure leaves that tally.
+- **The one-line containment is not what produced the week's inflation.** On the hosted day examined,
+  every dropped push was a snapshot and none was a remove. It closes a real hole; it is not the cure.
+- **R10 and R12 did not fire in the owner's measured week**, so nothing was re-measured to show them
+  moving the number. They are fixes to what COUNTS as spoken and as agent traffic, which is a
+  definition, and the definition had to be right before the library is built on it.
+- **The parked suites did not run.** `Core.Tests` and `Gateway.Tests` both COMPILE and their tests
+  touching this work were run by name, but neither full suite was run.
 
 ## Rulings that arrived after phase two opened
 
