@@ -15,6 +15,7 @@ namespace CcDirector.Gateway.Tests;
 /// key per session, revoked when the session is reaped, lapsed when nobody revoked it, and a database
 /// failure that denies rather than grants.
 /// </summary>
+[Collection(FileLogCaptureCollection.Name)]
 public sealed class SessionKeyRegistryTests : IDisposable
 {
     private readonly GatewayDbTestHarness _harness = new();
@@ -228,21 +229,27 @@ public sealed class SessionKeyRegistryTests : IDisposable
         var registry = Registry(() => now);
         var session = Guid.NewGuid();
         var hash = GatewaySessionKey.Hash(GatewaySessionKey.Mint());
-        Assert.True(registry.Register(Account, "director-1", session.ToString(), hash, now + SessionKeyRegistry.MaxSessionKeyLifetime));
+        var initialExpiry = now + SessionKeyRegistry.MaxSessionKeyLifetime;
 
-        IReadOnlyList<string> refreshLines;
+        IReadOnlyList<string> registrationLines;
         using (var log = FileLog.RedirectForTests())
         {
+            Assert.True(registry.Register(Account, "director-1", session.ToString(), hash, initialExpiry));
             now = now.AddSeconds(10);
             Assert.True(registry.Register(Account, "director-1", session.ToString(), hash, now + TimeSpan.FromDays(1)));
-            refreshLines = log.DrainAndReadLines();
+            registrationLines = log.DrainAndReadLines();
         }
 
         using var ctx = _harness.Open().CreateUnscopedContext();
         var row = ctx.SessionKeys.Single();
         Assert.Equal(new DateTime(2026, 9, 4, 12, 0, 0, DateTimeKind.Utc), row.IssuedAtUtc);
         Assert.Equal(new DateTime(2026, 9, 5, 0, 0, 0, DateTimeKind.Utc), row.ExpiresAtUtc);
-        Assert.Empty(refreshLines);
+
+        // Presence proves the capture worked; exactly one proves the ten-second refresh added no cap or
+        // success line. Naming the first expiry also distinguishes that control from the later refresh.
+        var recorded = Assert.Single(registrationLines);
+        Assert.Contains($"session={session}", recorded, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains($"expires={initialExpiry:O}", recorded, StringComparison.Ordinal);
     }
 
     [Fact]
