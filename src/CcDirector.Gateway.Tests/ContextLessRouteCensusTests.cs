@@ -64,6 +64,33 @@ public sealed class ContextLessRouteCensusTests
     ///   /gateway/workflow-runs/{id}                workflow_runs
     ///   /gateway/skills/{id} and its family        skills, skill_versions, skill_files,
     ///                                              skill_tenant_overrides
+    ///   /gateway/rules/{id:guid} (+ /firings)      session_rules, session_rule_firings
+    ///
+    /// THE RULES FAMILY, ruled on here because it shipped without one (issue #2679). The three routes take
+    /// an id and no HttpContext, and nothing in the route confines them - the confinement is in the MODEL,
+    /// which is why reading the endpoint alone cannot settle it:
+    ///
+    ///   - SessionRuleEntity and SessionRuleFiringEntity both derive from GatewayMintedKeyEntity, which
+    ///     derives from TenantScopedEntity. TenantScopeGuardTests reflects the REAL EF model and asserts
+    ///     every such entity carries tenant_id AND the deny-by-default global query filter, so these two
+    ///     are covered by a check that enumerates rather than by a list somebody keeps.
+    ///   - The primary key is a Guid the Gateway MINTS, with a private setter only that base class can
+    ///     write, so there is no caller-supplied key to squat on and no existence oracle - the hazard the
+    ///     guard's third rule exists for.
+    ///   - GatewayDatabase.CreateContext() sets ActiveTenant from the ambient scope the device-key
+    ///     middleware entered, and THROWS on an invalid tenant rather than defaulting, so a rules query
+    ///     cannot run unscoped.
+    ///   - Writes additionally meet GatewayDbContext.SaveChanges, which refuses a row whose TenantId is not
+    ///     the connection's.
+    ///
+    /// EXECUTED, not argued: CensusRouteTenancyProbeTests hands the other account a real rule id and asks
+    /// it to read, delete, and read the firing record. The firing probe seeds a firing through the store
+    /// first, because no route creates one and two empty lists compared against each other would pass with
+    /// the filter removed.
+    ///
+    /// POST /gateway/rules and POST /gateway/rules/{id:guid}/promote are NOT in this census and that is not
+    /// an omission: the first takes no path parameter, and the second takes the HttpContext it needs to
+    /// mint a promotion grant, so neither is context-less.
     ///
     /// Hosted deny (the legacy same-machine discovery plane - not a tenant surface at all; refused on
     /// hosted, gated on the process-level hosted flag and proven by
@@ -74,6 +101,7 @@ public sealed class ContextLessRouteCensusTests
     {
         "DELETE /cron/jobs/{id}",
         "DELETE /directors/{id}/registration",
+        "DELETE /gateway/rules/{id:guid}",
         "DELETE /gateway/skills/{id}",
         "DELETE /gateway/workflows/{id}",
         "DELETE /lists/{name}/consumer",
@@ -81,6 +109,8 @@ public sealed class ContextLessRouteCensusTests
         "GET /cron/jobs/{id}",
         "GET /cron/jobs/{id}/runs",
         "GET /gateway/governance/session-spend/{sessionId}",
+        "GET /gateway/rules/{id:guid}",
+        "GET /gateway/rules/{id:guid}/firings",
         "GET /gateway/skills/{id}",
         "GET /gateway/skills/{id}/body",
         "GET /gateway/skills/{id}/files/{**filePath}",
