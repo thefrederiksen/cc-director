@@ -1,7 +1,16 @@
 # throttle-conformance
 
-The check that fails when the two consumers of the Your Throttle figure diverge (mission "Clean up Your
-Throttle", phase three). Both consumers read one substrate - the Gateway's submission ledger
+Two things, in one place: the Your Throttle library's COMMAND LINE (`ThrottleConformance.csproj`), and the
+check that fails when the two consumers of the figure diverge (`conformance.py`), both from the mission
+"Clean up Your Throttle".
+
+**The command line is run by two callers.** The conformance check below runs it, and from phase five the
+mentor report itself runs it: the report asks this tool for its figure rather than computing a ring of its
+own (ruling R3), so the report's number and the page's number are one number by construction. It prints the
+figure in exactly the shape `GET /stats/data` serves under `throttle`, window statement and selector choices
+included. The project keeps its historical name; both callers know it by this name.
+
+**The check** (phase three) fails when the two consumers diverge. Both consumers read one substrate - the Gateway's submission ledger
 (`activity_events`, `turn-submitted`) - through one definition, stated once in
 `src/CcDirector.Gateway/Throttle/ThrottleDefinition.cs`:
 

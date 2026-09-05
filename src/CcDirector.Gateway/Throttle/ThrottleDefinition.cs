@@ -59,6 +59,16 @@ public static class ThrottleDefinition
     public static readonly int RetentionDays = (int)Activity.ActivityRetentionSweep.RetentionPeriod.TotalDays;
 
     /// <summary>
+    /// The window the feed answers when none is asked for: a ROLLING seven days ending now (ruling R5, landed
+    /// directly per R15). Seven because the owner asked for "seven days, so it lines up with the report";
+    /// rolling rather than the report's calendar week because Your Throttle is a live dashboard that refreshes
+    /// while he works, and a Monday-to-Sunday default would show a nearly empty page every Monday morning. The
+    /// report's own link names its exact week instead (<c>week=YYYY-Www</c>), so following it shows the
+    /// identical number. Always one of <see cref="ThrottleWindowChoices.Days"/>.
+    /// </summary>
+    public const int DefaultWindowDays = 7;
+
+    /// <summary>
     /// One turn-submitted row, projected to the five facts the definition reads. Anything else on the row
     /// (terminal diffs, detector fields) is never loaded.
     /// </summary>

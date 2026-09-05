@@ -16,8 +16,10 @@ namespace CcDirector.Gateway.Stats;
 /// Two routes, both behind the normal Gateway auth (the owner's signed-in browser reaches them):
 ///   GET /stats       - RETIRED as a page (issue #587): redirects to the Cockpit /your-throttle route.
 ///   GET /stats/data  - the figures as JSON, which the Cockpit and mobile pages fetch through client-core.
-///                      Optional <c>from</c> and <c>to</c> (ISO 8601, UTC) name the window; absent, the
-///                      window is the ledger's whole retention, and the answer says so either way.
+///                      The window is one of four forms (see <see cref="ResolveWindow"/>): none (a rolling
+///                      seven days), <c>days=N</c>, <c>week=YYYY-Www</c> in the caller's display zone, or
+///                      <c>from</c> and <c>to</c> (ISO 8601, UTC). The answer states the window either way,
+///                      and carries the selector's choices so the clients offer only what the ledger holds.
 ///
 /// EVERY COUNT OF TURNS ON THIS FEED COMES FROM THE SUBMISSION LEDGER, THROUGH THE ONE DEFINITION IN
 /// <see cref="ThrottleDefinition"/> (mission "Clean up Your Throttle", ruling R9). The feed used to serve
@@ -136,24 +138,74 @@ public static class StatsPageEndpoint
     }
 
     /// <summary>
-    /// The window a request names, or the default. Both <c>from</c> and <c>to</c> or neither; ISO 8601 read
-    /// as UTC; the end after the start; and never longer than the ledger keeps - a window the store cannot
-    /// honestly answer is refused with the reason, not served with silent zeroes at the front.
+    /// The window a request names, or the default. FOUR FORMS, ONE AT A TIME (mission "Clean up Your
+    /// Throttle", rulings R4 and R5):
+    /// <list type="bullet">
+    /// <item>none - the default: a rolling <see cref="ThrottleDefinition.DefaultWindowDays"/> days ending now;</item>
+    /// <item><c>days=N</c> - a rolling N days ending now, N one of <see cref="ThrottleWindowChoices.Days"/>;</item>
+    /// <item><c>week=YYYY-Www</c> - the ISO week, Monday 00:00 to the next Monday 00:00 in the caller's display
+    /// zone (<paramref name="timeZone"/>, the same IANA id the feed serves), converted to UTC. This is the form
+    /// the mentor report's link uses, so following it shows the identical number the report printed;</item>
+    /// <item><c>from</c> and <c>to</c> - explicit ISO 8601 UTC instants.</item>
+    /// </list>
+    /// Two forms in one request is refused naming both. A length that is not a choice is refused naming the
+    /// choices; a malformed week is refused saying what a week looks like; a week the ledger no longer holds,
+    /// or one that has not begun, is refused with the reason. A week still in progress is served - its window
+    /// ends at the next Monday and the record simply stops at now. Half a window, a window that ends before it
+    /// starts, or a window longer than the ledger keeps: refused as before. A window the store cannot honestly
+    /// answer is never served with silent zeroes at the front.
     /// </summary>
-    internal static (ThrottleWindowDto? Window, string? Error) ResolveWindow(string? from, string? to, DateTime nowUtc)
+    /// <exception cref="InvalidOperationException">The display zone is not one this runtime knows. That is a
+    /// loud failure on purpose: the zone was validated when it was stored, so an unknown one here is a broken
+    /// runtime, and answering in UTC instead would show the reader a week that is not the one they asked for.</exception>
+    internal static (ThrottleWindowDto? Window, string? Error) ResolveWindow(
+        string? from, string? to, string? days, string? week, string timeZone, DateTime nowUtc)
     {
         var retention = ThrottleDefinition.RetentionDays;
-        if (string.IsNullOrWhiteSpace(from) && string.IsNullOrWhiteSpace(to))
+        var choices = ThrottleWindowChoices.Serve();
+
+        var forms = new List<string>();
+        if (!string.IsNullOrWhiteSpace(from) || !string.IsNullOrWhiteSpace(to)) forms.Add("'from' and 'to'");
+        if (!string.IsNullOrWhiteSpace(days)) forms.Add("'days'");
+        if (!string.IsNullOrWhiteSpace(week)) forms.Add("'week'");
+        if (forms.Count > 1)
+            return (null, $"only one of 'days', 'week', or 'from' and 'to' may be given; this request carries {string.Join(" and ", forms)}");
+
+        if (forms.Count == 0)
         {
-            var end = nowUtc;
+            var length = ThrottleDefinition.DefaultWindowDays;
             return (new ThrottleWindowDto
             {
-                FromUtc = end.AddDays(-retention),
-                ToUtc = end,
+                FromUtc = nowUtc.AddDays(-length),
+                ToUtc = nowUtc,
                 IsDefault = true,
-                Label = $"Last {retention} days",
+                Kind = ThrottleWindowKinds.Default,
+                Days = length,
+                Label = ThrottleWindowChoices.Label(length),
+                Choices = choices,
             }, null);
         }
+
+        if (!string.IsNullOrWhiteSpace(days))
+        {
+            if (!int.TryParse(days.Trim(), NumberStyles.None, CultureInfo.InvariantCulture, out var length)
+                || !ThrottleWindowChoices.Days.Contains(length))
+                return (null, $"'days' must be one of {ThrottleWindowChoices.Named()}");
+            return (new ThrottleWindowDto
+            {
+                FromUtc = nowUtc.AddDays(-length),
+                ToUtc = nowUtc,
+                IsDefault = false,
+                Kind = ThrottleWindowKinds.Days,
+                Days = length,
+                Label = ThrottleWindowChoices.Label(length),
+                Choices = choices,
+            }, null);
+        }
+
+        if (!string.IsNullOrWhiteSpace(week))
+            return ResolveWeek(week.Trim(), timeZone, nowUtc, choices);
+
         if (string.IsNullOrWhiteSpace(from) || string.IsNullOrWhiteSpace(to))
             return (null, "'from' and 'to' must be given together, both as ISO 8601 UTC instants");
 
@@ -168,7 +220,57 @@ public static class StatsPageEndpoint
             FromUtc = fromUtc,
             ToUtc = toUtc,
             IsDefault = false,
+            Kind = ThrottleWindowKinds.Explicit,
             Label = $"{fromUtc:yyyy-MM-dd HH:mm} to {toUtc:yyyy-MM-dd HH:mm} UTC",
+            Choices = choices,
+        }, null);
+    }
+
+    /// <summary>What a week looks like on the query string, for the refusal that says so.</summary>
+    private const string WeekShape = "an ISO week such as 2026-W35";
+
+    private static (ThrottleWindowDto? Window, string? Error) ResolveWeek(
+        string week, string timeZone, DateTime nowUtc, List<ThrottleWindowChoiceDto> choices)
+    {
+        // YYYY-Www, and nothing else: four digits, a dash, a capital W, two digits.
+        if (week.Length != 8 || week[4] != '-' || week[5] != 'W'
+            || !int.TryParse(week.AsSpan(0, 4), NumberStyles.None, CultureInfo.InvariantCulture, out var year)
+            || !int.TryParse(week.AsSpan(6, 2), NumberStyles.None, CultureInfo.InvariantCulture, out var number)
+            || year < 1 || number < 1 || number > ISOWeek.GetWeeksInYear(year))
+            return (null, $"'week' must be {WeekShape}");
+
+        TimeZoneInfo zone;
+        try
+        {
+            zone = TimeZoneInfo.FindSystemTimeZoneById(timeZone);
+        }
+        catch (Exception ex) when (ex is TimeZoneNotFoundException or InvalidTimeZoneException)
+        {
+            throw new InvalidOperationException(
+                $"the display time zone '{timeZone}' is not one this Gateway knows, so week {week} cannot be resolved", ex);
+        }
+
+        var monday = ISOWeek.ToDateTime(year, number, DayOfWeek.Monday).Date;
+        var fromUtc = Reports.MorningReportWindow.StartOfLocalDayUtc(monday, zone);
+        var toUtc = Reports.MorningReportWindow.StartOfLocalDayUtc(monday.AddDays(7), zone);
+
+        var retention = ThrottleDefinition.RetentionDays;
+        if (fromUtc < nowUtc.AddDays(-retention))
+            return (null, $"week {week} begins before the {retention} days the submission ledger keeps");
+        if (fromUtc > nowUtc)
+            return (null, $"week {week} has not begun yet");
+
+        var sunday = monday.AddDays(6);
+        return (new ThrottleWindowDto
+        {
+            FromUtc = fromUtc,
+            ToUtc = toUtc,
+            IsDefault = false,
+            Kind = ThrottleWindowKinds.Week,
+            Week = week,
+            Label = string.Format(CultureInfo.InvariantCulture,
+                "Week {0} of {1}, {2:dddd d MMMM} to {3:dddd d MMMM} ({4})", number, year, monday, sunday, timeZone),
+            Choices = choices,
         }, null);
     }
 
@@ -226,7 +328,7 @@ public static class StatsPageEndpoint
         // The empty prefix keeps the route paths written out in full, exactly as before.
         var app = outer.MapGroup("");
 
-        app.MapGet("/stats/data", (HttpContext ctx, string? from, string? to) =>
+        app.MapGet("/stats/data", (HttpContext ctx, string? from, string? to, string? days, string? week) =>
         {
             // Ruling R1: hosted only. Ruling R6: say so in one sentence, on a 200 the page renders - the
             // absence of a figure is a fact about this Gateway, not an error in the request.
@@ -239,7 +341,14 @@ public static class StatsPageEndpoint
             if (resolved is null) return TenantRequired();
             var tenant = resolved.Value;
 
-            var (window, windowError) = ResolveWindow(from, to, DateTime.UtcNow);
+            // The display time zone the hourly charts render local clock hours in (IANA id), read for the
+            // caller's tenant (issue #2017): the tenant override else the operator global default. Resolved
+            // before the window because a week is Monday to Monday in THIS zone.
+            var timeZone = tenantSettings is not null
+                ? tenantSettings.TimeZone(tenant)
+                : CcDirector.Core.Configuration.TimeZoneConfig.Get();
+
+            var (window, windowError) = ResolveWindow(from, to, days, week, timeZone, DateTime.UtcNow);
             if (window is null)
                 return Results.BadRequest(new { error = windowError });
 
@@ -256,11 +365,7 @@ public static class StatsPageEndpoint
             {
                 available = true,
                 generatedAtUtc = DateTime.UtcNow,
-                // The display time zone the hourly charts render local clock hours in (IANA id), read for the
-                // caller's tenant (issue #2017): the tenant override else the operator global default.
-                timeZone = tenantSettings is not null
-                    ? tenantSettings.TimeZone(tenant)
-                    : CcDirector.Core.Configuration.TimeZoneConfig.Get(),
+                timeZone,
                 // THE FIGURE. One definition, one substrate, the window stated, the excluded population
                 // disclosed. Every count of turns the page shows is read from this one block - the buckets,
                 // the hourly series, the per-repository and per-agent splits, and the turns the fleet drove

@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
@@ -222,7 +223,7 @@ public sealed class ThrottleFeedReadsTheLedgerTests : IAsyncLifetime
 
         var window = figure.GetProperty("window");
         Assert.True(window.GetProperty("isDefault").GetBoolean());
-        Assert.Equal("Last 30 days", window.GetProperty("label").GetString());
+        Assert.Equal("Last 7 days", window.GetProperty("label").GetString());
         Assert.Equal(30, figure.GetProperty("ledger").GetProperty("retentionDays").GetInt32());
         Assert.True(figure.GetProperty("ledger").GetProperty("earliestUtc").GetDateTime() <= t.AddSeconds(1));
 
@@ -275,6 +276,144 @@ public sealed class ThrottleFeedReadsTheLedgerTests : IAsyncLifetime
         // Half a window is not a window.
         var half = await Feed(_keyA, "?from=" + Uri.EscapeDataString(now.AddDays(-3).ToString("O")));
         Assert.Equal(HttpStatusCode.BadRequest, half.StatusCode);
+    }
+
+    // ---- the period selector (phase four, rulings R4, R5 and R15) ----------------------------------
+
+    private static readonly (int Days, string Label)[] ExpectedChoices =
+    {
+        (1, "Last 24 hours"), (7, "Last 7 days"), (14, "Last 14 days"), (30, "Last 30 days"),
+    };
+
+    private static (int Days, string Label)[] ChoicesOf(JsonElement window)
+        => window.GetProperty("choices").EnumerateArray()
+            .Select(c => (c.GetProperty("days").GetInt32(), c.GetProperty("label").GetString()!)).ToArray();
+
+    /// <summary>The default is a rolling SEVEN days (R5, landed directly per R15): a row eight days old is
+    /// outside it, the answer says which kind of window it is, and the selector's choices ride along.</summary>
+    [Fact]
+    public async Task The_default_window_is_a_rolling_seven_days_and_carries_the_choices()
+    {
+        var now = DateTime.UtcNow;
+        await Post(_keyA,
+            Submission(now.AddDays(-3), "s-d", "typed/desktop", null),
+            Submission(now.AddDays(-8), "s-d", "voice/desktop", "UserInput"));
+
+        var (a, _) = await FeedBody(_keyA);
+        var figure = a.GetProperty("throttle");
+        Assert.Equal(1, figure.GetProperty("turns").GetInt64());
+        Assert.Equal(1, figure.GetProperty("typedTurns").GetInt64());
+
+        var window = figure.GetProperty("window");
+        Assert.True(window.GetProperty("isDefault").GetBoolean());
+        Assert.Equal("default", window.GetProperty("kind").GetString());
+        Assert.Equal(7, window.GetProperty("days").GetInt32());
+        Assert.Equal(JsonValueKind.Null, window.GetProperty("week").ValueKind);
+        Assert.Equal("Last 7 days", window.GetProperty("label").GetString());
+        var from = window.GetProperty("fromUtc").GetDateTime();
+        var to = window.GetProperty("toUtc").GetDateTime();
+        Assert.Equal(TimeSpan.FromDays(7), to - from);
+        Assert.InRange(to, now.AddSeconds(-5), now.AddMinutes(1));
+        Assert.Equal(ExpectedChoices, ChoicesOf(window));
+        Assert.Equal(ThrottleDefinition.RetentionDays, ChoicesOf(window)[^1].Days);
+    }
+
+    [Fact]
+    public async Task A_served_length_is_honoured_and_one_that_is_not_a_choice_is_refused_naming_the_choices()
+    {
+        var now = DateTime.UtcNow;
+        await Post(_keyA,
+            Submission(now.AddDays(-3), "s-l", "typed/desktop", null),
+            Submission(now.AddDays(-8), "s-l", "voice/desktop", "UserInput"));
+
+        var (a, _) = await FeedBody(_keyA, "?days=14");
+        var figure = a.GetProperty("throttle");
+        Assert.Equal(2, figure.GetProperty("turns").GetInt64());
+        var window = figure.GetProperty("window");
+        Assert.False(window.GetProperty("isDefault").GetBoolean());
+        Assert.Equal("days", window.GetProperty("kind").GetString());
+        Assert.Equal(14, window.GetProperty("days").GetInt32());
+        Assert.Equal("Last 14 days", window.GetProperty("label").GetString());
+        Assert.Equal(TimeSpan.FromDays(14),
+            window.GetProperty("toUtc").GetDateTime() - window.GetProperty("fromUtc").GetDateTime());
+        Assert.Equal(ExpectedChoices, ChoicesOf(window));
+
+        var refused = await Feed(_keyA, "?days=9");
+        Assert.Equal(HttpStatusCode.BadRequest, refused.StatusCode);
+        Assert.Contains("'days' must be one of 1, 7, 14, 30", await refused.Content.ReadAsStringAsync());
+    }
+
+    /// <summary>
+    /// The mentor report's link asks for exactly the week it covered (R5): Monday 00:00 to the next Monday
+    /// 00:00 in the TENANT's display zone, which is set through the real settings route. The Gateway resolves
+    /// the bounds, names the week in its own label, and counts only the rows inside them - a row one minute
+    /// before the Toronto Monday midnight is out, one minute after is in.
+    /// </summary>
+    [Fact]
+    public async Task A_week_is_Monday_to_Monday_in_the_tenants_own_zone_counting_only_the_rows_inside_it()
+    {
+        var zoneSet = new HttpRequestMessage(HttpMethod.Put, "gateway/time-zone")
+        {
+            Content = JsonContent.Create(new { timeZone = "America/Toronto" }),
+        };
+        zoneSet.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _keyA);
+        Assert.Equal(HttpStatusCode.OK, (await _http.SendAsync(zoneSet)).StatusCode);
+
+        // Last week, so the week is complete and well inside the thirty days the ledger keeps.
+        var now = DateTime.UtcNow;
+        var lastWeek = now.AddDays(-7);
+        var year = ISOWeek.GetYear(lastWeek);
+        var number = ISOWeek.GetWeekOfYear(lastWeek);
+        var week = $"{year}-W{number:00}";
+        var zone = TimeZoneInfo.FindSystemTimeZoneById("America/Toronto");
+        var monday = ISOWeek.ToDateTime(year, number, DayOfWeek.Monday).Date;
+        var expectedFrom = TimeZoneInfo.ConvertTimeToUtc(DateTime.SpecifyKind(monday, DateTimeKind.Unspecified), zone);
+        var expectedTo = TimeZoneInfo.ConvertTimeToUtc(DateTime.SpecifyKind(monday.AddDays(7), DateTimeKind.Unspecified), zone);
+
+        await Post(_keyA,
+            Submission(expectedFrom.AddMinutes(-1), "s-k", "typed/desktop", null),
+            Submission(expectedFrom.AddMinutes(1), "s-k", "typed/desktop", null),
+            Submission(expectedTo.AddMinutes(-1), "s-k", "voice/desktop", "UserInput"),
+            Submission(expectedTo.AddMinutes(1), "s-k", "voice/desktop", "UserInput"));
+
+        var (a, _) = await FeedBody(_keyA, "?week=" + week);
+        Assert.Equal("America/Toronto", a.GetProperty("timeZone").GetString());
+        var figure = a.GetProperty("throttle");
+        Assert.Equal(2, figure.GetProperty("turns").GetInt64());
+        Assert.Equal(1, figure.GetProperty("typedTurns").GetInt64());
+        Assert.Equal(1, figure.GetProperty("voiceTurns").GetInt64());
+
+        var window = figure.GetProperty("window");
+        Assert.False(window.GetProperty("isDefault").GetBoolean());
+        Assert.Equal("week", window.GetProperty("kind").GetString());
+        Assert.Equal(week, window.GetProperty("week").GetString());
+        Assert.Equal(JsonValueKind.Null, window.GetProperty("days").ValueKind);
+        Assert.Equal(expectedFrom, window.GetProperty("fromUtc").GetDateTime().ToUniversalTime());
+        Assert.Equal(expectedTo, window.GetProperty("toUtc").GetDateTime().ToUniversalTime());
+        var label = window.GetProperty("label").GetString()!;
+        Assert.StartsWith($"Week {number} of {year}, Monday {monday:d MMMM}", label);
+        Assert.EndsWith("(America/Toronto)", label);
+        Assert.Equal(ExpectedChoices, ChoicesOf(window));
+    }
+
+    [Fact]
+    public async Task A_week_older_than_the_ledger_keeps_is_refused_and_so_are_two_forms_at_once()
+    {
+        var eightWeeksAgo = DateTime.UtcNow.AddDays(-56);
+        var old = $"{ISOWeek.GetYear(eightWeeksAgo)}-W{ISOWeek.GetWeekOfYear(eightWeeksAgo):00}";
+        var refused = await Feed(_keyA, "?week=" + old);
+        Assert.Equal(HttpStatusCode.BadRequest, refused.StatusCode);
+        Assert.Contains("submission ledger keeps", await refused.Content.ReadAsStringAsync());
+
+        var lastWeek = DateTime.UtcNow.AddDays(-7);
+        var recent = $"{ISOWeek.GetYear(lastWeek)}-W{ISOWeek.GetWeekOfYear(lastWeek):00}";
+        var both = await Feed(_keyA, "?days=7&week=" + recent);
+        Assert.Equal(HttpStatusCode.BadRequest, both.StatusCode);
+        Assert.Contains("'days' and 'week'", await both.Content.ReadAsStringAsync());
+
+        var malformed = await Feed(_keyA, "?week=last-week");
+        Assert.Equal(HttpStatusCode.BadRequest, malformed.StatusCode);
+        Assert.Contains("an ISO week such as", await malformed.Content.ReadAsStringAsync());
     }
 
     [Fact]

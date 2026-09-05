@@ -66,11 +66,35 @@ public sealed class ThrottleWindowDto
     /// <summary>Exclusive end, UTC.</summary>
     public DateTime ToUtc { get; set; }
 
-    /// <summary>True when the caller asked for no window and got the default (the ledger's whole retention).</summary>
+    /// <summary>True when the caller asked for no window and got the default (a rolling
+    /// <see cref="ThrottleDefinition.DefaultWindowDays"/> days ending now).</summary>
     public bool IsDefault { get; set; }
 
     /// <summary>The Gateway's own plain-English name for the window, rendered verbatim by the clients (the
-    /// dumb-client rule): "Last 30 days", or the explicit dates when a caller named them.</summary>
+    /// dumb-client rule): "Last 7 days", the week's name in the caller's zone, or the explicit dates when a
+    /// caller named them.</summary>
+    public string Label { get; set; } = "";
+
+    /// <summary>Which of the four query forms produced this window (<see cref="ThrottleWindowKinds"/>):
+    /// <c>default</c>, <c>days</c>, <c>week</c> or <c>explicit</c>. The selector marks its choice from this.</summary>
+    public string Kind { get; set; } = ThrottleWindowKinds.Explicit;
+
+    /// <summary>The rolling length in days when <see cref="Kind"/> is <c>default</c> or <c>days</c>; null otherwise.</summary>
+    public int? Days { get; set; }
+
+    /// <summary>The ISO week ("2026-W35") when <see cref="Kind"/> is <c>week</c>; null otherwise.</summary>
+    public string? Week { get; set; }
+
+    /// <summary>The selector's options, served on EVERY answer in order
+    /// (<see cref="ThrottleWindowChoices"/>), so no client keeps a list of lengths of its own.</summary>
+    public List<ThrottleWindowChoiceDto> Choices { get; set; } = new();
+}
+
+/// <summary>One length the period selector offers, with the Gateway's name for it.</summary>
+public sealed class ThrottleWindowChoiceDto
+{
+    public int Days { get; set; }
+
     public string Label { get; set; } = "";
 }
 

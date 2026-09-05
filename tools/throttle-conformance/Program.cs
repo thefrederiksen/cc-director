@@ -5,13 +5,18 @@ using CcDirector.Gateway.Data;
 using CcDirector.Gateway.Throttle;
 using Microsoft.EntityFrameworkCore;
 
-// The library side of the Your Throttle conformance check (mission "Clean up Your Throttle", phase three).
+// THE LIBRARY'S COMMAND LINE (mission "Clean up Your Throttle"). It runs the Gateway's OWN definition -
+// ThrottleDefinition, fed by ThrottleLedgerReader, the code behind GET /stats/data - against a Gateway
+// database named on the command line, for one tenant over one window, and prints the figure as the same
+// camel-cased JSON the feed serves under "throttle".
 //
-// It runs the Gateway's OWN definition - ThrottleDefinition, fed by ThrottleLedgerReader, the code behind
-// GET /stats/data - against a Gateway database named on the command line, for one tenant over one window,
-// and prints the figure as the same camel-cased JSON the feed serves under "throttle". conformance.py runs
-// this, computes the same figure through the mentor harness's own reader of the same ledger, and fails
-// when they disagree.
+// TWO CALLERS, and it is a second implementation for neither:
+//   1. The conformance check (phase three): conformance.py runs this, computes the same figure through the
+//      mentor harness's own reader of the same ledger, and fails when they disagree.
+//   2. The mentor report itself (phase five, ruling R3): the report asks THIS tool for its figure rather
+//      than computing a ring of its own, which is what makes the report a consumer of the library and the
+//      report's number and the page's number one number.
+// The project name is historical; do not rename it, both callers know it by this name.
 //
 // READ-ONLY BY CONSTRUCTION. It opens a plain DbContext over the connection string and never touches
 // GatewayDatabase.Open(), which checks for and applies pending migrations - a conformance check must never
@@ -49,8 +54,12 @@ try
     });
 
     var figure = reader.Compute(new TenantId(args_.Tenant), args_.FromUtc, args_.ToUtc);
+    // The same window shape GET /stats/data serves for an explicit from/to: kind, label, and the selector's
+    // choices, so the JSON this prints is the feed's shape and a consumer reads one shape, not two.
     figure.Window.IsDefault = false;
+    figure.Window.Kind = ThrottleWindowKinds.Explicit;
     figure.Window.Label = $"{args_.FromUtc:yyyy-MM-dd HH:mm} to {args_.ToUtc:yyyy-MM-dd HH:mm} UTC";
+    figure.Window.Choices = ThrottleWindowChoices.Serve();
 
     var json = JsonSerializer.Serialize(figure, new JsonSerializerOptions
     {
