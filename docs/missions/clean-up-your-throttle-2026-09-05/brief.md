@@ -326,3 +326,46 @@ that already landed stands on its own merits.
    being right to showing more and contradicting the page above.
 4. Defect two's wider fault, the incarnation token, and the Director-to-Gateway contract change are
    **explicitly OUT OF SCOPE** for this mission. Record the fault; do not build the token.
+
+---
+
+## Rulings closing phase two, 2026-09-05
+
+### R16 - Character volume is DROPPED from the page, not disclosed
+
+The Manager's recommendation, and it is right: after R9 it would be the only figure left standing on
+the untrusted tally, R8 already makes turns the unit of every share, and a page that has just been
+made honest must not carry one number whose own footnote says do not believe it. Drop it. If it is
+ever wanted back, it comes back from a trustworthy source, not with an apology attached.
+
+### R17 - The ledger predicate is stated EXACTLY, once, and the excluded population is disclosed
+
+Phase three does not get to paraphrase this. The shared figure is computed over `activity_events`
+rows where `EventType` is `turn-submitted` **and `InputOrigin` is present**, grouped by the origin's
+modality and surface. Three consequences, all of which must be true in the code and proven by a test:
+
+- **The 594 terminal-typed turns are IN.** They carry a null `SendSource` and a present `InputOrigin`,
+  so the predicate takes them. They were never missing from the ledger - only from the tally.
+- **Agent traffic is OUT by record**, now that R12 makes the fleet paths stamp the send source. Not
+  out because no surface happened to resolve, which is how it was being excluded before.
+- **Submissions with no `InputOrigin` are OUT and DISCLOSED as a count beside the share** (R7). On the
+  measured week that population was 502 rows, and it is where agent traffic used to hide. A share
+  computed over a subset publishes the size of the subset.
+
+### R18 - The parked Gateway suite runs IN FULL before anything lands
+
+Phase two closed with the default gate green, all four web workspaces green, and the two parked suites
+merely compiling with affected tests run by name. That is not sufficient for this mission: the work is
+almost entirely Gateway statistics, and `Gateway.Tests` is precisely the suite the default gate does
+not run. Phase three's first act is `.\scripts\test-local.ps1 -Parked`, in full, with the result
+recorded. A red there is a phase two defect, not a phase three one.
+
+### An honesty note the final report must carry
+
+Defect one's fix - counting a turn typed at the terminal - corrects the `stat_delta` tally, and R9 then
+stops the shared figure reading that tally at all. **The 28.3 points are recovered by moving to the
+ledger, not by that fix.** The fix is kept because a correct counter is better than an incorrect one
+for anything still reading it, and its companion R14 disclosure correction stands on its own. But the
+report must not claim the fix as the thing that corrected the number. The rest of phase two's work -
+the fleet-message source and the dictation modality - lands at the submission choke point and
+therefore reaches the ledger as well as the tally, so it is not affected by this.

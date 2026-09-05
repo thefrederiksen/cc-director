@@ -14,60 +14,13 @@ This is the compact handoff note. A fresh Manager needs THIS FILE, the brief bes
 
 ## Current phase
 
-**Phase two - the fixes that actually move the number. DONE, pushed, and awaiting inspection.**
-**Phase three - the shared library - is next, on the R9 ruling at the foot of the brief.**
+**Phase three - the library.** Open, on ruling R9. Phase two is DONE and pushed.
 
-Read the AMENDMENT at the foot of the brief, and then the R9 ruling after it. Rule R2 is revised:
-the two holes the mission was chartered to fix are worth nothing on the owner's real week, and three
-other defects are the whole gap.
+Read the brief's last three sections before planning: R9 (the shape), then the rulings closing phase
+two (R16 to R18 and the honesty note).
 
-### What phase two changed, in the order it landed
-
-1. **Task one, the measurement that had to come first.** The 594 terminal-typed turns are composed
-   prompts, not bare confirmations: median 29 characters and 6 words, 92.7 per cent carry two or more
-   words, 3.3 per cent are under five characters, and the short ones are instructions rather than
-   acknowledgements. `task1-shape-of-the-594.md`. The stop condition did not fire.
-2. **Defect one, with its guard and the R14 disclosure, as one slice.** `StampSubmission` now stamps
-   the submission event AND counts the turn, in one write; `SessionInputStats` no longer has a method
-   for recording characters without a turn. Guarded in `CcDirector.Core.UnitTests`
-   (`TerminalTypingIsATurnTests`), which is in the DEFAULT gate - the other Session tests are in the
-   parked half and would not have run.
-3. **Defect two: mechanism proven, then contained, and deliberately not fixed.**
-   `task3-defect-two-mechanism.md`. The one-line containment (a REJECTED removal no longer forgets
-   the counting baseline) landed with a revert-proved guard in `DirectorHubTests`.
-4. **R12, the fleet-message origin.** `PromptRequest.AgentDriven` had no producer anywhere in the
-   product - the Director honoured it, three tests proved it honoured it, and nothing set it. Both
-   Gateway fleet paths now set it; the fanout decides from the AUTHENTICATED caller, never the
-   sender field in the body.
-5. **R10, phone voice through the one-shot transcription.** A transcription now hands back the id of
-   the utterance it produced and the send carries it, so a dictated turn is recorded as speech. The
-   claim is dropped the moment the words stop being purely a transcription - a second segment, any
-   keystroke, or typed text sent alongside. Both shells, the same rule, a test on each. The page's
-   voice caveat was rewritten in the same change, because the fix made the old sentence false.
-6. **R13 is DISCHARGED BY R9, as truncation rather than repair.** See below.
-
-Every fix was watched failing with its reported symptom and restored. The local gate is green
-(`CcDirector.Gateway.UnitTests` 3,613 passed run directly, the rest through
-`scripts	est-local.ps1`), and all four web workspaces type-check with 1,285 tests passing.
-
-### R13: truncated, not repaired - and the truncation is measured
-
-R13 offered one validated forensic repair of the stored history OR an honest truncation. R9 settles
-it: every TURN figure moves to the submission ledger, so there is no second tally left to repair for
-the number anyone reads. **The truncation is the answer, and its size is a fact rather than a
-policy** - `activity_events` for `turn-submitted` runs from **2026-08-06 to now, exactly thirty
-days**, measured 2026-09-05. The ledger also carries `AgentKind` and `SessionId`, so the per-agent
-split and the repository join the ruling asks for are both available on it.
-
-### What phase three inherits, unstarted
-
-- Move every turn figure to the ledger; no two numbers from different substrates without the page
-  saying so; the selector must never offer more than thirty days.
-- **Decide and tell the Architect: disclose the inflated character volume, or drop the figure.** The
-  Manager's recommendation is to DROP it. It is the only number left standing on the untrusted tally,
-  R8 already makes turns the unit of every share, and a page that has just been made honest should
-  not carry one figure whose own footnote says not to believe it.
-- The conformance check over real weeks for both accounts, reusing phase one's reconstruction method.
+**First act, before any library work: `.\scripts	est-local.ps1 -Parked`, in full.** Phase two closed
+without it and the mission is almost entirely Gateway statistics. A red there belongs to phase two.
 
 ## What is done and pushed
 
