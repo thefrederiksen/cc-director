@@ -17,8 +17,24 @@ public interface ITurnLogEnvironment
     /// <summary>Whether capture is switched on for this account and machine.</summary>
     bool IsEnabled(string account, string machine);
 
-    /// <summary>The session as the Gateway holds it, whole. Null when the session cannot be located.</summary>
+    /// <summary>
+    /// The session as the Gateway holds it, whole. Null when the session cannot be located.
+    ///
+    /// The returned object is the CALLER'S to modify - implementations hand back a snapshot, never the
+    /// stored instance - so the recorder may fill in fields the raw push leaves empty without disturbing
+    /// anything else reading the roster.
+    /// </summary>
     SessionDto? LocateSession(TenantId tenant, string sessionId);
+
+    /// <summary>
+    /// The name of the computer a Director runs on, from that Director's own registration. Null when the
+    /// Director is not currently registered.
+    ///
+    /// It exists because a Director pushes its sessions with an EMPTY machine name and the Gateway fills it
+    /// in from the registration when it SERVES the session list. Anything reading the raw pushed snapshot -
+    /// which is what a turn-end capture does - is one layer earlier than that, and sees the blank.
+    /// </summary>
+    string? ResolveMachineName(TenantId tenant, string directorId);
 
     /// <summary>The live terminal grid. Null when it cannot be read.</summary>
     Task<ScreenGridResponse?> ReadScreenAsync(TenantId tenant, string directorId, string sessionId, CancellationToken ct);

@@ -393,6 +393,53 @@ public sealed class TurnLogRecorderTests
         Parts = new List<HistoryPartDto> { new() { Kind = "ToolResult", Text = text, ToolId = id } },
     };
 
+    [Fact]
+    public async Task CaptureAsync_TheRawPushHasNoMachineName_ItIsFilledFromTheDirectorRegistration()
+    {
+        // A Director pushes its sessions with an empty machine name; the Gateway fills it in when it SERVES
+        // the session list. A capture reads the pushed snapshot, one layer earlier, so it sees the blank -
+        // and every record on the fleet said its computer was "unknown" while the Gateway knew all along.
+        var env = new FakeEnvironment();
+        env.Session!.MachineName = "";
+        var recorder = new TurnLogRecorder(env);
+
+        await recorder.CaptureAsync(Signal(), CancellationToken.None);
+
+        var record = Assert.Single(env.Written);
+        Assert.Equal("SOREN-NORTH", record.Glance.Computer);
+        Assert.Equal("SOREN-NORTH", record.Session!.MachineName);
+    }
+
+    [Fact]
+    public async Task CaptureAsync_TheSessionAlreadyCarriesAMachineName_TheRegistrationIsNotConsulted()
+    {
+        // The Director's own answer wins, exactly as it does in the session listing. Asking the
+        // registration anyway would let a re-registered Director rename a machine under a session that had
+        // already told us what it was.
+        var env = new FakeEnvironment();
+        env.Session!.MachineName = "SOREN-SOUTH";
+        var recorder = new TurnLogRecorder(env);
+
+        await recorder.CaptureAsync(Signal(), CancellationToken.None);
+
+        var record = Assert.Single(env.Written);
+        Assert.Equal("SOREN-SOUTH", record.Glance.Computer);
+        Assert.Equal(0, env.MachineNameLookups);
+    }
+
+    [Fact]
+    public async Task CaptureAsync_NeitherTheSessionNorTheRegistrationKnowsTheMachine_TheRecordSaysNothingRatherThanGuessing()
+    {
+        var env = new FakeEnvironment { MachineNameFromRegistration = null };
+        env.Session!.MachineName = "";
+        var recorder = new TurnLogRecorder(env);
+
+        await recorder.CaptureAsync(Signal(), CancellationToken.None);
+
+        var record = Assert.Single(env.Written);
+        Assert.Null(record.Glance.Computer);
+    }
+
     private static HistoryMessageDto Message(string role, string text) => new()
     {
         Role = role,
@@ -410,6 +457,8 @@ public sealed class TurnLogRecorderTests
             = new(true, "transcript-1", Array.Empty<HistoryMessageDto>());
         public Exception? ScreenThrows { get; set; }
         public Exception? SupervisorEnabledThrows { get; set; }
+        public string? MachineNameFromRegistration { get; set; } = "SOREN-NORTH";
+        public int MachineNameLookups { get; private set; }
 
         public int ScreenReads { get; private set; }
         public int ScrollbackReads { get; private set; }
@@ -446,6 +495,12 @@ public sealed class TurnLogRecorderTests
         }
 
         public bool? IsVoiceSession(TenantId tenant, string sessionId) => false;
+
+        public string? ResolveMachineName(TenantId tenant, string directorId)
+        {
+            MachineNameLookups++;
+            return MachineNameFromRegistration;
+        }
 
         public string? Write(TurnLogRecord record)
         {
