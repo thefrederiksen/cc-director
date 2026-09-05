@@ -1,6 +1,7 @@
 # Mission: Clean up Your Throttle
 
-**Status: ACTIVE.** Chartered 2026-09-05. Architect seated. Phase one (measure) not yet started.
+**Status: ACTIVE.** Chartered 2026-09-05. Phase one (measure) DONE. Phase two open.
+**Read the amendment at the foot of this document before acting on rule R2 - it is revised.**
 
 **Branch:** `mission/clean-up-your-throttle` in BOTH repositories.
 **Worktrees:** `D:/ReposFred/devthrottle-throttle` (product) and
@@ -194,3 +195,65 @@ brings the owner one report.
   going forward; history is not rewritten.
 - Any public or signed link to a person's Your Throttle.
 - Anything that makes a third implementation of this figure.
+
+---
+
+## Amendment, 2026-09-05, after phase one
+
+Phase one measured the week and refuted the premise R2 was built on. The Architect independently
+verified the two load-bearing claims before ruling: `InputStats.RecordTurn` has exactly one call site
+in the product (`Session.cs:2592`, inside the text path) and `Session.SendInput` genuinely never
+reaches it; and `ChatService` has no construction site and no mapped route anywhere in the repository.
+
+### R10 - R2 is REVISED. Neither named hole is what makes the number wrong.
+
+The owner ruled "fix those two" when they were presented to him as the two things pushing his spoken
+share down. On his own week they are worth nothing and at most 3.4 points. His ruling was about
+fixing what makes his number wrong; applied to the facts phase one established, that is defects one
+and two, not these.
+
+- **The chat relay is NOT fixed.** `ChatService` is unreachable: nothing constructs it, no route maps
+  it, and the Control API that hosted it was removed. Fixing unreachable code is theatre. Report it,
+  recommend `thefrederiksen/devthrottle#2639` be closed as unreachable, and leave the code where it
+  is - deleting it is a different mission.
+- **Phone voice through the one-shot transcription IS still fixed.** It is real, reachable and cheap,
+  and what counts as spoken belongs to the shared definition even in a week when it did not fire.
+
+### R11 - Phase two's core is defect one and defect two
+
+- **Defect one:** `Session.SendInput` records characters and never records the turn, so 594 of the
+  week's 771 typed submissions are missing from the ring's denominator. Fix it **at the same choke
+  point**: the submission event and the turn counter are written eight lines apart in the same method
+  and must be written together, so that they cannot disagree again.
+- **Defect two:** the store counts 2,061 of 3,279 turns more than once. **The mechanism must be
+  proven before anything is changed.** Phase one names a plausible path and explicitly refuses to
+  claim it. No fix lands on a hypothesis; find the cause, then fix the cause.
+
+### R12 - The fleet-message origin is a third fix, and a small one
+
+292 of the week's 296 fleet messages were recorded as ordinary `UserInput` with no origin rather than
+as agent traffic. They are left out of his count by accident rather than by record, and the
+agent-driven lane under-reports by the same 292. The right answer by the wrong road is not good enough
+for a definition that has to be provably correct.
+
+### R13 - One validated forensic repair of the stored history, or an honest truncation
+
+The store cannot be corrected in place. Attempt ONE repair over the whole run using the same
+restatement-adjudicated walk phase one proved against the submission ledger to within one turn, and
+validate it the same way. If it validates, the history stands. If it does not, truncate to the repair
+date and say so on the page. A repaired number that was not validated is never served.
+
+### R14 - The page's own disclosure is false and is fixed in the same slice as defect one
+
+`StatsPageEndpoint.NotCaptured` tells the reader that terminal typing on the desktop is counted. It is
+counted in characters and not in turns, and the ring is a turn ratio. The sentence is false for the
+only unit the reader sees.
+
+### For phase three, carried forward rather than settled
+
+Phase one's strongest structural finding is that **there are two counters at one choke point**: the
+submission ledger and the Your Throttle turn tally, written in the same method, eight lines apart,
+free to drift - and they did, by 28 points. R9 stays open, but the shape that removes the defect
+rather than repairing it is the one where Your Throttle's figure derives from the same submission
+ledger the report already reconciles against, instead of from a second tally beside it. Phase three
+weighs that against what `stat_delta` gives cheaply that `activity_events` does not.
