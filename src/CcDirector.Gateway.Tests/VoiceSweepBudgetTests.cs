@@ -38,12 +38,28 @@ public sealed class VoiceSweepBudgetTests : IAsyncLifetime
 {
     private const string Token = "test-token";
 
+    /// <summary>
+    /// A suffix unique to THIS test instance, so no two tests in this class ever name the same session.
+    ///
+    /// It is not tidiness, it is the isolation this class depends on, and it was missing: the tests here
+    /// share a process, xunit gives each one a fresh GatewayHost but the Gateway's turn store resolves under
+    /// the process-wide CcStorage root, so a conversation SEEDED for a session id by one test is still there
+    /// when another test uses the same id. The recovery test seeds one; with the ids shared, whichever order
+    /// put it first left the starvation test looking at a session that already had words - which reads
+    /// exactly like the sweep having skipped it. Caught by the full suite after both tests passed together
+    /// in isolation, because the two orders are not the same experiment.
+    ///
+    /// The rule to carry: a test's isolation is only as deep as the deepest thing the production code
+    /// derives from, and a Gateway per test is NOT a store per test.
+    /// </summary>
+    private readonly string _run = Guid.NewGuid().ToString("N")[..8];
+
     /// <summary>Four, because that is how many the account on the hosted Gateway had, and because it is more
     /// than the three-generation cap - so the starvation is reproduced rather than merely described.</summary>
-    private static readonly string[] NoOpSessions =
-        { "sweep-noop-1", "sweep-noop-2", "sweep-noop-3", "sweep-noop-4" };
+    private string[] NoOpSessions => new[]
+        { $"sweep-noop-1-{_run}", $"sweep-noop-2-{_run}", $"sweep-noop-3-{_run}", $"sweep-noop-4-{_run}" };
 
-    private const string NarratableSession = "sweep-narratable";
+    private string NarratableSession => $"sweep-narratable-{_run}";
 
     private TenantId TenantNoOp { get; set; }
     private TenantId TenantNarratable { get; set; }
