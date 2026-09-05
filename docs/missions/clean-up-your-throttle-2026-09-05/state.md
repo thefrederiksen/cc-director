@@ -14,13 +14,22 @@ This is the compact handoff note. A fresh Manager needs THIS FILE, the brief bes
 
 ## Current phase
 
-**Phase three - the library - is DONE and pushed, and the four findings of the independent inspection of
-phase two (`inspection-phase-two.md`, FAIL) are FIXED on the branch with route-crossing tests** - see
-`phase3-library.md`, "The independent inspection of phase two, and its fixes". Phase two needs re-inspection
-by the Architect's call; phase four (the period selector, #2692) is next.
-Read `phase3-library.md` beside this file before planning it: the feed already states its window, takes
-`from` and `to`, and refuses a window longer than the ledger keeps; phase four changes the default from
-thirty days to seven (R15) and adds the selector on both surfaces.
+**Phases four and five - the selector, and the report becomes a consumer.** Open. Phases one, two and
+three are DONE and pushed, and phase two's independent inspection has been fixed.
+
+**Phase four** (`#2692`): the period selector, the default moved to a rolling SEVEN days per R15
+(directly - no sequencing, no migration note), and the window stated on the page. Phase three already
+put the window statement and the exclusions on both pages and in the feed, so the default can move
+without a number quietly changing meaning. Regenerate the OpenAPI client types from a Gateway running
+this code - phase three could not, and said so.
+
+**Phase five** (`#1680`, and R3): in `D:/ReposFred/devthrottle_internal-throttle`, branch
+`mission/clean-up-your-throttle`. TWO things, and the first is the one the mission is FOR:
+1. **The report CONSUMES the library.** Phase three proved the library and the harness agree over real
+   weeks, but the report still computes its own ring from its prompt log. Until it asks the library,
+   R3 is not met and the two numbers are not one number.
+2. The one-sentence link to the reader's own Your Throttle, behind sign-in, in the place the two
+   figures are drawn and in both parts of the email, opening on the week the report covers (R5).
 
 ## What is done and pushed
 
