@@ -3697,6 +3697,9 @@ public sealed class GatewayHost : IAsyncDisposable
         // mapped in the wrong order would read as a broken feature rather than as an ordering mistake.
         _turnLogSwitches ??= new TurnLog.TurnLogSwitchStore(_gatewayDb);
         AdminTurnLogEndpoint.Map(_app, _turnLogSwitches);
+        // The bridge between an administrator's world (emails) and the Gateway's (account ids, Directors).
+        // Without it the turn-log switch above can only be addressed for the administrator's OWN fleet.
+        AdminAccountLookupEndpoint.Map(_app, TenantRegistry, Registry);
 
         // "DevThrottle emails me" relay (issue #1318 consumer): POST /account/email. A session or scheduled
         // run passes a subject + body (+ optional attachments); the Gateway injects its own stored account
