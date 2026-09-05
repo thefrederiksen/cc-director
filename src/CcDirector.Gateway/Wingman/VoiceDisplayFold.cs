@@ -335,8 +335,18 @@ public static class VoiceDisplayFold
     };
 
     /// <summary>
-    /// The verdict for a turn whose narration was ABANDONED (issue #2676): the model did not answer, every
-    /// re-attempt the voice path books has been spent, and no further attempt exists anywhere.
+    /// The verdict for a turn whose narration was ABANDONED (issue #2685): the model leg failed and NO
+    /// further attempt is scheduled for this turn.
+    ///
+    /// THE SENTENCE NAMES NEITHER A CAUSE NOR A COUNT, and both omissions were forced by getting it wrong
+    /// once each. It said "the wingman model did not answer", which became false the day a rate limit -
+    /// an ANSWERED refusal - started arriving here. It then said "the re-attempts for it are used up",
+    /// which is false on the path where a provider asked for a longer wait than this service will hold a
+    /// promise across: that turn's ladder is deliberately left INTACT for a later attempt, and only the
+    /// promise is withdrawn (found in review).
+    ///
+    /// What is true of every path that reaches here, and all the reader needs, is that nothing is coming
+    /// unless they ask. The precise cause is in the log, where the person who can act on it looks.
     ///
     /// Two things separate it from <see cref="GaveUpDisplay"/>, which it sits next to and must not be merged
     /// with. It makes NO claim that anything is still being tried - that sentence is what turned a stalled
@@ -351,8 +361,8 @@ public static class VoiceDisplayFold
         Kind = "notNarrated",
         Tone = "red",
         Label = "Turn not narrated",
-        Message = "The wingman model did not answer, and the retries for this turn are used up, so this turn "
-                + "has no narration. Read the turn, or ask for the narration again.",
+        Message = "This turn has no narration, and nothing further is scheduled to make one. "
+                + "Read the turn, or ask for the narration again.",
         CanGenerate = true,
         WaitedLabel = waited,
     };
