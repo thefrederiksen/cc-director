@@ -1525,11 +1525,35 @@ public sealed class WingmanVoiceService
             // The turn has WORDS at this point - the model answered - so a re-attempt here is cheap in the
             // way that matters: it re-runs the narration from the same reply, and the identity-aware skip
             // means a turn that has since been narrated is left alone.
-            if (!speech.ProducedAudio && speech.WorthAnotherAttempt)
-                NoteNarrationAttemptFailed(tenant, state, sid, route, lastReply,
-                    "the speech provider produced no audio", speech.RetryAfter,
-                    cause: $"speech leg failed{(speech.RetryAfter is { } sra ? $", provider asked for {sra.TotalSeconds:F0}s" : "")}",
-                    epoch: turnEpoch);
+            if (!speech.ProducedAudio)
+            {
+                if (speech.WorthAnotherAttempt)
+                    NoteNarrationAttemptFailed(tenant, state, sid, route, lastReply,
+                        "the speech provider produced no audio", speech.RetryAfter,
+                        cause: $"speech leg failed{(speech.RetryAfter is { } sra ? $", provider asked for {sra.TotalSeconds:F0}s" : "")}",
+                        epoch: turnEpoch);
+                else if (CurrentTurnEpoch(state, sid) == turnEpoch)
+                    // NO AUDIO AND NOTHING BOOKED IS THE ABANDONED CASE, whatever produced it - and this
+                    // arm is the one that catches the outcomes nobody enumerated. Found in review: the
+                    // speech leg can return no audio and record NO state at all (a 200 carrying an empty
+                    // body, or an empty spoken text), and if an earlier attempt had left Retrying standing
+                    // then the screen went back to promising audio with nothing behind it - the very defect
+                    // this change exists to remove, arriving through the one door the classification did
+                    // not name.
+                    //
+                    // Guarded twice over, and by the two different questions that matter. The EPOCH check
+                    // above is what proves this attempt is still speaking about the current turn - which is
+                    // why the ledger-free overload is the right one here: with the turn known to be current,
+                    // an absent ledger entry means no failure has ever been recorded for it, not that the
+                    // turn moved on, and "nothing is pending" is then simply true. The reply-keyed overload
+                    // reads that same absence as "somebody else owns this now" and stays silent, which on
+                    // this path would leave the stale promise exactly where it was.
+                    //
+                    // Harmless where a more specific verdict already applies: an account condition or an
+                    // answered ServiceDown is ranked ahead of this fact by VoiceDisplayFold, so the reader
+                    // still gets the sentence they can act on.
+                    MarkAbandonedIfNothingPending(state, sid);
+            }
             // The model leg ran and answered - TranslateAsync returned rather than throwing
             // WingmanModelRateLimitedException. Reported as true purely so the return honestly says the
             // provider was reached (no caller acts on it now that the shared gate is gone).
@@ -1560,9 +1584,21 @@ public sealed class WingmanVoiceService
     /// again a second after a 429 is how a rate limit becomes a storm.
     /// </param>
     /// <param name="cause">Plain words for the log, so a reader can tell a silence from a refusal.</param>
-    /// <param name="epoch">The turn epoch this attempt started in. If the turn has been superseded since -
-    /// a new turn, a successful narration, voice switched off - this attempt says NOTHING, because every
-    /// sentence it could write would be about a turn that is over.</param>
+    /// <param name="epoch">
+    /// The turn epoch this attempt started in. If the turn has been superseded since - a new turn, a
+    /// successful narration, voice switched off - this method writes NOTHING, because every sentence it
+    /// could write would be about a turn that is over.
+    ///
+    /// WHAT THAT DOES NOT COVER, stated because an earlier version of this comment said a superseded
+    /// attempt "says nothing" full stop, and that was an overclaim (found in review). The guard binds THIS
+    /// method. A slow attempt still passes through <see cref="StoreSpokenAsync"/> first, which records its
+    /// own state and can store audio, and those writes happen before anything here is reached. So a
+    /// narration that was superseded while the speech provider was working can still leave the previous
+    /// turn's clip or its recorded state behind. That window predates this ladder and is bounded by the
+    /// identity-aware regeneration check, which sees a cached reply that is not the current one and
+    /// narrates again; closing it properly means making the store itself epoch-aware, which is a change to
+    /// a method three other callers share and is not attempted here.
+    /// </param>
     private void NoteNarrationAttemptFailed(TenantId tenant, TenantVoiceState state, string sid, SessionVerbClient route, string lastReply, string detail, TimeSpan? retryAfter, string cause, long epoch)
     {
         if (CurrentTurnEpoch(state, sid) != epoch)
@@ -1747,6 +1783,13 @@ public sealed class WingmanVoiceService
     ///
     /// It re-enters <see cref="GenerateAsync"/> rather than the inner attempt, so every guard on the ordinary
     /// path still applies: coalescing, the identity-aware "already narrated" skip, and the reply read itself.
+    ///
+    /// THAT RE-RUNS THE MODEL EVEN WHEN ONLY THE SPEECH LEG FAILED, and it is a deliberate trade rather than
+    /// an oversight (raised in review). Resuming at the speech step would save a model call, and would do it
+    /// by speaking text that was written for a reply this retry has not re-read - so a turn that moved on in
+    /// the meantime would be narrated with the OLD turn's words, which is the failure mode this file has
+    /// spent three issues removing. Re-reading is what makes a re-attempt narrate the CURRENT turn. The cost
+    /// is one extra model call on a speech-only failure, bounded by the same three-rung ladder.
     /// </summary>
     private void ScheduleModelRetry(TenantId tenant, string sid, SessionVerbClient route, TimeSpan delay, string replyKey, long reservation, int attempt, int cap)
     {
