@@ -119,7 +119,8 @@ public sealed class TurnLogWriter
     /// accounts' records into one bundle, so two different accounts' terminals would land in one file - a
     /// failure of the isolation this feature has to keep rather than a tidiness problem. A short hash of the
     /// ORIGINAL value, ordinal and case-sensitive, makes the mapping one-to-one again while the readable
-    /// stem keeps a human able to find the directory they want.
+    /// stem keeps a human able to find the directory they want. The digest is 128 bits: at 32 it was only
+    /// unlikely to collide by accident, which is not the same claim.
     /// </summary>
     internal static string Sanitize(string value)
     {
@@ -132,8 +133,13 @@ public sealed class TurnLogWriter
         if (cleaned.Length > 48) cleaned = cleaned[..48];
         if (cleaned.Length == 0) cleaned = "unnamed";
 
+        // SIXTEEN BYTES, not four. The comment above used to claim the mapping was one-to-one; with a
+        // 32-bit tag it was not, it was merely unlikely to collide by accident - and these segments carry
+        // ACCOUNT identifiers, so a collision co-mingles two accounts' terminals in one bundle. A value
+        // somebody chose to collide is a different problem from a value that happens to, and 32 bits is
+        // within reach of the first. 128 bits is not.
         var digest = Convert.ToHexString(
-            SHA256.HashData(Encoding.UTF8.GetBytes(value)), 0, 4).ToLowerInvariant();
+            SHA256.HashData(Encoding.UTF8.GetBytes(value)), 0, 16).ToLowerInvariant();
         return cleaned + "-" + digest;
     }
 }
