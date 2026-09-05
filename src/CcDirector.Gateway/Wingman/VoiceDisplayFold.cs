@@ -101,7 +101,12 @@ public static class VoiceDisplayFold
     /// running a build that cannot send its conversation, so the Gateway will never hold words to narrate
     /// for it. A SPECIFIC, ACTIONABLE reason with a one-line remedy - which is why it outranks every
     /// "be patient" verdict below it. See <see cref="DirectorTooOldText"/>.</param>
-    public static VoiceDisplay Fold(bool voiceMode, bool agentWorking, bool hasAudio, bool generating, HostedAiState? unavailable, bool nothingToNarrate, bool servedViaFallback = false, DateTime? waitingSince = null, DateTime? utcNow = null, bool directorCannotSendConversation = false)
+    /// <param name="narrationAbandoned">The model leg did not answer, every re-attempt in the voice path's
+    /// bounded budget has been spent, and NOTHING further is scheduled for this turn (issue #2676). The one
+    /// input here that reports a stopped effort rather than a slow one, which is why it displaces the calm
+    /// retrying sentence: "retrying automatically, it should come through shortly" is not a description of a
+    /// turn nobody is working on any more. See <see cref="WingmanVoiceService.NarrationAbandonedFor"/>.</param>
+    public static VoiceDisplay Fold(bool voiceMode, bool agentWorking, bool hasAudio, bool generating, HostedAiState? unavailable, bool nothingToNarrate, bool servedViaFallback = false, DateTime? waitingSince = null, DateTime? utcNow = null, bool directorCannotSendConversation = false, bool narrationAbandoned = false)
     {
         // Computed once, up front, because more than one verdict below carries it: the calm "on its way"
         // wants it so a healthy wait can be seen climbing, and the give-up verdict wants it in its own
@@ -188,6 +193,12 @@ public static class VoiceDisplayFold
         switch (unavailable)
         {
             case HostedAiState.Retrying:
+                // NOTHING IS SCHEDULED, so nothing is on its way. Checked before the elapsed-time give-up
+                // because the two say different things and this one is the stronger claim: gaveUp is "it has
+                // not arrived in three minutes, and we are still trying", while this is "we have stopped
+                // trying". A reader who is told the Gateway is still working on it waits; one who is told the
+                // turn was not narrated goes and reads it.
+                if (narrationAbandoned) return NotNarratedDisplay(waited);
                 // "Voice on its way" is true for a minute and a lie at forty-eight. Past the threshold the
                 // retry stops being news and becomes the thing being reported.
                 if (gaveUp) return GaveUpDisplay(waited);
@@ -252,6 +263,17 @@ public static class VoiceDisplayFold
                 // other machine, and the message names it.
             };
 
+        // THE NARRATION WAS ABANDONED, reached here when the cause was never written into the hosted-AI slot
+        // above (it is cleared on a new turn, and the two are set by different paths). Below the actionable
+        // account conditions and below "update that computer", for the same reason gaveUp is: a remedy the
+        // reader can carry out beats a report of what did not happen. Above nothingToNarrate because the two
+        // describe the same session from different evidence and this one has more - "nothing to read aloud"
+        // is a claim about a conversation, while this was recorded after a reply WAS read and handed to the
+        // model. In practice they never collide (the narration path clears nothingToNarrate before it calls
+        // the model), and the ordering is here because a defence that relies on another file's clearing
+        // discipline is not a defence.
+        if (narrationAbandoned) return NotNarratedDisplay(waited);
+
         // Nothing to read aloud: the session needs the user, but on a prompt / menu, not a text reply. This
         // is the honest state that replaces the old "red badge next to a Generate button that can never
         // work". No button - generating cannot narrate a text reply that does not exist.
@@ -309,6 +331,29 @@ public static class VoiceDisplayFold
         Message = "This turn's narration has not been produced. The Gateway is still trying, "
                 + "and you can read the turn instead.",
         // No Generate button: it would re-run exactly what has already not worked for the whole wait.
+        WaitedLabel = waited,
+    };
+
+    /// <summary>
+    /// The verdict for a turn whose narration was ABANDONED (issue #2676): the model did not answer, every
+    /// re-attempt the voice path books has been spent, and no further attempt exists anywhere.
+    ///
+    /// Two things separate it from <see cref="GaveUpDisplay"/>, which it sits next to and must not be merged
+    /// with. It makes NO claim that anything is still being tried - that sentence is what turned a stalled
+    /// narration into a permanent calm wait. And it DOES offer the Generate button, which gaveUp deliberately
+    /// withholds: gaveUp is said while automatic attempts continue, so a button would only duplicate them,
+    /// whereas here the automatic attempts have stopped and a person asking for one is the only thing left
+    /// that can produce this turn's audio. A model non-answer is transient by definition, so the button is
+    /// not a dead end - it is the one action on this screen that can still work.
+    /// </summary>
+    private static VoiceDisplay NotNarratedDisplay(string? waited) => new()
+    {
+        Kind = "notNarrated",
+        Tone = "red",
+        Label = "Turn not narrated",
+        Message = "The wingman model did not answer, and the retries for this turn are used up, so this turn "
+                + "has no narration. Read the turn, or ask for the narration again.",
+        CanGenerate = true,
         WaitedLabel = waited,
     };
 
