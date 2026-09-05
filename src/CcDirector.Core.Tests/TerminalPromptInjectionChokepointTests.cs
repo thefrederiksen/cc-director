@@ -94,7 +94,10 @@ public sealed class TerminalPromptInjectionChokepointTests
         // only difference is that the Gateway is asked to refuse the send outright when a menu owns the
         // screen. Both halves are pinned: the call site here, and (below) that the call it makes is the
         // prompt route carrying menuGuard.
-        Assert.Contains("await sendVoicePrompt(sid, trimmed);", mobileVoice);
+        // Since ruling R10 the voice-mode reply carries the utterance id as its fourth argument, so the words
+        // count as spoken only when they are exactly the transcription. The chokepoint - the prompt route,
+        // menu-guarded - is unchanged and is what this pins; the id is a claim the Gateway verifies.
+        Assert.Contains("await sendVoicePrompt(sid, trimmed, undefined, spokenDeliveryId);", mobileVoice);
         Assert.Contains("const body: PromptRequest & { menuGuard: boolean } = { text, appendEnter: true, menuGuard: true };", client);
 
         Assert.Contains("await sendPrompt(this.sessionId, chunk, false);", interactive);
