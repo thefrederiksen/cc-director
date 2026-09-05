@@ -58,6 +58,50 @@ Either gateway needs a DevThrottle login -- Google, GitHub, or email. The email 
   <a href="https://devthrottle.com"><img src="https://img.shields.io/badge/Start%20free-devthrottle.com-2EA44F?style=for-the-badge" alt="Start free at devthrottle.com"></a>
 </p>
 
+## Skills for your agents
+
+This repository is also a Claude Code plugin marketplace. Add it once:
+
+```
+/plugin marketplace add thefrederiksen/devthrottle
+```
+
+Then install either plugin:
+
+```
+/plugin install agent-discipline@devthrottle
+/plugin install devthrottle@devthrottle
+```
+
+### `agent-discipline` -- three skills about evidence
+
+Nothing to sign up for, nothing to install, no mention of any product in the skills
+themselves. They work on the first repository you point them at.
+
+- **`checks-that-fail-open`** -- a check whose pass condition is an ABSENCE certifies a run that never happened. "No errors found" is satisfied by finding nothing because nothing ran. Restate it as a specific presence.
+- **`proof-covers-the-wrong-thing`** -- the harder sibling: the evidence was gathered, the argument is sound, and it is about something adjacent to what you changed. It reads exactly like a proof, because it is one -- of a different claim.
+- **`destructive-sweeps-lean-to-keep`** -- a destructive operation acts only on what it can positively prove is disposable. Enumerate what to DELETE, never what to skip.
+
+These were not written from first principles. Each one is a defect a fleet of unattended
+coding agents hit over and over, in a different medium every time, until somebody put the
+instances side by side and saw one shape. That is the part worth having: the war stories
+are still in the skill bodies, because the shape is easier to recognise from the examples
+than from the rule. **This is what running a lot of agents at once teaches you, and it is
+the reason we built the thing that runs them.**
+
+Each skill carries only the fields in the [agentskills.io](https://agentskills.io)
+specification, so the same files load under other agents that implement the standard --
+not only Claude Code.
+
+### `devthrottle` -- for people who run it
+
+Install guidance and session-to-session messaging. Useful once you have DevThrottle,
+and honestly useless before that, which is why it is the second plugin and not the first.
+
+**Skills never mention the product.** A skill body is loaded straight into your agent as
+instructions; putting a pitch there would be an advert injected into your context, so the
+marketing stays on this page where you chose to read it.
+
 ---
 
 <sub>DevThrottle is open source (MIT) -- this repo is the source, and you're welcome to read it. The Director installs and runs free, with no account; a DevThrottle login is needed only to connect a gateway. The product experience, onboarding, and support live at <a href="https://devthrottle.com">devthrottle.com</a>. It's MIT, so you can always fork it.</sub>

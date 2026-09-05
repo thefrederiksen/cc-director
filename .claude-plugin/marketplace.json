@@ -1,0 +1,47 @@
+{
+  "$schema": "https://code.claude.com/schemas/marketplace.json",
+  "name": "devthrottle",
+  "owner": {
+    "name": "DevThrottle",
+    "url": "https://github.com/thefrederiksen/devthrottle"
+  },
+  "description": "Skills published by DevThrottle: discipline skills about evidence that work anywhere, and the skills for people who run DevThrottle itself.",
+  "version": "1.0.0",
+  "metadata": {
+    "pluginRoot": "./plugins"
+  },
+  "plugins": [
+    {
+      "name": "agent-discipline",
+      "displayName": "Agent Discipline",
+      "source": "./plugins/agent-discipline",
+      "description": "Three skills about evidence: checks that pass because nothing ran, proofs that cover something other than what you changed, and destructive sweeps that delete what they could not identify. No product, no setup, no dependencies.",
+      "version": "1.0.0",
+      "author": {
+        "name": "DevThrottle",
+        "url": "https://devthrottle.com"
+      },
+      "homepage": "https://github.com/thefrederiksen/devthrottle/tree/main/plugins/agent-discipline",
+      "repository": "https://github.com/thefrederiksen/devthrottle",
+      "license": "MIT",
+      "category": "workflow",
+      "keywords": ["verification", "evidence", "code-review", "safety", "testing"]
+    },
+    {
+      "name": "devthrottle",
+      "displayName": "DevThrottle",
+      "source": "./plugins/devthrottle",
+      "description": "For people running DevThrottle: how to install it, and how a session talks to the other sessions running across your machines.",
+      "version": "1.0.0",
+      "author": {
+        "name": "DevThrottle",
+        "url": "https://devthrottle.com"
+      },
+      "homepage": "https://devthrottle.com",
+      "repository": "https://github.com/thefrederiksen/devthrottle",
+      "license": "MIT",
+      "category": "productivity",
+      "keywords": ["devthrottle", "orchestration", "sessions", "multi-agent"]
+    }
+  ]
+}

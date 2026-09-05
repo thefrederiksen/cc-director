@@ -1,0 +1,14 @@
+{
+  "name": "devthrottle",
+  "displayName": "DevThrottle",
+  "version": "1.0.0",
+  "description": "For people running DevThrottle: how to install it, and how a session talks to the other sessions running across your machines.",
+  "author": {
+    "name": "DevThrottle",
+    "url": "https://devthrottle.com"
+  },
+  "homepage": "https://devthrottle.com",
+  "repository": "https://github.com/thefrederiksen/devthrottle",
+  "license": "MIT",
+  "keywords": ["devthrottle", "orchestration", "sessions", "multi-agent"]
+}
