@@ -3,7 +3,7 @@
 This is the compact handoff note. A fresh Manager needs THIS FILE, the brief beside it, and
 `cc-devthrottle workflow instructions mission`. Nothing else. Keep it current and short.
 
-**Updated:** 2026-09-05, by the phase three Manager, closing phase three.
+**Updated:** 2026-09-05, by the phase four and five Manager, seating both phases.
 
 ## Where the work lives
 
@@ -30,6 +30,17 @@ this code - phase three could not, and said so.
    R3 is not met and the two numbers are not one number.
 2. The one-sentence link to the reader's own Your Throttle, behind sign-in, in the place the two
    figures are drawn and in both parts of the email, opening on the week the report covers (R5).
+
+## Phases four and five, in flight
+
+Two worker briefs, both in this folder: `task4-selector.md` (product worktree) and
+`task5-report-consumes-the-library.md` (internal worktree). Seated in parallel on 2026-09-05. The contract
+between them is the link's URL: **`/your-throttle?week=YYYY-Www`** on the Cockpit, which is served at the
+site root of the hosted Gateway and whose sign-in gate carries the query through `next=` (verified live).
+The report reaches the library through the product's `tools/throttle-conformance` command line, which runs
+the Gateway's own code against the hosted database; it is the library's command-line face, not a second
+implementation. After landing, the harness's `config.json` key `throttle_library` must point at the main
+checkout's copy of that tool.
 
 ## What is done and pushed
 
