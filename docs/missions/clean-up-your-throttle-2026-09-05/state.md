@@ -3,7 +3,7 @@
 This is the compact handoff note. A fresh Manager needs THIS FILE, the brief beside it, and
 `cc-devthrottle workflow instructions mission`. Nothing else. Keep it current and short.
 
-**Updated:** 2026-09-05, by the phase four and five Manager, seating both phases.
+**Updated:** 2026-09-05, by the phase four and five Manager, closing both phases.
 
 ## Where the work lives
 
@@ -14,7 +14,12 @@ This is the compact handoff note. A fresh Manager needs THIS FILE, the brief bes
 
 ## Current phase
 
-**Phases four and five - the selector, and the report becomes a consumer.** Open. Phases one, two and
+**ALL FIVE PHASES DONE AND PUSHED.** What remains is the Architect's: the Codex inspection, landing both
+branches, and the report to the owner. Read `phase4-5-close.md` for the last two phases, their results, the
+parked-suite table, and the after-landing steps (the harness config key `throttle_library` must move to the
+main checkout's tool; the deployed Gateway runs the old feed until the product branch deploys).
+
+**Phases four and five - the selector, and the report becomes a consumer.** DONE. Phases one, two and
 three are DONE and pushed, and phase two's independent inspection has been fixed.
 
 **Phase four** (`#2692`): the period selector, the default moved to a rolling SEVEN days per R15
@@ -34,7 +39,7 @@ this code - phase three could not, and said so.
 ## Phases four and five, in flight
 
 Two worker briefs, both in this folder: `task4-selector.md` (product worktree) and
-`task5-report-consumes-the-library.md` (internal worktree). Seated in parallel on 2026-09-05. The contract
+`task5-report-consumes-the-library.md` (internal worktree). Seated in parallel on 2026-09-05 and both pushed the same afternoon (product `8da683f6e`, internal `673374d`). The contract
 between them is the link's URL: **`/your-throttle?week=YYYY-Www`** on the Cockpit, which is served at the
 site root of the hosted Gateway and whose sign-in gate carries the query through `next=` (verified live).
 The report reaches the library through the product's `tools/throttle-conformance` command line, which runs
