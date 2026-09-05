@@ -1,5 +1,9 @@
-import { describe, it, expect } from "vitest";
+import { afterEach, describe, it, expect, vi } from "vitest";
 import {
+  getThrottle,
+  throttleWindowQuery,
+  throttleWindowFromSearch,
+  hourlyChartEnd,
   summarizeThrottle,
   summarizeRepos,
   summarizeAgents,
@@ -21,11 +25,27 @@ import {
 // There is no character volume anywhere in these shapes (mission "Clean up Your Throttle", ruling R16): the
 // figure comes from the submission ledger, which counts turns and nothing else.
 
+const CHOICES = [
+  { days: 1, label: "Last 24 hours" },
+  { days: 7, label: "Last 7 days" },
+  { days: 14, label: "Last 14 days" },
+  { days: 30, label: "Last 30 days" },
+];
+
 function figure(buckets: ThrottleFigure["buckets"]): ThrottleFigure {
   return {
     definition: "The shared figure is computed over activity_events rows where EventType is turn-submitted and InputOrigin is present, grouped by the origin's modality and surface.",
     unit: "submitted turns",
-    window: { fromUtc: "2026-08-06T00:00:00Z", toUtc: "2026-09-05T00:00:00Z", isDefault: true, label: "Last 30 days" },
+    window: {
+      fromUtc: "2026-08-29T00:00:00Z",
+      toUtc: "2026-09-05T00:00:00Z",
+      isDefault: true,
+      label: "Last 7 days",
+      kind: "default",
+      days: 7,
+      week: null,
+      choices: CHOICES,
+    },
     ledger: { retentionDays: 30, earliestUtc: "2026-08-06T04:00:00Z" },
     turns: buckets.reduce((t, b) => t + b.turns, 0),
     voiceTurns: buckets.filter((b) => b.modality === "voice").reduce((t, b) => t + b.turns, 0),
@@ -228,5 +248,154 @@ describe("safeTimeZone", () => {
     // Whatever it resolves to, it must be a zone Intl can actually format with.
     expect(() => new Intl.DateTimeFormat("en-US", { timeZone: fallback })).not.toThrow();
     expect(safeTimeZone("").length).toBeGreaterThan(0);
+  });
+});
+
+// ---- the network read: what the three request shapes send, and what a served window must carry ------
+//
+// The Gateway decides the window (mission "Clean up Your Throttle", rulings R4 and R5); this client sends
+// what was chosen as the matching query and reads back the kind, the length or week, and the selector's
+// choices. An answer WITHOUT the choices is refused rather than defaulted: a selector that offered lengths
+// the Gateway did not serve would be the client ruling for itself (CLAUDE.md rule 7).
+
+vi.mock("../api/client", () => ({
+  authHeaders: () => ({}),
+  GatewayError: class GatewayError extends Error {
+    constructor(public status: number, message: string) {
+      super(message);
+    }
+  },
+}));
+
+function servedWindow(over: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    fromUtc: "2026-08-29T16:00:00Z",
+    toUtc: "2026-09-05T16:00:00Z",
+    isDefault: true,
+    label: "Last 7 days",
+    kind: "default",
+    days: 7,
+    week: null,
+    choices: CHOICES,
+    ...over,
+  };
+}
+
+function servedBody(window: Record<string, unknown>): Record<string, unknown> {
+  return {
+    available: true,
+    generatedAtUtc: "2026-09-05T16:00:00Z",
+    timeZone: "UTC",
+    throttle: { ...figure([]), window },
+    concurrency: null,
+    statisticsUnavailableReason: "no store",
+    notCaptured: [],
+  };
+}
+
+function stubFetch(body: Record<string, unknown>) {
+  const fetchMock = vi.fn(async (_input: RequestInfo | URL) =>
+    new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } }),
+  );
+  vi.stubGlobal("fetch", fetchMock);
+  return fetchMock;
+}
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
+
+describe("throttleWindowQuery and getThrottle", () => {
+  it("sends no query for the default, and the matching query for each of the three request shapes", async () => {
+    expect(throttleWindowQuery(undefined)).toBe("");
+    expect(throttleWindowQuery({ days: 14 })).toBe("?days=14");
+    expect(throttleWindowQuery({ week: "2026-W35" })).toBe("?week=2026-W35");
+    expect(throttleWindowQuery({ fromUtc: "2026-08-24T04:00:00Z", toUtc: "2026-08-31T04:00:00Z" })).toBe(
+      "?from=2026-08-24T04%3A00%3A00Z&to=2026-08-31T04%3A00%3A00Z",
+    );
+
+    const fetchMock = stubFetch(servedBody(servedWindow()));
+    await getThrottle(undefined);
+    await getThrottle(undefined, { days: 14 });
+    await getThrottle(undefined, { week: "2026-W35" });
+    await getThrottle(undefined, { fromUtc: "2026-08-24T04:00:00Z", toUtc: "2026-08-31T04:00:00Z" });
+    const urls = fetchMock.mock.calls.map((call) => String(call[0]));
+    expect(urls).toEqual([
+      "/stats/data",
+      "/stats/data?days=14",
+      "/stats/data?week=2026-W35",
+      "/stats/data?from=2026-08-24T04%3A00%3A00Z&to=2026-08-31T04%3A00%3A00Z",
+    ]);
+  });
+
+  it("reads the kind, the length or week, and the choices exactly as served", async () => {
+    stubFetch(servedBody(servedWindow({
+      kind: "week",
+      week: "2026-W35",
+      days: null,
+      isDefault: false,
+      label: "Week 35 of 2026, Monday 24 August to Sunday 30 August (America/Toronto)",
+    })));
+    const data = await getThrottle(undefined, { week: "2026-W35" });
+    if (!data.available) throw new Error("expected a served figure");
+    expect(data.throttle.window.kind).toBe("week");
+    expect(data.throttle.window.week).toBe("2026-W35");
+    expect(data.throttle.window.days).toBeNull();
+    expect(data.throttle.window.isDefault).toBe(false);
+    expect(data.throttle.window.label).toBe("Week 35 of 2026, Monday 24 August to Sunday 30 August (America/Toronto)");
+    expect(data.throttle.window.choices).toEqual(CHOICES);
+
+    stubFetch(servedBody(servedWindow({ kind: "days", days: 14, isDefault: false, label: "Last 14 days" })));
+    const chosen = await getThrottle(undefined, { days: 14 });
+    if (!chosen.available) throw new Error("expected a served figure");
+    expect(chosen.throttle.window.kind).toBe("days");
+    expect(chosen.throttle.window.days).toBe(14);
+  });
+
+  it("refuses a served answer without the choices, rather than defaulting a list of its own", async () => {
+    const { choices: _dropped, ...withoutChoices } = servedWindow();
+    void _dropped;
+    stubFetch(servedBody(withoutChoices));
+    await expect(getThrottle(undefined)).rejects.toThrow(/without the window choices/);
+  });
+
+  it("refuses a window kind it does not know, and a choice without a length and a label", async () => {
+    stubFetch(servedBody(servedWindow({ kind: "fortnight" })));
+    await expect(getThrottle(undefined)).rejects.toThrow(/window kind this client does not know: fortnight/);
+
+    stubFetch(servedBody(servedWindow({ choices: [{ days: 7 }] })));
+    await expect(getThrottle(undefined)).rejects.toThrow(/without a length and a label/);
+  });
+
+  it("still passes the self-hosted sentence through untouched", async () => {
+    stubFetch({ available: false, reason: "Your Throttle works only on the hosted DevThrottle Gateway." });
+    const data = await getThrottle(undefined);
+    expect(data).toEqual({ available: false, reason: "Your Throttle works only on the hosted DevThrottle Gateway." });
+  });
+});
+
+describe("throttleWindowFromSearch", () => {
+  it("reads a week, else a length, else nothing", () => {
+    expect(throttleWindowFromSearch(new URLSearchParams("week=2026-W35"))).toEqual({ week: "2026-W35" });
+    expect(throttleWindowFromSearch(new URLSearchParams("days=14"))).toEqual({ days: 14 });
+    expect(throttleWindowFromSearch(new URLSearchParams("week=2026-W35&days=14"))).toEqual({ week: "2026-W35" });
+    expect(throttleWindowFromSearch(new URLSearchParams(""))).toBeUndefined();
+    expect(throttleWindowFromSearch(new URLSearchParams("days=soon"))).toBeUndefined();
+    expect(throttleWindowFromSearch(new URLSearchParams("tab=repos"))).toBeUndefined();
+  });
+});
+
+describe("hourlyChartEnd", () => {
+  const now = new Date("2026-09-05T16:00:00Z");
+
+  it("ends the 24-hour charts at the served window's end when that is in the past", () => {
+    const w = { fromUtc: "2026-08-24T04:00:00Z", toUtc: "2026-08-31T04:00:00Z", isDefault: false, label: "", kind: "week" as const, days: null, week: "2026-W35", choices: CHOICES };
+    expect(hourlyChartEnd(w, now).toISOString()).toBe("2026-08-31T04:00:00.000Z");
+    expect(last24HourKeys(hourlyChartEnd(w, now))[23]).toBe("2026-08-31T04");
+  });
+
+  it("clamps to now when the window is still open", () => {
+    const w = { fromUtc: "2026-08-31T04:00:00Z", toUtc: "2026-09-07T04:00:00Z", isDefault: false, label: "", kind: "week" as const, days: null, week: "2026-W36", choices: CHOICES };
+    expect(hourlyChartEnd(w, now).toISOString()).toBe("2026-09-05T16:00:00.000Z");
   });
 });

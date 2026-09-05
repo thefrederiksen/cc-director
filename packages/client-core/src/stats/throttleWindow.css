@@ -1,0 +1,46 @@
+/* The Your Throttle period selector, shared by the Cockpit and the phone.
+ *
+ * One component (ThrottleWindowSelector.tsx) means one stylesheet, for the same reason the shared Settings
+ * cards carry theirs: shared markup with copied CSS is how one surface quietly drifts from the other.
+ * Every colour is a theme token both shells define in their own :root, so this file names none of its own.
+ *
+ * Sizing here is the DESKTOP baseline. The phone re-tunes it for touch from its own stylesheet under a
+ * `.screen` ancestor, which outranks these single-class rules on specificity rather than on stylesheet
+ * order, which no bundler guarantees. */
+
+.thr-window {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 10px 0 4px;
+}
+.thr-window-choice {
+  appearance: none;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text-dim);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  padding: 5px 14px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.thr-window-choice:hover {
+  color: var(--text);
+}
+.thr-window-choice.active {
+  color: var(--accent);
+  border-color: var(--accent);
+  font-weight: 600;
+}
+/* The served week is shown as the selected item, not a button: it came from the link that opened the
+   page, and choosing a length is how a person leaves it. */
+span.thr-window-choice {
+  cursor: default;
+}
+.thr-window-choice:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}

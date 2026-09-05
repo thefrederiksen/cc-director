@@ -1,9 +1,12 @@
 import { useEffect, useMemo, useState, type CSSProperties, type ReactNode } from "react";
+import { useSearchParams } from "react-router-dom";
 import {
   getThrottle,
   summarizeThrottle,
   formatShare,
   last24HourKeys,
+  hourlyChartEnd,
+  throttleWindowFromSearch,
   windowSeries,
   emptyInputHour,
   emptyConcurrencyHour,
@@ -20,6 +23,7 @@ import {
   type InputHour,
   type Surface,
 } from "@devthrottle/client-core/stats/statsClient";
+import { ThrottleWindowSelector } from "@devthrottle/client-core/stats/ThrottleWindowSelector";
 import { gatewayErrorMessage } from "@devthrottle/client-core/api/client";
 import { ReposTab } from "./ReposTab";
 import { AgentsTab } from "./AgentsTab";
@@ -35,6 +39,12 @@ import { TABS, DEFAULT_TAB, isThrottleTab, type ThrottleTab } from "./throttleTa
 // population it left out stated on it. This page lays that out; it derives nothing of its own beyond share
 // arithmetic over the counts it was given. A self-hosted Gateway answers with a sentence instead of a
 // figure, and this page shows that sentence (rulings R1 and R6) rather than an empty dashboard.
+//
+// THE WINDOW COMES FROM THE URL (rulings R4 and R5). `?week=2026-W35` is what the mentor report's link
+// carries, so following it asks the Gateway for exactly that week and shows the Gateway's label for it;
+// `?days=N` is a selector choice; neither asks for the Gateway's default (a rolling seven days). Choosing a
+// length writes it back to the URL, and the Gateway decides what every one of those means - this page never
+// computes a date.
 //
 // The page is TABBED so the two questions the owner actually cares about are not buried under supporting
 // tables (owner ask, 2026-07-13): Overview leads with the two headline percentages as big rings - how
@@ -61,6 +71,10 @@ export function YourThrottleView() {
   const [data, setData] = useState<ThrottleData | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [tab, setTabState] = useState<ThrottleTab>(initialTab);
+  const [searchParams, setSearchParams] = useSearchParams();
+  // The window the URL asks for. Stable for one URL, so the effect below re-runs only when the URL changes.
+  const request = useMemo(() => throttleWindowFromSearch(searchParams), [searchParams]);
+  const choose = (days: number) => setSearchParams({ days: String(days) });
 
   const setTab = (next: ThrottleTab) => {
     setTabState(next);
@@ -74,10 +88,14 @@ export function YourThrottleView() {
   useEffect(() => {
     const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout> | undefined;
+    // A new window is a new page: back to the loading state at once (responsive UI), never the old
+    // window's numbers under the new window's selection.
+    setData(null);
+    setError(null);
 
     const tick = async () => {
       try {
-        const fresh = await getThrottle(controller.signal);
+        const fresh = await getThrottle(controller.signal, request);
         if (controller.signal.aborted) return;
         setData(fresh);
         setError(null);
@@ -94,7 +112,7 @@ export function YourThrottleView() {
       controller.abort();
       if (timer !== undefined) clearTimeout(timer);
     };
-  }, []);
+  }, [request]);
 
   const served: ThrottleServed | null = data !== null && data.available ? data : null;
   const summary: ThrottleSummary | null = useMemo(
@@ -111,6 +129,7 @@ export function YourThrottleView() {
           is one submitted message; one spoken utterance and one typed message each count as one turn.
         </p>
         {served !== null && <WindowStatement figure={served.throttle} timeZone={served.timeZone} />}
+        {served !== null && <ThrottleWindowSelector window={served.throttle.window} onChoose={choose} />}
       </div>
 
       {error !== null && (
@@ -428,28 +447,31 @@ function ActivityTab({ data }: { data: ThrottleServed }) {
   const hasConcurrency = data.concurrency !== null && data.concurrency.hourly.length > 0;
 
   if (!hasTurns && !hasConcurrency) {
-    return <div className="thr-empty">No hourly activity recorded in the last day yet.</div>;
+    return <div className="thr-empty">No hourly activity recorded in this window yet.</div>;
   }
 
-  // Both charts render the SAME canonical 24-hour window (the last 24 clock hours ending now), so they
-  // line up exactly regardless of which hours each series happens to have data for. Labels are formatted
-  // in the configured display time zone, so the axis reads in local time, not UTC.
-  const now = data.generatedAtUtc ? new Date(data.generatedAtUtc) : new Date();
-  const keys = last24HourKeys(Number.isNaN(now.getTime()) ? new Date() : now);
+  // Both charts render the SAME canonical 24-hour window, so they line up exactly regardless of which
+  // hours each series happens to have data for. The 24 hours END AT THE SERVED WINDOW'S END (clamped to
+  // now when the window is still open), not at the clock: with a past week selected, a chart of the last
+  // 24 clock hours would draw nothing and read as broken. The heading says which 24 hours these are.
+  // Labels are formatted in the configured display time zone, so the axis reads in local time, not UTC.
   const timeZone = safeTimeZone(data.timeZone);
+  const end = hourlyChartEnd(data.throttle.window, new Date());
+  const keys = last24HourKeys(end);
   const turnsWindow = windowSeries(hourlyTurns, keys, emptyInputHour);
   const concurrencyWindow = windowSeries(data.concurrency?.hourly ?? [], keys, emptyConcurrencyHour);
   const zoneLabel = friendlyZone(timeZone);
+  const endStamp = localStamp(end.toISOString(), timeZone);
 
   return (
     <>
       {hasTurns && (
         <div className="thr-panel">
           <div className="thr-panel-head">
-            <h2>Turns per hour (last 24h)</h2>
+            <h2>Turns per hour (24 hours to {endStamp})</h2>
             <span className="thr-panel-sub">
-              Your working day: how many turns you submitted each hour ({zoneLabel}), voice over typed.
-              Empty hours are when you were away.
+              Your working day: how many turns you submitted each hour ({zoneLabel}), voice over typed, in
+              the 24 hours ending {endStamp}. Empty hours are when you were away.
             </span>
           </div>
           <TurnsPerHourChart hourly={turnsWindow} timeZone={timeZone} />
@@ -459,10 +481,11 @@ function ActivityTab({ data }: { data: ThrottleServed }) {
       {hasConcurrency && (
         <div className="thr-panel">
           <div className="thr-panel-head">
-            <h2>Sessions per hour (last 24h)</h2>
+            <h2>Sessions per hour (24 hours to {endStamp})</h2>
             <span className="thr-panel-sub">
-              Peak concurrent sessions in each hour ({zoneLabel}). The bar is loaded/running; the darker
-              portion is actively working. Hover a bar for that hour&apos;s distinct sessions and machines.
+              Peak concurrent sessions in each hour ({zoneLabel}) in the 24 hours ending {endStamp}. The bar
+              is loaded/running; the darker portion is actively working. Hover a bar for that hour&apos;s
+              distinct sessions and machines.
             </span>
           </div>
           <ConcurrencyChart hourly={concurrencyWindow} timeZone={timeZone} />

@@ -106,16 +106,35 @@ export interface AgentStat {
   agentDrivenTurns: number;
 }
 
+/** How a served window came to be - the four query forms GET /stats/data accepts. */
+export type ThrottleWindowKind = "default" | "days" | "week" | "explicit";
+
+/** One length the period selector offers, with the Gateway's name for it. The list is the Gateway's:
+ * the selector renders what it is handed and never keeps lengths of its own (CLAUDE.md rule 7). */
+export interface ThrottleWindowChoice {
+  days: number;
+  label: string;
+}
+
 /** The window the figure describes, as the Gateway stated it. */
 export interface ThrottleWindow {
   /** Inclusive start (ISO 8601 UTC). */
   fromUtc: string;
   /** Exclusive end (ISO 8601 UTC). */
   toUtc: string;
-  /** True when no window was asked for and the Gateway answered its default. */
+  /** True when no window was asked for and the Gateway answered its default (a rolling seven days). */
   isDefault: boolean;
-  /** The Gateway's own plain-English name for the window ("Last 30 days"). Rendered verbatim. */
+  /** The Gateway's own plain-English name for the window ("Last 7 days", "Week 35 of 2026, Monday 24 August
+   * to Sunday 30 August (America/Toronto)"). Rendered verbatim. */
   label: string;
+  /** Which query form produced this window. The selector marks its choice from this. */
+  kind: ThrottleWindowKind;
+  /** The rolling length in days when kind is "default" or "days"; null otherwise. */
+  days: number | null;
+  /** The ISO week ("2026-W35") when kind is "week"; null otherwise. */
+  week: string | null;
+  /** The selector's options, served on every answer in order. */
+  choices: ThrottleWindowChoice[];
 }
 
 /** What the submission ledger holds, so a page can say where the record begins. */
@@ -236,21 +255,42 @@ async function gatewayErrorFrom(res: Response, label: string): Promise<GatewayEr
   return new GatewayError(res.status, `${label} failed: ${detail}`);
 }
 
-/** The optional window to ask the Gateway for. Absent, the Gateway answers its default and says so. */
-export interface ThrottleWindowRequest {
-  /** Inclusive start (ISO 8601 UTC). */
-  fromUtc: string;
-  /** Exclusive end (ISO 8601 UTC). */
-  toUtc: string;
+/** The optional window to ask the Gateway for, one of three shapes: a rolling length in days (one of the
+ * served choices), an ISO week ("2026-W35", resolved by the Gateway in the account's display zone - the
+ * shape the mentor report's link uses), or explicit UTC instants. Absent, the Gateway answers its default
+ * and says so. The client sends what was chosen; what it means is decided on the Gateway. */
+export type ThrottleWindowRequest =
+  | { days: number }
+  | { week: string }
+  | { fromUtc: string; toUtc: string };
+
+/** The window a page's URL asks for: `?week=2026-W35` (the mentor report's link) or `?days=N` (a selector
+ * choice), else undefined for the Gateway's default. Both pages read their window from here and write a
+ * choice back to the URL, which is what makes a hard navigation to the report's link show the Gateway's
+ * answer for exactly that week. Nothing is validated here beyond its shape: a week the Gateway will not
+ * serve, or a length that is not a choice, is sent as asked and refused by the Gateway with its reason,
+ * which the page shows (the dumb-client rule, and no-fallback). */
+export function throttleWindowFromSearch(params: URLSearchParams): ThrottleWindowRequest | undefined {
+  const week = params.get("week");
+  if (week !== null && week.trim().length > 0) return { week: week.trim() };
+  const days = params.get("days");
+  if (days !== null && /^[0-9]+$/.test(days.trim())) return { days: Number(days.trim()) };
+  return undefined;
+}
+
+/** The query string for a window request, or "" for the default. */
+export function throttleWindowQuery(request: ThrottleWindowRequest | undefined): string {
+  if (request === undefined) return "";
+  if ("days" in request) return `?days=${encodeURIComponent(String(request.days))}`;
+  if ("week" in request) return `?week=${encodeURIComponent(request.week)}`;
+  return `?from=${encodeURIComponent(request.fromUtc)}&to=${encodeURIComponent(request.toUtc)}`;
 }
 
 // GET /stats/data - the "Your Throttle" figure. Throws on transport failure so the page can show an explicit
 // error banner (the no-fallback rule). A 200 carrying available=false is NOT a failure: it is the Gateway
 // saying, in a sentence, that there is no figure here, and the page shows that sentence.
-export async function getThrottle(signal?: AbortSignal, window?: ThrottleWindowRequest): Promise<ThrottleData> {
-  const query = window === undefined
-    ? ""
-    : `?from=${encodeURIComponent(window.fromUtc)}&to=${encodeURIComponent(window.toUtc)}`;
+export async function getThrottle(signal?: AbortSignal, request?: ThrottleWindowRequest): Promise<ThrottleData> {
+  const query = throttleWindowQuery(request);
   const res = await fetch(`/stats/data${query}`, {
     method: "GET",
     headers: { Accept: "application/json", ...authHeaders() },
@@ -285,20 +325,48 @@ export async function getThrottle(signal?: AbortSignal, window?: ThrottleWindowR
   };
 }
 
+const WINDOW_KINDS: readonly ThrottleWindowKind[] = ["default", "days", "week", "explicit"];
+
+/** The window as the Gateway stated it. REFUSES TO GUESS: the selector renders the served choices and marks
+ * the served kind, so an answer without them, or with a kind this client does not know, is not a window this
+ * client can render - it is thrown as an error the page shows, never defaulted into a selector that offers
+ * lengths the Gateway did not (CLAUDE.md rule 7). */
+function normalizeWindow(raw: unknown): ThrottleWindow {
+  const w = (raw ?? {}) as Partial<Record<keyof ThrottleWindow, unknown>>;
+  if (!Array.isArray(w.choices)) {
+    throw new Error("GET /stats/data answered without the window choices the period selector renders");
+  }
+  const choices = w.choices.map((c): ThrottleWindowChoice => {
+    const choice = (c ?? {}) as Partial<Record<keyof ThrottleWindowChoice, unknown>>;
+    if (typeof choice.days !== "number" || typeof choice.label !== "string") {
+      throw new Error("GET /stats/data answered a window choice without a length and a label");
+    }
+    return { days: choice.days, label: choice.label };
+  });
+  const kind = WINDOW_KINDS.find((k) => k === w.kind);
+  if (kind === undefined) {
+    throw new Error(`GET /stats/data answered a window kind this client does not know: ${String(w.kind)}`);
+  }
+  return {
+    fromUtc: typeof w.fromUtc === "string" ? w.fromUtc : "",
+    toUtc: typeof w.toUtc === "string" ? w.toUtc : "",
+    isDefault: w.isDefault === true,
+    label: typeof w.label === "string" ? w.label : "",
+    kind,
+    days: typeof w.days === "number" ? w.days : null,
+    week: typeof w.week === "string" ? w.week : null,
+    choices,
+  };
+}
+
 function normalizeFigure(raw: unknown): ThrottleFigure {
   const f = (raw ?? {}) as Partial<Record<keyof ThrottleFigure, unknown>>;
-  const w = (f.window ?? {}) as Partial<Record<keyof ThrottleWindow, unknown>>;
   const l = (f.ledger ?? {}) as Partial<Record<keyof ThrottleLedger, unknown>>;
   const x = (f.excluded ?? {}) as Partial<Record<keyof ThrottleExcluded, unknown>>;
   return {
     definition: typeof f.definition === "string" ? f.definition : "",
     unit: typeof f.unit === "string" ? f.unit : "",
-    window: {
-      fromUtc: typeof w.fromUtc === "string" ? w.fromUtc : "",
-      toUtc: typeof w.toUtc === "string" ? w.toUtc : "",
-      isDefault: w.isDefault === true,
-      label: typeof w.label === "string" ? w.label : "",
-    },
+    window: normalizeWindow(f.window),
     ledger: {
       retentionDays: num(l.retentionDays),
       earliestUtc: typeof l.earliestUtc === "string" ? l.earliestUtc : null,
@@ -545,26 +613,40 @@ export const SURFACE_ORDER = SURFACES;
 //
 // The two hourly series (turns, concurrency) only carry the hours that had activity, so slicing each to
 // its own "last 24" produced two DIFFERENT windows that did not line up. Instead, both charts render one
-// canonical window: the 24 consecutive UTC clock hours ending at "now", with absent hours zero-filled.
-// Labels are then formatted in the configured display time zone, so the axis reads in local time.
+// canonical window: the 24 consecutive UTC clock hours ending at the served window's end (clamped to now by
+// the caller when the window ends in the future), with absent hours zero-filled. Taking the end from the
+// window rather than from "now" is what keeps a week selected from the past from drawing an empty chart
+// that reads as broken. Labels are then formatted in the configured display time zone, so the axis reads in
+// local time.
 
 function padHourKey(d: Date): string {
   const p = (n: number) => String(n).padStart(2, "0");
   return `${d.getUTCFullYear()}-${p(d.getUTCMonth() + 1)}-${p(d.getUTCDate())}T${p(d.getUTCHours())}`;
 }
 
-/** The 24 consecutive UTC hour keys ("yyyy-MM-ddTHH") ending at the hour containing `nowUtc`, oldest
- *  first. Both hourly charts render this SAME window so they line up exactly. */
-export function last24HourKeys(nowUtc: Date): string[] {
+/** The 24 consecutive UTC hour keys ("yyyy-MM-ddTHH") ending at the hour containing `endUtc`, oldest
+ *  first. Both hourly charts render this SAME window so they line up exactly. The end is the served window's
+ *  end (see {@link hourlyChartEnd}), not the clock. */
+export function last24HourKeys(endUtc: Date): string[] {
   const topOfHour = Date.UTC(
-    nowUtc.getUTCFullYear(),
-    nowUtc.getUTCMonth(),
-    nowUtc.getUTCDate(),
-    nowUtc.getUTCHours(),
+    endUtc.getUTCFullYear(),
+    endUtc.getUTCMonth(),
+    endUtc.getUTCDate(),
+    endUtc.getUTCHours(),
   );
   const keys: string[] = [];
   for (let i = 23; i >= 0; i--) keys.push(padHourKey(new Date(topOfHour - i * 3_600_000)));
   return keys;
+}
+
+/** The instant the 24-hour charts end at: the served window's end, clamped to `nowUtc` when the window ends
+ *  in the future (a week still in progress, or a rolling window whose end is a moment ahead of the browser's
+ *  clock). A window end that does not parse falls back to `nowUtc` - the Gateway always serves one, so that
+ *  is a malformed answer, and the chart says which 24 hours it shows either way. */
+export function hourlyChartEnd(window: ThrottleWindow, nowUtc: Date): Date {
+  const end = Date.parse(window.toUtc);
+  if (Number.isNaN(end) || end > nowUtc.getTime()) return nowUtc;
+  return new Date(end);
 }
 
 /** Map an hourly series (keyed by UTC hour) onto a fixed window of hour keys, filling any absent hour with

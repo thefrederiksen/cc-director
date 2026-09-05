@@ -1,16 +1,18 @@
-import { useEffect, useState, type CSSProperties } from "react";
-import { Link } from "react-router-dom";
+import { useEffect, useMemo, useState, type CSSProperties } from "react";
+import { Link, useSearchParams } from "react-router-dom";
 import {
   getThrottle,
   summarizeThrottle,
   formatShare,
   safeTimeZone,
+  throttleWindowFromSearch,
   SURFACE_LABEL,
   SURFACE_ORDER,
   type ThrottleData,
   type ThrottleFigure,
   type ThrottleSummary,
 } from "@devthrottle/client-core/stats/statsClient";
+import { ThrottleWindowSelector } from "@devthrottle/client-core/stats/ThrottleWindowSelector";
 import { gatewayErrorMessage } from "@devthrottle/client-core/api/client";
 
 // Your Throttle on the phone: a compact dashboard of the MAIN stats, not the whole desktop page - many
@@ -21,6 +23,9 @@ import { gatewayErrorMessage } from "@devthrottle/client-core/api/client";
 // where the turns come from, then the totals and what was left out. The hourly charts, full breakdown,
 // and caveats stay on the desktop page. A self-hosted Gateway answers with a sentence, and this page shows
 // that sentence (rulings R1 and R6).
+// THE WINDOW COMES FROM THE URL (rulings R4 and R5): `/throttle?week=2026-W35` is what the mentor report's
+// link carries, `?days=N` is a choice from the shared period selector, and neither asks for the Gateway's
+// default. Choosing writes the length back to the URL; the Gateway decides what it means.
 // Renders immediately with a loading state, shows an explicit error banner on failure (no-fallback rule),
 // and auto-refreshes so the split moves live as the user drives by voice.
 
@@ -32,14 +37,22 @@ const RING_MOBILE = "#8b5cf6";
 export function YourThrottle() {
   const [data, setData] = useState<ThrottleData | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [searchParams, setSearchParams] = useSearchParams();
+  // The window the URL asks for. Stable for one URL, so the effect below re-runs only when the URL changes.
+  const request = useMemo(() => throttleWindowFromSearch(searchParams), [searchParams]);
+  const choose = (days: number) => setSearchParams({ days: String(days) });
 
   useEffect(() => {
     const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout> | undefined;
+    // A new window is a new page: back to the loading state at once, never the old window's numbers under
+    // the new window's selection.
+    setData(null);
+    setError(null);
 
     const tick = async () => {
       try {
-        const fresh = await getThrottle(controller.signal);
+        const fresh = await getThrottle(controller.signal, request);
         if (controller.signal.aborted) return;
         setData(fresh);
         setError(null);
@@ -56,7 +69,7 @@ export function YourThrottle() {
       controller.abort();
       if (timer !== undefined) clearTimeout(timer);
     };
-  }, []);
+  }, [request]);
 
   const figure: ThrottleFigure | null = data !== null && data.available ? data.throttle : null;
   const timeZone = data !== null && data.available ? safeTimeZone(data.timeZone) : "UTC";
@@ -87,6 +100,7 @@ export function YourThrottle() {
       )}
 
       {figure !== null && <WindowNote figure={figure} timeZone={timeZone} />}
+      {figure !== null && <ThrottleWindowSelector window={figure.window} onChoose={choose} />}
 
       {figure !== null && summary !== null && !summary.hasData && (
         <div className="thr-note">
