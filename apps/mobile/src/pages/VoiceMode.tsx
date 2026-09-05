@@ -186,9 +186,9 @@ export function VoiceMode() {
   // text path waits for the send to be accepted (stays put on failure, error visible); the audio
   // path is fire-and-forget by design and its progress/failures show on the roster rows.
   const onRespondText = useCallback(
-    (text: string) => {
+    (text: string, spokenDeliveryId?: string) => {
       void (async () => {
-        if (await onRespondSend(text)) goBackToList();
+        if (await onRespondSend(text, spokenDeliveryId)) goBackToList();
       })();
     },
     [onRespondSend, goBackToList],

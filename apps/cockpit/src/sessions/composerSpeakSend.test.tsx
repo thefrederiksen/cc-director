@@ -33,7 +33,7 @@ const { sendPrompt, transcribeUtterance, backgroundTranscribeAndSend, listSessio
   // The synchronous POST /prompt path: PAUSED-stage Send (text already in hand) and Insert use it.
   sendPrompt: vi.fn(async () => {}),
   // The synchronous /wingman/utterance/* transcription: the Pause checkpoint and Insert use it.
-  transcribeUtterance: vi.fn(async () => "the dictated words"),
+  transcribeUtterance: vi.fn(async () => ({ text: "the dictated words", deliveryId: "utt-77" })),
   // The durable background pipeline (POST /dictation/*) the recording-stage Send now rides.
   backgroundTranscribeAndSend: vi.fn(async () => {}),
   // The roster read the Speak press snapshots its moved-on baseline from (issue #2478).
@@ -202,8 +202,53 @@ describe("Cockpit Speak Send-direct (recording-stage)", () => {
     // snapshotted caret - no audio round trip, and the background pipeline stays untouched.
     fireEvent.click(within(dialog).getByText("Send"));
     await waitFor(() =>
-      expect(sendPrompt).toHaveBeenCalledWith("sess-42", "A the dictated words B", true),
+      // The last argument is the SPOKEN claim (ruling R10, "Clean up Your Throttle"), and it is
+      // undefined here on purpose: the box held typed text, so this turn is a mixture of speech and
+      // typing and is not claimed as spoken. See the test below for the pure-dictation case.
+      expect(sendPrompt).toHaveBeenCalledWith("sess-42", "A the dictated words B", true, undefined, undefined),
     );
     expect(backgroundTranscribeAndSend).not.toHaveBeenCalled();
+  });
+
+  // R10 ("Clean up Your Throttle", 2026-09-05). A dictated sentence submitted through the ordinary
+  // prompt door was recorded as TYPED, because the Director reads modality off the send source and an
+  // ordinary prompt is a typed one. The delivery id of the utterance the Gateway just transcribed is
+  // what says otherwise, and it must reach the send.
+  it("a PURE dictation carries the spoken delivery id, so the turn is recorded as speech and not as typing", async () => {
+    render(<Harness sessionId="sess-42" />);
+    // No typed text this time: open the dialog with an empty box, so what is sent is only the words.
+    fireEvent.click(screen.getByRole("button", { name: "Speak" }));
+    const dialog = await screen.findByRole("dialog", { name: "Dictate" });
+    await within(dialog).findByText("RECORDING");
+
+    const pauseBtn = dialog.querySelector(".dictate-pause") as HTMLButtonElement;
+    fireEvent.click(pauseBtn);
+    await within(dialog).findByText("PAUSED");
+
+    fireEvent.click(within(dialog).getByText("Send"));
+    await waitFor(() =>
+      expect(sendPrompt).toHaveBeenCalledWith("sess-42", "the dictated words", true, undefined, "utt-77"),
+    );
+  });
+
+  // The claim is dropped the moment the person edits the words: an edited transcript is composition,
+  // not a transcription, and the page's own disclosure already tells the reader it counts as typed.
+  it("editing the transcript before sending drops the spoken claim", async () => {
+    render(<Harness sessionId="sess-42" />);
+    fireEvent.click(screen.getByRole("button", { name: "Speak" }));
+    const dialog = await screen.findByRole("dialog", { name: "Dictate" });
+    await within(dialog).findByText("RECORDING");
+
+    const pauseBtn = dialog.querySelector(".dictate-pause") as HTMLButtonElement;
+    fireEvent.click(pauseBtn);
+    await within(dialog).findByText("PAUSED");
+
+    const box = dialog.querySelector("textarea") as HTMLTextAreaElement;
+    fireEvent.change(box, { target: { value: "the dictated words, reworded" } });
+
+    fireEvent.click(within(dialog).getByText("Send"));
+    await waitFor(() =>
+      expect(sendPrompt).toHaveBeenCalledWith("sess-42", "the dictated words, reworded", true, undefined, undefined),
+    );
   });
 });

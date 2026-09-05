@@ -278,16 +278,22 @@ export function SessionComposer({ sessionId, value, onChange, onQueued, focusHan
   );
 
   const onDictateSend = useCallback(
-    async (text: string) => {
+    async (text: string, spokenDeliveryId?: string) => {
       setDictating(false);
       if (!sessionId) return;
       const combined = insertAt(value, caretRef.current, text).trim();
       if (combined.length === 0) return;
+      // The turn is SPOKEN only when the dictation is the whole of it. Send behaves like
+      // Insert-then-Enter, so anything already in the box is typed text this person composed, and a
+      // mixture is not a spoken turn - the page's own disclosure says so (ruling R10, "Clean up Your
+      // Throttle", 2026-09-05). The dialog has already withheld the id if the transcript itself was
+      // edited or came from more than one segment; this is the other half of the same test.
+      const spoken = value.trim().length === 0 ? spokenDeliveryId : undefined;
       setBusy(true);
       setError(null);
       onChange("");
       try {
-        await sendPrompt(sessionId, combined, true);
+        await sendPrompt(sessionId, combined, true, undefined, spoken);
         setStatus("Sent");
       } catch (err) {
         onChange(combined); // restore so a failed send never loses the typed + dictated text

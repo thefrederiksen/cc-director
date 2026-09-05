@@ -192,7 +192,7 @@ export function SessionControls({ sessionId, onFlash, onError, showKeyRows }: Se
   );
 
   const onDictateSend = useCallback(
-    async (text: string) => {
+    async (text: string, spokenDeliveryId?: string) => {
       setDictating(false);
       if (!sessionId) return;
       // Send behaves like Insert-then-Enter: the dictation is inserted at the caret inside any typed
@@ -200,9 +200,13 @@ export function SessionControls({ sessionId, onFlash, onError, showKeyRows }: Se
       // path, so the user does not re-send what just went out.
       const combined = insertAt(input, caretRef.current, text).trim();
       if (combined.length === 0) return;
+      // SPOKEN only when the dictation is the whole turn - the same test the Cockpit composer makes,
+      // because this is the same act on the other surface (ruling R10, "Clean up Your Throttle").
+      // Typed text already in the box makes it a mixture, and a mixture counts as typed.
+      const spoken = input.trim().length === 0 ? spokenDeliveryId : undefined;
       setInput("");
       try {
-        await sendPrompt(sessionId, combined, true);
+        await sendPrompt(sessionId, combined, true, undefined, spoken);
         onFlash("Sent");
       } catch (err) {
         setInput(combined); // restore so a failed send never loses the typed + dictated text

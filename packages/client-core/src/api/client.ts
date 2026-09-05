@@ -733,14 +733,26 @@ export async function getSessionHistory(
 // Write text (or a raw key escape sequence) to the session's PTY. appendEnter=true submits a typed
 // line (the Send button); appendEnter=false writes the bytes verbatim (Enter "\r", arrow keys
 // ESC[A/B/C/D) so the session reacts as if the key were pressed at the terminal.
+// `spokenDeliveryId` says this text was SPOKEN, not typed: it is the id of the utterance the Gateway
+// just transcribed, handed back by transcribeUtterance and passed straight through here. Without it a
+// dictated sentence submitted through this door is recorded as typed, because the Director reads the
+// modality off the send source and an ordinary prompt is a typed one - so the same words counted as
+// spoken or typed purely by which transcription path the surface happened to use. Ruling R10 of the
+// "Clean up Your Throttle" mission (2026-09-05).
+//
+// Pass it ONLY when the submitted text is the dictation and nothing else. A caller that mixed typed
+// text into the box before sending must leave it out: that turn is not wholly spoken, and the page's
+// own disclosure already says a transcript sent alongside typed text counts as typed.
 export async function sendPrompt(
   sessionId: string,
   text: string,
   appendEnter: boolean,
   signal?: AbortSignal,
+  spokenDeliveryId?: string,
 ): Promise<void> {
   const sid = encodeURIComponent(sessionId);
   const body: PromptRequest = { text, appendEnter };
+  if (spokenDeliveryId) body.deliveryUploadId = spokenDeliveryId;
   const res = await gatewayFetch(`/sessions/${sid}/prompt`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Accept: "application/json", ...authHeaders() },
@@ -816,9 +828,15 @@ export async function sendVoicePrompt(
   sessionId: string,
   text: string,
   signal?: AbortSignal,
+  spokenDeliveryId?: string,
 ): Promise<VoicePromptResult> {
   const sid = encodeURIComponent(sessionId);
   const body: PromptRequest & { menuGuard: boolean } = { text, appendEnter: true, menuGuard: true };
+  // A voice-mode reply is speech by definition, yet it reaches the session as an ordinary prompt, and
+  // the Director reads modality off the send source - so without the delivery id it was recorded as
+  // TYPED. Passed through, never invented here: the dialog withholds it the moment the words stop
+  // being one unedited transcription. Ruling R10, "Clean up Your Throttle" (2026-09-05).
+  if (spokenDeliveryId) body.deliveryUploadId = spokenDeliveryId;
   const res = await gatewayFetch(`/sessions/${sid}/prompt`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Accept: "application/json", ...authHeaders() },
@@ -1852,12 +1870,26 @@ export interface UtteranceCaptureHealth {
 // splits the reassembled clip into bounded transcription requests - it only bounds the upload hop.
 const MAX_UPLOAD_CHUNK_BYTES = 5_000_000;
 
+// What a finished transcription hands back: the words, and the id of the utterance they came from.
+//
+// The id is what lets a surface say, at submit time, that these words were SPOKEN. The Director reads
+// modality off the send source, so a transcript submitted as an ordinary prompt is recorded as typed
+// unless the delivery id rides with it - which is how the same sentence came to count as spoken or
+// typed depending only on which transcription path the surface used (ruling R10 of the "Clean up Your
+// Throttle" mission, 2026-09-05). Callers that only want the words read `.text`.
+export interface TranscribedUtterance {
+  text: string;
+  /** The Gateway's own id for the utterance it just transcribed. Pass to sendPrompt as
+   *  spokenDeliveryId when the submitted text is the dictation and nothing else. */
+  deliveryId: string;
+}
+
 export async function transcribeUtterance(
   wav: Blob,
   health?: UtteranceCaptureHealth,
   signal?: AbortSignal,
   onProgress?: (uploadedChunks: number, totalChunks: number) => void,
-): Promise<string> {
+): Promise<TranscribedUtterance> {
   // 1. Register the upload (mints an id the chunk + complete calls address).
   const reg = await gatewayFetch(`/wingman/utterance/upload`, {
     method: "POST",
@@ -1920,7 +1952,7 @@ export async function transcribeUtterance(
     if (comp.status === 402) throw creditsErrorFrom(compBody);
     throw new GatewayError(comp.status, transcriptionFailureMessage(compBody.error, comp.status));
   }
-  return (compBody.transcript ?? "").trim();
+  return { text: (compBody.transcript ?? "").trim(), deliveryId: uploadId };
 }
 
 // Hex SHA256 of the upload bytes via the Web Crypto API (available in any secure context, which a

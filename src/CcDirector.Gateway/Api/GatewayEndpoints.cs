@@ -2700,6 +2700,15 @@ internal static class GatewayEndpoints
                 AppendEnter = true,
                 WaitForIdle = req.WaitForIdle,
                 TimeoutMs = req.TimeoutMs,
+                // ONE AGENT PROMPTING ANOTHER, SAID OUT LOUD. This route is reached only by a caller that
+                // authenticated with a SESSION key, so the sender is a session by construction and there is
+                // nothing to infer. Without the marker the Director records the turn as an ordinary
+                // UserInput with no origin, and it is then left out of the person's figures only because no
+                // surface resolved for it - the right answer by the wrong road - while the agent-driven
+                // lane, which exists precisely to count these, never sees it at all. Over the owner's week
+                // of 2026-W35 that was 292 of 296 fleet messages: absent from both numbers. See ruling R12
+                // of the "Clean up Your Throttle" mission (2026-09-05).
+                AgentDriven = true,
             });
         });
 
@@ -3964,7 +3973,22 @@ internal static class GatewayEndpoints
                     };
                 }
 
-                var promptReq = new PromptRequest { Text = req.Text, AppendEnter = req.AppendEnter };
+                // AGENT-DRIVEN WHEN THE SENDER IS A SESSION, and not otherwise (ruling R12 of the "Clean up
+                // Your Throttle" mission, 2026-09-05). A fanout from a session key is one agent prompting
+                // others and must be recorded as agent traffic; left unmarked the Director records it as
+                // ordinary UserInput with no origin, so it falls out of the person's figures only because
+                // no surface resolved for it, and out of the agent-driven lane entirely. That was 292 of
+                // the owner's 296 fleet messages in 2026-W35: absent from both numbers.
+                //
+                // The test is the AUTHENTICATED caller, never req.FromSessionId. A device key acts for the
+                // account - a person broadcasting from the desktop or the phone - and it can put any string
+                // in that field, so trusting it would let a caller decide whether its own turns count.
+                var promptReq = new PromptRequest
+                {
+                    Text = req.Text,
+                    AppendEnter = req.AppendEnter,
+                    AgentDriven = callingSession is not null,
+                };
                 // Fanout delivery rides the tunnel (prompt verb). Tunnel-only: there is no HTTP arm.
                 bool ok; PromptResponse? body; string? err;
                 var deliverSr = await DirectorCommandRouter.TrySendAsync(sendCommand, director.DirectorId, "prompt", sid, promptReq, CancellationToken.None, machineName: director.MachineName);

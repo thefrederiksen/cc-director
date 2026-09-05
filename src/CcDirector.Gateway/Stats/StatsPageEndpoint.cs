@@ -56,7 +56,7 @@ public static class StatsPageEndpoint
     /// </summary>
     private static readonly string[] NotCaptured =
     {
-        "Your main phone voice (the Speak button / durable dictation) is counted as voice. If you pause a voice-mode reply and then send the already-typed transcript, that one is counted as typed.",
+        "Speaking counts as voice wherever you do it - the Speak button, the phone, and a voice-mode reply - whenever the words you send are the transcription and nothing else. Edit those words before sending, or send them alongside something you typed, and that turn is counted as typed.",
         "The message composer, and typing at the terminal in the desktop app, each count as one submitted turn when you press Enter, with the characters of the whole line. Raw keystrokes typed into a browser's live terminal stream are not attributed to a surface, so they are not counted at all.",
         "Surface (phone / cockpit) for remote input is read from the signed-in device. Remote input with no device identity (a shared-token or fleet call) is not counted as an operator surface.",
     };

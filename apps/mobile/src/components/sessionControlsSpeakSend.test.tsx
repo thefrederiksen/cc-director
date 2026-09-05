@@ -17,7 +17,7 @@ const { sendPrompt, transcribeUtterance, backgroundTranscribeAndSend, listSessio
   // The synchronous POST /prompt path (typed Send, Insert-then-Enter).
   sendPrompt: vi.fn(async () => {}),
   // The synchronous /wingman/utterance/* transcription (the Pause checkpoint and Insert).
-  transcribeUtterance: vi.fn(async () => "the dictated words"),
+  transcribeUtterance: vi.fn(async () => ({ text: "the dictated words", deliveryId: "utt-77" })),
   // The durable background pipeline (POST /dictation/*) the recording-stage Send rides.
   backgroundTranscribeAndSend: vi.fn(async () => {}),
   // The roster read the Speak press snapshots its moved-on baseline from (issue #2478).
@@ -188,5 +188,36 @@ describe("Mobile Speak Send-direct (recording-stage)", () => {
     ];
     await expect(opts.baselineBufferBytes).resolves.toBeUndefined();
     expect(listSessions).toHaveBeenCalledTimes(1);
+  });
+
+  // R10 ("Clean up Your Throttle", 2026-09-05), and the parity half of it: the phone and the Cockpit
+  // are the same act on two surfaces, so they must answer "was this spoken" the same way. A dictated
+  // sentence submitted through the ordinary prompt door was recorded as TYPED - the Director reads
+  // modality off the send source - and the delivery id of the utterance the Gateway just transcribed
+  // is what says otherwise. Mirrors composerSpeakSend.test.tsx in the Cockpit workspace.
+  it("a PURE dictation carries the spoken delivery id; typed text in the box drops the claim", async () => {
+    render(<SessionControls sessionId="sess-42" onFlash={() => {}} onError={() => {}} showKeyRows />);
+
+    // Nothing typed: open the dialog with an empty box, so what is sent is only the words.
+    fireEvent.click(screen.getByRole("button", { name: "Speak" }));
+    const clean = await screen.findByRole("dialog", { name: "Dictate" });
+    await within(clean).findByText("RECORDING");
+    fireEvent.click(clean.querySelector(".dictate-pause") as HTMLButtonElement);
+    await within(clean).findByText("PAUSED");
+    fireEvent.click(within(clean).getByText("Send"));
+    await waitFor(() =>
+      expect(sendPrompt).toHaveBeenCalledWith("sess-42", "the dictated words", true, undefined, "utt-77"),
+    );
+
+    // Now with typed text around it: a mixture is not a spoken turn, and the page's own disclosure
+    // already tells the reader so.
+    sendPrompt.mockClear();
+    const mixed = await typeAndOpenRecordingDialog();
+    fireEvent.click(mixed.querySelector(".dictate-pause") as HTMLButtonElement);
+    await within(mixed).findByText("PAUSED");
+    fireEvent.click(within(mixed).getByText("Send"));
+    await waitFor(() =>
+      expect(sendPrompt).toHaveBeenCalledWith("sess-42", "A the dictated words B", true, undefined, undefined),
+    );
   });
 });

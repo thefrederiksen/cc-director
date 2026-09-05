@@ -209,7 +209,7 @@ export function VoiceTab({ sessionId }: { sessionId: string | undefined }) {
         <DictationDialog
           surface="cockpit"
           showInsert={false}
-          onSend={(text) => void v.onRespondSend(text)}
+          onSend={(text, spokenDeliveryId) => void v.onRespondSend(text, spokenDeliveryId)}
           onSendAudio={v.onRespondSendAudio}
           onClose={() => v.setResponding(false)}
         />

@@ -70,8 +70,17 @@ export interface DictationDialogProps {
    *  only when Insert is shown; ignored when showInsert is false. */
   onInsert?: (text: string) => void;
   /** Commit the transcript AND submit it (the view's Send path). Used for the instant PAUSED-stage
-   *  Send (the text is already transcribed) and as the fallback Send when onSendAudio is not wired. */
-  onSend: (text: string) => void;
+   *  Send (the text is already transcribed) and as the fallback Send when onSendAudio is not wired.
+   *
+   *  `spokenDeliveryId` is present ONLY when the committed text is exactly one unedited transcription,
+   *  and it is what lets the host record the turn as SPOKEN rather than typed - the Director reads
+   *  modality off the send source, so a transcript submitted as an ordinary prompt counts as typed
+   *  without it (ruling R10, "Clean up Your Throttle", 2026-09-05). It is deliberately dropped the
+   *  moment the words stop being purely a transcription: a second dictated segment joined on, or any
+   *  keystroke in the box. A host that mixes in its own typed text must drop it too. Undefined means
+   *  "do not claim this was spoken", which is the honest answer for a mixture and is what the page's
+   *  own disclosure already tells the reader. */
+  onSend: (text: string, spokenDeliveryId?: string) => void;
   /** Immediate (fire-and-forget) Send: when provided, hitting Send while still RECORDING captures the
    *  audio buffer, hands it here, and closes the dialog IMMEDIATELY - the host then transcodes,
    *  uploads, transcribes, and submits in the background (marking the session "Transcribing..."). This
@@ -130,6 +139,20 @@ export function DictationDialog({
   const readyTimeoutRef = useRef<number | null>(null);
 
   const [transcript, setTranscript] = useState<string>("");
+
+  // THE SPOKEN CLAIM, AND WHAT REVOKES IT (ruling R10, "Clean up Your Throttle", 2026-09-05).
+  //
+  // Holds the delivery id of the ONE transcription the current text came from, so a Send can tell the
+  // host these words were spoken rather than typed. It is null unless that is exactly true, and it is
+  // dropped - not merely questioned - the instant the text stops being one unedited transcription: a
+  // second dictated segment joined on (the id names one utterance and cannot speak for two) or any
+  // keystroke in the box (the person is now typing).
+  //
+  // Conservative on purpose, and the direction of the error is the point. Claiming spoken wrongly puts
+  // words in the person's mouth in a figure he publishes; declining to claim it understates by one
+  // turn, and the page's own disclosure already tells the reader that a transcript sent alongside
+  // typed text counts as typed.
+  const spokenDeliveryRef = useRef<string | null>(null);
   const [hint, setHint] = useState<string>("");
   // Sticky dropped-audio warning (issue #863 made the loss measurable; this makes it VISIBLE).
   // Once a segment shows a material capture deficit the warning stays for the rest of the dialog -
@@ -260,7 +283,7 @@ export function DictationDialog({
   // dropped-audio warning when the capture-health check found a material deficit, or null when there
   // was no audio / transcription failed (the reason is shown). The recorder is consumed here, so a
   // segment is never transcribed twice.
-  const transcribeCurrentSegment = useCallback(async (): Promise<{ text: string; lossWarning: string | null } | null> => {
+  const transcribeCurrentSegment = useCallback(async (): Promise<{ text: string; lossWarning: string | null; deliveryId: string } | null> => {
     let wav: Blob;
     let health;
     let lossWarning: string | null = null;
@@ -299,12 +322,12 @@ export function DictationDialog({
     try {
       // The surface rides ALONGSIDE the measurement rather than inside it: capture-health is what was
       // measured, the surface is who measured it, and only the upload needs both.
-      const text = await transcribeUtterance(wav, { ...health, surface }, undefined, (uploaded, total) => {
+      const transcribed = await transcribeUtterance(wav, { ...health, surface }, undefined, (uploaded, total) => {
         // A short clip uploads in one chunk (no progress line needed); a long recording uploads in
         // several, so show which piece is going up before the "Transcribing..." wait.
         if (total > 1) setHint(`Uploading recording... ${uploaded} of ${total}`);
       });
-      return { text, lossWarning };
+      return { text: transcribed.text, lossWarning, deliveryId: transcribed.deliveryId };
     } catch (err) {
       setHint(err instanceof Error ? err.message : "The transcription service had a problem and couldn't process your recording.");
       return null;
@@ -321,7 +344,11 @@ export function DictationDialog({
       setHint("Transcribing what you have said so far...");
       const segment = await transcribeCurrentSegment();
       if (segment !== null) {
+        // One utterance id cannot speak for two segments, so a second one drops the claim rather than
+        // naming whichever happened to be last.
+        const wasTheOnlySegment = accumulatedRef.current.length === 0 && transcript.length === 0;
         accumulatedRef.current = joinText(accumulatedRef.current, segment.text);
+        spokenDeliveryRef.current = wasTheOnlySegment ? segment.deliveryId : null;
         setTranscript(accumulatedRef.current);
         setHint("");
       }
@@ -346,7 +373,7 @@ export function DictationDialog({
   }, [stage, transcript, transcribeCurrentSegment, armReadyBackstop, clearReadyBackstop]);
 
   const commit = useCallback(
-    async (action: (text: string) => void) => {
+    async (action: (text: string, spokenDeliveryId?: string) => void) => {
       if (busyRef.current) return;
       if (stage === "recording") {
         busyRef.current = true;
@@ -360,7 +387,11 @@ export function DictationDialog({
           busyRef.current = false;
           return;
         }
+        // The claim survives only if this transcription IS the whole text: nothing committed before
+        // it, and nothing typed into the box.
+        const wasTheOnlySegment = accumulatedRef.current.length === 0 && transcript.length === 0;
         accumulatedRef.current = joinText(accumulatedRef.current, segment.text);
+        spokenDeliveryRef.current = wasTheOnlySegment ? segment.deliveryId : null;
         if (segment.lossWarning !== null) {
           // The capture dropped audio, so this text may be missing words. Committing it silently
           // (worst of all straight into a session via Send) would hide the loss - park in PAUSED
@@ -372,10 +403,13 @@ export function DictationDialog({
           return;
         }
         busyRef.current = false;
-        action(accumulatedRef.current.trim());
+        action(accumulatedRef.current.trim(), spokenDeliveryRef.current ?? undefined);
         onClose();
       } else if (stage === "paused") {
-        action(transcript.trim());
+        // The PAUSED box is editable, so the claim only stands if what is in it is still exactly the
+        // text the transcription produced.
+        const untouched = transcript === accumulatedRef.current;
+        action(transcript.trim(), untouched ? (spokenDeliveryRef.current ?? undefined) : undefined);
         onClose();
       }
     },
@@ -393,7 +427,9 @@ export function DictationDialog({
   const onSendClick = useCallback(async () => {
     if (busyRef.current) return;
     if (stage === "paused") {
-      onSend(transcript.trim());
+      // Same rule as the commit path: an edited box is no longer a transcription.
+      const untouched = transcript === accumulatedRef.current;
+      onSend(transcript.trim(), untouched ? (spokenDeliveryRef.current ?? undefined) : undefined);
       onClose();
       return;
     }
@@ -501,7 +537,13 @@ export function DictationDialog({
             className="dictate-transcript"
             value={isPaused ? transcript : accumulatedRef.current}
             readOnly={!isPaused}
-            onChange={(e) => setTranscript(e.target.value)}
+            onChange={(e) => {
+              // Typing here makes the words no longer purely a transcription, so the spoken claim
+              // goes (R10). Dropped on the FIRST keystroke rather than compared at Send: an edit that
+              // happens to restore the original text is still the person composing.
+              spokenDeliveryRef.current = null;
+              setTranscript(e.target.value);
+            }}
             placeholder="Your words appear when you pause or finish - press Pause to see them so far."
           />
         )}

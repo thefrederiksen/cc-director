@@ -132,7 +132,7 @@ export interface VoiceModeView {
   /** Sends the reply into the session. Resolves true when the send succeeded, false when it failed
    *  (the error is already surfaced) - so a caller that navigates away after a reply can stay put on
    *  failure instead of leaving the error behind on an abandoned screen. */
-  onRespondSend: (text: string) => Promise<boolean>;
+  onRespondSend: (text: string, spokenDeliveryId?: string) => Promise<boolean>;
   onRespondSendAudio: (captured: CapturedUtterance) => void;
   /** Set when the last reply was NOT sent because a menu owns the session's screen (issue #2193): the
    *  line to show. Voice cannot pick an option yet, so the person has to open the session and choose.
@@ -657,7 +657,7 @@ export function useVoiceMode(
   }, []);
 
   const onRespondSend = useCallback(
-    async (text: string): Promise<boolean> => {
+    async (text: string, spokenDeliveryId?: string): Promise<boolean> => {
       setResponding(false);
       const trimmed = text.trim();
       if (sid.length === 0 || trimmed.length === 0) return false;
@@ -667,7 +667,7 @@ export function useVoiceMode(
         // is sent verbatim (transcript integrity, CodingStyle s16). If a chooser owns the screen the
         // Gateway types nothing and presses nothing, and says so - we surface that instead of pretending
         // the reply landed.
-        const result = await sendVoicePrompt(sid, trimmed);
+        const result = await sendVoicePrompt(sid, trimmed, undefined, spokenDeliveryId);
         if (result.blockedByMenu) {
           setMenuBlocked(result.message);
           speakBlocked(result.spoken, result.spokenLanguage);
