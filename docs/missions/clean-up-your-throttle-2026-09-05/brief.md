@@ -369,3 +369,35 @@ for anything still reading it, and its companion R14 disclosure correction stand
 report must not claim the fix as the thing that corrected the number. The rest of phase two's work -
 the fleet-message source and the dictation modality - lands at the submission choke point and
 therefore reaches the ledger as well as the tally, so it is not affected by this.
+
+---
+
+## A finding OUTSIDE this mission, verified by the Architect, 2026-09-05
+
+Phase three reported two red tests it attributed to `main` rather than to the mission. **The Architect
+verified that independently** rather than accepting it: the merge-base `a0aef2c74` - plain `origin/main`
+with no mission code present - was checked out in a separate worktree and
+`ContextLessRouteCensusTests` run against it. Both facts fail there. The claim holds and this branch
+introduces no red.
+
+**But the red itself is real and nobody is chasing it.** Three routes in
+`src/CcDirector.Gateway/Api/SessionRuleEndpoints.cs` take a rule identifier and **no request context**:
+
+```
+MapGet   ("/gateway/rules/{id:guid}",          (Guid id) => ...)
+MapDelete("/gateway/rules/{id:guid}",          (Guid id) => ...)
+MapGet   ("/gateway/rules/{id:guid}/firings",  (Guid id) => ...)
+```
+
+The `promote` route beside them DOES take `HttpContext`, so the distinction was understood when they
+were written. The census exists to force a written tenant-confinement verdict for exactly this shape of
+route on a multi-tenant hosted Gateway, and it has been failing since these were added on 2026-08-01, in
+a suite the default gate does not run - so it has been red and unread for over a month.
+
+**What is established:** the routes take no request context, and the census that would rule on them is
+failing. **What is NOT established, and must not be claimed:** whether they are actually confined by an
+ambient tenant scope. That unanswered question is precisely what the failing census is complaining
+about. Nobody on this mission has looked, because it is not this mission's work.
+
+**Not fixed here.** It is out of scope, it wants its own issue and its own ruling, and it was reported
+to the owner when found.
