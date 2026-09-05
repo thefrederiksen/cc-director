@@ -564,7 +564,22 @@ public sealed class DirectorHub : Hub
         // the authoritative removal - the partial-success shape the snapshot and delta catches were added to
         // remove. Containing two of the three hub paths and leaving this one was the hole an inspection
         // found; the claim was about the hub, not about two of its methods.
-        if (_inputStats is not null)
+        //
+        // GATED ON ACCEPTANCE, which it was not. A rejected remove is one this store has just ruled is NOT
+        // about the roster it holds - a superseded connection, or a sequence it has already passed - so the
+        // session is still there and still counting. Forgetting its high-water anyway deletes the baseline
+        // the counting is measured from, and the next fold then inserts a fresh row whose previous value is
+        // zero and appends the session's ENTIRE standing tally to the ledger as new activity. That error is
+        // permanent: nothing rewrites an appended delta. Two lines below, the work-history observer was
+        // already gated on exactly this flag for exactly this reason. Measured on the owner's 2026-W35 week
+        // in docs/missions/clean-up-your-throttle-2026-09-05/task3-defect-two-mechanism.md, where 240
+        // buckets show a whole cumulative re-added with no reset recorded against them.
+        //
+        // THIS CLOSES THE HOLE, NOT THE DEFECT. On the day of the hosted log that was examined every
+        // dropped push was a snapshot and none was a remove, so this path is not what fired there. The
+        // wider fault - that an ABSENT high-water row is read as "this session has never been counted" at
+        // all - is unchanged, and is held for the ruling on where Your Throttle's figure comes from.
+        if (_inputStats is not null && accepted)
         {
             var boundTenant = RequireBoundTenant();
             Stats.StatsObservation.Contain(_inputStats.Health, "DirectorHub.RemoveSession",

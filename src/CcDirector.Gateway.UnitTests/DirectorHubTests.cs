@@ -462,6 +462,92 @@ public sealed class DirectorHubTests : IDisposable
         Assert.Equal("fresh", fresh[0].SessionId);
     }
 
+    // ---------- A REJECTED REMOVE MUST NOT DELETE THE STATISTICS BASELINE ----------
+    //
+    // Landed with the "Clean up Your Throttle" mission (2026-09-05). Your Throttle's totals are built by
+    // appending, for each roster reading, the DIFFERENCE between a session's reported cumulative and the
+    // high-water the store already holds. Delete that high-water and the next reading has nothing to
+    // measure from: the writer inserts a fresh row whose previous value is zero and appends the session's
+    // ENTIRE standing tally a second time. Nothing rewrites an appended delta, so the error is permanent
+    // and its size is the whole session.
+    //
+    // RemoveSession called Forget unconditionally. ApplyRemove returning false is the store SAYING the
+    // message is not about the roster it holds - a superseded connection, or a sequence already passed -
+    // and the session stays in that roster and keeps counting. The work-history observer two lines below
+    // was already gated on the same flag for the same reason; the statistics were not.
+    //
+    // This closes ONE route to a lost baseline. It does not close the wider fault that an ABSENT high-water
+    // row is read as "this session has never been counted at all", which is measured in
+    // docs/missions/clean-up-your-throttle-2026-09-05/task3-defect-two-mechanism.md and held for the ruling
+    // on where Your Throttle's figure comes from. On the hosted day examined, every dropped push was a
+    // snapshot and none was a remove, so this path is not what produced the numbers in that document.
+    //
+    // Revert-prove: drop the "&& accepted" from DirectorHub.RemoveSession and the first of these goes red
+    // with the reported symptom - the tally counted twice - after its positive control has passed, while
+    // the second, which pins that a REAL removal still forgets, stays green.
+
+    /// <summary>A session reporting a standing tally of typed desktop turns.</summary>
+    private static SessionDto Counting(string id, long turns, long chars) => new()
+    {
+        SessionId = id,
+        ActivityState = "Working",
+        Agent = "ClaudeCode",
+        RepoPath = @"C:\repo",
+        InputStats = new InputStatsDto
+        {
+            Buckets = { new InputStatBucketDto { Modality = "typed", Surface = "desktop", Turns = turns, Characters = chars } },
+        },
+    };
+
+    private long TypedDesktopTurns()
+    {
+        foreach (var b in _inputStats.CurrentTotals(TenantId.Local).Buckets)
+            if (b.Modality == "typed" && b.Surface == "desktop") return b.Turns;
+        return 0;
+    }
+
+    [Fact]
+    public void ARemoveFromASupersededConnection_DoesNotCountTheSessionsWholeTallyASecondTime()
+    {
+        var (live, _) = NewHub("conn-1");
+        live.Hello(Hello("dir-A"));
+        live.PushSnapshot(1, new[] { Counting("s1", turns: 10, chars: 400) });
+
+        // Positive control: the ten turns were counted once, so a doubling below cannot be read into an
+        // empty store.
+        Assert.Equal(10, TypedDesktopTurns());
+
+        // conn-2 reconnects and supersedes conn-1; conn-1's remove then arrives late. The store refuses it,
+        // so s1 is still in the roster and still counting.
+        var (current, _) = NewHub("conn-2");
+        current.Hello(Hello("dir-A"));
+        live.RemoveSession(2, "s1");
+
+        // The session reports the same standing tally on the next roster reading, plus one new turn.
+        current.PushSnapshot(3, new[] { Counting("s1", turns: 11, chars: 440) });
+
+        // Eleven turns happened. Eleven must be counted - not twenty-one.
+        Assert.Equal(11, TypedDesktopTurns());
+    }
+
+    [Fact]
+    public void ARealRemoveStillForgets_SoTheBaselineDoesNotGrowWithoutBound()
+    {
+        // The control on the gate: an ACCEPTED remove must still drop the high-water, which is what stops
+        // the map growing for every session that has ever run. Proved by its effect - after the removal the
+        // same session id reported afresh is measured from nothing and counted again, which is exactly what
+        // forgetting means, and exactly why it must never fire on a session that is still alive.
+        var (hub, _) = NewHub("conn-1");
+        hub.Hello(Hello("dir-A"));
+        hub.PushSnapshot(1, new[] { Counting("s1", turns: 10, chars: 400) });
+        Assert.Equal(10, TypedDesktopTurns());
+
+        hub.RemoveSession(2, "s1");
+        hub.PushSnapshot(3, new[] { Counting("s1", turns: 10, chars: 400) });
+
+        Assert.Equal(20, TypedDesktopTurns());
+    }
+
     private sealed class FakeHubCallerContext : HubCallerContext
     {
         public FakeHubCallerContext(string connectionId)
