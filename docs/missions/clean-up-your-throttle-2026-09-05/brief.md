@@ -428,3 +428,45 @@ permanent footnote, and it is not carried on later weeks.
 **Not restating history.** Earlier weeks keep their published figures, per the mission's standing
 position that history is not rewritten. The disclosure explains the discontinuity; it does not try to
 erase it.
+
+---
+
+## R20 - The desktop composer does not know which of its characters were spoken (OWNER-FOUND, 2026-09-05)
+
+The owner said: "whenever we speak, text also gets put into the prompt box and then sent in from there
+into the terminal - are you aware of that?" He was right, and it is two defects with one root.
+
+**The root:** `PromptInput` is a plain text box. Once a transcript is inserted into it, nothing records
+which characters came from a microphone. The send path then guesses from which BUTTON was pressed.
+
+- **Understates him.** `InsertIntoPromptInputAt` (MainWindow.axaml.cs:3337) drops the transcript into
+  the compose box and leaves it. Pressing Send then runs the ordinary path, which stamps
+  `InputOrigin.DesktopTyped` under a comment asserting "the desktop composer is typed input from the
+  local machine, BY CONSTRUCTION" (:5011). That assertion is false the moment dictation was inserted,
+  and it is stated as a certainty, which is why nobody looked.
+- **Overstates him.** `BackgroundDictationSend` composes `before + dictation + after` into one message
+  (BackgroundDictationSend.cs:103) and `SubmitDictatedTextAsync` stamps the WHOLE thing
+  `InputOrigin.DesktopVoice` (MainWindow.axaml.cs:3372). A mixture of typing and speech counts as pure
+  speech - the exact defect the independent inspector found on the phone as I2-01 and which was fixed
+  there, and which therefore now behaves DIFFERENTLY on the two surfaces.
+
+**Measured, over 2026-W35, against the stored transcripts rather than by proximity.** A turn was tested
+for containing a stored transcript verbatim, with turns counted as spoken as the control:
+
+| population | carry a stored transcript verbatim |
+|---|---:|
+| counted as SPOKEN (the control) | 891 of 914, **97.5%** |
+| counted as TYPED | **25 of 655, 3.8%** (2,585 words) |
+
+The control at 97.5 per cent is what makes the 3.8 per cent meaningful. Moving those 25 takes the week
+from **56.8 to 58.2 per cent**. The transcript table also bounds what remains: 1,075 transcriptions,
+1,040 now accounted for, so at most about 35 spoken turns are still unaccounted anywhere - a ceiling
+near 60 per cent for that week, not the 80 or 90 the owner expected.
+
+**The fix:** the compose box must carry the provenance of its own characters - which ranges came from a
+transcript - so the send stamps what is true instead of inferring it from the button. Pure inserted
+dictation is voice; a mixture is typed, matching the ruling already applied to the phone in I2-01. The
+false "by construction" comment goes with it.
+
+**Consistency requirement:** after this, the desktop and the phone must classify an identical mixture
+identically. Today they disagree, and neither has a test that would notice.
