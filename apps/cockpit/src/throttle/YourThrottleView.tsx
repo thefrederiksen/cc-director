@@ -13,6 +13,8 @@ import {
   SURFACE_LABEL,
   SURFACE_ORDER,
   type ThrottleData,
+  type ThrottleServed,
+  type ThrottleFigure,
   type ThrottleSummary,
   type ConcurrencyHour,
   type InputHour,
@@ -23,18 +25,22 @@ import { ReposTab } from "./ReposTab";
 import { AgentsTab } from "./AgentsTab";
 import { TABS, DEFAULT_TAB, isThrottleTab, type ThrottleTab } from "./throttleTabs";
 
-// The "Your Throttle" page (devthrottle-stats mission): the in-Cockpit view of how the owner drives the
-// fleet - spoken vs typed, and from phone vs desktop vs cockpit. Read-only over the same GET /stats/data
-// feed the standalone Gateway page uses. Responsive (CodingStyle.md): renders immediately with a loading
-// state, loads asynchronously, and on a load failure shows an explicit error banner (no-fallback rule).
-// Auto-refreshes so the split visibly moves as the owner keeps driving.
+// The "Your Throttle" page: the in-Cockpit view of how the owner drives the fleet - spoken vs typed, and
+// from phone vs desktop vs cockpit - over the GET /stats/data feed. Responsive (CodingStyle.md): renders
+// immediately with a loading state, loads asynchronously, and on a load failure shows an explicit error
+// banner (no-fallback rule). Auto-refreshes so the split visibly moves as the owner keeps driving.
+//
+// EVERY NUMBER HERE IS THE GATEWAY'S (mission "Clean up Your Throttle", 2026-09-05). The feed carries one
+// figure computed by one definition over the submission ledger, with the window it covers and the
+// population it left out stated on it. This page lays that out; it derives nothing of its own beyond share
+// arithmetic over the counts it was given. A self-hosted Gateway answers with a sentence instead of a
+// figure, and this page shows that sentence (rulings R1 and R6) rather than an empty dashboard.
 //
 // The page is TABBED so the two questions the owner actually cares about are not buried under supporting
 // tables (owner ask, 2026-07-13): Overview leads with the two headline percentages as big rings - how
-// much do I speak vs type, and how much do I drive from my phone; Activity holds the (now larger) time
-// charts; Breakdown holds the supporting tables and honesty caveats; Repos holds the private per-repo
-// split, which was its own page and rail entry until 2026-07-14 (owner ask). All four tabs read the one
-// /stats/data snapshot this page already polls, so folding Repos in added no second request.
+// much do I speak vs type, and how much do I drive from my phone; Activity holds the time charts;
+// Breakdown holds the supporting tables, the definition, and the honesty caveats; Repos and Agents hold
+// the private splits. All five tabs read the one /stats/data snapshot this page already polls.
 
 const REFRESH_MS = 10_000;
 
@@ -90,9 +96,10 @@ export function YourThrottleView() {
     };
   }, []);
 
+  const served: ThrottleServed | null = data !== null && data.available ? data : null;
   const summary: ThrottleSummary | null = useMemo(
-    () => (data === null ? null : summarizeThrottle(data)),
-    [data],
+    () => (served === null ? null : summarizeThrottle(served.throttle)),
+    [served],
   );
 
   return (
@@ -103,6 +110,7 @@ export function YourThrottleView() {
           How you are driving development: spoken vs typed, and from phone vs desktop vs cockpit. A turn
           is one submitted message; one spoken utterance and one typed message each count as one turn.
         </p>
+        {served !== null && <WindowStatement figure={served.throttle} timeZone={served.timeZone} />}
       </div>
 
       {error !== null && (
@@ -111,9 +119,16 @@ export function YourThrottleView() {
         </div>
       )}
 
-      {summary === null && error === null && <div className="thr-loading">Loading your throttle...</div>}
+      {data === null && error === null && <div className="thr-loading">Loading your throttle...</div>}
 
-      {data !== null && summary !== null && (
+      {/* The Gateway has no figure to show here and said why, in one sentence. Rendered verbatim. */}
+      {data !== null && !data.available && (
+        <div className="thr-empty" role="status">
+          {data.reason}
+        </div>
+      )}
+
+      {served !== null && summary !== null && (
         <>
           <div className="thr-tabs" role="tablist" aria-label="Your Throttle sections">
             {TABS.map((t) => (
@@ -130,42 +145,81 @@ export function YourThrottleView() {
             ))}
           </div>
 
-          {tab === "overview" && <OverviewTab summary={summary} data={data} />}
-          {tab === "activity" && <ActivityTab data={data} />}
-          {tab === "breakdown" && <BreakdownTab summary={summary} data={data} />}
-          {tab === "repos" && <ReposTab data={data} />}
-          {tab === "agents" && <AgentsTab data={data} />}
+          {tab === "overview" && <OverviewTab summary={summary} data={served} />}
+          {tab === "activity" && <ActivityTab data={served} />}
+          {tab === "breakdown" && <BreakdownTab summary={summary} data={served} />}
+          {tab === "repos" && <ReposTab figure={served.throttle} />}
+          {tab === "agents" && <AgentsTab figure={served.throttle} />}
         </>
       )}
     </div>
   );
 }
 
+// ---- The window, stated on the page ---------------------------------------------------------------
+
+/** Format an ISO instant as a short local date and time in the display zone, or the raw text if it does
+ *  not parse - never a made-up date. */
+function localStamp(iso: string, timeZone: string): string {
+  const t = Date.parse(iso);
+  if (Number.isNaN(t)) return iso;
+  return new Intl.DateTimeFormat("en-US", {
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+    timeZone,
+  }).format(new Date(t));
+}
+
+// Which stretch of time every number on this page describes. The label is the Gateway's; the dates are
+// the Gateway's, rendered in the display zone. When the ledger's record begins after the window opens,
+// that is said too, so a quiet first week is never read as a quiet week.
+function WindowStatement({ figure, timeZone }: { figure: ThrottleFigure; timeZone: string }) {
+  const zone = safeTimeZone(timeZone);
+  const { window: w, ledger } = figure;
+  const recordStartsLate =
+    ledger.earliestUtc !== null &&
+    w.fromUtc !== "" &&
+    Date.parse(ledger.earliestUtc) > Date.parse(w.fromUtc);
+  return (
+    <p className="page-sub" data-testid="thr-window">
+      Showing <b>{w.label}</b>: {localStamp(w.fromUtc, zone)} to {localStamp(w.toUtc, zone)} ({friendlyZone(zone)}
+      ). Counted in {figure.unit} from the submission ledger, which keeps {ledger.retentionDays} days.
+      {recordStartsLate && ledger.earliestUtc !== null && (
+        <> Your record begins {localStamp(ledger.earliestUtc, zone)}; there is nothing before that.</>
+      )}
+      {ledger.earliestUtc === null && <> The ledger holds no submissions for you yet.</>}
+    </p>
+  );
+}
+
 // ---- Overview: the landing dashboard - the two headline percentages first, big and clear ------------
 
-function OverviewTab({ summary, data }: { summary: ThrottleSummary; data: ThrottleData }) {
+function OverviewTab({ summary, data }: { summary: ThrottleSummary; data: ThrottleServed }) {
+  const figure = data.throttle;
+
   if (!summary.hasData) {
     return (
-      <div className="thr-empty">
-        No input counted yet. Send a turn from the composer, dictation, phone, or cockpit and your
-        throttle will appear here.
-      </div>
+      <>
+        <div className="thr-empty">
+          No turn counted in this window. Send a turn from the composer, dictation, phone, or cockpit and
+          your throttle will appear here.
+        </div>
+        <ExcludedNote figure={figure} />
+      </>
     );
   }
 
   const peakLive = data.concurrency?.live.allTimeMax ?? 0;
 
-  // Wingman usage (a session "uses the wingman" when voice mode is on): the share of turns submitted while
-  // in voice mode, over the same total the other rings use, and the count of distinct sessions that used it.
-  const wingmanTurns = data.wingman.turns;
-  const wingmanShare = summary.totalTurns > 0 ? wingmanTurns / summary.totalTurns : null;
-  const wingmanSessions = data.wingman.sessions;
-
   return (
     <>
-      {/* The three hero rings: the questions the owner actually asks - how much do I speak, how much do I
-          drive from my phone, and how much do I lean on the wingman (voice mode). Each ring is its own
-          metric, so each fills with its own accent against a muted remainder; the center is the headline. */}
+      {/* The two hero rings: the questions the owner actually asks - how much do I speak, and how much do
+          I drive from my phone. Each ring is its own metric, so each fills with its own accent against a
+          muted remainder; the center is the headline. */}
       <div className="thr-heroes">
         <HeroRing
           title="Voice vs typing"
@@ -186,15 +240,6 @@ function OverviewTab({ summary, data }: { summary: ThrottleSummary; data: Thrott
             count: summary.totalTurns - summary.turnsBySurface.phone,
           }}
         />
-        <HeroRing
-          title="Wingman (voice mode)"
-          share={wingmanShare}
-          accentVar="--thr-wingman"
-          centerCaption="in voice mode"
-          primary={{ label: "Voice mode", count: wingmanTurns }}
-          secondary={{ label: "Hands-on", count: Math.max(0, summary.totalTurns - wingmanTurns) }}
-          note={`${wingmanSessions.toLocaleString()} session${wingmanSessions === 1 ? "" : "s"} used the wingman`}
-        />
       </div>
 
       {/* Where the turns come from, in one glance - the supporting detail behind the mobile ring. */}
@@ -208,11 +253,38 @@ function OverviewTab({ summary, data }: { summary: ThrottleSummary; data: Thrott
 
       {/* Supporting headline numbers. */}
       <div className="thr-stats">
-        <StatTile value={summary.totalTurns.toLocaleString()} label="Total turns" />
-        <StatTile value={summary.totalCharacters.toLocaleString()} label="Characters driven" />
+        <StatTile value={summary.totalTurns.toLocaleString()} label="Turns counted" sub={figure.window.label.toLowerCase()} />
+        <StatTile value={figure.sessions.toLocaleString()} label="Sessions you drove" />
         <StatTile value={String(peakLive)} label="Peak sessions at once" sub="all-time" />
       </div>
+
+      <ExcludedNote figure={figure} />
     </>
+  );
+}
+
+// What the definition left out, said beside the share (rulings R7 and R17): a share computed over a subset
+// publishes the size of the subset. The counts are the Gateway's; this only puts words around them.
+function ExcludedNote({ figure }: { figure: ThrottleFigure }) {
+  const { excluded, agentDrivenTurns } = figure;
+  if (excluded.unresolved === 0 && agentDrivenTurns === 0) return null;
+  return (
+    <p className="thr-muted" data-testid="thr-excluded">
+      {excluded.unresolved > 0 && (
+        <>
+          <b>{excluded.unresolved.toLocaleString()}</b> submission{excluded.unresolved === 1 ? "" : "s"} of
+          yours could not be placed on a surface and {excluded.unresolved === 1 ? "is" : "are"} outside every
+          number on this page.{" "}
+        </>
+      )}
+      {agentDrivenTurns > 0 && (
+        <>
+          <b>{agentDrivenTurns.toLocaleString()}</b> turn{agentDrivenTurns === 1 ? " was" : "s were"} other
+          sessions prompting yours - the fleet driving itself. Those are on the Agents tab, never in your
+          share.
+        </>
+      )}
+    </p>
   );
 }
 
@@ -350,8 +422,9 @@ function StatTile({ value, label, sub }: { value: string; label: string; sub?: s
 
 // ---- Activity: the time charts, now full-width and tall enough to read ------------------------------
 
-function ActivityTab({ data }: { data: ThrottleData }) {
-  const hasTurns = data.hourlyTurns.length > 0;
+function ActivityTab({ data }: { data: ThrottleServed }) {
+  const hourlyTurns = data.throttle.hourlyTurns;
+  const hasTurns = hourlyTurns.length > 0;
   const hasConcurrency = data.concurrency !== null && data.concurrency.hourly.length > 0;
 
   if (!hasTurns && !hasConcurrency) {
@@ -364,7 +437,7 @@ function ActivityTab({ data }: { data: ThrottleData }) {
   const now = data.generatedAtUtc ? new Date(data.generatedAtUtc) : new Date();
   const keys = last24HourKeys(Number.isNaN(now.getTime()) ? new Date() : now);
   const timeZone = safeTimeZone(data.timeZone);
-  const turnsWindow = windowSeries(data.hourlyTurns, keys, emptyInputHour);
+  const turnsWindow = windowSeries(hourlyTurns, keys, emptyInputHour);
   const concurrencyWindow = windowSeries(data.concurrency?.hourly ?? [], keys, emptyConcurrencyHour);
   const zoneLabel = friendlyZone(timeZone);
 
@@ -496,7 +569,7 @@ function TurnsPerHourChart({ hourly, timeZone }: { hourly: InputHour[]; timeZone
     return {
       key: h.hour,
       xlabel: i % 3 === 0 ? label : "",
-      title: `${label}:00 ${timeZone} - ${h.turns} turns (${h.voiceTurns} voice, ${h.typedTurns} typed), ${h.characters.toLocaleString()} chars`,
+      title: `${label}:00 ${timeZone} - ${h.turns} turns (${h.voiceTurns} voice, ${h.typedTurns} typed)`,
       bar: (
         <div className="thr-bar" style={{ height: `${heightPct}%` }}>
           <div className="thr-seg thr-seg-typed" style={{ height: `${typedPortion}%` }} />
@@ -565,9 +638,10 @@ function ConcurrencyChart({ hourly, timeZone }: { hourly: ConcurrencyHour[]; tim
   );
 }
 
-// ---- Breakdown: the supporting tables + honesty caveats ---------------------------------------------
+// ---- Breakdown: the supporting tables, the definition, and the honesty caveats ---------------------
 
-function BreakdownTab({ summary, data }: { summary: ThrottleSummary; data: ThrottleData }) {
+function BreakdownTab({ summary, data }: { summary: ThrottleSummary; data: ThrottleServed }) {
+  const figure = data.throttle;
   return (
     <>
       {data.concurrency !== null && (
@@ -640,23 +714,21 @@ function BreakdownTab({ summary, data }: { summary: ThrottleSummary; data: Throt
                   <th>Modality</th>
                   <th>Surface</th>
                   <th className="thr-num">Turns</th>
-                  <th className="thr-num">Characters</th>
                 </tr>
               </thead>
               <tbody>
-                {data.buckets.length === 0 ? (
+                {figure.buckets.length === 0 ? (
                   <tr>
-                    <td colSpan={4} className="thr-muted">
+                    <td colSpan={3} className="thr-muted">
                       No buckets yet.
                     </td>
                   </tr>
                 ) : (
-                  data.buckets.map((b) => (
+                  figure.buckets.map((b) => (
                     <tr key={`${b.modality}-${b.surface}`}>
                       <td>{MODALITY_LABEL[b.modality]}</td>
                       <td>{SURFACE_LABEL[b.surface]}</td>
                       <td className="thr-num">{b.turns}</td>
-                      <td className="thr-num">{b.characters.toLocaleString()}</td>
                     </tr>
                   ))
                 )}
@@ -665,6 +737,41 @@ function BreakdownTab({ summary, data }: { summary: ThrottleSummary; data: Throt
           </div>
         </>
       )}
+
+      {/* How the number is made and what it left out - the Gateway's definition, verbatim, and the size of
+          the population outside it, so the share above can be checked against both. */}
+      <div className="thr-panel">
+        <div className="thr-panel-head">
+          <h2>How this is counted</h2>
+          <span className="thr-panel-sub">{figure.definition}</span>
+        </div>
+        <table className="thr-table">
+          <thead>
+            <tr>
+              <th>Submissions in this window</th>
+              <th className="thr-num">Count</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Counted as your turns (carry an input origin)</td>
+              <td className="thr-num">{figure.turns.toLocaleString()}</td>
+            </tr>
+            <tr>
+              <td>Yours, but not placed on a surface - outside every number here</td>
+              <td className="thr-num">{figure.excluded.unresolved.toLocaleString()}</td>
+            </tr>
+            <tr>
+              <td>Other sessions prompting yours - the fleet driving itself (Agents tab)</td>
+              <td className="thr-num">{figure.excluded.agentDriven.toLocaleString()}</td>
+            </tr>
+            <tr>
+              <td>Text the product wrote itself (seed prompts, handovers) - nobody&apos;s turn</td>
+              <td className="thr-num">{figure.excluded.framework.toLocaleString()}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
 
       {data.notCaptured.length > 0 && (
         <div className="thr-caveats">

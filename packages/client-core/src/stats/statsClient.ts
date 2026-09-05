@@ -1,11 +1,16 @@
-// The DevThrottle Stats "Your Throttle" surface (devthrottle-stats mission, Phase 1 in-app port): the
-// typed, same-origin client both the Cockpit and the mobile app read to render the throttle dashboard
-// natively, instead of sending the user to the standalone Gateway /stats HTML page.
+// The DevThrottle Stats "Your Throttle" surface: the typed, same-origin client both the Cockpit and the
+// mobile app read to render the throttle dashboard natively.
 //
-// The Gateway already serves the aggregated tally at GET /stats/data (see StatsPageEndpoint). This is
-// the shared read client + the honest summary math (turn shares by modality and surface), so both
-// shells present one identical, single-source-of-truth view. Read-only; every request is root-relative
-// to the Gateway and carries the same Bearer via authHeaders().
+// The Gateway serves the figure at GET /stats/data (see StatsPageEndpoint). EVERY COUNT OF TURNS ON IT
+// COMES FROM ONE DEFINITION OVER THE SUBMISSION LEDGER (mission "Clean up Your Throttle", 2026-09-05,
+// ruling R9): the Gateway computes the figure, states the window it covers and the definition it used,
+// and discloses what it left out. This client is DUMB on purpose (CLAUDE.md rule 7): it normalizes the
+// wire shape and does share arithmetic over the counts the Gateway sent. It never decides what a state
+// means - a self-hosted Gateway answers with a sentence, and the pages render that sentence verbatim.
+//
+// No character volume anywhere here (ruling R16): the ledger carries none, and a number the page cannot
+// vouch for is not shown with an apology attached. Read-only; every request is root-relative to the
+// Gateway and carries the same Bearer via authHeaders().
 import { authHeaders, GatewayError } from "../api/client";
 
 /** How a unit of input was produced. */
@@ -14,14 +19,12 @@ export type Modality = "typed" | "voice";
 /** Which surface the operator drove from. */
 export type Surface = "desktop" | "cockpit" | "phone" | "unknown";
 
-/** One (modality, surface) tally bucket, mirroring the Gateway InputStatBucketDto. */
+/** One (modality, surface) count of submitted turns, mirroring the Gateway ThrottleBucketDto. */
 export interface ThrottleBucket {
   modality: Modality;
   surface: Surface;
   /** Submitted turns through this bucket (never synthesized from raw keystrokes). */
   turns: number;
-  /** Total character volume through this bucket. */
-  characters: number;
 }
 
 /** One tracked concurrency dimension (live loaded/running, or actively working). */
@@ -49,7 +52,7 @@ export interface ConcurrencyHour {
 
 /** Fleet concurrency: how many sessions are loaded/running at once (live) and how many are actively
  * working at once (working), plus the per-hour activity log. Null when the Gateway has not tracked any
- * yet. */
+ * yet, or when its statistics store has not published. */
 export interface ConcurrencyStats {
   live: ConcurrencySeries;
   working: ConcurrencySeries;
@@ -57,119 +60,150 @@ export interface ConcurrencyStats {
   hourly: ConcurrencyHour[];
 }
 
-/** One hour of the "working day" log: turns (total + by modality) and characters submitted that UTC hour
- * (hour key "yyyy-MM-ddTHH"). */
+/** One hour of the "working day" log: turns (total + by modality) submitted that UTC hour (hour key
+ * "yyyy-MM-ddTHH"). */
 export interface InputHour {
   hour: string;
   turns: number;
   voiceTurns: number;
   typedTurns: number;
-  characters: number;
 }
 
-/** One repository's all-time input tally for the private Repos page: how much development landed in this
- * codebase, in submitted turns (total + voice/typed split), character volume, and distinct sessions.
- * Mirrors the Gateway RepoStatBucketDto. Counts only - never any message text. */
+/** One repository's count of submitted turns over the window, through the Gateway's session-history join.
+ * Mirrors the Gateway ThrottleRepoDto. Counts only - never any message text. */
 export interface RepoStat {
-  /** Grouping key: the "owner/repo" repo name the sessions' checkouts belong to
-   * (e.g. "thefrederiksen/devthrottle"), so worktrees and per-machine clones are one row. Falls back to the
-   * checkout's folder name for a checkout whose Director reported no repo name. */
+  /** Grouping key: the "owner/repo" name the session's checkout belongs to (e.g. "thefrederiksen/devthrottle"),
+   * so worktrees and per-machine clones are one row; or the checkout's folder name when history holds a path
+   * and no name. */
   repo: string;
-  /** Display leaf of the key: the short repository name from an "owner/repo" key (e.g. "devthrottle"), or the
-   * folder name for a fallback. */
+  /** Display leaf of the key (e.g. "devthrottle"). */
   repoName: string;
-  /** Total submitted turns into this repo (voice + typed). */
+  /** Submitted turns into this repo (voice + typed). */
   turns: number;
-  /** Submitted turns driven by voice. */
   voiceTurns: number;
-  /** Submitted turns driven by typing. */
   typedTurns: number;
-  /** Total character volume of input into this repo. */
-  characters: number;
-  /** Distinct sessions that drove counted input into this repo. */
+  /** Distinct sessions the counted turns went into in this repo. */
   sessions: number;
-  /** Local checkout paths (worktrees, per-machine clones) whose turns rolled up into this repo, sorted.
-   * Retained so the page can show which working directories the work came from. */
+  /** The checkout paths those sessions ran in, sorted. */
   checkouts: string[];
 }
 
-/** One agent CLI's all-time input tally for the private Agents page: how much development you drive
- * through this agent, in submitted turns (total + voice/typed split), character volume, and distinct
- * sessions. Mirrors the Gateway AgentStatBucketDto. Counts only - never any message text. */
+/** One agent CLI's count of submitted turns over the window. Mirrors the Gateway ThrottleAgentDto. */
 export interface AgentStat {
-  /** The agent token the Director reported ("ClaudeCode", "Codex", ...), or "" when none (the key). */
+  /** The agent token the ledger recorded ("ClaudeCode", "Codex", ...), or "" when none (the key). */
   agent: string;
   /** Display name of the agent, e.g. "Claude Code"; "(unknown)" when the session carried no agent. */
   agentName: string;
-  /** Total submitted turns driven through this agent (voice + typed). */
+  /** Submitted turns you drove through this agent (voice + typed). */
   turns: number;
-  /** Submitted turns driven by voice. */
   voiceTurns: number;
-  /** Submitted turns driven by typing. */
   typedTurns: number;
-  /** Total character volume of input driven through this agent. */
-  characters: number;
-  /** Distinct sessions that drove counted input through this agent. */
+  /** Distinct sessions the counted turns went into under this agent. */
   sessions: number;
-  /** Turns OTHER AGENTS drove into the sessions running this agent (issue #1636) - not the human.
-   *  NOT part of `turns`, which stays the human's own driving: the two answer different questions and
-   *  adding them would corrupt the voice share. Zero from a Gateway that predates the lane. */
+  /** Turns OTHER sessions drove into the sessions running this agent (issue #1636) - not you. NOT part of
+   *  `turns`, which stays your own driving: the two answer different questions and adding them would corrupt
+   *  the voice share. */
   agentDrivenTurns: number;
-  /** Character volume of the `agentDrivenTurns`. */
-  agentDrivenCharacters: number;
 }
 
-/** The GET /stats/data body: the fleet-wide aggregated tally plus the honesty caveats. */
-export interface ThrottleData {
+/** The window the figure describes, as the Gateway stated it. */
+export interface ThrottleWindow {
+  /** Inclusive start (ISO 8601 UTC). */
+  fromUtc: string;
+  /** Exclusive end (ISO 8601 UTC). */
+  toUtc: string;
+  /** True when no window was asked for and the Gateway answered its default. */
+  isDefault: boolean;
+  /** The Gateway's own plain-English name for the window ("Last 30 days"). Rendered verbatim. */
+  label: string;
+}
+
+/** What the submission ledger holds, so a page can say where the record begins. */
+export interface ThrottleLedger {
+  retentionDays: number;
+  /** The oldest submission the ledger holds for this account (ISO 8601 UTC), or null when it holds none. */
+  earliestUtc: string | null;
+}
+
+/** The population the definition left out, disclosed beside the share (rulings R7 and R17). */
+export interface ThrottleExcluded {
+  /** Every submission in the window with no input origin. */
+  noInputOrigin: number;
+  /** Of those, the ones another session sent into this one - the fleet driving itself. */
+  agentDriven: number;
+  /** Of those, text the product wrote itself (a seed prompt, a handover). Nobody's turn. */
+  framework: number;
+  /** The remainder: a submission of yours the product could not place on a surface. Outside every number. */
+  unresolved: number;
+}
+
+/** THE FIGURE: every count of turns the pages show, from one definition over one substrate. Mirrors the
+ * Gateway ThrottleFigureDto. */
+export interface ThrottleFigure {
+  /** The definition, verbatim, so a reader can check the numbers against the sentence. */
+  definition: string;
+  /** The unit of every share ("submitted turns"). */
+  unit: string;
+  window: ThrottleWindow;
+  ledger: ThrottleLedger;
+  /** Turns the definition counted. */
+  turns: number;
+  voiceTurns: number;
+  typedTurns: number;
+  /** Distinct sessions the counted turns went into. */
+  sessions: number;
+  buckets: ThrottleBucket[];
+  /** Turns per UTC hour, oldest first, hours with none omitted. */
+  hourlyTurns: InputHour[];
+  /** Per-agent split, most-driven first. */
+  agents: AgentStat[];
+  /** Per-repository split, most-driven first. */
+  repos: RepoStat[];
+  /** Counted turns whose session has no repository on record - disclosed, never folded into a row. */
+  reposUnattributedTurns: number;
+  excluded: ThrottleExcluded;
+  /** Turns the fleet drove into ITSELF over the window: one session prompting another. Beside your own
+   *  turns, never inside them. The ratio of this to your own turns is your leverage. */
+  agentDrivenTurns: number;
+}
+
+/** GET /stats/data when the Gateway serves the figure. */
+export interface ThrottleServed {
+  available: true;
   /** When the Gateway generated this snapshot (ISO 8601 UTC), or "" when absent. */
   generatedAtUtc: string;
-  /** The display time zone (IANA id) the hourly charts render local clock hours in. Defaults to the
-   *  Gateway machine's own zone; a browser zone fills in for an older Gateway that does not send one. */
+  /** The display time zone (IANA id) the hourly charts render local clock hours in. */
   timeZone: string;
-  buckets: ThrottleBucket[];
-  /** Turns per UTC hour (the "working day" series), oldest hour first. */
-  hourlyTurns: InputHour[];
-  /** Fleet concurrency (both series), or null when nothing tracked yet. */
+  throttle: ThrottleFigure;
+  /** Fleet concurrency (both series), or null when nothing is tracked or the statistics store is not up. */
   concurrency: ConcurrencyStats | null;
-  /** Wingman usage (a session "uses the wingman" when it has voice mode on). */
-  wingman: WingmanUsage;
-  /** Per-repository all-time tally, ranked most-driven first (the private Repos page). */
-  repos: RepoStat[];
-  /** Per-agent all-time tally, ranked most-driven first (the private Agents page). */
-  agents: AgentStat[];
-  /** When the per-agent tally started counting (ISO 8601 UTC), or "" when it has never been stamped.
-   *  The other series predate it, so the Agents page states this window instead of implying the earlier
-   *  turns ran under no agent. */
-  agentsSinceUtc: string;
-  /** Turns the fleet drove into ITSELF: one agent prompting another (issue #1636). Reported alongside the
-   *  human tally, never inside it. The ratio of this to your own turns is your leverage - what the fleet
-   *  did off the back of each turn you spent. Zero from a Gateway that predates the lane. */
-  agentDrivenTurns: number;
-  /** Character volume of the fleet's `agentDrivenTurns`. */
-  agentDrivenCharacters: number;
+  /** The Gateway's reason the statistics-store blocks are null, or null when they are served. */
+  statisticsUnavailableReason: string | null;
   /** Plain-English caveats about what the numbers do and do not include. */
   notCaptured: string[];
 }
 
-/** All-time wingman usage: turns submitted while a session had voice mode on, and the count of distinct
- *  sessions ever seen with voice mode on. */
-export interface WingmanUsage {
-  turns: number;
-  sessions: number;
+/** GET /stats/data when this Gateway has no figure to show - a self-hosted Gateway (owner's ruling R1).
+ * The Gateway says why in one sentence and the pages render it verbatim (ruling R6). */
+export interface ThrottleUnavailable {
+  available: false;
+  reason: string;
 }
 
-/** A derived, presentation-ready summary of the tally. Shares are fractions in [0,1], or null when
- * there are no counted turns yet (an honest empty state - never a fabricated 0%). */
+/** The GET /stats/data body. */
+export type ThrottleData = ThrottleServed | ThrottleUnavailable;
+
+/** A derived, presentation-ready summary of the figure. Shares are fractions in [0,1], or null when
+ * there are no counted turns (an honest empty state - never a fabricated 0%). */
 export interface ThrottleSummary {
   totalTurns: number;
-  totalCharacters: number;
   voiceTurns: number;
   typedTurns: number;
-  /** Voice share of TURNS, or null when no turns are counted yet. */
+  /** Voice share of TURNS, or null when no turns are counted. */
   voiceShare: number | null;
   /** Turns per surface. */
   turnsBySurface: Record<Surface, number>;
-  /** Phone share of TURNS, or null when no turns are counted yet. */
+  /** Phone share of TURNS, or null when no turns are counted. */
   phoneShare: number | null;
   hasData: boolean;
 }
@@ -181,14 +215,7 @@ function normalizeBucket(raw: unknown): ThrottleBucket {
   const modality: Modality = String(b.modality).toLowerCase() === "voice" ? "voice" : "typed";
   const s = String(b.surface).toLowerCase();
   const surface: Surface = s === "desktop" || s === "cockpit" || s === "phone" ? s : "unknown";
-  const turns = Number(b.turns);
-  const characters = Number(b.characters);
-  return {
-    modality,
-    surface,
-    turns: Number.isFinite(turns) ? turns : 0,
-    characters: Number.isFinite(characters) ? characters : 0,
-  };
+  return { modality, surface, turns: num(b.turns) };
 }
 
 async function gatewayErrorFrom(res: Response, label: string): Promise<GatewayError> {
@@ -209,55 +236,90 @@ async function gatewayErrorFrom(res: Response, label: string): Promise<GatewayEr
   return new GatewayError(res.status, `${label} failed: ${detail}`);
 }
 
-// GET /stats/data - the fleet-wide "Your Throttle" tally. Throws on transport failure so the page can
-// show an explicit error banner (the no-fallback rule).
-export async function getThrottle(signal?: AbortSignal): Promise<ThrottleData> {
-  const res = await fetch("/stats/data", {
+/** The optional window to ask the Gateway for. Absent, the Gateway answers its default and says so. */
+export interface ThrottleWindowRequest {
+  /** Inclusive start (ISO 8601 UTC). */
+  fromUtc: string;
+  /** Exclusive end (ISO 8601 UTC). */
+  toUtc: string;
+}
+
+// GET /stats/data - the "Your Throttle" figure. Throws on transport failure so the page can show an explicit
+// error banner (the no-fallback rule). A 200 carrying available=false is NOT a failure: it is the Gateway
+// saying, in a sentence, that there is no figure here, and the page shows that sentence.
+export async function getThrottle(signal?: AbortSignal, window?: ThrottleWindowRequest): Promise<ThrottleData> {
+  const query = window === undefined
+    ? ""
+    : `?from=${encodeURIComponent(window.fromUtc)}&to=${encodeURIComponent(window.toUtc)}`;
+  const res = await fetch(`/stats/data${query}`, {
     method: "GET",
     headers: { Accept: "application/json", ...authHeaders() },
     signal,
   });
   if (!res.ok) throw await gatewayErrorFrom(res, "GET /stats/data");
   const body = (await res.json()) as {
+    available?: unknown;
+    reason?: unknown;
     generatedAtUtc?: unknown;
     timeZone?: unknown;
-    buckets?: unknown;
-    hourlyTurns?: unknown;
+    throttle?: unknown;
     concurrency?: unknown;
-    wingman?: unknown;
-    repos?: unknown;
-    agents?: unknown;
-    agentsSinceUtc?: unknown;
-    agentDrivenTurns?: unknown;
-    agentDrivenCharacters?: unknown;
+    statisticsUnavailableReason?: unknown;
     notCaptured?: unknown;
   } | null;
-  const buckets = Array.isArray(body?.buckets) ? body!.buckets.map(normalizeBucket) : [];
-  const hourlyTurns = Array.isArray(body?.hourlyTurns) ? body!.hourlyTurns.map(normalizeInputHour) : [];
-  const repos = Array.isArray(body?.repos) ? body!.repos.map(normalizeRepo) : [];
-  const agents = Array.isArray(body?.agents) ? body!.agents.map(normalizeAgent) : [];
+  if (body?.available === false) {
+    return { available: false, reason: typeof body.reason === "string" ? body.reason : "" };
+  }
   const notCaptured = Array.isArray(body?.notCaptured)
     ? body!.notCaptured.filter((x): x is string => typeof x === "string")
     : [];
   return {
+    available: true,
     generatedAtUtc: typeof body?.generatedAtUtc === "string" ? body.generatedAtUtc : "",
     timeZone: safeTimeZone(typeof body?.timeZone === "string" ? body.timeZone : null),
-    buckets,
-    hourlyTurns,
+    throttle: normalizeFigure(body?.throttle),
     concurrency: normalizeConcurrency(body?.concurrency),
-    wingman: normalizeWingman(body?.wingman),
-    repos,
-    agents,
-    agentsSinceUtc: typeof body?.agentsSinceUtc === "string" ? body.agentsSinceUtc : "",
-    agentDrivenTurns: num(body?.agentDrivenTurns),
-    agentDrivenCharacters: num(body?.agentDrivenCharacters),
+    statisticsUnavailableReason:
+      typeof body?.statisticsUnavailableReason === "string" ? body.statisticsUnavailableReason : null,
     notCaptured,
   };
 }
 
-function normalizeWingman(raw: unknown): WingmanUsage {
-  const w = (raw ?? {}) as { turns?: unknown; sessions?: unknown };
-  return { turns: num(w.turns), sessions: num(w.sessions) };
+function normalizeFigure(raw: unknown): ThrottleFigure {
+  const f = (raw ?? {}) as Partial<Record<keyof ThrottleFigure, unknown>>;
+  const w = (f.window ?? {}) as Partial<Record<keyof ThrottleWindow, unknown>>;
+  const l = (f.ledger ?? {}) as Partial<Record<keyof ThrottleLedger, unknown>>;
+  const x = (f.excluded ?? {}) as Partial<Record<keyof ThrottleExcluded, unknown>>;
+  return {
+    definition: typeof f.definition === "string" ? f.definition : "",
+    unit: typeof f.unit === "string" ? f.unit : "",
+    window: {
+      fromUtc: typeof w.fromUtc === "string" ? w.fromUtc : "",
+      toUtc: typeof w.toUtc === "string" ? w.toUtc : "",
+      isDefault: w.isDefault === true,
+      label: typeof w.label === "string" ? w.label : "",
+    },
+    ledger: {
+      retentionDays: num(l.retentionDays),
+      earliestUtc: typeof l.earliestUtc === "string" ? l.earliestUtc : null,
+    },
+    turns: num(f.turns),
+    voiceTurns: num(f.voiceTurns),
+    typedTurns: num(f.typedTurns),
+    sessions: num(f.sessions),
+    buckets: Array.isArray(f.buckets) ? f.buckets.map(normalizeBucket) : [],
+    hourlyTurns: Array.isArray(f.hourlyTurns) ? f.hourlyTurns.map(normalizeInputHour) : [],
+    agents: Array.isArray(f.agents) ? f.agents.map(normalizeAgent) : [],
+    repos: Array.isArray(f.repos) ? f.repos.map(normalizeRepo) : [],
+    reposUnattributedTurns: num(f.reposUnattributedTurns),
+    excluded: {
+      noInputOrigin: num(x.noInputOrigin),
+      agentDriven: num(x.agentDriven),
+      framework: num(x.framework),
+      unresolved: num(x.unresolved),
+    },
+    agentDrivenTurns: num(f.agentDrivenTurns),
+  };
 }
 
 function normalizeAgent(raw: unknown): AgentStat {
@@ -268,10 +330,8 @@ function normalizeAgent(raw: unknown): AgentStat {
     turns: num(a.turns),
     voiceTurns: num(a.voiceTurns),
     typedTurns: num(a.typedTurns),
-    characters: num(a.characters),
     sessions: num(a.sessions),
     agentDrivenTurns: num(a.agentDrivenTurns),
-    agentDrivenCharacters: num(a.agentDrivenCharacters),
   };
 }
 
@@ -283,7 +343,6 @@ function normalizeRepo(raw: unknown): RepoStat {
     turns: num(r.turns),
     voiceTurns: num(r.voiceTurns),
     typedTurns: num(r.typedTurns),
-    characters: num(r.characters),
     sessions: num(r.sessions),
     checkouts: Array.isArray(r.checkouts) ? r.checkouts.map((c) => String(c)) : [],
   };
@@ -296,7 +355,6 @@ function normalizeInputHour(raw: unknown): InputHour {
     turns: num(h.turns),
     voiceTurns: num(h.voiceTurns),
     typedTurns: num(h.typedTurns),
-    characters: num(h.characters),
   };
 }
 
@@ -337,18 +395,16 @@ function normalizeConcurrency(raw: unknown): ConcurrencyStats | null {
   };
 }
 
-/** Derive the honest headline summary from a tally snapshot. Turn shares are over counted turns only;
- * with zero turns the shares are null so the caller renders an empty state rather than "0%". */
-export function summarizeThrottle(data: ThrottleData): ThrottleSummary {
+/** Derive the honest headline summary from the figure. Turn shares are over counted turns only; with zero
+ * turns the shares are null so the caller renders an empty state rather than "0%". */
+export function summarizeThrottle(figure: ThrottleFigure): ThrottleSummary {
   const turnsBySurface: Record<Surface, number> = { desktop: 0, cockpit: 0, phone: 0, unknown: 0 };
   let totalTurns = 0;
-  let totalCharacters = 0;
   let voiceTurns = 0;
   let typedTurns = 0;
 
-  for (const b of data.buckets) {
+  for (const b of figure.buckets) {
     totalTurns += b.turns;
-    totalCharacters += b.characters;
     if (b.modality === "voice") voiceTurns += b.turns;
     else typedTurns += b.turns;
     turnsBySurface[b.surface] += b.turns;
@@ -358,30 +414,27 @@ export function summarizeThrottle(data: ThrottleData): ThrottleSummary {
 
   return {
     totalTurns,
-    totalCharacters,
     voiceTurns,
     typedTurns,
     voiceShare: share(voiceTurns),
     turnsBySurface,
     phoneShare: share(turnsBySurface.phone),
-    hasData: totalTurns > 0 || totalCharacters > 0,
+    hasData: totalTurns > 0,
   };
 }
 
-/** A derived, presentation-ready summary of the per-repo tally for the Repos page headline cards. */
+/** A derived, presentation-ready summary of the per-repo split for the Repos page headline cards. */
 export interface RepoSummary {
-  /** How many repos have any counted input. */
+  /** How many repos have any counted turn. */
   repoCount: number;
   /** Total submitted turns across every repo. */
   totalTurns: number;
-  /** Total character volume across every repo. */
-  totalCharacters: number;
   /** Total distinct sessions across every repo (a session belongs to exactly one repo, so summing the
    * per-repo distinct counts is itself a distinct total). */
   totalSessions: number;
   /** Total voice-driven turns across every repo. */
   voiceTurns: number;
-  /** The most-driven repo's share of all turns, or null when no turns are counted yet. */
+  /** The most-driven repo's share of all turns, or null when no turns are counted. */
   topShare: number | null;
   /** The most-driven repo's display name, or null when there is no data. */
   topRepoName: string | null;
@@ -390,18 +443,16 @@ export interface RepoSummary {
 
 /** The Agents-page headline summary: how much you drive each agent CLI. */
 export interface AgentSummary {
-  /** How many agents have any counted input. */
+  /** How many agents have any counted turn. */
   agentCount: number;
   /** Total submitted turns across every agent. */
   totalTurns: number;
-  /** Total character volume across every agent. */
-  totalCharacters: number;
   /** Total distinct sessions across every agent (a session drives exactly one agent, so summing the
    * per-agent distinct counts is itself a distinct total). */
   totalSessions: number;
   /** Total voice-driven turns across every agent. */
   voiceTurns: number;
-  /** The most-driven agent's share of all turns, or null when no turns are counted yet. */
+  /** The most-driven agent's share of all turns, or null when no turns are counted. */
   topShare: number | null;
   /** The most-driven agent's display name, or null when there is no data. */
   topAgentName: string | null;
@@ -414,12 +465,10 @@ export interface AgentSummary {
   hasData: boolean;
 }
 
-/** Derive the Agents-page headline summary from the per-agent tally. Shares are null (never a fabricated
- * 0%) when there are no counted turns yet - the tally starts when the breakdown shipped, so an empty
- * page is the honest state until the fleet has driven a turn under it. */
+/** Derive the Agents-page headline summary from the per-agent split. Shares are null (never a fabricated
+ * 0%) when there are no counted turns. */
 export function summarizeAgents(agents: AgentStat[]): AgentSummary {
   let totalTurns = 0;
-  let totalCharacters = 0;
   let totalSessions = 0;
   let voiceTurns = 0;
   let agentDrivenTurns = 0;
@@ -427,7 +476,6 @@ export function summarizeAgents(agents: AgentStat[]): AgentSummary {
 
   for (const a of agents) {
     totalTurns += a.turns;
-    totalCharacters += a.characters;
     totalSessions += a.sessions;
     voiceTurns += a.voiceTurns;
     agentDrivenTurns += a.agentDrivenTurns;
@@ -435,33 +483,30 @@ export function summarizeAgents(agents: AgentStat[]): AgentSummary {
   }
 
   return {
-    agentCount: agents.length,
+    agentCount: agents.filter((a) => a.turns > 0).length,
     totalTurns,
-    totalCharacters,
     totalSessions,
     voiceTurns,
     topShare: totalTurns > 0 && top !== null ? top.turns / totalTurns : null,
-    topAgentName: top !== null ? top.agentName : null,
+    topAgentName: top !== null && top.turns > 0 ? top.agentName : null,
     agentDrivenTurns,
     leverage: totalTurns > 0 ? agentDrivenTurns / totalTurns : null,
     // Agent-driven turns alone are data worth showing: a fleet driving itself while the owner has driven
     // nothing this window is a real state, not an empty one.
-    hasData: totalTurns > 0 || totalCharacters > 0 || agentDrivenTurns > 0,
+    hasData: totalTurns > 0 || agentDrivenTurns > 0,
   };
 }
 
-/** Derive the Repos-page headline summary from the per-repo tally. Shares are null (never a fabricated
- * 0%) when there are no counted turns yet. */
+/** Derive the Repos-page headline summary from the per-repo split. Shares are null (never a fabricated
+ * 0%) when there are no counted turns. */
 export function summarizeRepos(repos: RepoStat[]): RepoSummary {
   let totalTurns = 0;
-  let totalCharacters = 0;
   let totalSessions = 0;
   let voiceTurns = 0;
   let top: RepoStat | null = null;
 
   for (const r of repos) {
     totalTurns += r.turns;
-    totalCharacters += r.characters;
     totalSessions += r.sessions;
     voiceTurns += r.voiceTurns;
     if (top === null || r.turns > top.turns) top = r;
@@ -470,12 +515,11 @@ export function summarizeRepos(repos: RepoStat[]): RepoSummary {
   return {
     repoCount: repos.length,
     totalTurns,
-    totalCharacters,
     totalSessions,
     voiceTurns,
     topShare: totalTurns > 0 && top !== null ? top.turns / totalTurns : null,
     topRepoName: top !== null ? top.repoName : null,
-    hasData: totalTurns > 0 || totalCharacters > 0,
+    hasData: totalTurns > 0,
   };
 }
 
@@ -536,7 +580,7 @@ export function windowSeries<T extends { hour: string }>(
 
 /** A zero-filled turn-hour for an absent hour in the window. */
 export function emptyInputHour(hour: string): InputHour {
-  return { hour, turns: 0, voiceTurns: 0, typedTurns: 0, characters: 0 };
+  return { hour, turns: 0, voiceTurns: 0, typedTurns: 0 };
 }
 
 /** A zero-filled concurrency-hour for an absent hour in the window. */

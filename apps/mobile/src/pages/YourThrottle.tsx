@@ -4,18 +4,23 @@ import {
   getThrottle,
   summarizeThrottle,
   formatShare,
+  safeTimeZone,
   SURFACE_LABEL,
   SURFACE_ORDER,
   type ThrottleData,
+  type ThrottleFigure,
   type ThrottleSummary,
 } from "@devthrottle/client-core/stats/statsClient";
 import { gatewayErrorMessage } from "@devthrottle/client-core/api/client";
 
-// Your Throttle on the phone (devthrottle-stats mission): a compact dashboard of the MAIN stats, not the
-// whole desktop page - many people drive the fleet mostly from their phone, so this is a clean, glanceable
-// view of how they work. It reads the same GET /stats/data feed as the Cockpit, so the numbers match.
-// Leads with the three headline rings (spoken, from phone, wingman voice mode), then where the turns come
-// from, then the totals. The hourly charts, full breakdown, and caveats stay on the desktop page.
+// Your Throttle on the phone: a compact dashboard of the MAIN stats, not the whole desktop page - many
+// people drive the fleet mostly from their phone, so this is a clean, glanceable view of how they work. It
+// reads the same GET /stats/data feed as the Cockpit, so the numbers are the same numbers: one figure,
+// computed by the Gateway from the submission ledger, with the window it covers stated on it (mission
+// "Clean up Your Throttle", 2026-09-05). Leads with the two headline rings (spoken, from phone), then
+// where the turns come from, then the totals and what was left out. The hourly charts, full breakdown,
+// and caveats stay on the desktop page. A self-hosted Gateway answers with a sentence, and this page shows
+// that sentence (rulings R1 and R6).
 // Renders immediately with a loading state, shows an explicit error banner on failure (no-fallback rule),
 // and auto-refreshes so the split moves live as the user drives by voice.
 
@@ -23,7 +28,6 @@ const REFRESH_MS = 10_000;
 
 const RING_VOICE = "var(--accent)";
 const RING_MOBILE = "#8b5cf6";
-const RING_WINGMAN = "#14b8a6";
 
 export function YourThrottle() {
   const [data, setData] = useState<ThrottleData | null>(null);
@@ -54,7 +58,9 @@ export function YourThrottle() {
     };
   }, []);
 
-  const summary: ThrottleSummary | null = data === null ? null : summarizeThrottle(data);
+  const figure: ThrottleFigure | null = data !== null && data.available ? data.throttle : null;
+  const timeZone = data !== null && data.available ? safeTimeZone(data.timeZone) : "UTC";
+  const summary: ThrottleSummary | null = figure === null ? null : summarizeThrottle(figure);
 
   return (
     <div className="screen">
@@ -71,15 +77,25 @@ export function YourThrottle() {
         </div>
       )}
 
-      {summary === null && error === null && <div className="thr-note">Loading your throttle...</div>}
+      {data === null && error === null && <div className="thr-note">Loading your throttle...</div>}
 
-      {summary !== null && !summary.hasData && (
-        <div className="thr-note">
-          No input counted yet. Send a turn from the phone, desktop, or cockpit and it will show up here.
+      {/* The Gateway has no figure to show here and said why, in one sentence. Rendered verbatim. */}
+      {data !== null && !data.available && (
+        <div className="thr-note" role="status">
+          {data.reason}
         </div>
       )}
 
-      {data !== null && summary !== null && summary.hasData && (
+      {figure !== null && <WindowNote figure={figure} timeZone={timeZone} />}
+
+      {figure !== null && summary !== null && !summary.hasData && (
+        <div className="thr-note">
+          No turn counted in this window. Send a turn from the phone, desktop, or cockpit and it will show up
+          here.
+        </div>
+      )}
+
+      {figure !== null && summary !== null && summary.hasData && (
         <div className="mthr">
           <div className="mthr-metrics">
             <MetricRing
@@ -96,14 +112,6 @@ export function YourThrottle() {
               primary={{ label: "Phone", count: summary.turnsBySurface.phone }}
               secondary={{ label: "Desk + Cockpit", count: summary.totalTurns - summary.turnsBySurface.phone }}
             />
-            <MetricRing
-              title="Wingman (voice mode)"
-              share={summary.totalTurns > 0 ? data.wingman.turns / summary.totalTurns : null}
-              color={RING_WINGMAN}
-              primary={{ label: "Voice mode", count: data.wingman.turns }}
-              secondary={{ label: "Hands-on", count: Math.max(0, summary.totalTurns - data.wingman.turns) }}
-              note={`${data.wingman.sessions.toLocaleString()} session${data.wingman.sessions === 1 ? "" : "s"} used the wingman`}
-            />
           </div>
 
           <SurfaceSplitBar summary={summary} />
@@ -111,13 +119,15 @@ export function YourThrottle() {
           <div className="mthr-stats">
             <div className="mthr-stat">
               <div className="mthr-stat-value">{summary.totalTurns.toLocaleString()}</div>
-              <div className="mthr-stat-label">Total turns</div>
+              <div className="mthr-stat-label">Turns counted</div>
             </div>
             <div className="mthr-stat">
-              <div className="mthr-stat-value">{summary.totalCharacters.toLocaleString()}</div>
-              <div className="mthr-stat-label">Characters</div>
+              <div className="mthr-stat-value">{figure.sessions.toLocaleString()}</div>
+              <div className="mthr-stat-label">Sessions you drove</div>
             </div>
           </div>
+
+          <ExcludedNote figure={figure} />
 
           <p className="mthr-foot">
             The full hourly charts and breakdown live on Your Throttle in the desktop Cockpit.
@@ -125,6 +135,51 @@ export function YourThrottle() {
         </div>
       )}
     </div>
+  );
+}
+
+/** Format an ISO instant as a short local date in the display zone, or the raw text if it does not parse. */
+function localDate(iso: string, timeZone: string): string {
+  const t = Date.parse(iso);
+  if (Number.isNaN(t)) return iso;
+  return new Intl.DateTimeFormat("en-US", { day: "numeric", month: "short", timeZone }).format(new Date(t));
+}
+
+// Which stretch of time the numbers describe: the Gateway's label and dates, rendered in the display zone.
+function WindowNote({ figure, timeZone }: { figure: ThrottleFigure; timeZone: string }) {
+  const { window: w, ledger } = figure;
+  const recordStartsLate =
+    ledger.earliestUtc !== null && w.fromUtc !== "" && Date.parse(ledger.earliestUtc) > Date.parse(w.fromUtc);
+  return (
+    <p className="thr-note" data-testid="mthr-window">
+      <b>{w.label}</b>: {localDate(w.fromUtc, timeZone)} to {localDate(w.toUtc, timeZone)}, in submitted
+      turns.
+      {recordStartsLate && ledger.earliestUtc !== null && (
+        <> Your record begins {localDate(ledger.earliestUtc, timeZone)}.</>
+      )}
+    </p>
+  );
+}
+
+// What the definition left out, beside the share (rulings R7 and R17). The counts are the Gateway's.
+function ExcludedNote({ figure }: { figure: ThrottleFigure }) {
+  const { excluded, agentDrivenTurns } = figure;
+  if (excluded.unresolved === 0 && agentDrivenTurns === 0) return null;
+  return (
+    <p className="thr-note" data-testid="mthr-excluded">
+      {excluded.unresolved > 0 && (
+        <>
+          {excluded.unresolved.toLocaleString()} submission{excluded.unresolved === 1 ? "" : "s"} of yours could
+          not be placed on a surface and {excluded.unresolved === 1 ? "is" : "are"} outside every number here.{" "}
+        </>
+      )}
+      {agentDrivenTurns > 0 && (
+        <>
+          {agentDrivenTurns.toLocaleString()} turn{agentDrivenTurns === 1 ? " was" : "s were"} other sessions
+          prompting yours; those are never in your share.
+        </>
+      )}
+    </p>
   );
 }
 

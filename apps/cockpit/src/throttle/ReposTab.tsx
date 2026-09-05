@@ -2,57 +2,37 @@ import { useMemo, useState } from "react";
 import {
   summarizeRepos,
   formatShare,
-  type ThrottleData,
+  type ThrottleFigure,
   type RepoStat,
   type RepoSummary,
 } from "@devthrottle/client-core/stats/statsClient";
 
-// The "Repos" tab of Your Throttle (devthrottle-stats mission): where the owner's development actually
-// happens - how driving splits across the codebases worked in, ranked by submitted turns.
+// The "Repos" tab of Your Throttle: where the owner's development actually happens - how driving splits
+// across the codebases worked in, ranked by submitted turns.
 //
 // This was its own page and rail entry until 2026-07-14, kept apart so the private per-repo split could
-// never ride along on-screen beside the shareable voice/surface splits. It is now the fourth tab here
-// (owner ask), which holds that line just as well: tabs are mutually exclusive, so Repos still never
-// renders next to the throttle - the owner has to select it. The "private - only you" badge stays on the
-// tab body so it still announces, on sight, that this view is not for sharing.
+// never ride along on-screen beside the shareable voice/surface splits. It is now a tab here (owner ask),
+// which holds that line just as well: tabs are mutually exclusive, so Repos still never renders next to
+// the throttle - the owner has to select it. The "private - only you" badge stays on the tab body so it
+// still announces, on sight, that this view is not for sharing.
 //
-// Data arrives as a prop: Your Throttle already polls GET /stats/data (repos ride on that envelope), so
-// the tab reads its parent's snapshot rather than opening a second poll of the same feed. Counts only -
-// never any message text.
+// The figure arrives as a prop: Your Throttle already polls GET /stats/data, and the per-repository split
+// is part of the one figure that feed carries (mission "Clean up Your Throttle", ruling R9: the same
+// submission ledger as the rings above, joined to the session history for the repository). Counts only -
+// never any message text, and no character volume (ruling R16).
 
-// The three honest metrics the system actually measures per repo. Tokens are intentionally absent: the
-// tally counts turns and characters, never tokens, and this tab never fabricates a number.
-type Metric = "turns" | "characters" | "sessions";
-const METRIC_LABEL: Record<Metric, string> = {
-  turns: "Turns",
-  characters: "Characters",
-  sessions: "Sessions",
-};
-const METRIC_WORD: Record<Metric, string> = {
-  turns: "turns",
-  characters: "characters",
-  sessions: "sessions",
-};
+// The two honest metrics the ledger actually measures per repo. Tokens and characters are intentionally
+// absent: the figure counts turns, and this tab never fabricates a number.
+type Metric = "turns" | "sessions";
+const METRIC_LABEL: Record<Metric, string> = { turns: "Turns", sessions: "Sessions" };
+const METRIC_WORD: Record<Metric, string> = { turns: "turns", sessions: "sessions" };
 
 function metricValue(r: RepoStat, metric: Metric): number {
-  return metric === "turns" ? r.turns : metric === "characters" ? r.characters : r.sessions;
-}
-
-function formatValue(value: number, metric: Metric): string {
-  return metric === "characters" ? compactNumber(value) : value.toLocaleString();
-}
-
-/** Compact large character counts (e.g. 48200 -> "48.2K", 1_200_000 -> "1.2M"); plain below 1,000. */
-function compactNumber(n: number): string {
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
-  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
-  return String(n);
+  return metric === "turns" ? r.turns : r.sessions;
 }
 
 /** A big headline metric card, built from the same thr-stat tokens the Overview tab's tiles use, so the
- * two tabs read as one page. (Until this became a tab it asked for thr-card-*, which the Cockpit
- * stylesheet has never defined - only the phone's does - so these four cards rendered as an unstyled
- * stack on the old standalone page.) */
+ * two tabs read as one page. */
 function HeadlineCard({ label, value, sub }: { label: string; value: string; sub: string }) {
   return (
     <div className="thr-stat">
@@ -85,13 +65,11 @@ function RepoRow({
   const showSplit = metric === "turns" && repo.turns > 0;
 
   // The secondary facts on the meta line depend on which metric is the headline, so the row never just
-  // repeats the big number - it shows the other two honest measures alongside it.
+  // repeats the big number - it shows the other honest measure alongside it.
   const meta =
     metric === "turns"
-      ? `${compactNumber(repo.characters)} chars - ${repo.sessions} session${repo.sessions === 1 ? "" : "s"} - ${voicePct}% voice`
-      : metric === "characters"
-        ? `${repo.turns.toLocaleString()} turns - ${repo.sessions} session${repo.sessions === 1 ? "" : "s"}`
-        : `${repo.turns.toLocaleString()} turns - ${compactNumber(repo.characters)} chars`;
+      ? `${repo.sessions} session${repo.sessions === 1 ? "" : "s"} - ${voicePct}% voice`
+      : `${repo.turns.toLocaleString()} turns - ${voicePct}% voice`;
 
   return (
     <div className="repo-row">
@@ -107,7 +85,7 @@ function RepoRow({
             {repo.checkouts.length} checkouts: {repo.checkouts.join(" - ")}
           </div>
         )}
-        <div className="repo-bar-track" title={`${formatValue(value, metric)} ${METRIC_WORD[metric]}`}>
+        <div className="repo-bar-track" title={`${value.toLocaleString()} ${METRIC_WORD[metric]}`}>
           {showSplit ? (
             <>
               <div className="repo-bar-voice" style={{ width: `${(width * voicePct) / 100}%` }} />
@@ -119,21 +97,21 @@ function RepoRow({
         </div>
       </div>
       <div className="repo-val">
-        <div className="repo-val-num">{formatValue(value, metric)}</div>
+        <div className="repo-val-num">{value.toLocaleString()}</div>
         <div className="repo-val-share">{share}%</div>
       </div>
     </div>
   );
 }
 
-export function ReposTab({ data }: { data: ThrottleData }) {
+export function ReposTab({ figure }: { figure: ThrottleFigure }) {
   const [metric, setMetric] = useState<Metric>("turns");
 
-  const repos = data.repos ?? [];
+  const repos = figure.repos;
   const summary: RepoSummary = summarizeRepos(repos);
 
-  // Rank by the active metric (the feed arrives ranked by turns; re-sort so switching to characters or
-  // sessions re-orders the list honestly).
+  // Rank by the active metric (the feed arrives ranked by turns; re-sort so switching to sessions
+  // re-orders the list honestly).
   const ranked = useMemo(
     () => [...repos].sort((a, b) => metricValue(b, metric) - metricValue(a, metric)),
     [repos, metric],
@@ -144,8 +122,8 @@ export function ReposTab({ data }: { data: ThrottleData }) {
   if (!summary.hasData) {
     return (
       <div className="thr-empty">
-        No input counted yet. Drive a session in any repo - by voice, from the phone, or typed on the
-        desktop - and the repos you work in will appear here, ranked.
+        No turn counted in this window. Drive a session in any repo - by voice, from the phone, or typed
+        on the desktop - and the repos you work in will appear here, ranked.
       </div>
     );
   }
@@ -159,7 +137,8 @@ export function ReposTab({ data }: { data: ThrottleData }) {
 
       <p className="repos-intro">
         Where your development actually happens: how your driving splits across the codebases you work in,
-        ranked by {METRIC_WORD[metric]}. All-time, counted at the Director so desktop typing is included.
+        ranked by {METRIC_WORD[metric]}. {figure.window.label}, the same turns as the rings on the Overview
+        tab - desktop typing included.
       </p>
 
       <div className="thr-stats repos-cards">
@@ -169,9 +148,9 @@ export function ReposTab({ data }: { data: ThrottleData }) {
           sub={`${summary.totalSessions} session${summary.totalSessions === 1 ? "" : "s"} in total`}
         />
         <HeadlineCard
-          label="Total turns"
+          label="Turns placed in a repo"
           value={summary.totalTurns.toLocaleString()}
-          sub={`${compactNumber(summary.totalCharacters)} characters`}
+          sub={figure.window.label.toLowerCase()}
         />
         <HeadlineCard
           label="Busiest repo"
@@ -185,10 +164,18 @@ export function ReposTab({ data }: { data: ThrottleData }) {
         />
       </div>
 
+      {/* Turns whose session has no repository on record are disclosed, never folded into a row (R7). */}
+      {figure.reposUnattributedTurns > 0 && (
+        <p className="thr-muted" data-testid="repos-unattributed">
+          <b>{figure.reposUnattributedTurns.toLocaleString()}</b> of your turns went into sessions with no
+          repository on record, so they are in the rings but not in any row here.
+        </p>
+      )}
+
       <div className="repos-controls">
         <span className="repos-controls-label">Rank by</span>
         <div className="repos-seg" role="tablist" aria-label="Rank repositories by">
-          {(["turns", "characters", "sessions"] as Metric[]).map((m) => (
+          {(["turns", "sessions"] as Metric[]).map((m) => (
             <button
               key={m}
               type="button"
@@ -228,11 +215,10 @@ export function ReposTab({ data }: { data: ThrottleData }) {
             repo out on rolls up into one row (the working directories that fed it are listed under the
             name). A checkout whose Director has not reported a GitHub remote is grouped by its folder name
             instead, so the same repo across machines still merges. Time is deliberately not shown: an idle
-            hour looks the same as a heads-down hour, so it would lie. Turns and characters track what you
-            actually pushed through.
+            hour looks the same as a heads-down hour, so it would lie.
           </li>
           <li>
-            Tokens are not shown - the tally counts turns and characters, never tokens, and this tab never
+            Tokens and characters are not shown - the figure counts submitted turns, and this tab never
             fabricates a number it did not measure.
           </li>
         </ul>
