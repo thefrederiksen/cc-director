@@ -47,7 +47,7 @@ both repositories.
 
 ## The parked suite (R18) over the finished product branch, `8da683f6e`
 
-`.\scripts	est-local.ps1 -Parked`, started 15:26 and finished 16:26 (exit 1), the Gateway lock uncontended.
+`.\scripts\test-local.ps1 -Parked`, started 15:26 and finished 16:26 (exit 1), the Gateway lock uncontended.
 
 | suite | total | passed | failed | note |
 |---|---:|---:|---:|---|

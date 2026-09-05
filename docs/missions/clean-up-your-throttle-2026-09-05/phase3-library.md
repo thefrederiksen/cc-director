@@ -237,13 +237,13 @@ Restored, 8 of 8 and 3 of 3 green.
 The Gateway suite queued 35 minutes behind another session's run of the same suite and then ran 60 minutes.
 Eight Core tests were skipped by their own gates.
 
-**The default gate over everything on this branch** (`.\scripts	est-local.ps1`, 13:38): nine projects,
+**The default gate over everything on this branch** (`.\scripts\test-local.ps1`, 13:38): nine projects,
 4,946 tests, 0 failed, by their result files (the script printed FAIL for `Gateway.UnitTests` with "no
 summary line" - its result file says 3,641 passed, 2 skipped; the summary-read race is known).
 The four web workspaces: client-core 92 files, cockpit 284 tests, mobile 15, cc-assistant 106, all green;
 lint clean on the changed files.
 
-**The parked suite over the finished branch** (`.\scripts	est-local.ps1 -Parked` on `18f7b31b3`, 13:43 to
+**The parked suite over the finished branch** (`.\scripts\test-local.ps1 -Parked` on `18f7b31b3`, 13:43 to
 14:20, the Gateway lock uncontended this time):
 
 | suite | total | passed | failed | note |
