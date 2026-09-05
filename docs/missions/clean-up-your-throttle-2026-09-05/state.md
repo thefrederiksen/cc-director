@@ -3,7 +3,7 @@
 This is the compact handoff note. A fresh Manager needs THIS FILE, the brief beside it, and
 `cc-devthrottle workflow instructions mission`. Nothing else. Keep it current and short.
 
-**Updated:** 2026-09-05, by the Manager, closing phase two.
+**Updated:** 2026-09-05, by the phase three Manager, closing phase three.
 
 ## Where the work lives
 
@@ -14,96 +14,73 @@ This is the compact handoff note. A fresh Manager needs THIS FILE, the brief bes
 
 ## Current phase
 
-**Phase three - the library.** Open, on ruling R9. Phase two is DONE and pushed.
-
-Read the brief's last three sections before planning: R9 (the shape), then the rulings closing phase
-two (R16 to R18 and the honesty note).
-
-**First act, before any library work: `.\scripts	est-local.ps1 -Parked`, in full.** Phase two closed
-without it and the mission is almost entirely Gateway statistics. A red there belongs to phase two.
+**Phase three - the library - is DONE and pushed, and the four findings of the independent inspection of
+phase two (`inspection-phase-two.md`, FAIL) are FIXED on the branch with route-crossing tests** - see
+`phase3-library.md`, "The independent inspection of phase two, and its fixes". Phase two needs re-inspection
+by the Architect's call; phase four (the period selector, #2692) is next.
+Read `phase3-library.md` beside this file before planning it: the feed already states its window, takes
+`from` and `to`, and refuses a window longer than the ledger keeps; phase four changes the default from
+thirty days to seven (R15) and adds the selector on both surfaces.
 
 ## What is done and pushed
 
-- The brief, and its amendment carrying rulings R10 to R14.
-- `reconciliation.md` and `evidence/` - phase one's account, over 2026-W35 (Monday 24 August to
-  Sunday 30 August, America/Toronto), for `soren@centerconsulting.com`.
+- The brief, and its amendments carrying rulings R10 to R18.
+- Phase one: `reconciliation.md` and `evidence/`.
+- Phase two: defect one and its guard, the R14 disclosure, the fleet-message origin (R12), phone voice
+  through the one-shot transcription (R10), the mid-chain containment.
+- Phase three: the library (`src/CcDirector.Gateway/Throttle/`), the feed on it, both pages on the feed,
+  the conformance check (`tools/throttle-conformance/`), and `phase3-library.md` with the evidence under
+  `evidence/conformance/`.
+- The inspection fixes: the Gateway sets both attribution markers itself (`AgentDriven` from the credential,
+  the spoken claim spent against `Voice/SpokenClaimRegistry`), the durable dictation composes a mixed message
+  as typed, the tally observer fan-out is guarded, the source-count test is gone, and the stale Core pin is
+  updated.
 
-## What phase one found, in one place
+## Phase three, in one paragraph
 
-- Over the same week, same zone, same person: the report says 58.76 per cent spoken, the Your
-  Throttle store says 91.46, and **the Gateway's own submission ledger says 56.83**. The report is
-  close to the truth. **The 92 is the number that is wrong.**
-- **Defect one - 28.3 points.** `Session.SendInput` records characters and never calls
-  `InputStats.RecordTurn`, so a turn typed at the desktop terminal is not counted as a turn at all:
-  594 turns, 77 per cent of the week's typing, absent from the ring's denominator. Verified
-  independently by the Architect: `RecordTurn` has one call site in the product and `SendInput` does
-  not reach it.
-- **Defect two - 8.2 points.** 2,061 of the 3,279 stored turns for the week are restated cumulatives
-  or duplicated rows, 96 per cent of it on voice. The MECHANISM IS NOT PROVEN.
-- **Defect three - 0.3 points, plus the ambiguity.** `GET /stats/data` has no window: it serves every
-  turn since 2026-08-02, unlabelled. Handled in phase four.
-- **Both holes named in the original R2 are at zero.** The chat relay is unreachable code - verified
-  independently, no construction site and no mapped route. No phone-voice-endpoint transcription
-  happened in the week; the ceiling on that hole is 60 turns, 3.4 points.
-- **The owner's question:** no session-to-session traffic is counted as his on either side, but 292
-  of the week's 296 fleet messages were recorded as ordinary `UserInput` with no origin rather than
-  as agent traffic, so both sides exclude them by accident and the agent-driven lane under-reports.
-- One Gateway, two machines. The self-hosted Gateway has recorded nothing since 2026-07-21, so R1
-  costs nothing.
+Every count of turns on `GET /stats/data` now comes from the submission ledger through ONE definition
+whose predicate is R17's sentence, verbatim. The page states its window, discloses the excluded population
+beside the share, carries no character volume (R16) and no wingman ring (dropped, same reasoning as R16 -
+see the decisions list in `phase3-library.md`), and on a self-hosted Gateway shows one sentence (R1, R6).
+The conformance check ran over two real weeks for both accounts against the live hosted database and every
+number agreed with the mentor harness's own reading of the same ledger; run with the predicate deliberately
+broken it went red with defect one's shape.
 
-## Phase two's task list - all six closed
+## The parked suite (R18) - RUN IN FULL, result recorded
 
-1. Measure the 594 first - DONE, and the stop condition did not fire.
-2. Defect one with its guard and the R14 disclosure, one slice - DONE.
-3. Defect two: prove the mechanism, then fix the cause - MECHANISM PROVEN; the cause is not fixed
-   here, by the Architect's R9 ruling, and the containment landed instead.
-4. The fleet-message origin (R12) - DONE.
-5. Phone voice through the one-shot transcription (R10) - DONE.
-6. The repair or the truncation (R13) - DISCHARGED as truncation by R9; reach measured at thirty days.
+Run on the phase two close commit `050f7174a`, before any library work. Default projects all green.
+`Core.Tests`: 4,394 tests, ONE failure - `TerminalPromptInjectionChokepointTests` pinning the mobile
+dictated-send call, which phase two changed for R10 without updating the pin. A phase two defect; fixed in
+phase three (the pin now carries the new call on both shells). `Gateway.Tests`: see `phase3-library.md`
+"Results" for the count; TWO failures in `ContextLessRouteCensusTests`, which PREDATE THE MISSION - three
+`/gateway/rules/{id:guid}` routes were mapped on main after the census was written (2026-08-01) with no
+request context and no census verdict. Not phase two's, not phase three's, not fixed here: the census
+demands a written tenant-confinement verdict per route, which is a ruling, not a repair. **For the
+Architect:** the parked Gateway suite is red on main for this reason and will stay red when this lands.
 
-## What phase two did NOT prove, said plainly
+## What phase three did NOT prove, said plainly
 
-- **Why a session that is still counting has its high-water row removed, one to twenty-six times.**
-  The route is proven (the row was absent and was re-inserted from zero) and the only deleter is
-  named, but the trigger is not. It needs an instrumented run or a log line that does not exist.
-  Out of scope now that the figure leaves that tally.
-- **The one-line containment is not what produced the week's inflation.** On the hosted day examined,
-  every dropped push was a snapshot and none was a remove. It closes a real hole; it is not the cure.
-- **R10 and R12 did not fire in the owner's measured week**, so nothing was re-measured to show them
-  moving the number. They are fixes to what COUNTS as spoken and as agent traffic, which is a
-  definition, and the definition had to be right before the library is built on it.
-- **The parked suites did not run.** `Core.Tests` and `Gateway.Tests` both COMPILE and their tests
-  touching this work were run by name, but neither full suite was run.
-
-## Rulings that arrived after phase two opened
-
-- **R15 (owner, RELAYED - see the brief).** Phase four changes the default to a rolling seven days
-  DIRECTLY: no sequencing, no migration note, no care for what an existing viewer saw. The page must
-  still state which period it is showing - that half stands.
-
-## R9 IS SETTLED - see the brief's final section
-
-The shared figure derives from the SUBMISSION LEDGER, not from the `stat_delta` cumulative tally.
-Defect two stops existing for it rather than being fixed. The second tally is not repaired and not
-trusted; the incarnation token and the wire-contract change are OUT OF SCOPE. Reach falls to thirty
-days, which is the ledger's retention, and the selector must not offer more.
-
-Every TURN figure on the page moves to the ledger, including the per-agent split (the ledger carries
-the agent kind) and the per-repository split (through the session-history join, which keeps ninety
-days and carries the repository name). Character volume stays where it is and stays inflated; phase
-three decides whether to disclose it or drop it and tells the Architect which.
+- The mentor report does not yet CONSUME the library (R3); that is the internal repository's work. What is
+  proven is that the library and the harness's reading of the ledger agree over real weeks.
+- The conformance check ran the library in-process against the hosted database, not through the deployed
+  `GET /stats/data`, which still runs the old feed until this lands and deploys.
+- The generated OpenAPI client types were not regenerated (they come from a running Gateway); phase four
+  should regenerate them.
+- The per-agent agent-driven split was zero in every measured week (R12 landed after them); proven by test.
 
 ## Open, for the Architect only
 
-- Nothing. Phase three may proceed on the ruling above.
+- The wingman ring was dropped from both pages (decision 1 in `phase3-library.md`). If that is wrong, the
+  voice-mode fact has to reach the ledger first; nothing on the tally can come back.
+- The pre-existing route-census red on main, above.
+- Mario's record: most of his submissions carry no input origin (758 of 976 in W35). The library discloses
+  it; something on his side stamps almost nothing. Belongs in the final report.
 
 ## Known ground already established (do not re-derive)
 
 - The report's headline is a share of human PROMPTS, the same unit as Your Throttle's turn share.
-  The report's word-based voice figure is a different metric and is out of scope.
-- `GET /stats/data` is tenant-scoped and refuses when no tenant resolves. A SESSION key cannot call
-  it at all - it answers 403. A conformance check needs a device key.
-- There are two accounts in the mentor configuration, `soren` and `mario`. The conformance check in
-  phase three runs over real weeks for both, reusing phase one's reconstruction method.
-- All time for his tenant: 23,958 turns other agents drove into his sessions against 14,189 of his
-  own, and that 14,189 is itself inflated.
+- `GET /stats/data` is tenant-scoped, refuses when no tenant resolves (403), answers a self-hosted Gateway
+  with `available: false` and one sentence, and needs a device key on hosted.
+- Two accounts in the mentor configuration, `soren` and `mario`; the conformance check takes either.
+- The hosted database connection string for the check: the `DEVTHROTTLE_GATEWAY_DB_CONNECTION` key in the
+  credentials file, or `evidence/pgconn.txt` (never committed).
