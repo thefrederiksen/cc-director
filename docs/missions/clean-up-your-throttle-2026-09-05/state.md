@@ -65,6 +65,12 @@ gap. Rulings R10 to R14 govern this phase.
 5. Phone voice through the one-shot transcription (R10).
 6. The validated forensic repair of the stored history, or the honest truncation (R13).
 
+## Rulings that arrived after phase two opened
+
+- **R15 (owner, RELAYED - see the brief).** Phase four changes the default to a rolling seven days
+  DIRECTLY: no sequencing, no migration note, no care for what an existing viewer saw. The page must
+  still state which period it is showing - that half stands.
+
 ## Open, for the Architect only
 
 - R9: the shape of the shared thing, settled at the start of phase three. Phase one's structural

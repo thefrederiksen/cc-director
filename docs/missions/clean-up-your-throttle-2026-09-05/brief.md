@@ -257,3 +257,21 @@ free to drift - and they did, by 28 points. R9 stays open, but the shape that re
 rather than repairing it is the one where Your Throttle's figure derives from the same submission
 ledger the report already reconciles against, instead of from a second tally beside it. Phase three
 weighs that against what `stat_delta` gives cheaply that `activity_events` does not.
+
+### R15 - The seven-day default lands directly. No sequencing for existing viewers. (OWNER, RELAYED 2026-09-05)
+
+**Provenance: relayed, not heard first-hand.** Carried to this mission by the session
+`devthrottle_internal - mentor` and written by it onto `thefrederiksen/devthrottle#2692`. The owner's
+quoted words: *"it is okay to change the period nobody's really using a software yet it's released but
+you don't have a lot of people on your throttle, so don't worry about what this will look like to
+people that are already on and have used the site."* A later reader should know it reached the
+Architect second-hand rather than from the owner in conversation.
+
+The effect on phase four: **change the default to a rolling seven days directly.** No staged
+sequencing, no migration note, no preserving what an existing viewer saw. The brief's phase four
+caution about stating the window "before or with" the default change is withdrawn as a SEQUENCING
+constraint.
+
+**What is NOT withdrawn: the page must still say which period it is showing.** That is the owner's own
+item, it stands on its own, and it is the half that makes the number readable rather than merely
+narrow. It ships in phase four with the selector.
