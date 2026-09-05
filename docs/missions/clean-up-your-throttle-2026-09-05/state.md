@@ -71,12 +71,21 @@ gap. Rulings R10 to R14 govern this phase.
   DIRECTLY: no sequencing, no migration note, no care for what an existing viewer saw. The page must
   still state which period it is showing - that half stands.
 
+## R9 IS SETTLED - see the brief's final section
+
+The shared figure derives from the SUBMISSION LEDGER, not from the `stat_delta` cumulative tally.
+Defect two stops existing for it rather than being fixed. The second tally is not repaired and not
+trusted; the incarnation token and the wire-contract change are OUT OF SCOPE. Reach falls to thirty
+days, which is the ledger's retention, and the selector must not offer more.
+
+Every TURN figure on the page moves to the ledger, including the per-agent split (the ledger carries
+the agent kind) and the per-repository split (through the session-history join, which keeps ninety
+days and carries the repository name). Character volume stays where it is and stays inflated; phase
+three decides whether to disclose it or drop it and tells the Architect which.
+
 ## Open, for the Architect only
 
-- R9: the shape of the shared thing, settled at the start of phase three. Phase one's structural
-  finding - two counters at one choke point, eight lines apart, free to drift - leans it towards
-  deriving Your Throttle's figure from the submission ledger rather than repairing a second tally
-  beside it. Nobody else settles this.
+- Nothing. Phase three may proceed on the ruling above.
 
 ## Known ground already established (do not re-derive)
 

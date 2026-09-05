@@ -275,3 +275,54 @@ constraint.
 **What is NOT withdrawn: the page must still say which period it is showing.** That is the owner's own
 item, it stands on its own, and it is the half that makes the number readable rather than merely
 narrow. It ships in phase four with the selector.
+
+---
+
+## R9 SETTLED, 2026-09-05, on phase two's proven mechanism
+
+Phase two proved defect two's cause: **the aggregator concludes "all of this is new" from the ABSENCE
+of a prior record.** A sound repair means the Director stating positively which incarnation of a tally
+it is reporting - a change to the wire contract between the Director and the Gateway. The Manager
+correctly refused to build that before this ruling, because the two answers are the same decision.
+
+### The ruling
+
+**The shared figure derives from the SUBMISSION LEDGER (`activity_events`, `turn-submitted`), not from
+the second cumulative tally in `stat_delta`.**
+
+One choke point already writes both, eight lines apart. The ledger is append-only and idempotent on
+replay, so absence can never be mistaken for novelty and **defect two stops existing for this figure
+rather than needing a fix.** Phase one validated the ledger against an independent reconstruction of
+the store to within one turn, and the mentor report's classifier already reconciles against this same
+ledger - so both consumers anchor on one substrate, which is what agreeing by construction means.
+
+**The second tally is not repaired in this mission and is not trusted.** Building an incarnation token
+to rescue a counter the design is replacing is the waste the Manager named. The one-line containment
+that already landed stands on its own merits.
+
+### What this costs, stated plainly rather than discovered later
+
+- **Reach falls from ninety days to thirty.** The ledger's retention is thirty days by the owner's own
+  ruling of 2026-07-24. The selector therefore offers at most thirty days, honouring #2692's rule that
+  it must never offer a length the store cannot honestly answer. Thirty days of a correct number beats
+  ninety days of an inflated one. **The extension, if he ever wants the reach back, is a derived hourly
+  rollup folded from the ledger before the purge - noted here, NOT built now.**
+- **The ledger carries no character count.** Acceptable: R8 makes turns the unit of every share, and
+  characters are a supporting volume, never a ratio.
+- **The ledger carries no repository.** It carries the session, and session history carries `RepoName`
+  and keeps ninety days, so the repository split is a join rather than a blocker.
+
+### What follows from it, as instructions
+
+1. **Every figure Your Throttle presents as a count of TURNS comes from the ledger** - modality,
+   surface, and the per-agent split (the ledger carries `AgentKind`), and the per-repository split
+   through the session-history join.
+2. **No two numbers on the page may come from different substrates without the page saying so.** The
+   ring reading 57 while a tab still reads 91 about the same week is the same defect this mission
+   exists to remove, one screen further down.
+3. **Character volume stays on `stat_delta` and stays inflated.** Phase three decides whether to
+   disclose that or drop the figure, and tells the Architect which - it is a small call and it is not
+   worth a round trip to the owner, but it is worth being deliberate about. Prefer showing less and
+   being right to showing more and contradicting the page above.
+4. Defect two's wider fault, the incarnation token, and the Director-to-Gateway contract change are
+   **explicitly OUT OF SCOPE** for this mission. Record the fault; do not build the token.
