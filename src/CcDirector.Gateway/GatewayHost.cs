@@ -2216,16 +2216,21 @@ public sealed class GatewayHost : IAsyncDisposable
     private const int MaxVoiceGenerationsPerSweep = 3;
 
     /// <summary>
-    /// How many sessions one sweep cycle may LOOK AT. Far larger than the generation cap because the arms it
-    /// bounds are cheap - a dictionary lookup and one read of the Gateway's own turn store - and because a
-    /// tight bound here would re-create the starvation issue #2675 removed, just at a higher number.
+    /// How many sessions one sweep cycle may LOOK AT WITHIN ONE ACCOUNT. Far larger than the generation cap
+    /// because the arms it bounds are cheap - a dictionary lookup and one read of the Gateway's own turn
+    /// store - but a bound all the same, because that store read is a database query and an unbounded pass
+    /// over every voice session on a busy hosted Gateway every 45 seconds would be a real new cost
+    /// introduced by fixing issue #2675.
     ///
-    /// It is not zero-cost, though, which is why it is a bound at all: the store read is a database query, so
-    /// an unbounded pass over every voice session on a busy hosted Gateway every 45 seconds would be a real
-    /// new cost. Sized to be out of the way of any account a person actually runs, and in the way of a
-    /// pathological one.
+    /// PER ACCOUNT, NOT GLOBAL, and that is the whole difference between a bound and a smaller version of
+    /// the bug. A global ceiling is spent by whichever accounts the pass happens to reach first, so an
+    /// account with enough sessions would consume it before the later accounts were visited at all - the
+    /// exact starvation this issue is about, moved from three to sixty rather than removed (found in
+    /// review). Charged to each account separately, no account can spend another's, and the only shared
+    /// budget left is the generation cap - which is right, because that one rations a genuinely shared
+    /// resource and this one does not.
     /// </summary>
-    private const int MaxVoiceAttemptsPerSweep = 60;
+    private const int MaxVoiceAttemptsPerTenantPerSweep = 60;
 
     /// <summary>
     /// Pre-build voice for voice sessions that are idle and missing it, so the session list shows
@@ -2266,16 +2271,17 @@ public sealed class GatewayHost : IAsyncDisposable
             // (WingmanVoiceService announces that at its own commit point, which is the one place that knows),
             // and a second, far larger ATTEMPTS budget keeps the pass itself bounded - a no-op attempt is
             // cheap, but it is a store read, and an unbounded loop over every voice session on the Gateway
-            // every 45 seconds would be a new cost introduced by fixing this one.
+            // every 45 seconds would be a new cost introduced by fixing this one. That second budget is
+            // charged PER ACCOUNT, so it cannot become a smaller copy of the starvation it bounds.
             var generated = 0;
-            var attempted = 0;
             _tenantPass.ForEachTenant(() =>
             {
                 if (_tenantPass.Current is not { } tenant) return;   // deny: no scope in effect -> sweep nothing
+                var attempted = 0;                                   // this account's own, never shared
                 foreach (var sid in vs.VoiceSessionIds(tenant))
                 {
-                    if (generated >= MaxVoiceGenerationsPerSweep) break;   // gentle on the serialized brain (global cap)
-                    if (attempted >= MaxVoiceAttemptsPerSweep) break;      // and the pass itself stays bounded
+                    if (generated >= MaxVoiceGenerationsPerSweep) break;              // gentle on the serialized brain (global cap)
+                    if (attempted >= MaxVoiceAttemptsPerTenantPerSweep) break;        // and this account's pass stays bounded
                     if (vs.HasVoice(tenant, sid)) continue;          // already cached, nothing to do
                     // A session whose agent exposes NO conversation history will not become readable by being
                     // asked again immediately, and asking is not free: this pass generates at most three per

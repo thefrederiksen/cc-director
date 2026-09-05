@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Concurrent;
 using System.Linq;
 using System.Threading.Tasks;
@@ -128,15 +128,15 @@ public sealed class VoiceSweepBudgetTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task A_no_op_session_stays_in_the_sweep_so_its_recovery_needs_nobody()
+    public async Task A_no_op_session_recovers_on_the_next_pass_with_nobody_touching_the_gateway()
     {
         // The fix must NOT be "drop these sessions from the sweep". Keeping them is what makes the recovery
         // free: the moment that computer is updated it starts pushing, the next pass finds words, and
-        // narration resumes with nobody touching the Gateway. Two cycles, and the sweep comes back to every
-        // one of them both times.
+        // narration resumes with nobody touching the Gateway.
         await _gateway.SweepVoiceSessionsAsync();
         foreach (var sid in NoOpSessions)
-            Assert.True(_gateway.VoiceService!.DirectorCannotSendConversationFor(TenantNoOp, sid));
+            Assert.True(_gateway.VoiceService!.DirectorCannotSendConversationFor(TenantNoOp, sid),
+                $"session {sid} was never attempted on the first pass");
 
         // That computer is updated and pushes its conversation for one of them.
         _gateway.SeedStoredConversationForTest(TenantNoOp, "dir-noop", NoOpSessions[0],
@@ -144,11 +144,16 @@ public sealed class VoiceSweepBudgetTests : IAsyncLifetime
 
         await _gateway.SweepVoiceSessionsAsync();
 
-        // The marker comes off by itself on the very next pass - no restart, nothing to clear by hand.
+        // The marker comes off by itself on the very next pass - no restart, nothing to clear by hand. A
+        // CHANGE from true to false, which is the one observation here that only the second pass can have
+        // produced.
         Assert.False(_gateway.VoiceService!.DirectorCannotSendConversationFor(TenantNoOp, NoOpSessions[0]));
-        // ...and the sessions still waiting on that computer are still being visited, not stood down.
-        foreach (var sid in NoOpSessions.Skip(1))
-            Assert.True(_gateway.VoiceService!.DirectorCannotSendConversationFor(TenantNoOp, sid));
+
+        // NOTHING IS ASSERTED HERE ABOUT THE OTHER THREE. Their markers are still set - but they were set by
+        // the FIRST pass, so their presence is a leftover and would hold just as well if the second pass had
+        // skipped them entirely (found in review). A check a stale value satisfies is not a check. The claim
+        // that every one of them is visited in a single cycle is made, as a presence, by
+        // One_accounts_no_op_sessions_cannot_starve_another_accounts_session_out_of_the_same_cycle.
     }
 
     /// <summary>Poll for a verb+session rather than sleeping a fixed time: the sweep fires generation onto
