@@ -1,6 +1,8 @@
 using System.Collections.Concurrent;
 using CcDirector.Gateway.Contracts;
 
+using CcDirector.Core.Utilities;
+
 namespace CcDirector.Core.Sessions;
 
 /// <summary>
@@ -45,6 +47,20 @@ public sealed class SessionInputStats
     public event Action? Changed;
 
     /// <summary>
+    /// Fan out <see cref="Changed"/> with a subscriber's fault CONTAINED (inspection finding I2-04 of the "Clean up
+    /// Your Throttle" mission, 2026-09-05). The counters are advanced before this is raised, and the caller -
+    /// <c>Session.StampSubmission</c> - stamps the submission ledger event AFTER it returns. A subscriber that
+    /// threw here therefore left the tally advanced, the backend already holding the text, and the ledger
+    /// without the submission: the one invariant this class exists to keep, split by an observer. The fault
+    /// is logged and swallowed, exactly as the ledger's own fan-out already does.
+    /// </summary>
+    private void RaiseChanged()
+    {
+        try { Changed?.Invoke(); }
+        catch (Exception ex) { FileLog.Write($"[SessionInputStats] Changed subscriber failed (contained; the tally and the submission ledger both stand): {ex.Message}"); }
+    }
+
+    /// <summary>
     /// Record one submitted turn from <paramref name="origin"/>, plus its <paramref name="characters"/> of
     /// text volume. The ONE caller is <see cref="Session"/>.StampSubmission, which stamps the submission
     /// event in the same breath - both the text path
@@ -59,7 +75,7 @@ public sealed class SessionInputStats
         Interlocked.Increment(ref c.Turns);
         if (characters > 0)
             Interlocked.Add(ref c.Characters, characters);
-        Changed?.Invoke();
+        RaiseChanged();
     }
 
     /// <summary>
@@ -75,7 +91,7 @@ public sealed class SessionInputStats
         Interlocked.Increment(ref _agentDriven.Turns);
         if (characters > 0)
             Interlocked.Add(ref _agentDriven.Characters, characters);
-        Changed?.Invoke();
+        RaiseChanged();
     }
 
     /// <summary>An immutable snapshot of the tally as the shared wire DTO, buckets in a stable order.</summary>

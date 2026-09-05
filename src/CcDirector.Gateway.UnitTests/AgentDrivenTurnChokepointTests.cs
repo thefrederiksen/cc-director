@@ -191,58 +191,11 @@ public sealed class AgentDrivenTurnChokepointTests
         finally { sm.Dispose(); }
     }
 
-    // ---------- SOMETHING HAS TO SET THE MARKER (ruling R12, "Clean up Your Throttle", 2026-09-05) ----------
-    //
-    // Every test above proves the Director does the right thing WHEN TOLD. Nothing proved anybody ever told
-    // it, and nobody did: `AgentDriven` had no producer anywhere in the product, so every fleet message
-    // reached the Director as an ordinary UserInput with no origin. It was then left out of the person's
-    // voice-versus-typed figures only because no surface resolved for it - the right answer by the wrong
-    // road - and left out of the agent-driven lane, which exists to count exactly these, altogether. Over
-    // the owner's week of 2026-W35 that was 292 of 296 fleet messages, missing from both numbers.
-    //
-    // This file's own opening paragraph names that failure - "a live consumer reading a field no producer
-    // assigns is the most common defect in this codebase, and it always looks like green tests" - and then
-    // the suite went on to demonstrate it. So the producer is pinned here, beside the consumer, in source.
-    //
-    // WHY A SOURCE TEST. Both producers are inside route lambdas in GatewayEndpoints.cs, which only comes
-    // alive with the whole host booted; that harness is the parked suite. What has to be guarded is not the
-    // wire behaviour - the tests above already cover it - but that the two fleet delivery paths keep
-    // DECIDING. Counting the construction sites is what makes a third one fail loudly instead of quietly
-    // defaulting to "a person typed this".
-
-    [Fact]
-    public void EveryPromptTheGatewayBuildsForTheFleet_SaysWhetherAnAgentDroveIt()
-    {
-        var endpoints = File.ReadAllText(Path.Combine(RepoRoot(), "src", "CcDirector.Gateway", "Api", "GatewayEndpoints.cs"));
-
-        // Two, and only two, places in the Gateway build a prompt to deliver: the one-to-one fleet message
-        // and the fanout that serves a broadcast. A third would be a new way for a turn to reach a session,
-        // and it must answer this question rather than inherit an answer.
-        var sites = System.Text.RegularExpressions.Regex.Matches(endpoints, @"new PromptRequest");
-        Assert.Equal(2, sites.Count);
-
-        // The one-to-one message route: reached only with a session key, so the sender is an agent by
-        // construction and the marker is unconditional.
-        Assert.Contains("AppendEnter = true,\r\n                WaitForIdle = req.WaitForIdle,", endpoints);
-        Assert.Contains("AgentDriven = true,", endpoints);
-
-        // The fanout: a device key acts for the ACCOUNT - a person broadcasting from the desktop or the
-        // phone - so this one turns on whether the caller authenticated AS a session. It must never read
-        // req.FromSessionId, which the caller supplies and could use to decide whether its own turns count.
-        Assert.Contains("AgentDriven = callingSession is not null,", endpoints);
-        Assert.DoesNotContain("AgentDriven = req.FromSessionId", endpoints);
-    }
-
-    private static string RepoRoot()
-    {
-        var dir = new DirectoryInfo(AppContext.BaseDirectory);
-        while (dir is not null)
-        {
-            if (File.Exists(Path.Combine(dir.FullName, "cc-director.sln")))
-                return dir.FullName;
-            dir = dir.Parent;
-        }
-
-        throw new DirectoryNotFoundException("Could not find repository root from " + AppContext.BaseDirectory);
-    }
+    // The source-reading test that used to sit here - counting "new PromptRequest" expressions in
+    // GatewayEndpoints.cs and grepping for two assignments - was DELETED on the independent inspection of
+    // phase two ("Clean up Your Throttle", 2026-09-05, finding I2-02): it was proof over the wrong surface.
+    // A factory extraction would have failed it while a deserialization path accepting an untrusted
+    // AgentDriven field stayed green, which is exactly the defect it did not catch. The producer is now
+    // proven where it lives: CcDirector.Gateway.Tests PromptAttributionIsGatewayAuthoritativeTests posts
+    // hostile bodies at the mapped route and reads what reaches the Director.
 }

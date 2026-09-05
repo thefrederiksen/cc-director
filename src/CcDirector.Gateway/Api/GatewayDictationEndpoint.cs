@@ -604,7 +604,25 @@ internal static class GatewayDictationEndpoint
             // one voice turn from the resolved surface. A dictation is always a real operator turn, so when
             // the device key did not resolve we stamp "unknown" (never null) - it is counted into the honest
             // "unknown" surface bucket, never silently dropped (decision 9).
-            var (ok, _, err) = await route.PostPromptAsync(sid, new PromptRequest { Text = message, AppendEnter = true, Surface = deliverySurface ?? "unknown", DeliveryUploadId = uploadId });
+            //
+            // SPOKEN ONLY WHEN THE WORDS ARE THE TRANSCRIPT AND NOTHING ELSE (ruling R10; inspection finding I2-01 of
+            // the "Clean up Your Throttle" mission, 2026-09-05). The Director reads a nonblank DeliveryUploadId as
+            // "a voice turn", and this path used to stamp it on the WHOLE composed message - so typed text the
+            // caret split the dictation around (before / after) and any earlier segment already turned to text
+            // (prefix) were all counted as speech, while the same words sent from the paused dialog were typed.
+            // The rule the page discloses is applied here, at the one place the message is composed: the id
+            // rides only when before, prefix and after are all empty. A mixed message is delivered exactly the
+            // same, as one typed turn from the same surface. The upload's own durable record is untouched.
+            var spokenAlone = string.IsNullOrWhiteSpace(req.Before) && string.IsNullOrWhiteSpace(req.Prefix) && string.IsNullOrWhiteSpace(req.After);
+            if (!spokenAlone)
+                FileLog.Write($"[GatewayDictation] complete sid={sid} uploadId={uploadId}: composed with typed text around the transcript; delivered as ONE TYPED turn (ruling R10)");
+            var (ok, _, err) = await route.PostPromptAsync(sid, new PromptRequest
+            {
+                Text = message,
+                AppendEnter = true,
+                Surface = deliverySurface ?? "unknown",
+                DeliveryUploadId = spokenAlone ? uploadId : null,
+            });
             if (!ok)
             {
                 // THE ATTEMPT WE JUST MADE INVALIDATED THE PHONE'S BASELINE (Lost Dictations mission, #1593).

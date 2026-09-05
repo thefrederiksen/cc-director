@@ -279,6 +279,11 @@ public sealed class GatewayHost : IAsyncDisposable
     /// </summary>
     public Pairing.SessionKeyRegistry SessionKeys { get; }
 
+    /// <summary>The Gateway's record of what each utterance upload transcribed (inspection finding I2-03), spent
+    /// by the prompt route when a prompt claims to be that utterance. One per process, shared by the utterance
+    /// completion route that writes it and the prompt route that spends it. In memory by design.</summary>
+    public Voice.SpokenClaimRegistry SpokenClaims { get; } = new();
+
     /// <summary>
     /// Issue #288: which Director last owned each session, so the per-session WS proxy can answer
     /// 503 (owner offline) instead of 404 (unknown session). Populated by the /sessions aggregator
@@ -3137,6 +3142,8 @@ public sealed class GatewayHost : IAsyncDisposable
             // Issue #2017: the snooze-default consumer at POST /sessions/{sid}/hold reads the caller tenant's
             // default through the resolver instead of the process-global config.
             tenantSettings: _tenantSettingsResolver,
+            // Inspection finding I2-03: the prompt route spends spoken claims against this record.
+            spokenClaims: SpokenClaims,
             // Issue #2022: the live process diagnostics the About page shows read-only on both surfaces,
             // after the machine settings left the Cockpit Settings page.
             gatewayStartedAtUtc: StartedAtUtc,
@@ -3478,6 +3485,11 @@ public sealed class GatewayHost : IAsyncDisposable
             // Store injection points: hand the endpoint the host's single voice-turn upload store and the
             // host's transcription history + audio archive, so it stops newing its own copies.
             uploadStore: _voiceTurnUploads,
+            // Inspection finding I2-03: the utterance completion route records each transcription here.
+            spokenClaims: SpokenClaims,
+            // The same transcription service the dictation endpoint uses, when the host was handed one (tests
+            // fake its provider); null builds the production service as before.
+            transcriptionService: _dictationTranscription,
             history: _transcriptionHistory,
             audioArchive: _transcriptionAudioArchive,
             tenantBoundary: _tenantBoundary,

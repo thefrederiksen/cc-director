@@ -214,7 +214,11 @@ internal static class GatewayEndpoints
         // ran, and a value read here would freeze the answer at startup. Null computes none, which OMITS
         // the block; that is what every self-host and test caller gets, and it is honest: a responder that
         // was given nothing to report must not report that everything is fine. See HealthDto.Subsystems.
-        Func<IReadOnlyDictionary<string, string>>? subsystems = null)
+        Func<IReadOnlyDictionary<string, string>>? subsystems = null,
+        // Inspection finding I2-03 ("Clean up Your Throttle", 2026-09-05): the Gateway's own record of what it
+        // transcribed, so a prompt's spoken claim is verified against it rather than trusted. Null (older
+        // callers, tests) means no claim can ever be honoured - fail closed, every prompt is typed.
+        Voice.SpokenClaimRegistry? spokenClaims = null)
     {
         // The old issue #1188 "session lock" (423 Locked on human input while a PENDING dictation record
         // existed) was removed deliberately (issue #1308). This is a single-operator tool: a collision
@@ -2806,6 +2810,42 @@ internal static class GatewayEndpoints
             // Machine-to-machine traffic (fanout/broadcast) never reaches this handler and never sets Surface,
             // so it stays null and is correctly excluded.
             req.Surface = (httpCtx.Items.TryGetValue(AuthMiddleware.DeviceTypeItemKey, out var dt) ? dt as string : null) ?? "unknown";
+            // THE TWO ATTRIBUTION MARKERS ARE THE GATEWAY'S TO SET, NEVER THE BODY'S (inspection findings I2-02
+            // and I2-03 of the "Clean up Your Throttle" mission, 2026-09-05). The Director believes both fields
+            // of this DTO unconditionally: AgentDriven relabels the turn as another agent's and takes it out of
+            // the person's figures; a nonblank DeliveryUploadId makes it a voice delivery. Before this, both were
+            // forwarded exactly as the caller sent them, so a device-authenticated body could count its own
+            // typed prompt as agent traffic, or as speech under a made-up or replayed id.
+            //
+            // Who drove it is decided from the AUTHENTICATED credential, the same way the fanout decides: a
+            // session key is one agent prompting another; anything else is the person. Whether it was spoken is
+            // decided by spending the Gateway's own claim for the utterance id - known, this tenant's, unspent,
+            // young, and the submitted words are the transcript - and an agent never spoke. Anything that does
+            // not clear that bar is a typed turn (ruling R10: an edited, mixed, or replayed dictation is typed).
+            // The text is still delivered either way; nothing here refuses the prompt.
+            var callingSessionForAttribution = AuthMiddleware.CallingSession(httpCtx);
+            req.AgentDriven = callingSessionForAttribution is not null;
+            var claimedUploadId = req.DeliveryUploadId;
+            req.DeliveryUploadId = null;
+            if (!string.IsNullOrWhiteSpace(claimedUploadId) && callingSessionForAttribution is null)
+            {
+                var claimTenant = ResolveReadTenant(httpCtx, tenantBoundary);
+                var refusal = Voice.SpokenClaimRegistry.Refusal.None;
+                if (spokenClaims is not null && claimTenant is { } ct && spokenClaims.TryConsume(ct, claimedUploadId, req.Text, out refusal))
+                {
+                    req.DeliveryUploadId = claimedUploadId;
+                    FileLog.Write($"[GatewayEndpoints] POST prompt: sid={sid} spoken claim honoured (upload={claimedUploadId})");
+                }
+                else
+                {
+                    FileLog.Write($"[GatewayEndpoints] POST prompt: sid={sid} spoken claim REFUSED, delivered as typed " +
+                                  $"(upload={claimedUploadId}, reason={(spokenClaims is null ? "no-registry" : claimTenant is null ? "no-tenant" : refusal.ToString())})");
+                }
+            }
+            else if (!string.IsNullOrWhiteSpace(claimedUploadId))
+            {
+                FileLog.Write($"[GatewayEndpoints] POST prompt: sid={sid} spoken claim ignored - the caller is a session, and a session did not speak");
+            }
 
             var (director, session) = await LocateSessionForRequestAsync(httpCtx, tenantBoundary, registry, sid, pushedSessions, streamStaleResolved, owners);
             if (session is null || director is null)
