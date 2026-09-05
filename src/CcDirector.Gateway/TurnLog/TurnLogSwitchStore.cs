@@ -41,6 +41,20 @@ public sealed class TurnLogSwitchStore : IDisposable
     /// </summary>
     public static readonly TimeSpan RefreshEvery = TimeSpan.FromSeconds(30);
 
+    /// <summary>
+    /// How stale the decisions may get before capture STOPS.
+    ///
+    /// The cache exists so the turn-end path never waits on a database, and that is worth keeping. But a
+    /// cache that is trusted forever is a way for a withdrawal never to take effect: if the database is
+    /// unreachable, every instance would go on capturing from the last answer it happened to hold, for as
+    /// long as the outage lasted, while an administrator who switched capture off had been told it stopped.
+    ///
+    /// So the answer expires. Past this, IsEnabled says NO for everything until a read succeeds again. That
+    /// direction is deliberate and it is not symmetric: losing some records during a database outage is a
+    /// gap in a corpus, and capturing somebody who withdrew is a broken promise.
+    /// </summary>
+    public static readonly TimeSpan MaxTrustedStaleness = TimeSpan.FromMinutes(5);
+
     private readonly GatewayDatabase _db;
     private readonly Func<DateTime> _nowUtc;
     private readonly object _gate = new();
@@ -53,6 +67,17 @@ public sealed class TurnLogSwitchStore : IDisposable
     /// records, and the cost of being wrong the other way is recording somebody who was switched off.
     /// </summary>
     private volatile IReadOnlyList<TurnLogSwitchEntity> _cached = Array.Empty<TurnLogSwitchEntity>();
+
+    /// <summary>When the decisions were last read successfully. MinValue means never - which reads as off.</summary>
+    private DateTime _lastGoodReadUtc = DateTime.MinValue;
+
+    /// <summary>
+    /// Test seam: where <see cref="Refresh"/> gets its rows. Exists so a test can make the re-read FAIL
+    /// while the write succeeds, which is the exact shape of the defect this class had - a committed OFF
+    /// that a failed refresh quietly discarded, leaving capture on and the caller told it had stopped.
+    /// Production never sets it.
+    /// </summary>
+    internal Func<IReadOnlyList<TurnLogSwitchEntity>>? ReaderForTest { get; set; }
 
     public TurnLogSwitchStore(GatewayDatabase db, Func<DateTime>? nowUtc = null)
     {
@@ -88,6 +113,12 @@ public sealed class TurnLogSwitchStore : IDisposable
     {
         if (string.IsNullOrWhiteSpace(account) || string.IsNullOrWhiteSpace(machine)) return false;
 
+        // AN ANSWER WE CANNOT REFRESH IS NOT AN ANSWER. See MaxTrustedStaleness: past the window this
+        // stops capturing rather than trusting whatever it last held.
+        DateTime lastGood;
+        lock (_gate) lastGood = _lastGoodReadUtc;
+        if (lastGood == DateTime.MinValue || _nowUtc() - lastGood > MaxTrustedStaleness) return false;
+
         var rows = _cached;
         if (rows.Count == 0) return false;
 
@@ -95,9 +126,15 @@ public sealed class TurnLogSwitchStore : IDisposable
         var on = false;
         foreach (var row in rows)
         {
-            var accountMatches = string.Equals(row.Account, account, StringComparison.Ordinal)
+            // CASE-INSENSITIVE, to match how a Director id is keyed where it actually lives: the pushed
+            // roster stores Directors in a case-insensitive map (PushedSessionStore). Comparing ordinally
+            // here meant a switch row whose identifier differed only in case matched nothing - so a
+            // deliberate OFF for one machine could sit in the table looking recorded while a wider ON went
+            // on capturing it. For a privacy switch the comparison has to be the LOOSER one, so that an OFF
+            // catches every spelling of the thing it is trying to protect.
+            var accountMatches = string.Equals(row.Account, account, StringComparison.OrdinalIgnoreCase)
                                  || string.Equals(row.Account, any, StringComparison.Ordinal);
-            var machineMatches = string.Equals(row.Machine, machine, StringComparison.Ordinal)
+            var machineMatches = string.Equals(row.Machine, machine, StringComparison.OrdinalIgnoreCase)
                                  || string.Equals(row.Machine, any, StringComparison.Ordinal);
             if (!accountMatches || !machineMatches) continue;
 
@@ -160,12 +197,35 @@ public sealed class TurnLogSwitchStore : IDisposable
                 existing.RecordedUtc = _nowUtc();
             }
             ctx.SaveChanges();
+
+            // APPLY IT TO THE CACHE HERE, FROM THE VALUE WE JUST COMMITTED - not by re-reading. Set used to
+            // call Refresh() and rely on that; Refresh swallows a failed read and keeps whatever it already
+            // had, so a committed OFF could be discarded by a database blip while the endpoint answered
+            // "recorded". An administrator would have been told capture had stopped when it had not. The
+            // decision is authoritative the moment it commits, and the serving answer now moves with it
+            // inside the same lock.
+            var updated = _cached.Where(r =>
+                    !(string.Equals(r.Account, account, StringComparison.OrdinalIgnoreCase)
+                      && string.Equals(r.Machine, machine, StringComparison.OrdinalIgnoreCase)))
+                .ToList();
+            updated.Add(new TurnLogSwitchEntity
+            {
+                Account = account,
+                Machine = machine,
+                Enabled = enabled,
+                Actor = actor,
+                Reason = reason,
+                RecordedUtc = _nowUtc(),
+            });
+            _cached = updated;
+            _lastGoodReadUtc = _nowUtc();
         }
 
-        // Take effect NOW rather than at the next tick. Someone who switches capture off is entitled to
-        // have it stop, not to wait out a refresh interval they cannot see.
+        // Still re-read, so this instance also picks up anything another instance changed. It is now an
+        // optimisation rather than the thing the decision depends on, and its failure cannot lose the
+        // decision above.
         Refresh();
-        FileLog.Write($"[TurnLogSwitchStore] capture {(enabled ? "ON" : "OFF")} for machine={machine} (scope recorded)");
+        FileLog.Write($"[TurnLogSwitchStore] capture {(enabled ? "ON" : "OFF")} for machine={Clean(machine)} (scope recorded)");
     }
 
     /// <summary>
@@ -180,14 +240,35 @@ public sealed class TurnLogSwitchStore : IDisposable
         {
             lock (_gate)
             {
-                using var ctx = _db.CreateUnscopedContext();
-                _cached = ctx.TurnLogSwitches.AsNoTracking().ToList();
+                if (ReaderForTest is { } read)
+                {
+                    _cached = read();
+                }
+                else
+                {
+                    using var ctx = _db.CreateUnscopedContext();
+                    _cached = ctx.TurnLogSwitches.AsNoTracking().ToList();
+                }
+                _lastGoodReadUtc = _nowUtc();
             }
         }
         catch (Exception ex)
         {
             FileLog.Write($"[TurnLogSwitchStore] Refresh FAILED - the previous decisions still stand: {ex.Message}");
         }
+    }
+
+    /// <summary>
+    /// An identifier as it is safe to put in a log line. Caller-supplied text reaches the log, and the log
+    /// is line-oriented, so an embedded newline lets a caller forge an entry that looks like ours. Control
+    /// characters are stripped and the value is capped rather than escaped, because a log line is for
+    /// reading and an identifier that needs escaping is already wrong.
+    /// </summary>
+    internal static string Clean(string? value)
+    {
+        if (string.IsNullOrEmpty(value)) return "(none)";
+        var safe = new string(value.Where(ch => !char.IsControl(ch)).ToArray());
+        return safe.Length <= 80 ? safe : safe[..80];
     }
 
     public void Dispose()

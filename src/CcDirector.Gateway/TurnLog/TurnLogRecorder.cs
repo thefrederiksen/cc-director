@@ -116,12 +116,12 @@ public sealed class TurnLogRecorder : IDisposable
             }
             catch (OperationCanceledException)
             {
-                FileLog.Write($"[TurnLogRecorder] capture timed out sid={signal.SessionId} - no record written");
+                FileLog.Write($"[TurnLogRecorder] capture timed out sid={TurnLogSwitchStore.Clean(signal.SessionId)} - no record written");
             }
             catch (Exception ex)
             {
                 // Loud, and it goes no further. The turn is long over.
-                FileLog.Write($"[TurnLogRecorder] capture FAILED sid={signal.SessionId}: {ex.Message}");
+                FileLog.Write($"[TurnLogRecorder] capture FAILED sid={TurnLogSwitchStore.Clean(signal.SessionId)}: {ex.Message}");
             }
         });
     }
@@ -291,7 +291,7 @@ public sealed class TurnLogRecorder : IDisposable
 
         var path = _env.Write(record);
         if (path is null)
-            FileLog.Write($"[TurnLogRecorder] record NOT written sid={signal.SessionId} - the writer refused it");
+            FileLog.Write($"[TurnLogRecorder] record NOT written sid={TurnLogSwitchStore.Clean(signal.SessionId)} - the writer refused it");
         return path;
     }
 

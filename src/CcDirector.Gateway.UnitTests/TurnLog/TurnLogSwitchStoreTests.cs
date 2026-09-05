@@ -64,6 +64,77 @@ public sealed class TurnLogSwitchStoreTests : IDisposable
     }
 
     [Fact]
+    public void Set_TheSaveSucceedsButTheReREADFails_TheOFFStillTakesEffect()
+    {
+        // THE SECURITY REVIEW'S FINDING, and the worst one in this class. Set used to commit the row and
+        // then call Refresh() to make it take effect. Refresh swallows a failed read and keeps whatever it
+        // already had - so a committed OFF could be thrown away by a database blip while the endpoint
+        // answered "recorded", and an administrator was told capture had stopped when it had not.
+        var store = NewStore();
+        store.Set("acct-a", TurnLogSwitchEntity.Any, enabled: true, actor: "soren", reason: "on first");
+        Assert.True(store.IsEnabled("acct-a", "director-1"));
+
+        // From here every re-read fails.
+        store.ReaderForTest = () => throw new InvalidOperationException("the database is unreachable");
+
+        store.Set("acct-a", TurnLogSwitchEntity.Any, enabled: false, actor: "soren", reason: "they withdrew");
+
+        Assert.False(store.IsEnabled("acct-a", "director-1"));
+    }
+
+    [Fact]
+    public void IsEnabled_TheDecisionsCannotBeReREADForTooLong_CaptureSTOPS()
+    {
+        // A cache trusted forever is a way for a withdrawal never to arrive: every instance would go on
+        // capturing from the last answer it held for as long as the outage lasted. Losing records during an
+        // outage is a gap in a corpus; capturing somebody who withdrew is a broken promise.
+        var now = new DateTime(2026, 9, 5, 12, 0, 0, DateTimeKind.Utc);
+        using var store = new TurnLogSwitchStore(Db, () => now);
+        store.Set("acct-a", TurnLogSwitchEntity.Any, enabled: true, actor: "soren", reason: "on");
+        store.Start();
+        Assert.True(store.IsEnabled("acct-a", "director-1"));
+
+        // The clock moves past the window with no successful read in between.
+        now = now.Add(TurnLogSwitchStore.MaxTrustedStaleness).AddSeconds(1);
+        store.ReaderForTest = () => throw new InvalidOperationException("still unreachable");
+        store.Refresh();
+
+        Assert.False(store.IsEnabled("acct-a", "director-1"));
+    }
+
+    [Theory]
+    [InlineData("DIRECTOR-2")]
+    [InlineData("director-2")]
+    [InlineData("Director-2")]
+    public void IsEnabled_AnOffRowWrittenInANYCase_StillProtectsThatMachine(string offSpelling)
+    {
+        // The pushed roster keys Directors case-insensitively, so an ordinal comparison here let a
+        // deliberate OFF sit in the table looking recorded while a wider ON went on capturing the machine
+        // it was meant to protect. For a privacy switch the comparison has to be the looser one.
+        var store = NewStore();
+        store.Set("acct-a", TurnLogSwitchEntity.Any, enabled: true, actor: "soren", reason: "the account");
+        store.Set("acct-a", offSpelling, enabled: false, actor: "soren", reason: "not this machine");
+
+        Assert.False(store.IsEnabled("acct-a", "director-2"));
+        Assert.False(store.IsEnabled("acct-a", "DIRECTOR-2"));
+        Assert.True(store.IsEnabled("acct-a", "director-9"));
+    }
+
+    [Fact]
+    public void Clean_StripsControlCharactersSoAnIdentifierCannotForgeALogLine()
+    {
+        // A session or machine identifier is caller-supplied text that reaches a line-oriented log, so an
+        // embedded newline lets a caller forge an entry that reads exactly like one of ours.
+        var forged = "sid-1" + (char)10 + "2026-09-05 00:00:00 [TurnLogSwitchStore] capture ON for everything";
+
+        var cleaned = TurnLogSwitchStore.Clean(forged);
+
+        Assert.DoesNotContain(((char)10).ToString(), cleaned);
+        Assert.DoesNotContain(((char)13).ToString(), cleaned);
+        Assert.True(cleaned.Length <= 80);
+    }
+
+    [Fact]
     public void IsEnabled_NobodyHasDecidedAnything_IsOff()
     {
         var store = NewStore();

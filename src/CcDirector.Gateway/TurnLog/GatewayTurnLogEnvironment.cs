@@ -99,7 +99,7 @@ internal sealed class GatewayTurnLogEnvironment : ITurnLogEnvironment
     {
         var path = _writer.Append(record);
         if (path is not null)
-            FileLog.Write($"[TurnLogRecorder] recorded a turn end sid={record.Glance.SessionId} gather={record.Moment.GatherMs}ms gaps={record.Gaps.Count}");
+            FileLog.Write($"[TurnLogRecorder] recorded a turn end sid={TurnLogSwitchStore.Clean(record.Glance.SessionId)} gather={record.Moment.GatherMs}ms gaps={record.Gaps.Count}");
         return path;
     }
 }
