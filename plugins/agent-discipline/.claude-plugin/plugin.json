@@ -1,0 +1,14 @@
+{
+  "name": "agent-discipline",
+  "displayName": "Agent Discipline",
+  "version": "1.0.0",
+  "description": "Three skills about evidence: checks that pass because nothing ran, proofs that cover something other than what you changed, and destructive sweeps that delete what they could not identify.",
+  "author": {
+    "name": "DevThrottle",
+    "url": "https://devthrottle.com"
+  },
+  "homepage": "https://github.com/thefrederiksen/devthrottle/tree/main/plugins/agent-discipline",
+  "repository": "https://github.com/thefrederiksen/devthrottle",
+  "license": "MIT",
+  "keywords": ["verification", "evidence", "code-review", "safety", "testing"]
+}
