@@ -401,3 +401,30 @@ about. Nobody on this mission has looked, because it is not this mission's work.
 
 **Not fixed here.** It is out of scope, it wants its own issue and its own ruling, and it was reported
 to the owner when found.
+
+---
+
+## R19 - The report discloses the attribution change, once, on the week that spans it (INFERRED, 2026-09-05)
+
+Found by the Architect after the owner challenged the figure, and not covered by any earlier ruling.
+
+Two fixes on this branch change what the product RECORDS about a turn: agent prompts stop wearing a
+human origin, and a dictated sentence sent through the ordinary prompt door stops being filed as
+typing. Neither can act retroactively - the ledger rows for past weeks are already written - so the
+week of 24 August stays at 57 per cent forever, while the first full week after the deploy is
+measured under better attribution.
+
+**The owner's spoken share will therefore STEP UP after the deploy - measured at roughly 67 to 70 per
+cent on the week of 29 August - for a reason that is about the fix and not about him.** The report
+carries a baseline comparison, so it will read that step as a change in how he works. That is exactly
+the defect this mission exists to remove, arriving one screen further along: a number that quietly
+starts meaning something else.
+
+**The ruling:** on the first report whose week spans or follows the deploy, one sentence in the place
+the figures are drawn says that how spoken and typed are counted was corrected on that date, and that
+a step in the figure is the correction rather than a change in behaviour. Once. Not a banner, not a
+permanent footnote, and it is not carried on later weeks.
+
+**Not restating history.** Earlier weeks keep their published figures, per the mission's standing
+position that history is not rewritten. The disclosure explains the discontinuity; it does not try to
+erase it.
