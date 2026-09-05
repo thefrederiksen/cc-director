@@ -51,7 +51,41 @@ public sealed class WingmanVoiceService
     /// or the shared <see cref="HostedAiState"/> when hosted AI is unavailable (out of credits, cap
     /// reached, or account setup is incomplete) so the caller can surface it instead of a silent
     /// null. Both null means a generic provider error (logged, no shared state).</summary>
-    private sealed record TtsResult(byte[]? Audio, string? ContentType, HostedAiState? Unavailable, bool ServedViaFallback = false);
+    private sealed record TtsResult(byte[]? Audio, string? ContentType, HostedAiState? Unavailable, bool ServedViaFallback = false, SpeechFailure Failure = SpeechFailure.None, TimeSpan? RetryAfter = null);
+
+    /// <summary>
+    /// What the SPEECH leg did, in the only terms the narration path needs: is this worth another attempt,
+    /// and did the provider name a delay?
+    ///
+    /// It exists because the recorded <see cref="HostedAiState"/> cannot answer that. Two failures that are
+    /// completely different to a retry - a 429 the provider will lift in thirty seconds, and a 5xx it has no
+    /// deadline for - are both an ANSWERED failure and both record <see cref="HostedAiState.ServiceDown"/>,
+    /// so a caller reading the state alone can only guess. Guessing is how the speech leg came to log "this
+    /// session retries on its own" about three different failures while scheduling nothing for any of them.
+    /// </summary>
+    private enum SpeechFailure
+    {
+        /// <summary>Audio was produced, or the failure is the account's (no key, out of credits, cap).</summary>
+        None,
+        /// <summary>The provider refused this call with a 429. Transient by definition, and it may have named
+        /// how long to wait - see <see cref="TtsResult.RetryAfter"/>.</summary>
+        RateLimited,
+        /// <summary>The provider ANSWERED with a failure (a 5xx). It told us it is failing, which is a claim
+        /// about the service the screen is right to make - and not something a re-attempt seconds later has
+        /// any reason to fix, so the narration path does not book one.</summary>
+        AnsweredFailure,
+        /// <summary>The call did not answer at all - the bounded deadline fired, or the transport failed. The
+        /// absence of evidence, and the one speech failure whose screen used to promise audio nobody was
+        /// making.</summary>
+        DidNotAnswer,
+    }
+
+    /// <summary>
+    /// What one call to <see cref="StoreSpokenAsync"/> did, handed back so the narration path can decide
+    /// whether to book a re-attempt. Callers that do not book - the on-demand explain path - ignore it, and
+    /// the state <see cref="StoreSpokenAsync"/> records is unchanged for them.
+    /// </summary>
+    public readonly record struct SpeechAttempt(bool ProducedAudio, TimeSpan? RetryAfter, bool WorthAnotherAttempt);
 
     /// <summary>
     /// ONE tenant's voice state. Every dictionary here is keyed by session id, and the ONLY way to reach one
@@ -1073,10 +1107,15 @@ public sealed class WingmanVoiceService
     /// paths), synthesize its audio, and mark the session as a voice session. Best-effort: if the
     /// audio can't be made (no key / outage) the session is still marked, so turn-end retries.
     /// </summary>
-    public async Task StoreSpokenAsync(TenantId tenant, string sid, string spoken, string reply, CancellationToken ct = default)
+    /// <returns>
+    /// What the speech leg did, so a caller that CAN book a re-attempt knows whether to. Every existing
+    /// caller ignores it and is unaffected: the state this method records is exactly what it recorded
+    /// before, and a caller that does not book leaves the screen saying what it said before.
+    /// </returns>
+    public async Task<SpeechAttempt> StoreSpokenAsync(TenantId tenant, string sid, string spoken, string reply, CancellationToken ct = default)
     {
         Mark(tenant, sid);
-        if (string.IsNullOrWhiteSpace(spoken)) return;
+        if (string.IsNullOrWhiteSpace(spoken)) return new SpeechAttempt(false, null, false);
         var tts = await TtsAsync(tenant, sid, spoken, ct);
         // The "if anything fails, remove the triangle" rule: when synthesis returns null/empty we
         // leave this tenant's Ready map WITHOUT this session, so HasVoice stays false and no triangle shows. Only a
@@ -1094,6 +1133,14 @@ public sealed class WingmanVoiceService
             StateFor(tenant).Unavailable[sid] = unavailable;
             FileLog.Write($"[WingmanVoiceService] voice unavailable tenant={tenant.ToLogString()} sid={sid}: {unavailable}");
         }
+        // WORTH ANOTHER ATTEMPT means transient, and only two of the four speech outcomes are: a refusal
+        // that will be lifted, and a call that never answered. An account condition is the member's to fix
+        // and an answered 5xx is the service telling us it is failing - neither is improved by calling again
+        // in ten seconds, and both already put a specific, actionable sentence on the screen.
+        return new SpeechAttempt(
+            ProducedAudio: tts.Audio is { Length: > 0 },
+            RetryAfter: tts.RetryAfter,
+            WorthAnotherAttempt: tts.Failure is SpeechFailure.RateLimited or SpeechFailure.DidNotAnswer);
     }
 
     /// <summary>Mark a session ready with already-synthesized audio: update the in-memory cache and
@@ -1414,7 +1461,7 @@ public sealed class WingmanVoiceService
                 // account's unnarratable sessions were consuming (issue #2675). The leg that failed now owns
                 // the re-attempt, so the promise on the screen is backed by a booked piece of work rather
                 // than by a loop nobody here controls.
-                NoteModelAttemptFailed(tenant, state, sid, route, lastReply, ex, retryAfter: null,
+                NoteNarrationAttemptFailed(tenant, state, sid, route, lastReply, ex.Message, retryAfter: null,
                     cause: "model did not answer", epoch: turnEpoch);
                 return false;   // nothing produced; the provider was not usefully reached
             }
@@ -1434,7 +1481,7 @@ public sealed class WingmanVoiceService
                 //
                 // It is caught here rather than in the wrapper for a second reason: the ledger is keyed on
                 // the reply being narrated, and this is the innermost place that reply is known.
-                NoteModelAttemptFailed(tenant, state, sid, route, lastReply, rl, rl.RetryAfter,
+                NoteNarrationAttemptFailed(tenant, state, sid, route, lastReply, rl.Message, rl.RetryAfter,
                     cause: $"model rate limited (429){(rl.RetryAfter is { } ra ? $", provider asked for {ra.TotalSeconds:F0}s" : ", no Retry-After sent")}",
                     epoch: turnEpoch);
                 return false;   // nothing produced; the provider refused this call
@@ -1456,7 +1503,7 @@ public sealed class WingmanVoiceService
                 spoken += Speech.SpokenPhrases.WaitingScreenMenuNarrationSuffix.In(_tenantSettings.SpokenLanguage(tenant));
                 FileLog.Write($"[WingmanVoiceService] narration announces a waiting menu (model verdict): sid={sid}");
             }
-            await StoreSpokenAsync(tenant, sid, spoken, lastReply, ct);
+            var speech = await StoreSpokenAsync(tenant, sid, spoken, lastReply, ct);
             // Log the TRUE outcome: StoreSpokenAsync only makes the session playable when the
             // text-to-speech synthesis actually returned audio. Logging "voice ready"
             // unconditionally (the old behavior) hid every failed synthesis behind a success
@@ -1465,6 +1512,24 @@ public sealed class WingmanVoiceService
                 FileLog.Write($"[WingmanVoiceService] voice ready: sid={sid}, spokenLen={spoken.Length}");
             else
                 FileLog.Write($"[WingmanVoiceService] voice NOT ready (text-to-speech produced no audio): sid={sid}, spokenLen={spoken.Length}");
+            // THE SPEECH LEG GETS THE SAME LADDER AS THE MODEL LEG, and for the same reason: it was the
+            // third place in this file that said "this session retries on its own" while scheduling
+            // nothing. Its non-answer arm is the one that mattered most - that arm records Retrying, so
+            // unlike the two answered arms beside it, its SCREEN said "voice on its way" too.
+            //
+            // ONE ladder for the turn, shared with the model leg. A turn that loses its narration text to
+            // a stalled model and then its audio to a stalled speech provider has failed twice, not
+            // started again, and giving each leg its own three re-attempts would spend six on the turn
+            // already costing the most.
+            //
+            // The turn has WORDS at this point - the model answered - so a re-attempt here is cheap in the
+            // way that matters: it re-runs the narration from the same reply, and the identity-aware skip
+            // means a turn that has since been narrated is left alone.
+            if (!speech.ProducedAudio && speech.WorthAnotherAttempt)
+                NoteNarrationAttemptFailed(tenant, state, sid, route, lastReply,
+                    "the speech provider produced no audio", speech.RetryAfter,
+                    cause: $"speech leg failed{(speech.RetryAfter is { } sra ? $", provider asked for {sra.TotalSeconds:F0}s" : "")}",
+                    epoch: turnEpoch);
             // The model leg ran and answered - TranslateAsync returned rather than throwing
             // WingmanModelRateLimitedException. Reported as true purely so the return honestly says the
             // provider was reached (no caller acts on it now that the shared gate is gone).
@@ -1498,11 +1563,11 @@ public sealed class WingmanVoiceService
     /// <param name="epoch">The turn epoch this attempt started in. If the turn has been superseded since -
     /// a new turn, a successful narration, voice switched off - this attempt says NOTHING, because every
     /// sentence it could write would be about a turn that is over.</param>
-    private void NoteModelAttemptFailed(TenantId tenant, TenantVoiceState state, string sid, SessionVerbClient route, string lastReply, Exception ex, TimeSpan? retryAfter, string cause, long epoch)
+    private void NoteNarrationAttemptFailed(TenantId tenant, TenantVoiceState state, string sid, SessionVerbClient route, string lastReply, string detail, TimeSpan? retryAfter, string cause, long epoch)
     {
         if (CurrentTurnEpoch(state, sid) != epoch)
         {
-            FileLog.Write($"[WingmanVoiceService] {cause} for sid={sid}: {ex.Message} - the turn it was narrating has been superseded, so nothing is recorded and nothing is booked");
+            FileLog.Write($"[WingmanVoiceService] {cause} for sid={sid}: {detail} - the turn it was narrating has been superseded, so nothing is recorded and nothing is booked");
             return;
         }
         var schedule = _modelRetryBackoff;
@@ -1539,7 +1604,7 @@ public sealed class WingmanVoiceService
             // sweep, or a person pressing Generate. It must not spend a rung of a ladder it does not own,
             // and above all it must not declare the turn abandoned while that task exists.
             state.NarrationAbandoned.TryRemove(sid, out _);
-            FileLog.Write($"[WingmanVoiceService] {cause} for sid={sid}: {ex.Message} - Retrying; re-attempt {rung} of {schedule.Length} is already booked, so this attempt spends nothing");
+            FileLog.Write($"[WingmanVoiceService] {cause} for sid={sid}: {detail} - Retrying; re-attempt {rung} of {schedule.Length} is already booked, so this attempt spends nothing");
             return;
         }
         if (!abandon)
@@ -1556,14 +1621,14 @@ public sealed class WingmanVoiceService
                 ReleaseRefusedReservation(state, sid, replyKey, reservation, rung,
                     notBefore: DateTime.UtcNow + (retryAfter ?? delay));
                 MarkAbandonedIfNothingPending(state, sid, replyKey);
-                FileLog.Write($"[WingmanVoiceService] {cause} for sid={sid}: {ex.Message} - the provider asked us to wait {delay.TotalSeconds:F0}s, longer than the {_maxSingleRetryWait.TotalSeconds:F0}s this turn will hold a promise open, so NOTHING IS BOOKED, the model is not called again for this turn until the provider's own deadline passes, and the screen reports a turn that was not narrated rather than an arrival with no end in sight");
+                FileLog.Write($"[WingmanVoiceService] {cause} for sid={sid}: {detail} - the provider asked us to wait {delay.TotalSeconds:F0}s, longer than the {_maxSingleRetryWait.TotalSeconds:F0}s this turn will hold a promise open, so NOTHING IS BOOKED, the model is not called again for this turn until the provider's own deadline passes, and the screen reports a turn that was not narrated rather than an arrival with no end in sight");
                 return;
             }
 
             state.NarrationAbandoned.TryRemove(sid, out _);
             LastBookedRetryDelayForTest = delay;
             ScheduleModelRetry(tenant, sid, route, delay, replyKey, reservation, rung, schedule.Length);
-            FileLog.Write($"[WingmanVoiceService] {cause} for sid={sid}: {ex.Message} - Retrying (audio on its way); re-attempt {rung} of {schedule.Length} is booked for {delay.TotalSeconds:F0}s from now{(retryAfter is { } ra ? $" (provider asked for {ra.TotalSeconds:F0}s)" : "")}");
+            FileLog.Write($"[WingmanVoiceService] {cause} for sid={sid}: {detail} - Retrying (audio on its way); re-attempt {rung} of {schedule.Length} is booked for {delay.TotalSeconds:F0}s from now{(retryAfter is { } ra ? $" (provider asked for {ra.TotalSeconds:F0}s)" : "")}");
             return;
         }
         // THE LADDER IS SPENT. Recorded as its own fact rather than as a new HostedAiState because it is not
@@ -1571,7 +1636,7 @@ public sealed class WingmanVoiceService
         // run out. Published through the same guarded helper as every other abandonment, so it cannot be
         // stamped onto a turn that has moved on while this attempt was failing.
         MarkAbandonedIfNothingPending(state, sid, replyKey);
-        FileLog.Write($"[WingmanVoiceService] {cause} for sid={sid}: {ex.Message} - all {schedule.Length} re-attempt(s) spent and none pending, so THIS TURN WAS NOT NARRATED and nothing further is scheduled; the screen says so instead of promising audio");
+        FileLog.Write($"[WingmanVoiceService] {cause} for sid={sid}: {detail} - all {schedule.Length} re-attempt(s) spent and none pending, so THIS TURN WAS NOT NARRATED and nothing further is scheduled; the screen says so instead of promising audio");
     }
 
     /// <summary>
@@ -1827,14 +1892,19 @@ public sealed class WingmanVoiceService
                     return new TtsResult(null, null, HostedAiErrorMapper.Map402(body));
 
                 // A 429 is the provider saying "stop calling" for THIS call. There is no shared gate any
-                // more (removed 2026-07-17): this session simply gets no audio this cycle and retries on
-                // its own next turn-end / idle sweep. It never reaches across to silence another session.
+                // more (removed 2026-07-17): it never reaches across to silence another session.
+                //
+                // IT IS TRANSIENT BY DEFINITION, so the narration path books a re-attempt against the turn's
+                // own bounded ladder and honours the Retry-After carried back here. That number used to be
+                // parsed into a log line and dropped, while this branch claimed the session "retries on its
+                // own next turn-end / idle sweep" - a sentence with nothing behind it, and the last of the
+                // three places in this file that said it (issues #2676 and #2685 were the other two).
                 if ((int)resp.StatusCode == 429)
                 {
                     var retryAfter = RetryAfterHeader.Parse(resp.Headers);
-                    FileLog.Write($"[WingmanVoiceService] tts 429 - no audio for this session this cycle, it retries on its own" +
-                                  $"{(retryAfter is null ? "" : $" (provider Retry-After {retryAfter.Value.TotalSeconds:F0}s)")}");
-                    return new TtsResult(null, null, HostedAiState.ServiceDown);
+                    FileLog.Write($"[WingmanVoiceService] tts 429 sid={sid} - the speech provider refused this call" +
+                                  $"{(retryAfter is null ? " and sent no Retry-After" : $" and asked for {retryAfter.Value.TotalSeconds:F0}s")}; no audio this cycle - whether a re-attempt is booked is decided by the narration path, not here");
+                    return new TtsResult(null, null, HostedAiState.ServiceDown, Failure: SpeechFailure.RateLimited, RetryAfter: retryAfter);
                 }
 
                 // Any other error status means the far end failed, and we KNOW it. This used to return a
@@ -1842,10 +1912,15 @@ public sealed class WingmanVoiceService
                 // a log nobody reads and thrown away three lines from where it was known, so the phone
                 // fell back to "the Gateway has not made one, or this session's computer is offline".
                 // Both false. On 2026-07-15 that cost ~45 minutes of the owner not being able to tell an
-                // outage from a bug. Say what actually happened - this ONE session's ServiceDown - and
-                // let it retry on its own next cycle. No shared cooldown reaches across to other sessions.
-                FileLog.Write($"[WingmanVoiceService] tts {(int)resp.StatusCode} - server answered with a failure; this session has no audio this cycle and retries on its own");
-                return new TtsResult(null, null, HostedAiState.ServiceDown);
+                // outage from a bug. Say what actually happened - this ONE session's ServiceDown. No shared
+                // cooldown reaches across to other sessions.
+                //
+                // NO RE-ATTEMPT IS BOOKED for this one, and the log no longer says one is. The service told
+                // us it is failing, which is a claim the red "Voice service down" screen is right to make
+                // and which a second call seconds later has no reason to change - unlike a refusal that
+                // names its own deadline, or a call that never answered at all.
+                FileLog.Write($"[WingmanVoiceService] tts {(int)resp.StatusCode} sid={sid} - the server answered with a failure; this session has no audio this cycle and NOTHING is booked for it - the next turn-end or sweep is what comes back");
+                return new TtsResult(null, null, HostedAiState.ServiceDown, Failure: SpeechFailure.AnsweredFailure);
             }
             var contentType = resp.Content.Headers.ContentType?.MediaType;
             // The cloud proxy sets this out-of-band header when it quietly failed the primary voice
@@ -1880,8 +1955,8 @@ public sealed class WingmanVoiceService
             // above - keeps ServiceDown, because there the service really did tell us it is failing.)
             // This is per session and touches nothing else: there is no shared gate for a timeout to arm.
             sw.Stop();
-            FileLog.Write($"[WingmanVoiceService] tts did not answer for this narration (elapsedMs={sw.ElapsedMilliseconds}): {ex.Message} - " +
-                          "no answer from the service, so this is Retrying (not down); this session retries on its own");
+            FileLog.Write($"[WingmanVoiceService] tts did not answer for this narration sid={sid} (elapsedMs={sw.ElapsedMilliseconds}): {ex.Message} - " +
+                          "no answer from the service, so this is Retrying (not down); the narration path books the re-attempt");
             // A TimeoutException specifically means the primary went SILENT (the per-attempt deadline
             // fired, no answer). That silent hang is exactly what the cloud proxy's own failover cannot
             // see, so arm this session to route past the primary to the backup on its next turn-end /
@@ -1889,7 +1964,7 @@ public sealed class WingmanVoiceService
             // DIFFERENT fault - the proxy itself was unreachable, which does not implicate the primary -
             // so it does not arm the backup route.
             if (ex is TimeoutException) ArmPreferBackup(tenant, sid);
-            return new TtsResult(null, null, HostedAiState.Retrying);
+            return new TtsResult(null, null, HostedAiState.Retrying, Failure: SpeechFailure.DidNotAnswer);
         }
         // NOTE: no `finally { http.Dispose(); }`. `http` is now either the caller's injected client or
         // the shared static, and disposing EITHER would be wrong - the static must outlive every call
