@@ -77,6 +77,16 @@ passed four more times by name during the phase.
    behind the figures, which is what the sentence promises; the phone page honours the same `week` and is
    proven to.
 
+## Ruling R19, implemented after the close
+
+The owner challenged the figure and the Architect ruled R19. Implemented by the Manager in the internal
+repository (`1944625`): a required config key `attribution_corrected_utc` (`null` until the corrected
+Gateway is deployed), one sentence after the Your Throttle link on the first report whose week spans the
+deploy (or the week after, only if the spanning week's report was never sent), naming the date in the
+account's zone, on no other week and restating nothing; ten tests over the real render, two mutations
+watched, the real week rendered with a planted instant and restored. Detail in the R19 section of the
+internal phase five note. **Whoever deploys the product branch sets that key to the deploy instant.**
+
 ## For the Architect, after landing
 
 - The harness's real `config.json` (gitignored, main checkout) has `throttle_library` pointing at the

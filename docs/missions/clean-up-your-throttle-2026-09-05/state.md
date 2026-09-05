@@ -19,7 +19,13 @@ branches, and the report to the owner. Read `phase4-5-close.md` for the last two
 parked-suite table, and the after-landing steps (the harness config key `throttle_library` must move to the
 main checkout's tool; the deployed Gateway runs the old feed until the product branch deploys).
 
-**Phases four and five - the selector, and the report becomes a consumer.** DONE. Phases one, two and
+**Phases four and five - the selector, and the report becomes a consumer.** DONE.
+
+**Ruling R19 (after the owner's challenge) - IMPLEMENTED** in the internal repository at `1944625`: the
+report discloses the attribution correction once, on the week that spans the deploy, driven by the required
+config key `attribution_corrected_utc` (`null` until the corrected Gateway is deployed; whoever deploys the
+product branch sets it). Record: the R19 section of the internal repository's
+`phase5-report-consumes-the-library.md`. Phases one, two and
 three are DONE and pushed, and phase two's independent inspection has been fixed.
 
 **Phase four** (`#2692`): the period selector, the default moved to a rolling SEVEN days per R15
