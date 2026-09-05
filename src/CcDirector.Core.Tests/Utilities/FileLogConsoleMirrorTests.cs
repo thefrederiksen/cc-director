@@ -10,8 +10,8 @@ namespace CcDirector.Core.Tests.Utilities;
 //   1. MirrorToConsole puts every line on standard output as well - the sink the
 //      container platform captures per container, and the one with no queue in front of
 //      it, so it survives the file-share stall that erased three startup records.
-//   2. UseUniqueInstanceId REFUSES to run after Start(), instead of quietly leaving the
-//      process writing to the shared file it was supposed to move off.
+//   2. UseUniqueInstanceId installs the caller-selected directory before Start(), and
+//      REFUSES to run after Start() instead of splitting one process record across files.
 // =====================================================================================
 public sealed class FileLogConsoleMirrorTests
 {
@@ -74,5 +74,30 @@ public sealed class FileLogConsoleMirrorTests
 
         var ex = Assert.Throws<InvalidOperationException>(FileLog.UseUniqueInstanceId);
         Assert.Contains("before FileLog.Start()", ex.Message);
+    }
+
+    [Fact]
+    public void UseUniqueInstanceId_WithDirectory_WritesToTheSelectedDirectory()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "cc-filelog-selected-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            FileLog.UseUniqueInstanceId(dir);
+            FileLog.Start();
+            FileLog.Write("[FileLog] selected directory proof");
+            FileLog.Stop();
+
+            var file = Assert.Single(Directory.GetFiles(dir, "director-*.log"));
+            Assert.Equal(Path.GetFullPath(dir), Path.GetDirectoryName(Path.GetFullPath(file)));
+            Assert.Contains("selected directory proof", File.ReadAllText(file));
+        }
+        finally
+        {
+            FileLog.Stop();
+            FileLog.UseUniqueInstanceId();
+            try { if (Directory.Exists(dir)) Directory.Delete(dir, recursive: true); }
+            catch (IOException) { }
+            catch (UnauthorizedAccessException) { }
+        }
     }
 }

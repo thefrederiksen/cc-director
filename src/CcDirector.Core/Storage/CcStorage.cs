@@ -17,7 +17,7 @@ namespace CcDirector.Core.Storage;
 ///   CC_DIRECTOR_INSTANCES_DIR - Override the Director instance-discovery directory specifically
 ///
 /// NOTE: CcStorage methods intentionally omit FileLog.Write calls because
-/// FileLog.LogDir is initialized from CcStorage.ToolLogs(), creating a
+/// FileLog's default directory is initialized from CcStorage.ToolLogs(), creating a
 /// circular dependency at static initialization time.
 /// </summary>
 public static class CcStorage

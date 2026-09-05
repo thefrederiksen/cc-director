@@ -380,9 +380,11 @@ public sealed class DirectorHub : Hub
         var registered = _sessionKeys.Register(
             tenant, directorId, registration.SessionId, registration.KeyHash, registration.ExpiresAtUtc);
 
-        FileLog.Write($"[DirectorHub] RegisterSessionKey: director={directorId}, session={registration.SessionId}, registered={registered}");
         if (!registered)
+        {
+            FileLog.Write($"[DirectorHub] RegisterSessionKey REFUSED: director={directorId}, session={registration.SessionId}");
             throw new HubException($"the session key for {registration.SessionId} was not registered");
+        }
     }
 
     /// <summary>

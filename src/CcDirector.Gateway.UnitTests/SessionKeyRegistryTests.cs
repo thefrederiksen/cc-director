@@ -1,5 +1,6 @@
 using CcDirector.Core.Security;
 using CcDirector.Core.Tenancy;
+using CcDirector.Core.Utilities;
 using CcDirector.Gateway.Pairing;
 using CcDirector.Gateway.Tests.Data;
 using Xunit;
@@ -14,6 +15,7 @@ namespace CcDirector.Gateway.Tests;
 /// key per session, revoked when the session is reaped, lapsed when nobody revoked it, and a database
 /// failure that denies rather than grants.
 /// </summary>
+[Collection(FileLogCaptureCollection.Name)]
 public sealed class SessionKeyRegistryTests : IDisposable
 {
     private readonly GatewayDbTestHarness _harness = new();
@@ -218,6 +220,75 @@ public sealed class SessionKeyRegistryTests : IDisposable
         Assert.True(registry.Register(Account, "director-1", session.ToString(), GatewaySessionKey.Hash(second), Later));
 
         Assert.Equal(SessionCredentialResolutionKind.Active, registry.ResolveCredential(second).Kind);
+    }
+
+    [Fact]
+    public void An_unchanged_roster_refresh_does_not_rewrite_a_long_lived_key()
+    {
+        var now = new DateTime(2026, 9, 4, 12, 0, 0, DateTimeKind.Utc);
+        var registry = Registry(() => now);
+        var session = Guid.NewGuid();
+        var hash = GatewaySessionKey.Hash(GatewaySessionKey.Mint());
+        var initialExpiry = now + SessionKeyRegistry.MaxSessionKeyLifetime;
+
+        IReadOnlyList<string> registrationLines;
+        using (var log = FileLog.RedirectForTests())
+        {
+            Assert.True(registry.Register(Account, "director-1", session.ToString(), hash, initialExpiry));
+            now = now.AddSeconds(10);
+            Assert.True(registry.Register(Account, "director-1", session.ToString(), hash, now + TimeSpan.FromDays(1)));
+            registrationLines = log.DrainAndReadLines();
+        }
+
+        using var ctx = _harness.Open().CreateUnscopedContext();
+        var row = ctx.SessionKeys.Single();
+        Assert.Equal(new DateTime(2026, 9, 4, 12, 0, 0, DateTimeKind.Utc), row.IssuedAtUtc);
+        Assert.Equal(new DateTime(2026, 9, 5, 0, 0, 0, DateTimeKind.Utc), row.ExpiresAtUtc);
+
+        // Presence proves the capture worked; exactly one proves the ten-second refresh added no cap or
+        // success line. Naming the first expiry also distinguishes that control from the later refresh.
+        var recorded = Assert.Single(registrationLines);
+        Assert.Contains($"session={session}", recorded, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains($"expires={initialExpiry:O}", recorded, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void An_unchanged_key_is_refreshed_before_half_its_lifetime_remains()
+    {
+        var started = new DateTime(2026, 9, 4, 12, 0, 0, DateTimeKind.Utc);
+        var now = started;
+        var registry = Registry(() => now);
+        var session = Guid.NewGuid();
+        var hash = GatewaySessionKey.Hash(GatewaySessionKey.Mint());
+        Assert.True(registry.Register(Account, "director-1", session.ToString(), hash, now + SessionKeyRegistry.MaxSessionKeyLifetime));
+
+        now = started + SessionKeyRegistry.RefreshWhenRemaining + TimeSpan.FromSeconds(1);
+        Assert.True(registry.Register(Account, "director-1", session.ToString(), hash, now + SessionKeyRegistry.MaxSessionKeyLifetime));
+
+        using var ctx = _harness.Open().CreateUnscopedContext();
+        var row = ctx.SessionKeys.Single();
+        Assert.Equal(now, row.IssuedAtUtc);
+        Assert.Equal(now + SessionKeyRegistry.MaxSessionKeyLifetime, row.ExpiresAtUtc);
+    }
+
+    [Fact]
+    public void A_shorter_expiry_on_the_same_key_is_written_immediately()
+    {
+        var started = new DateTime(2026, 9, 4, 12, 0, 0, DateTimeKind.Utc);
+        var now = started;
+        var registry = Registry(() => now);
+        var session = Guid.NewGuid();
+        var hash = GatewaySessionKey.Hash(GatewaySessionKey.Mint());
+        Assert.True(registry.Register(Account, "director-1", session.ToString(), hash, now + SessionKeyRegistry.MaxSessionKeyLifetime));
+
+        now = started.AddSeconds(10);
+        var shorterExpiry = started.AddHours(1);
+        Assert.True(registry.Register(Account, "director-1", session.ToString(), hash, shorterExpiry));
+
+        using var ctx = _harness.Open().CreateUnscopedContext();
+        var row = ctx.SessionKeys.Single();
+        Assert.Equal(now, row.IssuedAtUtc);
+        Assert.Equal(shorterExpiry, row.ExpiresAtUtc);
     }
 
     [Fact]

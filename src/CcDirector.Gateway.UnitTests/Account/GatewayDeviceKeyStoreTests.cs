@@ -9,6 +9,7 @@ namespace CcDirector.Gateway.Tests.Account;
 /// install id, that a different install id yields no key, that clearing removes it, and - DT-05 - that the
 /// raw key value is never written to the log even though it is persisted to disk.
 /// </summary>
+[Collection(CcDirector.Gateway.Tests.FileLogCaptureCollection.Name)]
 public sealed class GatewayDeviceKeyStoreTests
 {
     private const string Install = "install-857";

@@ -3,7 +3,8 @@ using CcDirector.Core.Storage;
 namespace CcDirector.Core.Utilities;
 
 /// <summary>
-/// Simple thread-safe file logger. Writes to cc-director logs/director/ directory.
+/// Simple thread-safe file logger. Writes to cc-director logs/director/ by default; a hosted process may
+/// select container-local storage before it starts.
 ///
 /// The actual dequeue/rollover/flush work lives in <see cref="FileLogWriter"/> so the day-rollover
 /// behavior can be unit-tested with an injectable clock (issue #171). This type is the thin static
@@ -12,7 +13,8 @@ namespace CcDirector.Core.Utilities;
 /// </summary>
 public static class FileLog
 {
-    private static readonly string LogDir = CcStorage.ToolLogs("director");
+    private static readonly string DefaultLogDir = CcStorage.ToolLogs("director");
+    private static string _logDir = DefaultLogDir;
 
     // What distinguishes this process's log file from another process's. The desktop uses the process id,
     // which is unique there and is what the desktop tooling globs for. A container must call
@@ -27,7 +29,7 @@ public static class FileLog
     // This comment used to say "Production never reassigns it", which was true and was the bug: a stopped
     // writer was restarted rather than replaced, so every later line threw. See Start.
     private static FileLogWriter _writer =
-        new(LogDir, _instanceId, () => DateTime.Now);
+        new(_logDir, _instanceId, () => DateTime.Now);
 
     private static int _started;
 
@@ -48,20 +50,34 @@ public static class FileLog
     /// leaving the process on the shared file.
     ///
     /// A hosted Gateway needs this because the default discriminator - the process id - is always 1 inside
-    /// a container, so every container computed the same path. Two of them then appended to one file on an
-    /// SMB share mounted <c>nobrl</c>, where the FileShare.Read request is not enforced across clients, and
-    /// clobbered each other mid-record. The token is generated per process rather than read from the
-    /// environment so its uniqueness does not depend on the platform supplying anything.
+    /// a container, so every container computed the same path. Two of them then appended to one file on a
+    /// Server Message Block share mounted <c>nobrl</c>, where the FileShare.Read request is not enforced
+    /// across clients, and clobbered each other mid-record. The token is generated per process rather than
+    /// read from the environment so its uniqueness does not depend on the platform supplying anything.
+    ///
+    /// A caller may also choose a different directory before the writer starts. The hosted Gateway uses
+    /// that seam to keep its process log on the container's temporary disk instead of the durable workload
+    /// share. Durable product state still uses <see cref="CcStorage"/>; a process log is not product state.
     /// </summary>
-    public static void UseUniqueInstanceId()
+    public static void UseUniqueInstanceId() => UseUniqueInstanceId(DefaultLogDir);
+
+    /// <summary>
+    /// Give this process a unique log file in a caller-selected directory. Like the parameterless overload,
+    /// this must be called before <see cref="Start"/>.
+    /// </summary>
+    public static void UseUniqueInstanceId(string logDirectory)
     {
         if (_started != 0)
             throw new InvalidOperationException(
                 "FileLog.UseUniqueInstanceId() must be called before FileLog.Start(); the writer is already " +
                 "running on the shared log file and moving it now would split this process's record in two.");
 
+        if (string.IsNullOrWhiteSpace(logDirectory))
+            throw new ArgumentException("A log directory cannot be blank.", nameof(logDirectory));
+
         _instanceId = Guid.NewGuid().ToString("N")[..12];
-        _writer = new FileLogWriter(LogDir, _instanceId, () => DateTime.Now);
+        _logDir = logDirectory;
+        _writer = new FileLogWriter(_logDir, _instanceId, () => DateTime.Now);
     }
 
     /// <summary>
@@ -129,7 +145,7 @@ public static class FileLog
             return;
 
         if (_writer.IsSpent)
-            _writer = new FileLogWriter(LogDir, _instanceId, () => DateTime.Now);
+            _writer = new FileLogWriter(_logDir, _instanceId, () => DateTime.Now);
 
         _writer.OnSinkHealthChanged = OnSinkHealthChanged;
         _writer.Start();
@@ -174,7 +190,7 @@ public static class FileLog
 
     /// <summary>Returns the current log file path (useful for display).</summary>
     public static string CurrentLogPath =>
-        Path.Combine(LogDir, $"director-{DateTime.Now:yyyy-MM-dd}-{_instanceId}.log");
+        Path.Combine(_logDir, $"director-{DateTime.Now:yyyy-MM-dd}-{_instanceId}.log");
 
     /// <summary>
     /// TEST-ONLY seam (issue #862). Redirects FileLog to a private, throwaway directory for the life
