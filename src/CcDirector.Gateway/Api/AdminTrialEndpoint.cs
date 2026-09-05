@@ -127,6 +127,11 @@ internal static class AdminTrialEndpoint
     // The wire vocabulary, in one place. These strings are a CONTRACT with the website's admin screen, which
     // says a different sentence for each - so they are named constants rather than literals scattered through
     // the switch below, and renaming one is a change to an interface rather than a tidy-up.
+    /// <summary>The ONE body every unavailable administrator-auth state answers with. Deliberately says
+    /// nothing about which state it is: an unauthenticated caller learning whether a token is configured,
+    /// or whether two tokens collide, is a configuration oracle. The detail lives in the log.</summary>
+    private static readonly object Unavailable = new { error = "the administrator surface is unavailable" };
+
     internal const string OutcomeExtended = "extended";
     internal const string OutcomeNoTrial = "no_trial";
     internal const string OutcomeNotLater = "not_later";
@@ -212,10 +217,12 @@ internal static class AdminTrialEndpoint
         {
             // Fail loud and CLOSED. An unconfigured token is a deployment error, not a reason to serve to
             // anyone who asks, and not a reason to invent an allow-anything mode either.
-            FileLog.Write($"[AdminTrialEndpoint] DENIED: {ServiceTokenEnvVar} is not set on this Gateway - the trial-extension endpoint refuses to serve unguarded");
-            return Results.Json(
-                new { error = $"the admin service token ({ServiceTokenEnvVar}) is not configured on this Gateway" },
-                statusCode: StatusCodes.Status503ServiceUnavailable);
+            FileLog.Write($"[AdminTrialEndpoint] DENIED: {ServiceTokenEnvVar} is not set on this Gateway - the administrator surface refuses to serve unguarded");
+            // ONE EXTERNAL ANSWER FOR EVERY UNAVAILABLE STATE. Saying WHICH misconfiguration it is told an
+            // unauthenticated caller - anybody on the internet - whether this Gateway has an admin token
+            // configured and whether it collides with the report token. That is a configuration oracle, and
+            // the person who needs the detail is reading the log, not the response.
+            return Results.Json(Unavailable, statusCode: StatusCodes.Status503ServiceUnavailable);
         }
 
         // TWO VARIABLE NAMES ARE NOT TWO SECRETS. The separation from the read-only report token is the
@@ -228,14 +235,8 @@ internal static class AdminTrialEndpoint
         var report = Environment.GetEnvironmentVariable(MorningReportEndpoint.ServiceTokenEnvVar);
         if (!string.IsNullOrWhiteSpace(report) && SameSecret(configured, report))
         {
-            FileLog.Write($"[AdminTrialEndpoint] DENIED: {ServiceTokenEnvVar} and {MorningReportEndpoint.ServiceTokenEnvVar} hold the SAME value - the read-only report credential would gain trial-extension authority. Refusing to serve until they differ.");
-            return Results.Json(
-                new
-                {
-                    error = $"{ServiceTokenEnvVar} and {MorningReportEndpoint.ServiceTokenEnvVar} are set to the same value on this Gateway. "
-                          + "They must be different secrets: the report token is read-only and this one hands out paid product.",
-                },
-                statusCode: StatusCodes.Status503ServiceUnavailable);
+            FileLog.Write($"[AdminTrialEndpoint] DENIED: {ServiceTokenEnvVar} and {MorningReportEndpoint.ServiceTokenEnvVar} hold the SAME value - the read-only report credential would gain administrator authority. Refusing to serve until they differ.");
+            return Results.Json(Unavailable, statusCode: StatusCodes.Status503ServiceUnavailable);
         }
 
         if (!PresentedTokenMatches(ctx, configured))

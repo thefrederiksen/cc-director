@@ -806,6 +806,7 @@ public sealed class GatewayHost : IAsyncDisposable
     // when off, nothing here runs and a turn ends identically.
     private TurnLog.TurnLogRecorder? _turnLogRecorder;
     private TurnLog.TurnLogSwitchStore? _turnLogSwitches;
+    private Timer? _turnLogRetentionTimer;
     private Wingman.WingmanVoiceService? _voiceService;
     // Voice mode is a standing intent, not a one-time action: a tenant that is in voice mode wants EVERY one
     // of its sessions narrating, including the ones that do not exist yet. This timer is how that intent
@@ -2683,6 +2684,17 @@ public sealed class GatewayHost : IAsyncDisposable
             enterTenantScope: tenant => _tenantBoundary.EnterScope(tenant));
         FileLog.Write("[GatewayHost] StartAsync: turn log armed (records nothing unless an administrator has switched a machine on)");
 
+        // Retention on the captured records. Without it the copy on the Gateway is permanent - every screen
+        // and both sides of every conversation, for every account capture was switched on for, on a shared
+        // file system behind a management endpoint. Anything worth keeping has already been pulled daily,
+        // so a bounded window costs nothing and turns an unbounded exposure into a bounded one.
+        var turnLogRetention = new TurnLog.TurnLogRetention(Core.Storage.CcStorage.TurnLog());
+        _turnLogRetentionTimer = new Timer(_ =>
+        {
+            try { turnLogRetention.Sweep(); }
+            catch (Exception ex) { FileLog.Write($"[GatewayHost] turn-log retention sweep FAILED: {ex.Message}"); }
+        }, null, TimeSpan.FromMinutes(5), TimeSpan.FromHours(6));
+
         _turnEndWatcher = new TurnEndWatcher(
             onTurnEnd: signal =>
             {
@@ -3696,7 +3708,7 @@ public sealed class GatewayHost : IAsyncDisposable
         // route is never mapped against a null - a switch screen that answers 503 because the routes were
         // mapped in the wrong order would read as a broken feature rather than as an ordering mistake.
         _turnLogSwitches ??= new TurnLog.TurnLogSwitchStore(_gatewayDb);
-        AdminTurnLogEndpoint.Map(_app, _turnLogSwitches);
+        AdminTurnLogEndpoint.Map(_app, _turnLogSwitches, TenantRegistry, Registry);
         // The bridge between an administrator's world (emails) and the Gateway's (account ids, Directors).
         // Without it the turn-log switch above can only be addressed for the administrator's OWN fleet.
         AdminAccountLookupEndpoint.Map(_app, TenantRegistry, Registry);
@@ -4823,6 +4835,8 @@ public sealed class GatewayHost : IAsyncDisposable
         _turnLogRecorder = null;
         try { _turnLogSwitches?.Dispose(); } catch (Exception ex) { FileLog.Write($"[GatewayHost] turn log switch dispose error: {ex.Message}"); }
         _turnLogSwitches = null;
+        try { _turnLogRetentionTimer?.Dispose(); } catch (Exception ex) { FileLog.Write($"[GatewayHost] turn log retention dispose error: {ex.Message}"); }
+        _turnLogRetentionTimer = null;
         try { _turnEndWatcher?.Dispose(); } catch (Exception ex) { FileLog.Write($"[GatewayHost] watcher dispose error: {ex.Message}"); }
         // Issue #915: cancel any recovery wait in flight, so a Gateway shutdown does not leave a background
         // ladder holding a token and re-sending into a fleet this process no longer owns.

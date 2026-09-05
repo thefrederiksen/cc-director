@@ -440,6 +440,75 @@ public sealed class TurnLogRecorderTests
         Assert.Null(record.Glance.Computer);
     }
 
+    [Fact]
+    public void EnforceRecordCeiling_AnEnormousScrollback_IsTrimmedAndTheScreenIsUntouched()
+    {
+        // Terminal content is UNTRUSTED input - it is whatever a program somebody ran decided to print - so
+        // a record's size must not be settable by that program. The scrollback is the shock absorber; the
+        // live screen is what every judgement reads and is never trimmed.
+        var record = new TurnLogRecord
+        {
+            CapturedAtUtc = new DateTime(2026, 9, 5, 12, 0, 0, DateTimeKind.Utc),
+            Glance = new TurnLogGlance { SessionId = "sid-1", Account = "acct-a", Computer = "PC" },
+            Terminal = new TurnLogTerminal
+            {
+                HasGrid = true,
+                Rows = { "the screen line a judgement reads" },
+                RowCount = 1,
+                Scrollback = Enumerable.Range(0, 4000).Select(i => new string('x', 600)).ToList(),
+                ScrollbackLineCount = 4000,
+            },
+        };
+
+        var trimmed = TurnLogRecorder.EnforceRecordCeiling(record);
+
+        Assert.True(trimmed.Terminal.Scrollback.Count < 4000);
+        Assert.Equal(trimmed.Terminal.Scrollback.Count, trimmed.Terminal.ScrollbackLineCount);
+        Assert.Equal("the screen line a judgement reads", Assert.Single(trimmed.Terminal.Rows));
+        Assert.Contains(trimmed.Gaps, g => g.Part == "scrollback" && g.Reason.Contains("dropped to keep the record under"));
+    }
+
+    [Fact]
+    public void EnforceRecordCeiling_AnOrdinaryRecord_IsReturnedUntouchedAndUnmarked()
+    {
+        var record = new TurnLogRecord
+        {
+            CapturedAtUtc = new DateTime(2026, 9, 5, 12, 0, 0, DateTimeKind.Utc),
+            Glance = new TurnLogGlance { SessionId = "sid-1", Account = "acct-a", Computer = "PC" },
+            Terminal = new TurnLogTerminal { HasGrid = true, Rows = { "small" }, RowCount = 1 },
+        };
+
+        var result = TurnLogRecorder.EnforceRecordCeiling(record);
+
+        Assert.Empty(result.Gaps);
+        Assert.Same(record, result);
+    }
+
+    [Fact]
+    public void OnTurnEnd_MoreTurnsThanCapturesAllowedAtOnce_DropsRatherThanQueueing()
+    {
+        // Every turn end used to start an unbounded task, each holding a screen, thousands of scrollback
+        // lines and a conversation in memory. Dropping loses a turn and says so; queueing would hold them
+        // all and trade a memory problem for a latency one.
+        using var gate = new ManualResetEventSlim(false);
+        var env = new FakeEnvironment { BlockScreenReadOn = gate };
+        using var recorder = new TurnLogRecorder(env);
+
+        // A FIXED number, deliberately NOT derived from MaxConcurrentCaptures. Scaling the input to the
+        // constant under test makes the test vacuous: raise the bound and the input rises with it, so the
+        // bound still bites and the test still passes while proving nothing. Caught by mutation - the first
+        // version of this test went green with the bound raised to a hundred thousand.
+        const int turnsFiredAtOnce = 64;
+        for (var i = 0; i < turnsFiredAtOnce; i++)
+            recorder.OnTurnEnd(Signal());
+
+        // Let the blocked captures finish before the test tears the fake down.
+        var dropped = recorder.DroppedForConcurrency;
+        gate.Set();
+
+        Assert.True(dropped > 0, $"expected some captures to be dropped, but {dropped} were");
+    }
+
     private static HistoryMessageDto Message(string role, string text) => new()
     {
         Role = role,
@@ -457,6 +526,7 @@ public sealed class TurnLogRecorderTests
             = new(true, "transcript-1", Array.Empty<HistoryMessageDto>());
         public Exception? ScreenThrows { get; set; }
         public Exception? SupervisorEnabledThrows { get; set; }
+        public ManualResetEventSlim? BlockScreenReadOn { get; set; }
         public string? MachineNameFromRegistration { get; set; } = "SOREN-NORTH";
         public int MachineNameLookups { get; private set; }
 
@@ -471,6 +541,7 @@ public sealed class TurnLogRecorderTests
 
         public Task<ScreenGridResponse?> ReadScreenAsync(TenantId tenant, string directorId, string sessionId, CancellationToken ct)
         {
+            BlockScreenReadOn?.Wait(TimeSpan.FromSeconds(10));
             ScreenReads++;
             if (ScreenThrows is not null) throw ScreenThrows;
             return Task.FromResult(Grid);

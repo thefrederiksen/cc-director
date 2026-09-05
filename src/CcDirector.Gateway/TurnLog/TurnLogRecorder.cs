@@ -65,11 +65,45 @@ public sealed class TurnLogRecorder : IDisposable
     /// </summary>
     public static readonly TimeSpan CaptureTimeout = TimeSpan.FromSeconds(30);
 
+    /// <summary>
+    /// How many captures may be in flight at once, across the whole fleet.
+    ///
+    /// Every turn end used to start an unbounded task. On a busy fleet - or a wildcard switch covering many
+    /// accounts - that is an unbounded number of concurrent tunnel reads, each holding a screen, two
+    /// thousand scrollback lines and a conversation in memory before it compresses them. The log is not
+    /// allowed to be the reason the Gateway struggles, and "it observes, it does not interfere" has to hold
+    /// under load as well as at rest.
+    ///
+    /// Past this, a capture is DROPPED rather than queued. Queueing would trade a memory problem for a
+    /// latency problem and still hold the records; dropping loses that turn and says so. A corpus that is
+    /// missing a turn it names is honest; a Gateway that fell over is not.
+    /// </summary>
+    public const int MaxConcurrentCaptures = 8;
+
+    /// <summary>
+    /// The ceiling on ONE finished record, in bytes of serialized JSON, whatever it is made of.
+    ///
+    /// The conversation already has its own ceiling. This is the backstop for everything else - a terminal
+    /// that emitted an enormous line, a session snapshot that grew, a scrollback of very long rows. Terminal
+    /// content is UNTRUSTED input: it is whatever a program somebody ran decided to print, and a record's
+    /// size should not be settable by that program.
+    ///
+    /// When a record is over, the SCROLLBACK is trimmed first and the trim is recorded. The live screen is
+    /// never trimmed - it is the thing every judgement reads and the reason the record exists at all.
+    /// </summary>
+    public const int MaxRecordBytes = 1024 * 1024;
+
     private readonly ITurnLogEnvironment _env;
     private readonly Func<TenantId, IDisposable>? _enterTenantScope;
     private readonly Func<DateTime> _nowUtc;
     private readonly CancellationTokenSource _stopping = new();
+    private readonly SemaphoreSlim _inFlight = new(MaxConcurrentCaptures, MaxConcurrentCaptures);
+    private long _dropped;
     private bool _disposed;
+
+    /// <summary>How many captures have been dropped because too many were already in flight. Exposed so
+    /// the number is visible rather than inferred from a corpus that is quietly short.</summary>
+    public long DroppedForConcurrency => Interlocked.Read(ref _dropped);
 
     /// <param name="enterTenantScope">Enters the owning account's storage scope for the duration of a
     /// capture. Required on the hosted Gateway and inert on a self-hosted one, which has a single partition.
@@ -102,6 +136,15 @@ public sealed class TurnLogRecorder : IDisposable
         // switch can be asked, and neither costs a round trip.
         if (!_env.IsEnabled(signal.Tenant.Value, signal.DirectorId)) return;
 
+        // BACKPRESSURE BEFORE THE TASK, not inside it. Taking the slot here means a saturated Gateway does
+        // not even allocate the work, and the drop is counted where it can be seen.
+        if (!_inFlight.Wait(0))
+        {
+            var n = Interlocked.Increment(ref _dropped);
+            FileLog.Write($"[TurnLogRecorder] capture DROPPED (already {MaxConcurrentCaptures} in flight; {n} dropped so far) sid={TurnLogSwitchStore.Clean(signal.SessionId)}");
+            return;
+        }
+
         _ = Task.Run(async () =>
         {
             try
@@ -122,6 +165,10 @@ public sealed class TurnLogRecorder : IDisposable
             {
                 // Loud, and it goes no further. The turn is long over.
                 FileLog.Write($"[TurnLogRecorder] capture FAILED sid={TurnLogSwitchStore.Clean(signal.SessionId)}: {ex.Message}");
+            }
+            finally
+            {
+                try { _inFlight.Release(); } catch (ObjectDisposedException) { /* stopping */ }
             }
         });
     }
@@ -289,11 +336,58 @@ public sealed class TurnLogRecorder : IDisposable
             Gaps = gaps,
         };
 
+        record = EnforceRecordCeiling(record);
+
         var path = _env.Write(record);
         if (path is null)
             FileLog.Write($"[TurnLogRecorder] record NOT written sid={TurnLogSwitchStore.Clean(signal.SessionId)} - the writer refused it");
         return path;
     }
+
+    /// <summary>
+    /// Keep one record under <see cref="MaxRecordBytes"/>, trimming the SCROLLBACK and nothing else.
+    ///
+    /// Terminal content is untrusted input - it is whatever a program somebody ran decided to print - so a
+    /// record's size must not be settable by that program. The scrollback is the shock absorber because it
+    /// is the largest part and the least precious: the live screen is what every judgement reads and is
+    /// never touched, and the conversation has already been cut to whole turns by its own ceiling.
+    ///
+    /// A trim is RECORDED. A record that is quietly shorter than it claims teaches the corpus that a
+    /// session printed less than it did.
+    /// </summary>
+    internal static TurnLogRecord EnforceRecordCeiling(TurnLogRecord record)
+    {
+        var size = Measure(record);
+        if (size <= MaxRecordBytes) return record;
+
+        var scrollback = record.Terminal.Scrollback;
+        var kept = scrollback.Count;
+        // Halve the scrollback until it fits, keeping the NEWEST lines - the ones nearest the screen.
+        while (kept > 0 && size > MaxRecordBytes)
+        {
+            kept /= 2;
+            var trimmedTerminal = record.Terminal with
+            {
+                Scrollback = scrollback.Skip(scrollback.Count - kept).ToList(),
+                ScrollbackLineCount = kept,
+            };
+            record = record with { Terminal = trimmedTerminal };
+            size = Measure(record);
+        }
+
+        var dropped = scrollback.Count - kept;
+        var gaps = record.Gaps.ToList();
+        gaps.Add(new TurnLogGap
+        {
+            Part = "scrollback",
+            Reason = $"{dropped} of {scrollback.Count} scrollback line(s) were dropped to keep the record under "
+                   + $"{MaxRecordBytes / 1024} KB - the lines nearest the screen were kept, and the screen itself was not touched",
+        });
+        return record with { Gaps = gaps };
+    }
+
+    private static int Measure(TurnLogRecord record)
+        => System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(record).Length;
 
     private static TurnLogTerminal BuildTerminal(ScreenGridResponse? grid, BufferResponse? scrollback)
     {
