@@ -243,4 +243,17 @@ summary line" - its result file says 3,641 passed, 2 skipped; the summary-read r
 The four web workspaces: client-core 92 files, cockpit 284 tests, mobile 15, cc-assistant 106, all green;
 lint clean on the changed files.
 
-**The parked suite over the finished branch:** see the paragraph the Manager appends below when it lands.
+**The parked suite over the finished branch** (`.\scripts	est-local.ps1 -Parked` on `18f7b31b3`, 13:43 to
+14:20, the Gateway lock uncontended this time):
+
+| suite | total | passed | failed | note |
+|---|---:|---:|---:|---|
+| nine default projects | 4,946 | 4,946 | 0 | |
+| Core.Tests | 4,394 | 4,385 | 1 | the SAME test, one line further: the second pin phase two's R10 change broke (the voice-mode reply now carries the utterance id). Fixed after the run in `7420c63f8`; the class re-run by itself is 4 of 4 green |
+| Gateway.Tests | 2,349 | 2,343 | 2 | the pre-existing `ContextLessRouteCensusTests` red on main, unchanged; every test this branch added or changed passed |
+
+So over the finished branch nothing is red that this mission wrote. Two things stay red and are named:
+the route census, which predates the mission and needs a ruling, and nothing else.
+
+- **Still not covered:** the client's `useVoiceMode` forwarding argument has no focused test of its own
+  (the inspection's audit table); the Core pin above is the only guard on it, and it is a source pin.

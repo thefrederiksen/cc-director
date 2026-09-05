@@ -58,6 +58,10 @@ request context and no census verdict. Not phase two's, not phase three's, not f
 demands a written tenant-confinement verdict per route, which is a ruling, not a repair. **For the
 Architect:** the parked Gateway suite is red on main for this reason and will stay red when this lands.
 
+**Re-run over the finished branch** (`18f7b31b3`, 13:43 to 14:20): 11,689 tests; the only reds are the
+same census pair and one more stale R10 pin in the same Core test, fixed right after (`7420c63f8`, the
+class re-run green). Nothing this mission wrote is red. Full table in `phase3-library.md`, "Results".
+
 ## What phase three did NOT prove, said plainly
 
 - The mentor report does not yet CONSUME the library (R3); that is the internal repository's work. What is
