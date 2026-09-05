@@ -1,6 +1,9 @@
 using System.Text.Json.Serialization;
+using CcDirector.Core.Tenancy;
 using CcDirector.Core.Utilities;
 using CcDirector.Gateway.Data.Entities;
+using CcDirector.Gateway.Discovery;
+using CcDirector.Gateway.Tenancy;
 using CcDirector.Gateway.TurnLog;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
@@ -40,6 +43,47 @@ internal static class AdminTurnLogEndpoint
     /// <summary>The route. Exact-match public in <c>AuthMiddleware</c>; the endpoint carries its own gate.</summary>
     public const string Path = "/gateway/admin/turn-log";
 
+    /// <summary>
+    /// Why an ON decision cannot be recorded, or null when it can. Checks only what the registries can
+    /// answer for certain, and refuses only on a DEFINITE problem - an account nobody has, or a machine
+    /// that belongs to a different account. A machine the Gateway simply does not know right now is
+    /// refused too, because capture cannot reach a computer that is not connected and the far likelier
+    /// explanation for an unknown identifier is a typo; the account lookup exists to supply the real one.
+    /// </summary>
+    private static string? Refuse(
+        TenantRegistry tenants, DirectorRegistry directors, string? account, string? machine)
+    {
+        var any = TurnLogSwitchEntity.Any;
+        var namedAccount = !string.Equals(account, any, StringComparison.Ordinal);
+        var namedMachine = !string.Equals(machine, any, StringComparison.Ordinal);
+
+        TenantId? tenant = null;
+        if (namedAccount)
+        {
+            var known = tenants.ListAll()
+                .Any(t => string.Equals(t.TenantId, account, StringComparison.OrdinalIgnoreCase));
+            if (!known)
+                return $"no account on this Gateway has the identifier \"{account}\". Find it with GET /gateway/admin/accounts?email=...";
+            tenant = new TenantId(account!);
+        }
+
+        if (!namedMachine) return null;
+
+        var owners = tenants.ListAll()
+            .Select(t => new TenantId(t.TenantId))
+            .Where(t => directors.ListDirectors(t)
+                .Any(d => string.Equals(d.DirectorId, machine, StringComparison.OrdinalIgnoreCase)))
+            .ToList();
+
+        if (owners.Count == 0)
+            return $"no computer currently connected to this Gateway has the identifier \"{machine}\". Find it with GET /gateway/admin/accounts?email=...";
+
+        if (tenant is { } named && !owners.Any(o => o.Equals(named)))
+            return $"the computer \"{machine}\" does not belong to the account \"{account}\"";
+
+        return null;
+    }
+
     /// <summary>What the caller sends. Every wire name is spelled out: the host binds property names
     /// case-insensitively, which is NOT punctuation-insensitively, so <c>recorded_at_utc</c> does not bind
     /// to <c>RecordedAtUtc</c> by that rule - it binds to nothing and arrives null.</summary>
@@ -53,9 +97,15 @@ internal static class AdminTurnLogEndpoint
     internal const string OutcomeRecorded = "recorded";
     internal const string OutcomeUnknown = "unknown";
 
-    public static void Map(IEndpointRouteBuilder app, TurnLogSwitchStore switches)
+    public static void Map(
+        IEndpointRouteBuilder app,
+        TurnLogSwitchStore switches,
+        TenantRegistry tenants,
+        DirectorRegistry directors)
     {
         ArgumentNullException.ThrowIfNull(switches);
+        ArgumentNullException.ThrowIfNull(tenants);
+        ArgumentNullException.ThrowIfNull(directors);
 
         app.MapGet(Path, (HttpContext ctx) =>
         {
@@ -102,7 +152,7 @@ internal static class AdminTurnLogEndpoint
                     return Results.BadRequest(new { error = "the request body is not readable JSON" });
                 }
 
-                return Handle(ctx, body, switches);
+                return Handle(ctx, body, switches, tenants, directors);
             }
             catch (Exception ex)
             {
@@ -117,7 +167,12 @@ internal static class AdminTurnLogEndpoint
     }
 
     /// <summary>Internal so every refusal can be tested directly, without standing a host up per case.</summary>
-    internal static IResult Handle(HttpContext ctx, SetRequest? body, TurnLogSwitchStore switches)
+    internal static IResult Handle(
+        HttpContext ctx,
+        SetRequest? body,
+        TurnLogSwitchStore switches,
+        TenantRegistry tenants,
+        DirectorRegistry directors)
     {
         if (AdminTrialEndpoint.ServiceTokenDenial(ctx) is { } denial) return denial;
 
@@ -136,6 +191,22 @@ internal static class AdminTurnLogEndpoint
             return Results.BadRequest(new { error = "an actor is required: a capture decision must record who made it" });
         if (string.IsNullOrWhiteSpace(body.Reason))
             return Results.BadRequest(new { error = "a reason is required: for an account that is not yours, this is where the permission is recorded" });
+
+        // A SCOPE THAT NAMES NOTHING REAL IS REFUSED - but ONLY when switching capture ON.
+        //
+        // The endpoint used to persist any non-blank strings. A mistyped account or machine then sat in the
+        // table looking like a recorded decision while naming nothing, which is dangerous in exactly one
+        // direction: somebody who believed they had switched a machine OFF, under a wider ON, would have
+        // been captured anyway. Validating shuts that door.
+        //
+        // OFF IS NEVER BLOCKED, whatever it names. A withdrawal must always be accepted - refusing one
+        // because the machine is currently away, or because the identifier no longer resolves, would be the
+        // same failure this validation exists to prevent, arriving from the other side.
+        if (enabled)
+        {
+            if (Refuse(tenants, directors, body.Account, body.Machine) is { } refusal)
+                return Results.BadRequest(new { error = refusal });
+        }
 
         switches.Set(body.Account, body.Machine, enabled, body.Actor, body.Reason);
         return Results.Json(new { outcome = OutcomeRecorded, enabled });
