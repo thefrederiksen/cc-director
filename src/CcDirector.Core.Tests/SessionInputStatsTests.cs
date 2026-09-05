@@ -5,9 +5,10 @@ using Xunit;
 namespace CcDirector.Core.Tests;
 
 /// <summary>
-/// The DevThrottle Stats tally math: one submitted turn is one turn (never inflated by mechanics), raw
-/// keystrokes are character volume with no turn, buckets split by (modality, surface), and a snapshot
-/// round-trips through the wire DTO so a persisted tally restores exactly after a Director restart.
+/// The DevThrottle Stats tally math: one submitted turn is one turn (never inflated by mechanics),
+/// including a submission that carried no new characters, buckets split by (modality, surface), and a
+/// snapshot round-trips through the wire DTO so a persisted tally restores exactly after a Director
+/// restart.
 /// </summary>
 public sealed class SessionInputStatsTests
 {
@@ -35,16 +36,20 @@ public sealed class SessionInputStatsTests
     }
 
     [Fact]
-    public void RecordCharacters_AddsVolumeButNeverATurn()
+    public void ASubmissionWithNoNewCharacters_IsStillExactlyOneTurn()
     {
+        // A line recalled from the terminal's history is submitted without a single new printable
+        // keystroke. It is a turn, and it must be counted as one, because the submission ledger written
+        // in the same breath counts it: a tally that drops the zero-character turns disagrees with the
+        // ledger by exactly the turns it dropped, which is the class of drift this whole slice removes.
         var stats = new SessionInputStats();
 
-        stats.RecordCharacters(InputOrigin.DesktopTyped, characters: 5);
-        stats.RecordCharacters(InputOrigin.DesktopTyped, characters: 7);
+        stats.RecordTurn(InputOrigin.DesktopTyped, characters: 0);
+        stats.RecordTurn(InputOrigin.DesktopTyped, characters: 12);
 
         var v = new InputStatsDtoView(stats.Snapshot());
 
-        Assert.Equal(0, Turns(v, "typed", "desktop"));
+        Assert.Equal(2, Turns(v, "typed", "desktop"));
         Assert.Equal(12, Chars(v, "typed", "desktop"));
     }
 
@@ -65,15 +70,18 @@ public sealed class SessionInputStatsTests
     }
 
     [Fact]
-    public void RecordCharacters_IgnoresNonPositiveVolume()
+    public void RecordTurn_IgnoresNonPositiveVolume_ButStillCountsTheTurn()
     {
         var stats = new SessionInputStats();
 
-        stats.RecordCharacters(InputOrigin.DesktopTyped, characters: 0);
-        stats.RecordCharacters(InputOrigin.DesktopTyped, characters: -3);
+        stats.RecordTurn(InputOrigin.DesktopTyped, characters: 0);
+        stats.RecordTurn(InputOrigin.DesktopTyped, characters: -3);
 
-        Assert.True(stats.IsEmpty);
-        Assert.Empty(stats.Snapshot().Buckets);
+        var v = new InputStatsDtoView(stats.Snapshot());
+
+        Assert.False(stats.IsEmpty);
+        Assert.Equal(2, Turns(v, "typed", "desktop"));
+        Assert.Equal(0, Chars(v, "typed", "desktop"));
     }
 
     [Fact]
@@ -82,7 +90,7 @@ public sealed class SessionInputStatsTests
         var original = new SessionInputStats();
         original.RecordTurn(InputOrigin.Voice(InputSurface.Phone), 100);
         original.RecordTurn(InputOrigin.Typed(InputSurface.Cockpit), 20);
-        original.RecordCharacters(InputOrigin.Typed(InputSurface.Desktop), 33);
+        original.RecordTurn(InputOrigin.Typed(InputSurface.Desktop), 33);
 
         var persisted = original.Snapshot();
 
@@ -94,7 +102,7 @@ public sealed class SessionInputStatsTests
         Assert.Equal(100, Chars(v, "voice", "phone"));
         Assert.Equal(1, Turns(v, "typed", "cockpit"));
         Assert.Equal(20, Chars(v, "typed", "cockpit"));
-        Assert.Equal(0, Turns(v, "typed", "desktop"));
+        Assert.Equal(1, Turns(v, "typed", "desktop"));
         Assert.Equal(33, Chars(v, "typed", "desktop"));
     }
 

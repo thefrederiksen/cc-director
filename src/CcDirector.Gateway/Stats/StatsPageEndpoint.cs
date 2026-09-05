@@ -45,11 +45,19 @@ public static class StatsPageEndpoint
     /// <summary>
     /// Honesty caveats returned in the JSON: exactly which input paths are counted
     /// and which are not-captured, so a share the owner might publish is never quietly flattered.
+    ///
+    /// EVERY SENTENCE HERE NAMES ITS UNIT. The headline on this page is a ratio of TURNS, and the second
+    /// sentence used to say only that terminal typing on the desktop app "is counted" - which was true of
+    /// characters and false of turns, the only unit the reader sees. It read as a reassurance and it was
+    /// covering the largest defect in the number: 594 of the owner's 771 typed submissions in the week of
+    /// 2026-W35 were absent from the ring's denominator while that sentence said they were there. A
+    /// caveat that does not say WHICH TALLY it is talking about cannot be checked by the person reading
+    /// it, so it is worse than no caveat at all. Guarded by StatsPageDisclosureTests.
     /// </summary>
     private static readonly string[] NotCaptured =
     {
         "Your main phone voice (the Speak button / durable dictation) is counted as voice. If you pause a voice-mode reply and then send the already-typed transcript, that one is counted as typed.",
-        "Raw keystrokes typed directly into a browser's live terminal stream are not attributed to a surface, so they are not counted. The message composer, and terminal typing on the desktop app, are counted.",
+        "The message composer, and typing at the terminal in the desktop app, each count as one submitted turn when you press Enter, with the characters of the whole line. Raw keystrokes typed into a browser's live terminal stream are not attributed to a surface, so they are not counted at all.",
         "Surface (phone / cockpit) for remote input is read from the signed-in device. Remote input with no device identity (a shared-token or fleet call) is not counted as an operator surface.",
     };
 

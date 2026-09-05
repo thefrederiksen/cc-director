@@ -15,9 +15,14 @@ namespace CcDirector.Core.Sessions;
 /// - A submitted turn (a whole message that ends with Enter, or a dictation/voice-turn delivery) is one
 ///   turn via <see cref="RecordTurn"/>. One spoken utterance and one typed message each count as one turn,
 ///   so neither modality is inflated by its mechanics.
-/// - Raw keystrokes (a <see cref="Session.SendInput(byte[], InputOrigin?)"/> that is terminal typing, not a
-///   prompt submission) are counted as typed CHARACTER volume only via <see cref="RecordCharacters"/> -
-///   NEVER synthesized into turns.
+/// - A bare keystroke is the user COMPOSING and is not a turn and not counted. It is the write carrying
+///   the Enter that is the turn, and it is recorded exactly like any other submission, with the character
+///   volume of the whole line.
+/// - There is ONE writer: <see cref="Session"/>.StampSubmission, which stamps the submission event and
+///   counts the turn together. There is deliberately no method here for recording characters without a
+///   turn. One existed, terminal typing was the only caller of it, and the result was that 594 of the
+///   owner's 771 typed submissions in 2026-W35 reached the character total and never the turn total -
+///   28.3 points of a published spoken share (see the mission reconciliation of 2026-09-05).
 ///
 /// Thread-safe: several PTY/stream callers can record concurrently.
 /// </summary>
@@ -41,8 +46,12 @@ public sealed class SessionInputStats
 
     /// <summary>
     /// Record one submitted turn from <paramref name="origin"/>, plus its <paramref name="characters"/> of
-    /// text volume. Used by <see cref="Session.SendTextAsync(string, SendSource, InputOrigin?)"/> and by a
-    /// dictation/voice-turn delivery.
+    /// text volume. The ONE caller is <see cref="Session"/>.StampSubmission, which stamps the submission
+    /// event in the same breath - both the text path
+    /// (<see cref="Session.SendTextAsync(string, SendSource, InputOrigin?)"/>, a dictation or voice-turn
+    /// delivery) and the raw-byte path (<see cref="Session.SendInput(byte[], InputOrigin?)"/>, terminal
+    /// typing) reach it there. A submission with no new characters (a line recalled from history) is still
+    /// one turn: the count must match the submission ledger exactly.
     /// </summary>
     public void RecordTurn(InputOrigin origin, int characters)
     {
@@ -50,19 +59,6 @@ public sealed class SessionInputStats
         Interlocked.Increment(ref c.Turns);
         if (characters > 0)
             Interlocked.Add(ref c.Characters, characters);
-        Changed?.Invoke();
-    }
-
-    /// <summary>
-    /// Record <paramref name="characters"/> of raw typed keystrokes from <paramref name="origin"/> with NO
-    /// turn (mission rule: a bare keystroke is the user composing, not a submitted turn). Used by
-    /// <see cref="Session.SendInput(byte[], InputOrigin?)"/> for terminal typing.
-    /// </summary>
-    public void RecordCharacters(InputOrigin origin, int characters)
-    {
-        if (characters <= 0) return;
-        var c = _buckets.GetOrAdd((origin.Modality, origin.Surface), static _ => new Counters());
-        Interlocked.Add(ref c.Characters, characters);
         Changed?.Invoke();
     }
 
