@@ -855,6 +855,45 @@ public sealed class GatewayHost : IAsyncDisposable
         _sessionTurns.Append(directorId, batch, DateTime.UtcNow);
     }
 
+    /// <summary>
+    /// Record a rule firing for one account, as the evaluator's own write would.
+    ///
+    /// A test needs this because there is NO ROUTE that creates a firing - the record is written by the
+    /// evaluator, and the only firing route is the READ. Without a seeded firing, a cross-tenant probe of
+    /// <c>GET /gateway/rules/{id}/firings</c> compares one empty list against another and passes whether or
+    /// not the tenant filter is there at all: an absence standing in for a refusal. Seeding one gives the
+    /// owner's read a specific fingerprint to assert, which is what makes the other account's empty list
+    /// mean something.
+    ///
+    /// Enters the tenant's scope itself, so a test cannot write one account's firing into another's
+    /// partition by forgetting to - the same reason <see cref="SeedStoredConversationForTest"/> does.
+    ///
+    /// WHAT A PROBE BUILT ON THIS DOES NOT COVER, said here so nobody reads more into a green than it
+    /// carries (raised in review). It writes through the REAL store, so the entity mapping, the tenant
+    /// column, the save guard and the read projection are all the production ones - which is what makes it
+    /// evidence about the query filter. It says NOTHING about whether the evaluator enters the right
+    /// ambient tenant before recording a firing of its own; that is the evaluator's own integration
+    /// question and needs its own test.
+    /// </summary>
+    internal Rules.SessionRuleFiring SeedRuleFiringForTest(
+        TenantId tenant, Guid ruleId, string sessionId, string reason, DateTime nowUtc)
+    {
+        using var scope = _tenantBoundary?.EnterScope(tenant);
+        return _sessionRules.RecordFiring(
+            ruleId, sessionId,
+            screenText: "a screen the rule looked at",
+            understanding: "what the rule made of it",
+            // A dry-run rule may not claim to have typed anything, so the decision is the one that records
+            // a rule choosing NOT to act. The store refuses anything outside act/decline/abandoned/refused.
+            decision: "decline",
+            reason: reason,
+            primitiveRuns: Array.Empty<Rules.RulePrimitiveRun>(),
+            typedText: "",
+            outcome: "dry-run",
+            grounding: "seeded by a test",
+            nowUtc: nowUtc);
+    }
+
     /// <summary>Test-only: the session supervisor (issue #915), so a test can drive a real Working -&gt; idle
     /// transition into the REAL engine. Null until StartAsync builds it.</summary>
     internal Supervision.SessionSupervisor? SessionSupervisorForTest => _sessionSupervisor;
