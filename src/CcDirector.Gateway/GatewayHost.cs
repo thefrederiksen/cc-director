@@ -3888,7 +3888,12 @@ public sealed class GatewayHost : IAsyncDisposable
         // 503 for the life of the process. The handle is passed in instead and asked on each request, so the
         // routes start serving the moment there is something to serve, and still answer the named 503 with
         // the store's own reason while there is not.
-        Stats.StatsPageEndpoint.Map(_app, InputStatsHandle, _tenantBoundary, () => SessionConcurrency,
+        // Every count of turns the feed serves comes from the submission ledger through the one definition
+        // in Throttle.ThrottleDefinition (mission "Clean up Your Throttle", ruling R9); the reader below is
+        // the only thing that feeds it from the store. The statistics handle still supplies what counts no
+        // turn - concurrency, token spend, the per-model split - and is asked per request as before.
+        Stats.StatsPageEndpoint.Map(_app, InputStatsHandle, _tenantBoundary,
+            new Throttle.ThrottleLedgerReader(_gatewayDb), () => SessionConcurrency,
             _tenantSettingsResolver, _sessionHistory);
 
         // The prompt log (issue #1551): Directors push what they captured to POST /prompts, and anyone

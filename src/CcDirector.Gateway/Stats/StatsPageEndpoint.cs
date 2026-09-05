@@ -1,5 +1,7 @@
+using System.Globalization;
 using CcDirector.Core.Tenancy;
 using CcDirector.Core.Utilities;
+using CcDirector.Gateway.Throttle;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
@@ -7,44 +9,44 @@ using Microsoft.AspNetCore.Routing;
 namespace CcDirector.Gateway.Stats;
 
 /// <summary>
-/// The DevThrottle Stats feed: the aggregated totals behind the Cockpit and mobile "Your Throttle"
-/// pages - how much of the owner's development is spoken vs typed, from which surface, and what it cost.
-/// It reads the Gateway's own aggregated totals with no cloud round-trip.
+/// The DevThrottle Stats feed: the figures behind the Cockpit and mobile "Your Throttle" pages - how much of
+/// the owner's development is spoken vs typed, from which surface, into which repository and agent, and what
+/// the fleet drove into itself.
 ///
 /// Two routes, both behind the normal Gateway auth (the owner's signed-in browser reaches them):
-///   GET /stats       - RETIRED as a page (issue #587): the embedded standalone dashboard duplicated the
-///                      Cockpit's Your Throttle outside the Cockpit shell, which read as a broken white
-///                      page. It now redirects to the Cockpit /your-throttle route.
-///   GET /stats/data  - the aggregated totals as JSON, which the Cockpit and mobile pages fetch through
-///                      client-core.
+///   GET /stats       - RETIRED as a page (issue #587): redirects to the Cockpit /your-throttle route.
+///   GET /stats/data  - the figures as JSON, which the Cockpit and mobile pages fetch through client-core.
+///                      Optional <c>from</c> and <c>to</c> (ISO 8601, UTC) name the window; absent, the
+///                      window is the ledger's whole retention, and the answer says so either way.
+///
+/// EVERY COUNT OF TURNS ON THIS FEED COMES FROM THE SUBMISSION LEDGER, THROUGH THE ONE DEFINITION IN
+/// <see cref="ThrottleDefinition"/> (mission "Clean up Your Throttle", ruling R9). The feed used to serve
+/// the <c>stat_delta</c> tally the Directors push, which over the owner's measured week said he was 92 per
+/// cent spoken when the ledger written at the same choke point said 57: a turn typed at the desktop terminal
+/// was never counted, and the tally re-counted restated cumulatives. The ledger is append-only and idempotent,
+/// and the mentor report reconciles against the same rows, so both consumers agree by construction. What
+/// still comes from the statistics store is nothing that counts a turn: fleet concurrency, token spend and
+/// the per-model spend split. Character volume is gone from the feed (ruling R16): the ledger carries none
+/// and the tally's is inflated.
+///
+/// YOUR THROTTLE IS A HOSTED-GATEWAY FEATURE (owner's ruling R1). On a self-hosted Gateway the data route
+/// answers 200 with <c>available=false</c> and one plain sentence saying so (ruling R6): the page renders
+/// that sentence rather than vanishing (which reads as a broken build) or serving a number from a store the
+/// report does not read (the defect the mission exists to remove). The Gateway decides; the client renders.
 ///
 /// Only counts and ratios are ever served - never the text of anything typed or said (mission decision 5).
 /// The feed states plainly which input paths are counted and which are not-captured (no-fallback rule).
 ///
-/// SERVES PER-TENANT ON HOSTED. The hosted deny (issue #1848) has been RETIRED: the aggregator behind this
-/// feed is fully tenant-partitioned (MTR-08) - every map is keyed by (tenant, ...), and every read takes a
-/// <see cref="TenantId"/> - so there IS a correct per-tenant answer to serve. The data route resolves the
-/// CALLER'S tenant from its authenticated device key and serves that tenant's totals: its own turns, repos,
-/// agents, models and token spend, and no one else's. On the single-tenant self host the caller is always
-/// <see cref="TenantId.Local"/>, so the page is byte-identical to before.
-///
-/// A REQUEST WITH NO RESOLVABLE TENANT IS DENIED (403), NEVER SERVED THE LOCAL PARTITION. On hosted an
-/// authenticated device key that is bound to no account carries no tenant, and serving it Local would be a
-/// wrong-tenant read; it is refused instead. The gate is <c>ResolveReadTenant</c> returning null - the same
-/// tenant-boundary seam every other served hosted route uses (issue #2017/#2022) - read directly, never a
-/// fallback: the fix that makes this feed serve is the same one that makes it fail closed.
-///
-/// The store's file-share write-ahead-log hazard (#1861) is orthogonal and unchanged: the reads here are
-/// in-memory per-tenant aggregates, so serving one tenant its own totals adds no new persistence surface.
-///
-/// Self-host is COMPLETELY unchanged, and that is the control: there the sole tenant is Local and the page
-/// serves exactly as it always has.
+/// SERVES PER-TENANT ON HOSTED. The data route resolves the CALLER'S tenant from its authenticated device key
+/// and serves that tenant's figure: its own turns, repos and agents, and no one else's. A REQUEST WITH NO
+/// RESOLVABLE TENANT IS DENIED (403), NEVER SERVED THE LOCAL PARTITION - the gate is <c>ResolveReadTenant</c>
+/// returning null, the same tenant-boundary seam every other served hosted route uses (issue #2017/#2022).
 /// </summary>
 public static class StatsPageEndpoint
 {
     /// <summary>
-    /// Honesty caveats returned in the JSON: exactly which input paths are counted
-    /// and which are not-captured, so a share the owner might publish is never quietly flattered.
+    /// Honesty caveats returned in the JSON: exactly which input paths are counted and which are
+    /// not-captured, so a share the owner might publish is never quietly flattered.
     ///
     /// EVERY SENTENCE HERE NAMES ITS UNIT. The headline on this page is a ratio of TURNS, and the second
     /// sentence used to say only that terminal typing on the desktop app "is counted" - which was true of
@@ -57,14 +59,20 @@ public static class StatsPageEndpoint
     private static readonly string[] NotCaptured =
     {
         "Speaking counts as voice wherever you do it - the Speak button, the phone, and a voice-mode reply - whenever the words you send are the transcription and nothing else. Edit those words before sending, or send them alongside something you typed, and that turn is counted as typed.",
-        "The message composer, and typing at the terminal in the desktop app, each count as one submitted turn when you press Enter, with the characters of the whole line. Raw keystrokes typed into a browser's live terminal stream are not attributed to a surface, so they are not counted at all.",
+        "The message composer, and typing at the terminal in the desktop app, each count as one submitted turn when you press Enter. Raw keystrokes typed into a browser's live terminal stream are not attributed to a surface, so they are not counted at all.",
         "Surface (phone / cockpit) for remote input is read from the signed-in device. Remote input with no device identity (a shared-token or fleet call) is not counted as an operator surface.",
+        "A submission the product could not place on a surface is not counted in any number here; how many there were is shown beside the share. Turns one session sent into another are the fleet driving itself, and they are shown beside your own turns, never inside them.",
     };
+
+    /// <summary>The one sentence a self-hosted Gateway answers with (rulings R1 and R6). The clients render
+    /// it verbatim and work nothing out for themselves.</summary>
+    public const string SelfHostReason =
+        "Your Throttle works only on the hosted DevThrottle Gateway. This Gateway is self-hosted, so there is " +
+        "no figure to show here.";
 
     /// <summary>The 403 the data route answers when the caller's tenant cannot be resolved (issue #2017 seam).
     /// On the hosted Gateway an authenticated request whose device key has no bound tenant is refused, NEVER
-    /// served the Local partition (that would be a wrong-tenant read). Self-host always resolves to Local, so
-    /// this never fires there.</summary>
+    /// served the Local partition (that would be a wrong-tenant read).</summary>
     private static IResult TenantRequired()
         => Results.Json(new { error = "a tenant could not be resolved for this request" },
             statusCode: StatusCodes.Status403Forbidden);
@@ -86,9 +94,14 @@ public static class StatsPageEndpoint
     /// <see cref="DateTime.MinValue"/> deliberately - anything higher would silently drop a row whose
     /// start time is missing rather than showing it in the not-recorded bucket where it belongs.
     /// </summary>
-    private static object OriginBlock(History.SessionHistoryStore sessionHistory)
+    private static object OriginBlock(History.SessionHistoryStore sessionHistory, TenantId tenant,
+        Tenancy.HostedTenantBoundary tenantBoundary)
     {
         var now = DateTime.UtcNow;
+        // The history store reads through the AMBIENT tenant, so the route's resolved tenant is entered
+        // explicitly for the two reads - the same seam the ledger routes use - rather than relying on
+        // whatever scope the request happens to be in.
+        using var scope = tenantBoundary.EnterScope(tenant);
         var allTime = sessionHistory.OriginTotals(DateTime.MinValue, now);
         var week = sessionHistory.OriginTotals(now.AddDays(-7), now);
         return new
@@ -123,20 +136,65 @@ public static class StatsPageEndpoint
     }
 
     /// <summary>
-    /// Maps the two stats routes. Returns the group builder they were mapped through (kept for callers that
-    /// compose onto it). The hosted deny is gone: the data route serves the caller's own tenant's totals and
-    /// answers 403 when no tenant resolves.
+    /// The window a request names, or the default. Both <c>from</c> and <c>to</c> or neither; ISO 8601 read
+    /// as UTC; the end after the start; and never longer than the ledger keeps - a window the store cannot
+    /// honestly answer is refused with the reason, not served with silent zeroes at the front.
     /// </summary>
+    internal static (ThrottleWindowDto? Window, string? Error) ResolveWindow(string? from, string? to, DateTime nowUtc)
+    {
+        var retention = ThrottleDefinition.RetentionDays;
+        if (string.IsNullOrWhiteSpace(from) && string.IsNullOrWhiteSpace(to))
+        {
+            var end = nowUtc;
+            return (new ThrottleWindowDto
+            {
+                FromUtc = end.AddDays(-retention),
+                ToUtc = end,
+                IsDefault = true,
+                Label = $"Last {retention} days",
+            }, null);
+        }
+        if (string.IsNullOrWhiteSpace(from) || string.IsNullOrWhiteSpace(to))
+            return (null, "'from' and 'to' must be given together, both as ISO 8601 UTC instants");
+
+        if (!TryParseUtc(from!, out var fromUtc)) return (null, "'from' is not an ISO 8601 instant");
+        if (!TryParseUtc(to!, out var toUtc)) return (null, "'to' is not an ISO 8601 instant");
+        if (toUtc <= fromUtc) return (null, "'to' must be later than 'from'");
+        if (toUtc - fromUtc > TimeSpan.FromDays(retention))
+            return (null, $"the window is longer than the {retention} days the submission ledger keeps");
+
+        return (new ThrottleWindowDto
+        {
+            FromUtc = fromUtc,
+            ToUtc = toUtc,
+            IsDefault = false,
+            Label = $"{fromUtc:yyyy-MM-dd HH:mm} to {toUtc:yyyy-MM-dd HH:mm} UTC",
+        }, null);
+    }
+
+    private static bool TryParseUtc(string text, out DateTime utc)
+    {
+        var ok = DateTime.TryParse(text.Trim(), CultureInfo.InvariantCulture,
+            DateTimeStyles.AdjustToUniversal | DateTimeStyles.AssumeUniversal, out var parsed);
+        utc = ok ? DateTime.SpecifyKind(parsed, DateTimeKind.Utc) : default;
+        return ok;
+    }
+
     /// <summary>Convenience for callers that already hold a settled aggregator - the self-host probe hosts
     /// and the unit tests. Production passes the handle, because on hosted the answer can change.</summary>
     public static RouteGroupBuilder Map(IEndpointRouteBuilder outer, GatewayInputStatsAggregator aggregator,
         Tenancy.HostedTenantBoundary tenantBoundary,
+        ThrottleLedgerReader throttle,
         ISessionConcurrencyRecorder? concurrency = null,
         Settings.TenantSettingsResolver? tenantSettings = null,
         History.SessionHistoryStore? sessionHistory = null) =>
-        Map(outer, InputStatsHandle.Available(aggregator), tenantBoundary, () => concurrency, tenantSettings,
+        Map(outer, InputStatsHandle.Available(aggregator), tenantBoundary, throttle, () => concurrency, tenantSettings,
             sessionHistory);
 
+    /// <summary>
+    /// Maps the two stats routes. Returns the group builder they were mapped through (kept for callers that
+    /// compose onto it).
+    /// </summary>
     public static RouteGroupBuilder Map(IEndpointRouteBuilder outer, InputStatsHandle statistics,
         // The tenant boundary the data route resolves the CALLER's tenant through. REQUIRED AND NON-NULLABLE
         // (finding I1-01), and moved AHEAD of the optional tail so it cannot sit in a defaulted position: a
@@ -144,6 +202,10 @@ public static class StatsPageEndpoint
         // over the SingleTenantContext, which always resolves the single Local tenant; on hosted it resolves
         // the authenticated device key's tenant and the route answers 403 when there is none - never Local.
         Tenancy.HostedTenantBoundary tenantBoundary,
+        // The library (ruling R9): the one reader of the submission ledger every turn figure comes from.
+        // REQUIRED, for the same reason the boundary is - a feed mapped without it would have nothing honest
+        // to serve, and that must be a compile error rather than a route that serves the old tally.
+        ThrottleLedgerReader throttle,
         // A FUNCTION, not an instance, for the same reason the handle replaced the aggregator above: on
         // hosted the recorder arrives when the statistics store publishes its factory, which may be after
         // startup. Capturing the instance here would freeze that decision a third time.
@@ -158,88 +220,66 @@ public static class StatsPageEndpoint
         // much more interesting claim than "this Gateway is not keeping the record".
         History.SessionHistoryStore? sessionHistory = null)
     {
-        FileLog.Write($"[StatsPageEndpoint] mapping /stats (redirect to /your-throttle) and /stats/data; hosted={GatewayHostedMode.IsHosted} - the data route serves the caller's own tenant totals, 403 when unresolved (issue #1848 deny retired)");
-
+        ArgumentNullException.ThrowIfNull(tenantBoundary);
+        ArgumentNullException.ThrowIfNull(throttle);
+        FileLog.Write($"[StatsPageEndpoint] mapping /stats (redirect to /your-throttle) and /stats/data; hosted={GatewayHostedMode.IsHosted} - turn figures come from the submission ledger; a self-hosted Gateway answers available=false");
         // The empty prefix keeps the route paths written out in full, exactly as before.
         var app = outer.MapGroup("");
 
-        app.MapGet("/stats/data", (HttpContext ctx) =>
+        app.MapGet("/stats/data", (HttpContext ctx, string? from, string? to) =>
         {
-            // ASKED PER REQUEST. On hosted this can be null now and non-null in a moment, when a statistics
-            // store that opened past the startup deadline publishes its factory. The named 503 is what the
-            // route answers meanwhile - never a vanished route, which reads as a broken deploy, and never a
-            // 200 carrying somebody else's partition.
-            var aggregator = statistics.Aggregator;
-            if (aggregator is null)
-                return Results.Json(
-                    new { available = false, reason = statistics.UnavailableReason ?? "Statistics are unavailable." },
-                    statusCode: 503);
+            // Ruling R1: hosted only. Ruling R6: say so in one sentence, on a 200 the page renders - the
+            // absence of a figure is a fact about this Gateway, not an error in the request.
+            if (!GatewayHostedMode.IsHosted)
+                return Results.Json(new { available = false, reason = SelfHostReason });
 
-            // Serve the CALLER's own tenant's totals (the aggregator is tenant-partitioned, MTR-08). On the
-            // hosted Gateway the tenant comes from the authenticated device key; a request with no bound tenant
-            // is refused (403), NEVER served the Local partition. On self-host the sole tenant is Local.
+            // Serve the CALLER's own tenant. On the hosted Gateway the tenant comes from the authenticated
+            // device key; a request with no bound tenant is refused (403), NEVER served the Local partition.
             var resolved = Api.GatewayEndpoints.ResolveReadTenant(ctx, tenantBoundary);
             if (resolved is null) return TenantRequired();
             var tenant = resolved.Value;
-            var totals = aggregator.CurrentTotals(tenant);
+
+            var (window, windowError) = ResolveWindow(from, to, DateTime.UtcNow);
+            if (window is null)
+                return Results.BadRequest(new { error = windowError });
+
+            var figure = throttle.Compute(tenant, window.FromUtc, window.ToUtc);
+            figure.Window = window;
+
+            // The statistics store is asked per request, because on hosted it can publish after startup.
+            // Nothing that counts a turn depends on it any more, so its absence no longer takes the whole
+            // page down: the blocks it feeds come back null with the store's own reason beside them.
+            var aggregator = statistics.Aggregator;
+            var statisticsReason = aggregator is null ? statistics.UnavailableReason ?? "Statistics are unavailable." : null;
+
             return Results.Json(new
             {
+                available = true,
                 generatedAtUtc = DateTime.UtcNow,
                 // The display time zone the hourly charts render local clock hours in (IANA id), read for the
-                // (self-host) local tenant (issue #2017): the tenant override else the operator global default.
-                // Auto-defaults to this Gateway machine's own zone; the owner can override it in Settings.
+                // caller's tenant (issue #2017): the tenant override else the operator global default.
                 timeZone = tenantSettings is not null
                     ? tenantSettings.TimeZone(tenant)
                     : CcDirector.Core.Configuration.TimeZoneConfig.Get(),
-                buckets = totals.Buckets,
-                // DevThrottle Stats: the "working day" series - turns (by modality) + characters per UTC hour.
-                hourlyTurns = aggregator.HourlyTurns(tenant),
-                // Wingman usage: turns submitted while a session had voice mode on, and the count of distinct
-                // sessions ever in voice mode ("using the wingman" = voice mode on for that session).
-                wingman = aggregator.WingmanUsage(tenant),
-                // DevThrottle Stats: fleet concurrency (both series: live loaded/running, and actively
-                // working). Null until the aggregator is wired (old callers / tests).
-                concurrency = concurrency()?.Snapshot(DateTime.UtcNow, tenant),
-                // DevThrottle Stats (private Repos page): the per-repository all-time tally, ranked
-                // most-driven first, so the owner can see where development actually happens. Same
-                // owner-only auth as the rest of this feed; rendered on a SEPARATE page from Your Throttle
-                // so it never rides along when the throttle is shared.
-                repos = aggregator.RepoTotals(tenant),
-                // DevThrottle Stats (private Agents page): the per-agent all-time tally, ranked most-driven
-                // first, so the owner can see which agent CLI the work actually goes through. Unlike the
-                // other series this one starts at agentsSinceUtc - the breakdown was added after the totals
-                // had been accumulating - so the page states that window rather than implying the earlier
-                // turns ran under no agent.
-                agents = aggregator.AgentTotals(tenant),
-                agentsSinceUtc = aggregator.AgentsSinceUtc(tenant),
-                // DevThrottle Stats (issue #1637): the per-model all-time tally - which model actually did
-                // the work, ranked most-driven first. Like the agents series it starts at modelsSinceUtc
-                // rather than at the beginning of the totals, so the page states that window instead of
-                // implying the earlier turns ran under no model. A null model in this list is the honest
-                // "the agent had not recorded one yet" bucket, not a missing value to hide.
-                models = aggregator.ModelTotals(tenant),
-                modelsSinceUtc = aggregator.ModelsSinceUtc,
-                // DevThrottle Stats (issue #1637): TOKEN SPEND - what the work actually cost. Three views of
-                // one number: the all-time total, the per-hour series for "what did I spend today / this
-                // week / this month", and the per-model split for "which model cost what". Cumulative,
-                // additive tokens only (input / output / cache) - never context-window occupancy, which is a
-                // gauge and cannot be summed. Claude-only until other agents' drivers report cumulative spend.
-                tokenSpend = aggregator.TokenSpend(tenant),
-                tokenSpendByHour = aggregator.TokenSpendByHour(tenant),
-                tokenSpendByModel = aggregator.TokenSpendByModel(tenant),
-                // DevThrottle Stats (issue #1636): turns the fleet drove into ITSELF - one agent prompting
-                // another. Reported alongside the human tally but never inside it: "how do you drive" and
-                // "how much does the fleet drive itself" are different questions, and the ratio between
-                // them is the leverage the owner actually gets per turn they spend.
-                agentDrivenTurns = aggregator.AgentDrivenUsage(tenant).Turns,
-                agentDrivenCharacters = aggregator.AgentDrivenUsage(tenant).Characters,
+                // THE FIGURE. One definition, one substrate, the window stated, the excluded population
+                // disclosed. Every count of turns the page shows is read from this one block - the buckets,
+                // the hourly series, the per-repository and per-agent splits, and the turns the fleet drove
+                // into itself (issue #1636: reported beside the human tally, never inside it). It is served
+                // ONCE, so no page can end up with two copies of a number from two places.
+                throttle = figure,
+                // What the statistics store still feeds - none of it a count of turns. Null, with the
+                // reason beside it, while the store has not published on hosted.
+                statisticsUnavailableReason = statisticsReason,
+                concurrency = aggregator is null ? null : concurrency()?.Snapshot(DateTime.UtcNow, tenant),
+                models = aggregator?.ModelTotals(tenant),
+                modelsSinceUtc = aggregator?.ModelsSinceUtc,
+                tokenSpend = aggregator?.TokenSpend(tenant),
+                tokenSpendByHour = aggregator?.TokenSpendByHour(tenant),
+                tokenSpendByModel = aggregator?.TokenSpendByModel(tenant),
                 // devthrottle_internal issue #982: how the fleet's sessions CAME TO EXIST, over the
-                // durable work-history window. The agent-driven numbers above count turns - who does
-                // the talking once a session is running. This counts births - who decides a session
-                // should exist at all, which is the step that turns one person into a supervisor of
-                // twenty-two. Null when no history store is wired; see the parameter note above for
-                // why that is not zero.
-                sessionOrigins = sessionHistory is null ? null : OriginBlock(sessionHistory),
+                // durable work-history window. Null when no history store is wired; see the parameter note
+                // above for why that is not zero.
+                sessionOrigins = sessionHistory is null ? null : OriginBlock(sessionHistory, tenant, tenantBoundary),
                 notCaptured = NotCaptured,
             });
         });
@@ -247,14 +287,10 @@ public static class StatsPageEndpoint
         // The standalone embedded dashboard is RETIRED (issue #587): it duplicated the Cockpit's
         // Your Throttle page outside the Cockpit shell. Anyone still opening /stats lands on the
         // real page. A temporary (302) redirect on purpose - browsers do not cache it, so the
-        // destination can change without stranding old bookmarks.
-        // The page rides the same per-request availability gate as the feed. Redirecting a caller to a
-        // Cockpit page whose feed cannot serve is a dead end, so while there is no aggregator this answers
-        // the named 503 in plain text - and it starts redirecting the moment there is one.
-        app.MapGet("/stats", () => statistics.Aggregator is null
-            ? Results.Text(statistics.UnavailableReason ?? "Statistics are unavailable.", "text/plain", statusCode: 503)
-            : Results.Redirect("/your-throttle"));
-
+        // destination can change without stranding old bookmarks. The page reads the feed, and the feed
+        // answers on every Gateway - with the figure on hosted, with the one sentence on self-host - so
+        // the redirect no longer has an availability gate in front of it.
+        app.MapGet("/stats", () => Results.Redirect("/your-throttle"));
         return app;
     }
 }
