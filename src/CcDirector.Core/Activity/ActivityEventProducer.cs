@@ -42,7 +42,7 @@ public sealed class ActivityEventProducer : IDisposable
     private readonly SessionManager _sessionManager;
     private readonly ActivityEventOutbox _outbox;
     private readonly ConcurrentDictionary<Guid, Action<ActivityState, ActivityState>> _transitionHandlers = new();
-    private readonly ConcurrentDictionary<Guid, Action<SendSource?, InputOrigin?>> _submitHandlers = new();
+    private readonly ConcurrentDictionary<Guid, Action<SendSource?, InputOrigin?, SubmissionEvidence>> _submitHandlers = new();
     private readonly ConcurrentDictionary<Guid, string> _lastSubmissionCause = new();
     private bool _started;
     private bool _disposed;
@@ -79,7 +79,7 @@ public sealed class ActivityEventProducer : IDisposable
     internal void Wire(Session session)
     {
         Action<ActivityState, ActivityState> onTransition = (old, @new) => Guarded(() => RecordTransition(session, old, @new));
-        Action<SendSource?, InputOrigin?> onSubmit = (source, origin) => Guarded(() => RecordTurnSubmitted(session, source, origin));
+        Action<SendSource?, InputOrigin?, SubmissionEvidence> onSubmit = (source, origin, evidence) => Guarded(() => RecordTurnSubmitted(session, source, origin, evidence));
         if (_transitionHandlers.TryAdd(session.Id, onTransition))
             session.OnActivityStateChanged += onTransition;
         if (_submitHandlers.TryAdd(session.Id, onSubmit))
@@ -104,16 +104,25 @@ public sealed class ActivityEventProducer : IDisposable
 
     // ---- the producers -----------------------------------------------------------------------------
 
-    private void RecordTurnSubmitted(Session session, SendSource? source, InputOrigin? origin)
+    private void RecordTurnSubmitted(Session session, SendSource? source, InputOrigin? origin, SubmissionEvidence evidence)
     {
         var cause = SubmissionCause(source, origin);
         _lastSubmissionCause[session.Id] = cause;
+        // WHAT THE DOOR KNEW AT ENTRY, onto the ledger row (owner's ruling, 2026-09-05: source logging). Every
+        // field is the door's own statement or the choke point's own digest; nothing here is derived.
+        var provenance = evidence.Provenance;
         _outbox.Enqueue(Base(session) with
         {
             EventType = ActivityEventTypes.TurnSubmitted,
             Cause = cause,
             SendSource = source?.ToString(),
             InputOrigin = origin is InputOrigin o ? $"{o.ModalityToken}/{o.SurfaceToken}" : null,
+            Route = provenance.Route,
+            IdentityKind = provenance.IdentityKind,
+            TranscriptId = provenance.TranscriptId,
+            SpokenSpans = SubmissionProvenance.SpansToText(provenance.SpokenSpans),
+            ContentSha256 = evidence.ContentSha256,
+            ContentLength = evidence.ContentLength,
         });
     }
 

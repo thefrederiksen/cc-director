@@ -102,7 +102,7 @@ public static class WingmanActionExecutor
         // Tell the detector the burst these bytes provoke is OURS, not the agent producing
         // output, then write through the same path a human keystroke uses.
         session.SuppressActivityFor(InjectionSuppression);
-        session.SendInput(bytes);
+        session.SendInput(bytes, null, SubmissionProvenance.FrameworkText());
         session.MarkWingmanInjection(screenHash);
         session.RecordWingmanAction(new Session.WingmanActionRecord(DateTime.UtcNow, action.Action, detail, action.Reason));
         FileLog.Write($"[WingmanActionExecutor] session={session.Id} performed {action.Action}: {detail}");

@@ -1,7 +1,7 @@
 namespace CcDirector.Core.Sessions;
 
 /// <summary>
-/// Who is driving a <see cref="Session.SendTextAsync(string, SendSource)"/> call (issue #1181,
+/// Who is driving a <see cref="Session.SendTextAsync(string, SubmissionProvenance, SendSource, InputOrigin?)"/> call (issue #1181,
 /// Task 3b - the desktop-side enforced dictation lock). The default is <see cref="UserInput"/>,
 /// which is FAIL-CLOSED: a caller that does not name its source is treated as a human typing, so
 /// forgetting to tag a new call site over-blocks (safe) rather than leaking past the lock (unsafe).

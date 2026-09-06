@@ -24,6 +24,11 @@ namespace CcDirector.Terminal.Avalonia;
 /// </summary>
 public class TerminalControl : Control
 {
+    /// <summary>What every byte from this control says about itself (source logging, 2026-09-05): the desktop
+    /// terminal door, the person at the keyboard. Keystrokes, a paste and a wheel report all enter here.</summary>
+    private static readonly SubmissionProvenance DesktopTerminalDoor =
+        SubmissionProvenance.Typed(SubmissionRoutes.DesktopTerminal, SubmissionIdentityKinds.LocalUser);
+
     private const int DefaultCols = 120;
     private const int DefaultRows = 30;
     private const int ScrollbackLines = 1000;
@@ -861,6 +866,13 @@ public class TerminalControl : Control
     /// <summary>Harness: feed an incremental batch, exactly like a poll tick.</summary>
     internal void HarnessFeed(byte[] data) => ApplyIncomingBytes(data);
 
+    /// <summary>The desktop terminal door, for its test (source logging, 2026-09-05): text typed into the control
+    /// through the SAME handler the toolkit calls, so the test enters the real route and not a copy of it.</summary>
+    internal void HarnessTextInput(string text) => OnTextInput(new global::Avalonia.Input.TextInputEventArgs { Text = text });
+
+    /// <summary>A key pressed in the control, through the real key-down handler.</summary>
+    internal void HarnessKeyDown(global::Avalonia.Input.Key key) => OnKeyDown(new global::Avalonia.Input.KeyEventArgs { Key = key, RoutedEvent = KeyDownEvent });
+
     /// <summary>Harness: force the grid dimensions (when not driven by layout).</summary>
     internal void HarnessSetGrid(int cols, int rows)
     {
@@ -1293,7 +1305,7 @@ public class TerminalControl : Control
             if (data != null)
             {
                 // DevThrottle Stats: raw desktop terminal typing - typed character volume, local by construction.
-                _session.SendInput(data, InputOrigin.DesktopTyped);
+                _session.SendInput(data, InputOrigin.DesktopTyped, DesktopTerminalDoor);
                 e.Handled = true;
             }
         }
@@ -1311,7 +1323,7 @@ public class TerminalControl : Control
 
             var bytes = Encoding.UTF8.GetBytes(e.Text);
             // DevThrottle Stats: raw desktop terminal typing - typed character volume, local by construction.
-            _session.SendInput(bytes, InputOrigin.DesktopTyped);
+            _session.SendInput(bytes, InputOrigin.DesktopTyped, DesktopTerminalDoor);
             e.Handled = true;
         }
         catch (Exception ex)
@@ -1395,7 +1407,7 @@ public class TerminalControl : Control
             : MouseReportEncoder.EncodeX10(button, col, row);
 
         for (int i = 0; i < notches; i++)
-            _session.SendInput(report);
+            _session.SendInput(report, null, DesktopTerminalDoor);
 
         FileLog.Write($"[TerminalControl] ForwardWheelToApplication: button={button}, col={col}, row={row}, notches={notches}, sgr={_parser.MouseSgrCoordinates}");
     }
@@ -1719,7 +1731,7 @@ public class TerminalControl : Control
 
         try
         {
-            await PaceChunksAsync(text, bytes => session.SendInput(bytes)).ConfigureAwait(false);
+            await PaceChunksAsync(text, bytes => session.SendInput(bytes, null, DesktopTerminalDoor)).ConfigureAwait(false);
             FileLog.Write($"[TerminalControl] PasteToTerminalAsync: complete ({text.Length} chars sent)");
         }
         catch (Exception ex)

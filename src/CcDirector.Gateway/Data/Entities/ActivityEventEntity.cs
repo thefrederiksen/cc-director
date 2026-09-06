@@ -89,4 +89,12 @@ public sealed class ActivityEventEntity : TenantScopedEntity
     /// <summary>The bounded normalized changed-row diff. Tenant-scoped customer data; may contain secrets;
     /// bounded at the store; never process-logged.</summary>
     public string? BoundedScreenDiff { get; set; }
+
+    // What the prompt's door knew at entry (source logging, 2026-09-05) - turn-submitted rows only, null elsewhere.
+    public string? Route { get; set; }
+    public string? IdentityKind { get; set; }
+    public string? TranscriptId { get; set; }
+    public string? SpokenSpans { get; set; }
+    public string? ContentSha256 { get; set; }
+    public long? ContentLength { get; set; }
 }

@@ -56,7 +56,7 @@ public sealed class PromptAttributionIsGatewayAuthoritativeTests : IAsyncLifetim
     private readonly List<PromptRequest> _arrived = new();
 
     /// <summary>What the session's submission ledger recorded, in order.</summary>
-    private readonly List<(SendSource? Source, InputOrigin? Origin)> _ledger = new();
+    private readonly List<(SendSource? Source, InputOrigin? Origin, SubmissionEvidence Evidence)> _ledger = new();
 
     public PromptAttributionIsGatewayAuthoritativeTests()
     {
@@ -104,7 +104,7 @@ public sealed class PromptAttributionIsGatewayAuthoritativeTests : IAsyncLifetim
         _sm = new SessionManager(new AgentOptions());
         _session = _sm.CreateEmbeddedSession(Path.GetTempPath(), null, new ExecuteActionTestBackend());
         _sid = _session.Id.ToString();
-        _session.OnTurnSubmitted += (source, origin) => { lock (_ledger) _ledger.Add((source, origin)); };
+        _session.OnTurnSubmitted += (source, origin, evidence) => { lock (_ledger) _ledger.Add((source, origin, evidence)); };
 
         // The Director registers UNREACHABLE, so a delivered prompt can only have ridden the tunnel.
         _gateway.Registry.Upsert(new DirectorRegistrationRequest
@@ -210,6 +210,14 @@ public sealed class PromptAttributionIsGatewayAuthoritativeTests : IAsyncLifetim
         var entry = Assert.Single(_ledger);
         Assert.Equal(SendSource.UserInput, entry.Source);
         Assert.Equal(InputModality.Typed, entry.Origin!.Value.Modality);
+        // WHAT THE DOOR KNEW (source logging): the prompt route, the shared machine token behind the call, no
+        // transcript, and the digest and length of exactly the text it delivered - recorded, not inferred.
+        Assert.Equal(SubmissionRoutes.GatewayPrompt, entry.Evidence.Provenance.Route);
+        Assert.Equal(SubmissionIdentityKinds.MachineToken, entry.Evidence.Provenance.IdentityKind);
+        Assert.Null(entry.Evidence.Provenance.TranscriptId);
+        Assert.Empty(entry.Evidence.Provenance.SpokenSpans);
+        Assert.Equal(SubmissionEvidence.Sha256Of("hello"), entry.Evidence.ContentSha256);
+        Assert.Equal(5, entry.Evidence.ContentLength);
     }
 
     [Fact]
@@ -234,6 +242,10 @@ public sealed class PromptAttributionIsGatewayAuthoritativeTests : IAsyncLifetim
         var entry = Assert.Single(_ledger);
         Assert.Equal(SendSource.Agent, entry.Source);
         Assert.Null(entry.Origin);
+        // A session calling is a FLEET MESSAGE at the door, behind a session credential.
+        Assert.Equal(SubmissionRoutes.FleetMessage, entry.Evidence.Provenance.Route);
+        Assert.Equal(SubmissionIdentityKinds.Session, entry.Evidence.Provenance.IdentityKind);
+        Assert.Equal(SubmissionEvidence.Sha256Of("do the next task"), entry.Evidence.ContentSha256);
     }
 
     // ---- I2-03: a spoken claim is evidence tied to one transcription, spent once ---------------------
@@ -251,6 +263,10 @@ public sealed class PromptAttributionIsGatewayAuthoritativeTests : IAsyncLifetim
         var entry = Assert.Single(_ledger);
         Assert.Equal(SendSource.Delivery, entry.Source);
         Assert.Equal(InputModality.Voice, entry.Origin!.Value.Modality);
+        // The reserved claim IS the transcript: its id and its characters - the whole text - are on the row.
+        Assert.Equal(id, entry.Evidence.Provenance.TranscriptId);
+        Assert.Equal(new SpokenTurnRule.SpokenSpan(0, Transcript.Length), Assert.Single(entry.Evidence.Provenance.SpokenSpans));
+        Assert.Equal(SubmissionEvidence.Sha256Of(Transcript), entry.Evidence.ContentSha256);
     }
 
     [Fact]
@@ -271,6 +287,11 @@ public sealed class PromptAttributionIsGatewayAuthoritativeTests : IAsyncLifetim
         Assert.Equal(2, _ledger.Count);
         Assert.Equal(SendSource.Delivery, _ledger[0].Source);
         Assert.Equal(SendSource.UserInput, _ledger[1].Source);
+        // The replay carried no transcript at the door: no id, no spoken characters, the same words digested.
+        Assert.Equal(id, _ledger[0].Evidence.Provenance.TranscriptId);
+        Assert.Null(_ledger[1].Evidence.Provenance.TranscriptId);
+        Assert.Empty(_ledger[1].Evidence.Provenance.SpokenSpans);
+        Assert.Equal(_ledger[0].Evidence.ContentSha256, _ledger[1].Evidence.ContentSha256);
     }
 
     // ---- final inspection finding F-07: a claim is spent by a DELIVERED turn, not by an attempt -------
@@ -397,6 +418,18 @@ public sealed class PromptAttributionIsGatewayAuthoritativeTests : IAsyncLifetim
                 $"'{example.Name}': the phone route recorded {entry.Origin!.Value.Modality} ({entry.Source}), the shared rule says {example.Expected}");
             if (example.Expected == InputModality.Voice) { Assert.Equal(id, arrived.DeliveryUploadId); expectedVoice++; }
             else { Assert.Null(arrived.DeliveryUploadId); expectedTyped++; }
+            // WHAT THE DOOR KNEW (source logging): the dictation route, the transcript's id whether or not the turn
+            // is spoken, and the spoken characters - the earlier segment and this transcript - exactly where they
+            // stand in the delivered text, with the typed halves outside them.
+            var p = entry.Evidence.Provenance;
+            Assert.Equal(SubmissionRoutes.GatewayDictation, p.Route);
+            Assert.Equal(SubmissionIdentityKinds.MachineToken, p.IdentityKind);
+            Assert.Equal(id, p.TranscriptId);
+            var spoken = p.SpokenSpans.Select(s => arrived.Text.Substring(s.Start, s.Length)).ToArray();
+            var expectedSpoken = new[] { example.Prefix.Trim(), Transcript }.Where(x => x.Length > 0).ToArray();
+            Assert.Equal(expectedSpoken, spoken);
+            Assert.Equal(SubmissionEvidence.Sha256Of(arrived.Text), entry.Evidence.ContentSha256);
+            Assert.Equal(arrived.Text.Length, entry.Evidence.ContentLength);
         }
         Assert.Equal(expectedVoice, Bucket("voice", "unknown").Turns);
         Assert.Equal(expectedTyped, Bucket("typed", "unknown").Turns);

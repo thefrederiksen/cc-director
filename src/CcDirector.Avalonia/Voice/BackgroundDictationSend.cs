@@ -51,7 +51,7 @@ public static class BackgroundDictationSend
         string prefix,
         Session target,
         IDictationTranscriber transcriber,
-        Func<string, InputOrigin, Task> submit,
+        Func<string, InputOrigin, SubmissionProvenance, Task> submit,
         string before = "",
         string after = "",
         Action<string, string?>? onFailed = null,
@@ -101,8 +101,22 @@ public static class BackgroundDictationSend
             //    straight through the echo-verified terminal submit. From here on the composed text is
             //    carried into every failure report so the words can be put back in the compose box -
             //    the words survive as text now, so the WAV safety net is no longer needed either way.
+            // The composition, and WHICH OF ITS CHARACTERS WERE SPOKEN (source logging, 2026-09-05): the earlier
+            // dictated segments and this clip's transcript are each a spoken span, placed where InsertAt and Join
+            // put them, then the whole is projected to the wire (newlines to spaces, trimmed) with the spans
+            // moved along - the same projection the compose box's Send uses.
             var dictation = DictationText.Join(prefix, transcript);
-            var text = DictationText.InsertAt(before + after, before.Length, dictation).Trim();
+            var composed = DictationText.InsertAt(before + after, before.Length, dictation);
+            var dictationAt = composed.IndexOf(dictation, before.Length, StringComparison.Ordinal);
+            var record = new SpokenTurnRule.ComposerProvenance();
+            var spans = new List<SpokenTurnRule.SpokenSpan>();
+            if (!string.IsNullOrWhiteSpace(prefix))
+                spans.Add(new SpokenTurnRule.SpokenSpan(dictationAt, prefix.Length));
+            if (!string.IsNullOrWhiteSpace(transcript))
+                spans.Add(new SpokenTurnRule.SpokenSpan(dictationAt + dictation.LastIndexOf(transcript, StringComparison.Ordinal), transcript.Length));
+            record.Restore(composed, spans);
+            var (text, sentSpans) = record.ForSend();
+            var provenance = new SubmissionProvenance(SubmissionRoutes.DesktopDictation, SubmissionIdentityKinds.LocalUser, null, sentSpans);
             // WHAT THE TURN IS, decided by the one rule both surfaces use (ruling R20): the transcript alone
             // is spoken; typed text before or after it, or an earlier segment ahead of it, makes the whole
             // message one typed turn - exactly as the phone's durable dictation classifies the same mixture.
@@ -112,7 +126,7 @@ public static class BackgroundDictationSend
                 FileLog.Write($"[BackgroundDictationSend] session {target.Id}: typed text or an earlier segment composed around the dictation; delivered as ONE TYPED turn (ruling R20)");
             try
             {
-                await submit(text, origin);
+                await submit(text, origin, provenance);
                 FileLog.Write($"[BackgroundDictationSend] delivered to session {target.Id}, chars={text.Length}");
             }
             catch (Exception ex)

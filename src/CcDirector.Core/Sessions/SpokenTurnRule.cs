@@ -229,6 +229,44 @@ public static class SpokenTurnRule
         public void Reset() => _spans.Clear();
 
         /// <summary>
+        /// The text as the desktop SENDS it - line endings made spaces, whitespace trimmed at both ends - with
+        /// the spoken spans moved to where their characters stand in THAT text. The send and the record it
+        /// carries come from one projection, so a span can never describe the box while the text describes
+        /// the wire. A span whose characters were all trimmed away is dropped.
+        /// </summary>
+        public (string Text, IReadOnlyList<SpokenSpan> Spans) ForSend()
+        {
+            // 1. Line endings to single spaces, with a map from each box index to its index in the joined text.
+            var joined = new System.Text.StringBuilder(_text.Length);
+            var map = new int[_text.Length + 1];
+            for (var i = 0; i < _text.Length; i++)
+            {
+                map[i] = joined.Length;
+                var ch = _text[i];
+                if (ch == '\r')
+                {
+                    joined.Append(' ');
+                    if (i + 1 < _text.Length && _text[i + 1] == '\n') { i++; map[i] = joined.Length - 1; }
+                }
+                else if (ch == '\n') joined.Append(' ');
+                else joined.Append(ch);
+            }
+            map[_text.Length] = joined.Length;
+            // 2. Trim, remembering how much leading whitespace went.
+            var whole = joined.ToString();
+            var trimmed = whole.Trim();
+            var lead = whole.Length == 0 ? 0 : whole.IndexOf(trimmed, StringComparison.Ordinal);
+            var spans = new List<SpokenSpan>();
+            foreach (var span in _spans)
+            {
+                var start = Math.Max(0, map[span.Start] - lead);
+                var end = Math.Min(trimmed.Length, map[span.End] - lead);
+                if (end > start) spans.Add(new SpokenSpan(start, end - start));
+            }
+            return (trimmed, spans);
+        }
+
+        /// <summary>
         /// The modality of the text in the box: voice only when exactly one spoken span stands in it and every
         /// character outside that span is whitespace. Two spans are an earlier dictated segment ahead of the
         /// transcript; any other character is typed text before or after it; both are typed under the one rule.

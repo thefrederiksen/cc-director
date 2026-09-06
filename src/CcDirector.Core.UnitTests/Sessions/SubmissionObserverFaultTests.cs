@@ -68,7 +68,7 @@ public sealed class SubmissionObserverFaultTests
         var backend = new RecordingBackend();
         var s = NewSession(backend);
         var ledger = new List<(SendSource? Source, InputOrigin? Origin)>();
-        s.OnTurnSubmitted += (source, origin) => ledger.Add((source, origin));
+        s.OnTurnSubmitted += (source, origin, _) => ledger.Add((source, origin));
         var observerCalls = 0;
         s.InputStats.Changed += () => { observerCalls++; throw new InvalidOperationException("the host's persistence hook is broken"); };
 
@@ -92,7 +92,7 @@ public sealed class SubmissionObserverFaultTests
         var backend = new RecordingBackend();
         var s = NewSession(backend);
         var ledger = new List<(SendSource? Source, InputOrigin? Origin)>();
-        s.OnTurnSubmitted += (source, origin) => ledger.Add((source, origin));
+        s.OnTurnSubmitted += (source, origin, _) => ledger.Add((source, origin));
         s.InputStats.Changed += () => throw new InvalidOperationException("the host's persistence hook is broken");
 
         foreach (var ch in "typed at the terminal")
@@ -118,8 +118,8 @@ public sealed class SubmissionObserverFaultTests
         var s = NewSession(backend);
         var ledger = new List<(SendSource? Source, InputOrigin? Origin)>();
         var faults = 0;
-        s.OnTurnSubmitted += (_, _) => { faults++; throw new InvalidOperationException("an earlier observer is broken"); };
-        s.OnTurnSubmitted += (source, origin) => ledger.Add((source, origin));
+        s.OnTurnSubmitted += (_, _, _) => { faults++; throw new InvalidOperationException("an earlier observer is broken"); };
+        s.OnTurnSubmitted += (source, origin, _) => ledger.Add((source, origin));
 
         await s.SendTextAsync("hello", SendSource.UserInput, InputOrigin.DesktopTyped);
 
@@ -137,8 +137,8 @@ public sealed class SubmissionObserverFaultTests
         var backend = new RecordingBackend();
         var s = NewSession(backend);
         var ledger = new List<(SendSource? Source, InputOrigin? Origin)>();
-        s.OnTurnSubmitted += (_, _) => throw new InvalidOperationException("an earlier observer is broken");
-        s.OnTurnSubmitted += (source, origin) => ledger.Add((source, origin));
+        s.OnTurnSubmitted += (_, _, _) => throw new InvalidOperationException("an earlier observer is broken");
+        s.OnTurnSubmitted += (source, origin, _) => ledger.Add((source, origin));
 
         foreach (var ch in "typed at the terminal")
             s.SendInput(System.Text.Encoding.UTF8.GetBytes(ch.ToString()), InputOrigin.DesktopTyped);
@@ -156,10 +156,10 @@ public sealed class SubmissionObserverFaultTests
         var backend = new RecordingBackend();
         var s = NewSession(backend);
         var heard = new List<string>();
-        s.OnTurnSubmitted += (_, _) => { heard.Add("first"); throw new InvalidOperationException("first is broken"); };
-        s.OnTurnSubmitted += (_, _) => heard.Add("second");
-        s.OnTurnSubmitted += (_, _) => { heard.Add("third"); throw new InvalidOperationException("third is broken"); };
-        s.OnTurnSubmitted += (_, _) => heard.Add("fourth");
+        s.OnTurnSubmitted += (_, _, _) => { heard.Add("first"); throw new InvalidOperationException("first is broken"); };
+        s.OnTurnSubmitted += (_, _, _) => heard.Add("second");
+        s.OnTurnSubmitted += (_, _, _) => { heard.Add("third"); throw new InvalidOperationException("third is broken"); };
+        s.OnTurnSubmitted += (_, _, _) => heard.Add("fourth");
 
         await s.SendTextAsync("hello", SendSource.UserInput, InputOrigin.DesktopTyped);
 
@@ -172,7 +172,7 @@ public sealed class SubmissionObserverFaultTests
         var backend = new RecordingBackend();
         var s = NewSession(backend);
         var ledger = new List<(SendSource? Source, InputOrigin? Origin)>();
-        s.OnTurnSubmitted += (source, origin) => ledger.Add((source, origin));
+        s.OnTurnSubmitted += (source, origin, _) => ledger.Add((source, origin));
         s.InputStats.Changed += () => throw new InvalidOperationException("the host's persistence hook is broken");
 
         await s.SendTextAsync("a fleet message", SendSource.Agent, null);
@@ -222,7 +222,7 @@ public sealed class SubmissionObserverFaultTests
         var faults = 0;
         // FIRST in the invocation list: the fault. THEN the real producer subscribes, exactly as it does for
         // every session the manager announces.
-        s.OnTurnSubmitted += (_, _) => { faults++; throw new InvalidOperationException("an earlier observer is broken"); };
+        s.OnTurnSubmitted += (_, _, _) => { faults++; throw new InvalidOperationException("an earlier observer is broken"); };
         real.Producer.Wire(s);
 
         await s.SendTextAsync("hello", SendSource.UserInput, InputOrigin.DesktopVoice);
@@ -244,7 +244,7 @@ public sealed class SubmissionObserverFaultTests
         using var real = new RealProducer();
         var backend = new RecordingBackend();
         var s = NewSession(backend);
-        s.OnTurnSubmitted += (_, _) => throw new InvalidOperationException("an earlier observer is broken");
+        s.OnTurnSubmitted += (_, _, _) => throw new InvalidOperationException("an earlier observer is broken");
         real.Producer.Wire(s);
 
         foreach (var ch in "typed at the terminal")
@@ -265,7 +265,7 @@ public sealed class SubmissionObserverFaultTests
         using var real = new RealProducer();
         var backend = new RecordingBackend();
         var s = NewSession(backend);
-        s.OnTurnSubmitted += (_, _) => throw new InvalidOperationException("an earlier observer is broken");
+        s.OnTurnSubmitted += (_, _, _) => throw new InvalidOperationException("an earlier observer is broken");
         real.Producer.Wire(s);
         real.Producer.Unwire(s);
 

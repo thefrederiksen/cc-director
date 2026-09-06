@@ -69,6 +69,12 @@ public sealed class PromptRequest
     /// and never forwarded, so the Director's own prompt verb sees exactly what it always saw.
     /// </summary>
     public bool MenuGuard { get; set; }
+
+    /// <summary>What the Gateway's door knew at entry (source logging, 2026-09-05): the route, the credential
+    /// kind, the transcript claim and where its characters stand in <see cref="Text"/>. Built by the Gateway
+    /// route that accepted the request; the Director records it on the ledger row untouched. Null only from a
+    /// Gateway older than this field, which the Director records as the unknown it is.</summary>
+    public SubmissionProvenanceDto? Provenance { get; set; }
 }
 
 /// <summary>

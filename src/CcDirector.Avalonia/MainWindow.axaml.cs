@@ -3318,8 +3318,8 @@ public partial class MainWindow : Window
                 var spokenAlone = SpokenTurnRule.IsSpokenAlone(before, dlg.BackgroundPrefix, after);
                 _ = global::CcDirector.Avalonia.Voice.BackgroundDictationSend.RunAsync(
                     recorder, dlg.BackgroundPrefix, target, _dictationTranscriber!,
-                    submit: (text, origin) => global::Avalonia.Threading.Dispatcher.UIThread.InvokeAsync(
-                        () => SubmitDictatedTextAsync(target, text, origin)),
+                    submit: (text, origin, provenance) => global::Avalonia.Threading.Dispatcher.UIThread.InvokeAsync(
+                        () => SubmitDictatedTextAsync(target, text, origin, provenance)),
                     before: before,
                     after: after,
                     onFailed: (err, composedText) => global::Avalonia.Threading.Dispatcher.UIThread.Post(
@@ -3404,13 +3404,13 @@ public partial class MainWindow : Window
     /// the important parts of the normal send: a history snapshot (a rewind point) and the shared
     /// submit path. Runs on the UI thread.
     /// </summary>
-    private async Task SubmitDictatedTextAsync(Session target, string text, InputOrigin origin)
+    private async Task SubmitDictatedTextAsync(Session target, string text, InputOrigin origin, SubmissionProvenance provenance)
     {
+        // The text arrives already projected for the wire by BackgroundDictationSend, with its spoken spans
+        // over that exact text; it is not reshaped here, or the spans would describe a different string.
         if (string.IsNullOrWhiteSpace(text)) return;
-        text = text.ReplaceLineEndings(" ").Trim();
-        if (string.IsNullOrEmpty(text)) return;
 
-        FileLog.Write($"[MainWindow] SubmitDictatedTextAsync: {text.Length} chars to session {target.Id}, origin={origin.Modality}/{origin.Surface}");
+        FileLog.Write($"[MainWindow] SubmitDictatedTextAsync: {text.Length} chars to session {target.Id}, origin={origin.Modality}/{origin.Surface}, spans={provenance.SpokenSpans.Count}");
 
         // Rewind point, exactly like SendPrompt.
         target.InitializeHistory();
@@ -3419,7 +3419,7 @@ public partial class MainWindow : Window
         // DevThrottle Stats: the origin BackgroundDictationSend decided by the one rule (ruling R20) -
         // DesktopVoice for the transcript alone, DesktopTyped for typed text composed around it. This
         // used to stamp every background dictation DesktopVoice, mixture or not.
-        await target.SendTextAsync(text, origin: origin);
+        await target.SendTextAsync(text, provenance, origin: origin);
     }
 
     // ===== Fire-and-forget dictation delivery =====
@@ -5042,9 +5042,11 @@ public partial class MainWindow : Window
         var boxText = PromptInput.Text ?? "";
         _composerProvenance.TextChanged(boxText, PromptInput.CaretIndex);
         var origin = _composerProvenance.OriginFor(boxText);
-        // Strip newlines -- Claude Code prompt expects single-line input
-        var text = boxText.ReplaceLineEndings(" ").Trim();
+        // The text as sent (newlines to spaces - the agent's prompt is one line - and trimmed) AND the spoken
+        // ranges moved to where they stand in that text, from one projection (source logging, 2026-09-05).
+        var (text, spokenSpans) = _composerProvenance.ForSend();
         if (string.IsNullOrEmpty(text)) return;
+        var provenance = new SubmissionProvenance(SubmissionRoutes.DesktopComposer, SubmissionIdentityKinds.LocalUser, null, spokenSpans);
 
         // Intercept slash commands and show native dialogs
         if (TryHandleSlashCommand(text))
@@ -5085,7 +5087,7 @@ public partial class MainWindow : Window
         // Backends send Enter (CR/LF) explicitly after the text -- don't append a submit
         // newline here. Appending one used to trip LargeInputHandler's multi-line check
         // and route short single-line prompts through a temp file.
-        await _activeSession.Session.SendTextAsync(text, origin: origin);
+        await _activeSession.Session.SendTextAsync(text, provenance, origin: origin);
 
         if (isInteractiveCommand)
         {
@@ -5275,7 +5277,7 @@ public partial class MainWindow : Window
             return;
         }
 
-        await _activeSession.Session.SendTextAsync("/handover", SendSource.Framework);
+        await _activeSession.Session.SendTextAsync("/handover", SubmissionProvenance.FrameworkText(), SendSource.Framework);
         FileLog.Write($"[MainWindow] BtnHandover_Click: sent /handover to session {_activeSession.Session.Id}");
     }
 
@@ -6235,7 +6237,7 @@ public partial class MainWindow : Window
             + "and what you think we should work on next. Show the scope of remaining work "
             + "and suggest priorities.";
 
-        await session.SendTextAsync(prompt, SendSource.Framework);
+        await session.SendTextAsync(prompt, SubmissionProvenance.FrameworkText(), SendSource.Framework);
         FileLog.Write($"[MainWindow] InjectHandoverPromptAsync: sent handover prompt for session {session.Id}");
     }
 

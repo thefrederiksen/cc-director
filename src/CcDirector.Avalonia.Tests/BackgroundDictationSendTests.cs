@@ -101,7 +101,7 @@ public sealed class BackgroundDictationSendTests : IDisposable
         await BackgroundDictationSend.RunAsync(
             recorder, prefix: "", NewSession(),
             new FakeTranscriber { Throws = new InvalidOperationException("provider down") },
-            submit: (_, _) => throw new InvalidOperationException("must not submit without a transcript"),
+            submit: (_, _, _) => throw new InvalidOperationException("must not submit without a transcript"),
             onFailed: (err, composed) => { failedError = err; failedComposed = composed; },
             recordingsDirectory: _dir);
 
@@ -122,7 +122,7 @@ public sealed class BackgroundDictationSendTests : IDisposable
         await BackgroundDictationSend.RunAsync(
             recorder, prefix: "", NewSession(),
             new FakeTranscriber { Text = "the words" },
-            submit: (text, _) => { submitted = text; return Task.CompletedTask; },
+            submit: (text, _, _) => { submitted = text; return Task.CompletedTask; },
             onFailed: (_, _) => throw new InvalidOperationException("delivery must not report failure"),
             recordingsDirectory: _dir);
 
@@ -139,7 +139,7 @@ public sealed class BackgroundDictationSendTests : IDisposable
         await BackgroundDictationSend.RunAsync(
             recorder, prefix: "", NewSession(),
             new FakeTranscriber { Text = "the words" },
-            submit: (_, _) => throw new InvalidOperationException("composer refused"),
+            submit: (_, _, _) => throw new InvalidOperationException("composer refused"),
             onFailed: (_, composed) => failedComposed = composed,
             recordingsDirectory: _dir);
 
@@ -158,7 +158,7 @@ public sealed class BackgroundDictationSendTests : IDisposable
         await BackgroundDictationSend.RunAsync(
             recorder, prefix: "", NewSession(),
             new FakeTranscriber { Text = "the words" },
-            submit: (_, _) => throw new InvalidOperationException("composer refused"),
+            submit: (_, _, _) => throw new InvalidOperationException("composer refused"),
             onFailed: null,
             recordingsDirectory: _dir);
 
@@ -185,10 +185,11 @@ public sealed class BackgroundDictationSendTests : IDisposable
             var recorder = await NewRecordingRecorderAsync(new byte[] { 1, 2, 3, 4 });
             InputOrigin? stamped = null;
             string? submitted = null;
+            SubmissionProvenance? provenance = null;
             await BackgroundDictationSend.RunAsync(
                 recorder, prefix: example.Prefix, NewSession(),
                 new FakeTranscriber { Text = example.Transcript },
-                submit: (text, origin) => { submitted = text; stamped = origin; return Task.CompletedTask; },
+                submit: (text, origin, door) => { submitted = text; stamped = origin; provenance = door; return Task.CompletedTask; },
                 before: example.Before,
                 after: example.After,
                 onFailed: (_, _) => throw new InvalidOperationException("delivery must not report failure"),
@@ -198,6 +199,14 @@ public sealed class BackgroundDictationSendTests : IDisposable
             Assert.True(example.Expected == stamped.Value.Modality,
                 $"'{example.Name}': the desktop background Send stamped {stamped.Value.Modality}, the shared rule says {example.Expected}");
             Assert.Contains(example.Transcript, submitted!);
+            // WHAT THE DOOR KNEW (source logging, 2026-09-05): the dictation door, the person at the desk, and the
+            // spoken characters - the earlier segment and this transcript - where they stand in the text handed on.
+            Assert.NotNull(provenance);
+            Assert.Equal(SubmissionRoutes.DesktopDictation, provenance!.Route);
+            Assert.Equal(SubmissionIdentityKinds.LocalUser, provenance.IdentityKind);
+            var spoken = provenance.SpokenSpans.Select(s => submitted!.Substring(s.Start, s.Length)).ToArray();
+            var expectedSpoken = new[] { example.Prefix.Trim(), example.Transcript }.Where(x => x.Length > 0).ToArray();
+            Assert.Equal(expectedSpoken, spoken);
         }
     }
 }

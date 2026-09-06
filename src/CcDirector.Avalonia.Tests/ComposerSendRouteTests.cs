@@ -1,9 +1,12 @@
 using Avalonia.Controls;
 using Avalonia.Headless.XUnit;
 using Avalonia.Threading;
+using CcDirector.Core.Activity;
 using CcDirector.Core.Backends;
+using CcDirector.Core.Configuration;
 using CcDirector.Core.Memory;
 using CcDirector.Core.Sessions;
+using CcDirector.Gateway.Contracts;
 using Xunit;
 
 namespace CcDirector.Avalonia.Tests;
@@ -47,24 +50,43 @@ public sealed class ComposerSendRouteTests
     }
 
     /// <summary>The real window with one or more real sessions in its rail, the first selected.</summary>
-    private sealed class Rig
+    private sealed class Rig : IDisposable
     {
         public MainWindow Window { get; } = new();
         public List<Session> Sessions { get; } = new();
-        public List<(Session Session, InputOrigin? Origin, string? Text)> Submitted { get; } = new();
+        public List<(Session Session, InputOrigin? Origin, SubmissionEvidence Evidence)> Submitted { get; } = new();
         public TextBox Box => Window.PromptInput;
+        // The REAL activity producer over a real outbox, so what the door said is read off the ledger row it
+        // wrote (source logging, 2026-09-05), not off an event a test could subscribe to differently.
+        private readonly string _dir = Path.Combine(Path.GetTempPath(), "cc-director-tests", Guid.NewGuid().ToString("N"));
+        private readonly ActivityEventOutbox _outbox;
+        private readonly ActivityEventProducer _producer;
 
         public Rig(int sessions = 1)
         {
+            Directory.CreateDirectory(_dir);
+            _outbox = new ActivityEventOutbox(Path.Combine(_dir, "outbox.jsonl"));
+            _producer = new ActivityEventProducer(new SessionManager(new AgentOptions()) { DirectorId = "dir-test" }, _outbox);
             for (var i = 0; i < sessions; i++)
             {
                 var session = new Session(Guid.NewGuid(), @"C:\test\repo", @"C:\test\repo", null, new NullBackend(), null,
                     ActivityState.Idle, DateTimeOffset.UtcNow, null, null);
-                session.OnTurnSubmitted += (_, origin) => Submitted.Add((session, origin, null));
+                session.OnTurnSubmitted += (_, origin, evidence) => Submitted.Add((session, origin, evidence));
+                _producer.Wire(session);
                 Sessions.Add(session);
                 Window._sessions.Add(new SessionViewModel(session));
             }
             Select(0);
+        }
+
+        /// <summary>The one turn-submitted row the real producer wrote for the last send.</summary>
+        public ActivityEventRecord LedgerRow() =>
+            Assert.Single(_outbox.PendingBatch(100).Where(e => e.EventType == ActivityEventTypes.TurnSubmitted).TakeLast(1));
+
+        public void Dispose()
+        {
+            _producer.Dispose();
+            try { Directory.Delete(_dir, recursive: true); } catch { /* scratch dir; best effort */ }
         }
 
         public void Select(int index)
@@ -117,7 +139,7 @@ public sealed class ComposerSendRouteTests
     {
         // The owner's case: he speaks, the words land in the box, he presses Send. Under the "typed by
         // construction" comment this was DesktopTyped.
-        var rig = new Rig();
+        using var rig = new Rig();
         rig.Dictate(Words);
         Assert.Equal(Words, rig.Box.Text);
 
@@ -131,7 +153,7 @@ public sealed class ComposerSendRouteTests
     [AvaloniaFact]
     public async Task TypedWordsSentWithTheOrdinarySend_AreStampedDesktopTyped()
     {
-        var rig = new Rig();
+        using var rig = new Rig();
         rig.Type("please deploy the gateway");
 
         Assert.Equal(InputOrigin.DesktopTyped, await rig.SendAsync());
@@ -145,7 +167,7 @@ public sealed class ComposerSendRouteTests
         Assert.True(SpokenTurnRule.Examples.Count >= 6, "the shared table is too short to be a contract");
         foreach (var example in SpokenTurnRule.Examples)
         {
-            var rig = new Rig();
+            using var rig = new Rig();
             rig.Type(example.Before);
             if (example.Prefix.Length > 0) rig.Dictate(example.Prefix);
             rig.Dictate(example.Transcript);
@@ -162,7 +184,7 @@ public sealed class ComposerSendRouteTests
     [AvaloniaFact]
     public async Task EditingInsideTheDictation_MakesTheTurnTyped()
     {
-        var rig = new Rig();
+        using var rig = new Rig();
         rig.Dictate(Words);
         rig.Box.CaretIndex = Words.IndexOf("gateway", StringComparison.Ordinal) + "gateway".Length;
         rig.Type("s");
@@ -175,7 +197,7 @@ public sealed class ComposerSendRouteTests
     {
         // The fix-round inspector's case against a record that knew the transcript's text and not its place:
         // typed once, dictated once, the spoken copy deleted - the record still saw the words and said voice.
-        var rig = new Rig();
+        using var rig = new Rig();
         rig.Type(Words);
         rig.Dictate(Words);
         Assert.Equal(Words + " " + Words, rig.Box.Text);
@@ -185,12 +207,12 @@ public sealed class ComposerSendRouteTests
         Assert.Equal(InputOrigin.DesktopTyped, await rig.SendAsync());
 
         // The mirror: the TYPED copy deleted, the spoken one kept. Same surviving text, opposite answer.
-        rig = new Rig();
-        rig.Type(Words);
-        rig.Dictate(Words);
-        rig.Delete(0, Words.Length + 1);
-        Assert.Equal(Words, rig.Box.Text);
-        Assert.Equal(InputOrigin.DesktopVoice, await rig.SendAsync());
+        using var mirror = new Rig();
+        mirror.Type(Words);
+        mirror.Dictate(Words);
+        mirror.Delete(0, Words.Length + 1);
+        Assert.Equal(Words, mirror.Box.Text);
+        Assert.Equal(InputOrigin.DesktopVoice, await mirror.SendAsync());
     }
 
     [AvaloniaFact]
@@ -198,7 +220,7 @@ public sealed class ComposerSendRouteTests
     {
         // The unfinished case the previous round admitted: switched away from and back to, the text came
         // back and its provenance did not, so the dictation was sent as typing.
-        var rig = new Rig(sessions: 2);
+        using var rig = new Rig(sessions: 2);
         rig.Dictate(Words);
 
         rig.Select(1);
@@ -217,7 +239,7 @@ public sealed class ComposerSendRouteTests
     [AvaloniaFact]
     public async Task ADictationSwitchedAwayFrom_ThenTypedAround_IsTyped()
     {
-        var rig = new Rig(sessions: 2);
+        using var rig = new Rig(sessions: 2);
         rig.Dictate(Words);
         rig.Select(1);
         rig.Select(0);
@@ -229,7 +251,7 @@ public sealed class ComposerSendRouteTests
     [AvaloniaFact]
     public async Task TypedTextSwitchedAwayFromAndBack_IsStillTyped()
     {
-        var rig = new Rig(sessions: 2);
+        using var rig = new Rig(sessions: 2);
         rig.Type(Words);
         rig.Select(1);
         rig.Select(0);
@@ -243,7 +265,7 @@ public sealed class ComposerSendRouteTests
     {
         // What a Director restart hands the window: the pending text and its spoken spans on the Session,
         // as SessionManager.RestoreEmbeddedSession sets them from the persisted state.
-        var rig = new Rig(sessions: 2);
+        using var rig = new Rig(sessions: 2);
         rig.Sessions[1].PendingPromptText = Words;
         rig.Sessions[1].PendingPromptSpokenSpans = new[] { new SpokenTurnRule.SpokenSpan(0, Words.Length) };
 
@@ -251,5 +273,60 @@ public sealed class ComposerSendRouteTests
         Assert.Equal(Words, rig.Box.Text);
 
         Assert.Equal(InputOrigin.DesktopVoice, await rig.SendAsync());
+    }
+
+    // ---- source logging (owner's ruling, 2026-09-05): the compose box door writes what it knew -------------
+
+    [AvaloniaFact]
+    public async Task ADictationTypedAround_LeavesTheDoorsWholeRecordOnTheLedgerRow()
+    {
+        using var rig = new Rig();
+        rig.Type("please ");
+        rig.Dictate(Words);
+        rig.Type(" now");
+        var sent = "please " + Words + " now";
+
+        await rig.SendAsync();
+
+        var row = rig.LedgerRow();
+        Assert.Equal(SubmissionRoutes.DesktopComposer, row.Route);
+        Assert.Equal(SubmissionIdentityKinds.LocalUser, row.IdentityKind);
+        Assert.Null(row.TranscriptId);
+        // WHICH characters were spoken, over the text as sent.
+        Assert.Equal("7+" + Words.Length, row.SpokenSpans);
+        Assert.Equal(SubmissionEvidence.Sha256Of(sent), row.ContentSha256);
+        Assert.Equal(sent.Length, row.ContentLength);
+        Assert.Equal("typed/desktop", row.InputOrigin);
+    }
+
+    [AvaloniaFact]
+    public async Task ADictationBehindABlankLine_IsSentTrimmed_AndItsSpanFollowsTheTrim()
+    {
+        // The box holds a leading Windows line ending and trailing spaces the wire never gets; the span on the
+        // row must land on the spoken words in the text actually sent.
+        using var rig = new Rig();
+        rig.Type("\r\n");
+        rig.Dictate(Words);
+        rig.Type("   ");
+
+        await rig.SendAsync();
+
+        var row = rig.LedgerRow();
+        Assert.Equal("0+" + Words.Length, row.SpokenSpans);
+        Assert.Equal(SubmissionEvidence.Sha256Of(Words), row.ContentSha256);
+        Assert.Equal(Words.Length, row.ContentLength);
+        Assert.Equal("voice/desktop", row.InputOrigin);
+    }
+
+    [AvaloniaFact]
+    public async Task TypedWords_LeaveNoSpokenCharactersOnTheRow()
+    {
+        using var rig = new Rig();
+        rig.Type("git status");
+        await rig.SendAsync();
+        var row = rig.LedgerRow();
+        Assert.Equal(SubmissionRoutes.DesktopComposer, row.Route);
+        Assert.Null(row.SpokenSpans);
+        Assert.Equal(SubmissionEvidence.Sha256Of("git status"), row.ContentSha256);
     }
 }

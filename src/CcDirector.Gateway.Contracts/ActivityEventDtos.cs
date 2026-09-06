@@ -86,6 +86,29 @@ public sealed record ActivityEventRecord
     /// <summary>A BOUNDED normalized changed-row diff (never the raw byte stream, never unbounded). May
     /// contain terminal content, so it is tenant-scoped customer data - never logged to process logs.</summary>
     [JsonPropertyName("boundedScreenDiff")] public string? BoundedScreenDiff { get; init; }
+
+    // ---- what the prompt's door knew at entry (owner's ruling, 2026-09-05: source logging) - turn-submitted only
+
+    /// <summary>The door the prompt came through: desktop-terminal, desktop-composer, desktop-dictation,
+    /// gateway-prompt, gateway-dictation, gateway-terminal, fleet-message, queue-drain, framework.</summary>
+    [JsonPropertyName("route")] public string? Route { get; init; }
+
+    /// <summary>The credential kind behind the caller: local-user, device, machine-token, session, framework, unknown.</summary>
+    [JsonPropertyName("identityKind")] public string? IdentityKind { get; init; }
+
+    /// <summary>The transcript's identifier when the door had one, else null.</summary>
+    [JsonPropertyName("transcriptId")] public string? TranscriptId { get; init; }
+
+    /// <summary>The character ranges of the sent text that came from a transcript, as "start+length" pairs,
+    /// comma-separated, in text order; null when none did.</summary>
+    [JsonPropertyName("spokenSpans")] public string? SpokenSpans { get; init; }
+
+    /// <summary>SHA-256 of the UTF-8 text sent, lower-case hex; null on the raw keystroke path, where the text
+    /// is never in hand.</summary>
+    [JsonPropertyName("contentSha256")] public string? ContentSha256 { get; init; }
+
+    /// <summary>The length of the text sent, or the printable keystrokes since the last submit on the raw path.</summary>
+    [JsonPropertyName("contentLength")] public long? ContentLength { get; init; }
 }
 
 /// <summary>

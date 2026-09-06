@@ -13,6 +13,7 @@
          sit behind that project's assembly-wide DisableTestParallelization. Same tests, same access. -->
     <InternalsVisibleTo Include="CcDirector.Core.UnitTests" />
     <InternalsVisibleTo Include="CcDirector.Avalonia.Tests" />
+    <InternalsVisibleTo Include="CcDirector.Terminal.Avalonia.Tests" />
     <InternalsVisibleTo Include="CcDirector.Gateway.Tests" />
     <!-- DirectorInstanceLocator moved here from the Launcher (Remove-the-network-port, phase 5: the
          instance picker resolves liveness from registrations now, not from a port probe). Its tests

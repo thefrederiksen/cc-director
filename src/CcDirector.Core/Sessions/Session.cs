@@ -2314,8 +2314,9 @@ public sealed class Session : IDisposable
     /// Reset at each submission. See <see cref="StampSubmission"/>.</summary>
     private int _pendingOriginChars;
 
-    public void SendInput(byte[] data, InputOrigin? origin = null)
+    public void SendInput(byte[] data, InputOrigin? origin, SubmissionProvenance provenance)
     {
+        ArgumentNullException.ThrowIfNull(provenance);
         if (_disposed || Status is SessionStatus.Exited or SessionStatus.Failed) return;
         FileLog.Write($"[Session] SendInput: session={Id}, bytes={data.Length}, firstByte=0x{(data.Length > 0 ? data[0].ToString("X2") : "00")}");
         _backend.Write(data);
@@ -2346,7 +2347,7 @@ public sealed class Session : IDisposable
             // would silently record prompts the user never sent. Only the provenance and the size are
             // recorded here; the text is read back from the agent's own transcript by the conversation
             // ingest and joined to this event by timestamp.
-            StampSubmission(source: null, origin, _pendingOriginChars);
+            StampSubmission(source: null, origin, SubmissionEvidence.OfKeystrokes(provenance, _pendingOriginChars));
             _pendingOriginChars = 0;
             SetActivityState(ActivityState.Working);
         }
@@ -2530,7 +2531,7 @@ public sealed class Session : IDisposable
     /// <see cref="SendInput"/> carries no <see cref="SendSource"/>) and the input origin (null when no
     /// human surface tagged it). The activity producer subscribes to record turn-submitted evidence.
     /// </summary>
-    public event Action<SendSource?, InputOrigin?>? OnTurnSubmitted;
+    public event Action<SendSource?, InputOrigin?, SubmissionEvidence>? OnTurnSubmitted;
 
     /// <summary>
     /// Stamp the submission fact, COUNT THE TURN, note its origin, and notify observers. An observer's
@@ -2551,8 +2552,10 @@ public sealed class Session : IDisposable
     /// keystroke - and it still counts as one turn. The turn tally and the submission event agree on the
     /// COUNT unconditionally; only the character volume depends on the size.
     /// </summary>
-    private void StampSubmission(SendSource? source, InputOrigin? origin, int characters)
+    private void StampSubmission(SendSource? source, InputOrigin? origin, SubmissionEvidence evidence)
     {
+        ArgumentNullException.ThrowIfNull(evidence);
+        var characters = (int)Math.Min(evidence.ContentLength, int.MaxValue);
         LastSubmissionAtUtc = DateTime.UtcNow;
         // A human origin is a human turn, on its own (modality, surface) bucket.
         if (origin is InputOrigin o)
@@ -2577,7 +2580,7 @@ public sealed class Session : IDisposable
         if (observers is null) return;
         foreach (var observer in observers.GetInvocationList())
         {
-            try { ((Action<SendSource?, InputOrigin?>)observer)(source, origin); }
+            try { ((Action<SendSource?, InputOrigin?, SubmissionEvidence>)observer)(source, origin, evidence); }
             catch (Exception ex) { FileLog.Write($"[Session] OnTurnSubmitted handler failed: session={Id}, handler={observer.Method.DeclaringType?.Name}.{observer.Method.Name}, {ex.Message}"); }
         }
     }
@@ -2596,8 +2599,11 @@ public sealed class Session : IDisposable
         catch (Exception ex) { FileLog.Write($"[Session] OnPromptDeliveryChanged handler failed: session={Id}, {ex.Message}"); }
     }
 
-    public async Task SendTextAsync(string text, SendSource source = SendSource.UserInput, InputOrigin? origin = null)
+    /// <param name="provenance">What the door this text came through knew at entry (source logging): required,
+    /// so no door can send text without saying which door it is.</param>
+    public async Task SendTextAsync(string text, SubmissionProvenance provenance, SendSource source = SendSource.UserInput, InputOrigin? origin = null)
     {
+        ArgumentNullException.ThrowIfNull(provenance);
         if (_disposed || Status is SessionStatus.Exited or SessionStatus.Failed) return;
 
         FileLog.Write($"[Session] SendTextAsync: session={Id}, source={source}, driver={Driver.Kind}, text=\"{(text.Length > 60 ? text[..60] + "..." : text)}\", len={text.Length}");
@@ -2653,7 +2659,7 @@ public sealed class Session : IDisposable
             StampOwnerTurn();
         // A SendTextAsync is exactly one submitted turn. StampSubmission stamps the submission event AND
         // counts the turn, in that one place, so this path and the raw-byte path cannot drift apart.
-        StampSubmission(source, origin, text?.Length ?? 0);
+        StampSubmission(source, origin, SubmissionEvidence.OfText(provenance, text ?? ""));
         SetActivityState(ActivityState.Working);
     }
 
@@ -2677,13 +2683,13 @@ public sealed class Session : IDisposable
     }
 
     /// <summary>Send text followed by Enter (sync wrapper). See
-    /// <see cref="SendTextAsync(string, SendSource, InputOrigin?)"/> for what <paramref name="source"/> and
+    /// <see cref="SendTextAsync(string, SubmissionProvenance, SendSource, InputOrigin?)"/> for what <paramref name="source"/> and
     /// <paramref name="origin"/> mean.</summary>
-    public void SendText(string text, SendSource source = SendSource.UserInput, InputOrigin? origin = null)
+    public void SendText(string text, SubmissionProvenance provenance, SendSource source = SendSource.UserInput, InputOrigin? origin = null)
     {
         if (_disposed || Status is SessionStatus.Exited or SessionStatus.Failed) return;
         // Fire and forget for sync API
-        _ = SendTextAsync(text, source, origin);
+        _ = SendTextAsync(text, provenance, source, origin);
     }
 
     /// <summary>Send just an Enter keystroke to the backend.</summary>
@@ -2890,7 +2896,7 @@ public sealed class Session : IDisposable
                 // Framework, not Agent or UserInput: this text is the product's own follow-up to a
                 // compaction it ran. It must not clear the owner's hold and must not be counted as
                 // anybody's turn.
-                await SendTextAsync(continuePrompt!, SendSource.Framework);
+                await SendTextAsync(continuePrompt!, SubmissionProvenance.FrameworkText(), SendSource.Framework);
                 FileLog.Write($"[Session] CompactContextAsync: continuation submitted (session={Id})");
                 return new CompactContextOutcome(true, true, waited, true,
                     $"Compacted in {waited:F0} seconds, then sent the follow-up.");

@@ -9,7 +9,7 @@ namespace CcDirector.Core.Sessions;
 /// Per-session tally of how the operator drove this session: submitted TURNS and CHARACTER volume, split
 /// by (<see cref="InputModality"/>, <see cref="InputSurface"/>). This is the honest instrumentation heart
 /// of the DevThrottle Stats mission: the count is taken at the Session choke point
-/// (<see cref="Session.SendInput(byte[], InputOrigin?)"/> / <see cref="Session.SendTextAsync(string, SendSource, InputOrigin?)"/>),
+/// (<see cref="Session.SendInput(byte[], InputOrigin?, SubmissionProvenance)"/> / <see cref="Session.SendTextAsync(string, SubmissionProvenance, SendSource, InputOrigin?)"/>),
 /// the one place that sees desktop-local input too, so a published phone/voice share is never silently
 /// inflated by a surface the Gateway cannot see.
 ///
@@ -64,8 +64,8 @@ public sealed class SessionInputStats
     /// Record one submitted turn from <paramref name="origin"/>, plus its <paramref name="characters"/> of
     /// text volume. The ONE caller is <see cref="Session"/>.StampSubmission, which stamps the submission
     /// event in the same breath - both the text path
-    /// (<see cref="Session.SendTextAsync(string, SendSource, InputOrigin?)"/>, a dictation or voice-turn
-    /// delivery) and the raw-byte path (<see cref="Session.SendInput(byte[], InputOrigin?)"/>, terminal
+    /// (<see cref="Session.SendTextAsync(string, SubmissionProvenance, SendSource, InputOrigin?)"/>, a dictation or voice-turn
+    /// delivery) and the raw-byte path (<see cref="Session.SendInput(byte[], InputOrigin?, SubmissionProvenance)"/>, terminal
     /// typing) reach it there. A submission with no new characters (a line recalled from history) is still
     /// one turn: the count must match the submission ledger exactly.
     /// </summary>

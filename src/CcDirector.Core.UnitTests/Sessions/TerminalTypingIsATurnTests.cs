@@ -179,7 +179,7 @@ public sealed class TerminalTypingIsATurnTests
 
         var stampedWithOrigin = 0;
         var stampedByAgent = 0;
-        s.OnTurnSubmitted += (source, origin) =>
+        s.OnTurnSubmitted += (source, origin, _) =>
         {
             if (origin is not null) stampedWithOrigin++;
             else if (source == SendSource.Agent) stampedByAgent++;

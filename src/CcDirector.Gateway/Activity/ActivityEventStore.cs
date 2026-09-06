@@ -245,6 +245,12 @@ public sealed class ActivityEventStore
             BeforeScreenHash = Optional(record.BeforeScreenHash, "beforeScreenHash", MaxHashChars),
             AfterScreenHash = Optional(record.AfterScreenHash, "afterScreenHash", MaxHashChars),
             BoundedScreenDiff = Optional(record.BoundedScreenDiff, "boundedScreenDiff", MaxDiffChars),
+            Route = Optional(record.Route, "route", MaxTokenChars),
+            IdentityKind = Optional(record.IdentityKind, "identityKind", MaxTokenChars),
+            TranscriptId = Optional(record.TranscriptId, "transcriptId", MaxIdChars),
+            SpokenSpans = Optional(record.SpokenSpans, "spokenSpans", MaxDetailChars),
+            ContentSha256 = Optional(record.ContentSha256, "contentSha256", MaxHashChars),
+            ContentLength = record.ContentLength,
         };
     }
 
@@ -290,5 +296,11 @@ public sealed class ActivityEventStore
         BeforeScreenHash = e.BeforeScreenHash,
         AfterScreenHash = e.AfterScreenHash,
         BoundedScreenDiff = e.BoundedScreenDiff,
+        Route = e.Route,
+        IdentityKind = e.IdentityKind,
+        TranscriptId = e.TranscriptId,
+        SpokenSpans = e.SpokenSpans,
+        ContentSha256 = e.ContentSha256,
+        ContentLength = e.ContentLength,
     };
 }

@@ -2861,6 +2861,21 @@ internal static class GatewayEndpoints
                 FileLog.Write($"[GatewayEndpoints] POST prompt: sid={sid} spoken claim ignored - the caller is a session, and a session did not speak");
             }
 
+            // WHAT THIS DOOR KNEW AT ENTRY (owner's ruling, 2026-09-05: source logging), onto the wire for the
+            // Director to record on the ledger row: the route (a session calling is a fleet message; anyone else
+            // is the prompt route), the credential kind this gate verified, and - when a spoken claim was
+            // reserved above - the transcript's id and its characters, which are the whole text (the registry
+            // reserves a claim only for text that IS the transcript). Nothing here is inferred later.
+            req.Provenance = new SubmissionProvenanceDto
+            {
+                Route = callingSessionForAttribution is not null ? Core.Sessions.SubmissionRoutes.FleetMessage : Core.Sessions.SubmissionRoutes.GatewayPrompt,
+                IdentityKind = AuthMiddleware.IdentityKind(httpCtx),
+                TranscriptId = spokenReservation is not null ? claimedUploadId : null,
+                SpokenSpans = spokenReservation is not null && !string.IsNullOrEmpty(req.Text)
+                    ? new List<SpokenSpanDto> { new() { Start = 0, Length = req.Text.Length } }
+                    : new List<SpokenSpanDto>(),
+            };
+
             var accepted = false;
             try
             {

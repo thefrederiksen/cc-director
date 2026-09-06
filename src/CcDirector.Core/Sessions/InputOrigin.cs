@@ -30,8 +30,8 @@ public enum InputSurface
 /// <summary>
 /// The origin of one unit of user input: its <see cref="InputModality"/> (typed vs voice) and its
 /// <see cref="InputSurface"/> (desktop / cockpit / phone). Threaded from each entry point into the two
-/// Session choke points (<see cref="Session.SendInput(byte[], InputOrigin?)"/> and
-/// <see cref="Session.SendTextAsync(string, SendSource, InputOrigin?)"/>) so the Director can tally, at
+/// Session choke points (<see cref="Session.SendInput(byte[], InputOrigin?, SubmissionProvenance)"/> and
+/// <see cref="Session.SendTextAsync(string, SubmissionProvenance, SendSource, InputOrigin?)"/>) so the Director can tally, at
 /// the ONE place that sees desktop-local input too, how the operator is actually driving development.
 ///
 /// A <c>null</c> origin at a choke point means the caller is framework-internal (handover text, queue

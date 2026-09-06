@@ -97,6 +97,12 @@ namespace CcDirector.Gateway.Data.Migrations
                         .IsRequired()
                         .HasColumnType("TEXT");
 
+                    b.Property<long?>("ContentLength")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("ContentSha256")
+                        .HasColumnType("TEXT");
+
                     b.Property<string>("ContextId")
                         .HasColumnType("TEXT");
 
@@ -120,6 +126,9 @@ namespace CcDirector.Gateway.Data.Migrations
                         .IsRequired()
                         .HasColumnType("TEXT");
 
+                    b.Property<string>("IdentityKind")
+                        .HasColumnType("TEXT");
+
                     b.Property<string>("InputOrigin")
                         .HasColumnType("TEXT");
 
@@ -141,11 +150,20 @@ namespace CcDirector.Gateway.Data.Migrations
                     b.Property<DateTime>("RecordedUtc")
                         .HasColumnType("TEXT");
 
+                    b.Property<string>("Route")
+                        .HasColumnType("TEXT");
+
                     b.Property<string>("SendSource")
                         .HasColumnType("TEXT");
 
                     b.Property<string>("SessionId")
                         .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("SpokenSpans")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("TranscriptId")
                         .HasColumnType("TEXT");
 
                     b.HasKey("TenantId", "EventId");
