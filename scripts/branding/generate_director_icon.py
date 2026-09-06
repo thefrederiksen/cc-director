@@ -2,9 +2,16 @@
 Director application icon generator (Windows).
 
 Renders scripts/branding/director-icon.svg into the multi-size Windows icon
-used by the Director executable and its main window:
+used by the Director executable and its main window, and into the browser tab
+icon the Cockpit serves:
 
     src/CcDirector.Avalonia/app.ico
+    apps/cockpit/public/favicon.ico
+
+Both files get the same frames, so the Cockpit tab in a browser carries the same
+mark as the Director on the machine. They are written from this one drawing
+rather than copied from one another, so regenerating the mark updates both and
+neither can quietly fall behind the other.
 
 Run from the repository root:
 
@@ -33,6 +40,10 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.dirname(os.path.dirname(HERE))
 SVG_SOURCE = os.path.join(HERE, "director-icon.svg")
 ICO_TARGET = os.path.join(REPO_ROOT, "src", "CcDirector.Avalonia", "app.ico")
+# The Cockpit's browser tab icon. Vite copies apps/cockpit/public verbatim into
+# the build output, which the Gateway's BuildCockpitApp target stages into
+# wwwroot/c, so this file is served at /favicon.ico by the hosted Gateway.
+FAVICON_TARGET = os.path.join(REPO_ROOT, "apps", "cockpit", "public", "favicon.ico")
 
 # Windows asks for the icon at these widths across the shell: 16 in the title
 # bar and small taskbar, 20/24/40 at scaled display settings, 32 in the taskbar
@@ -55,13 +66,14 @@ def render(size):
 def main():
     frames = {size: render(size) for size in SIZES}
     largest = frames[max(SIZES)]
-    largest.save(
-        ICO_TARGET,
-        format="ICO",
-        sizes=[(s, s) for s in SIZES],
-        append_images=[frames[s] for s in SIZES if s != max(SIZES)],
-    )
-    print("WROTE", ICO_TARGET, SIZES)
+    for target in (ICO_TARGET, FAVICON_TARGET):
+        largest.save(
+            target,
+            format="ICO",
+            sizes=[(s, s) for s in SIZES],
+            append_images=[frames[s] for s in SIZES if s != max(SIZES)],
+        )
+        print("WROTE", target, SIZES)
     print("DONE")
 
 
