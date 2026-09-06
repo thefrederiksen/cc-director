@@ -1057,9 +1057,10 @@ def raise_(
 ) -> None:
     """Put your hand up to the session driving you, when you cannot go on without an answer.
 
-    A supervised session - a worker with a live supervisor, an architect, a scheduled run - is quiet
-    toward the owner by construction: it parks on every screen when it stops and it has no channel to
-    him. This is the channel it has instead.
+    A supervised session - a worker with a live supervisor, or a scheduled run - is quiet toward the
+    owner by construction: it parks on every screen when it stops and it has no channel to him. This
+    is the channel it has instead. An ARCHITECT is not one of these: it is the seat the owner talks
+    to, so it reaches him directly and has no need of this.
 
     Raise it only when you are STILL WORKING and have hit something you cannot decide inside your
     mandate: an ambiguous requirement, an irreversible step, a real design fork, an authorisation you

@@ -94,11 +94,19 @@ other's layer.
   inferred from the spawn graph.
 - Mandate: it ONLY (a) recommends to the Manager and (b) maintains the design / architecture docs
   and diagrams. It does NOT drive implementation and does NOT implement code.
-- Attention (AMENDED, Soren 2026-07-09): the Architect does NOT push needs-you or status to the
-  human - that is the Manager's job. The human addresses the MANAGER for status + next steps. Like
-  a Worker, the Architect never surfaces to the human. The ONLY difference from a Worker: the human
-  may PULL the Architect into a design conversation the HUMAN initiates; the Architect then
-  recommends to the Manager and edits the docs. It never PUSHES to the human.
+- Attention (SETTLED, Soren 2026-09-06 - this overturns the 2026-07-09 amendment recorded below):
+  the Architect is a HUMAN-FACING seat. It surfaces to the owner, it counts in the needs-you total,
+  and the wingman reads it aloud - exactly like a Manager or a Standalone. In his words:
+
+  > "parking the architect seat is wrong. the architect is always the session i talk to."
+  > "no the architect should push to me it is what i talk to."
+
+  SUPERSEDED (Soren, 2026-07-09), kept because deleting it would let the next person re-derive it:
+  the July amendment said the Architect does NOT push needs-you or status to the human - that is the
+  Manager's job - and that like a Worker it never surfaces, the only difference being that the human
+  may PULL it into a design conversation he initiates. That reached this document in July and reached
+  the code on 2026-09-03 (commit 2a8679007, #2667). The owner then watched it running and reversed
+  it: the seat he addresses cannot be the seat that is silenced.
 - Runs ALONGSIDE managers without blocking them. When it changes an architectural document it
   NOTIFIES the relevant Manager(s) so they incorporate the change - a coordination behavior toward
   the MANAGER, not a human-facing push.
@@ -183,11 +191,15 @@ Two things changed, and both are in the code and in
    middle of the roster. The owner's ruling - *"supervised still show up in Director and Cockpit,
    session should go to onhold when not working"* - makes it sink into the parked bucket instead. It
    is still fully visible and readable on every screen; it just stops being in his queue.
-2. **The rule covers three kinds, not one.** It was Worker-only. It is now every SUPERVISED session:
-   a **Worker** (live supervisor), an **Architect** (the 2026-07-09 amendment recorded below, which
-   had reached this document and never reached the code), and a **scheduled run** (`OriginKind ==
-   "schedule"` - a cron firing has no supervisor to report to, and the owner's standing rule is that
-   scheduled runs escalate by email rather than by sitting red on the roster).
+2. **The rule covers two kinds, not one.** It was Worker-only. It is now every SUPERVISED session: a
+   **Worker** (live supervisor) and a **scheduled run** (`OriginKind == "schedule"` - a cron firing
+   has no supervisor to report to, and the owner's standing rule is that scheduled runs escalate by
+   email rather than by sitting red on the roster).
+
+   It briefly covered THREE. The **Architect** was added on 2026-09-03, implementing the 2026-07-09
+   amendment which had reached this document and never reached the code; the owner removed it again
+   on 2026-09-06 - "the architect is always the session i talk to". See the supervision table below,
+   which is the machine-checked statement of this rule and outranks any prose on either side of it.
 
 Unchanged, and load-bearing: **nothing outranks working**, an **exited or crashed** session never
 hides behind a snoozed label, and the **orphan escape hatch** still fires - a session whose
@@ -219,33 +231,80 @@ viewer-relative manager-facing HIGHLIGHT described below - no client knows its o
 ask "am I this row's supervisor?". The manager-facing surface built for #2662 is the COMMAND LINE
 (`session workers`), which is where managers actually live on this fleet. A rail highlight remains open.
 
+## The supervision table - MACHINE-CHECKED, and the one to change
+
+This table is the written half of `SessionOrdering.IsSupervised`, and it is not decoration.
+`SupervisionRuleMatchesTheDesignDocumentTests` (in `CcDirector.Gateway.UnitTests`) parses the rows
+below and fails when the document and the code disagree about any seat, in either direction. It also
+fails when a row is missing: the table must name every combination of the four roles and the two
+origins, so it cannot pass by saying nothing.
+
+**Why the guard exists.** The 2026-07-09 amendment sat in this document, unimplemented, for two
+months. Every test of the day asserted the SHIPPED behaviour in the present tense, so a document
+saying the opposite could not make anything go red - the divergence was invisible to the machine and
+was only ever going to be found by a person reading both halves side by side. Writing the rule down
+twice, once here and once in code, with nothing tying the two together, is what cost the two months.
+
+The role is the one the Gateway RESOLVED across the whole fleet, not the one a Director pushed. So
+"Worker" already means "controlled AND the supervisor is still alive"; a worker whose supervisor
+died resolves to Standalone and reads off the Standalone row, which is the orphan escape hatch.
+
+<!-- SUPERVISION-TABLE-BEGIN -->
+
+| Resolved role | Origin kind | Verdict |
+|---|---|---|
+| Standalone | (none) | HUMAN-FACING |
+| Manager | (none) | HUMAN-FACING |
+| Architect | (none) | HUMAN-FACING |
+| Worker | (none) | SUPERVISED |
+| Standalone | schedule | SUPERVISED |
+| Manager | schedule | SUPERVISED |
+| Architect | schedule | SUPERVISED |
+| Worker | schedule | SUPERVISED |
+
+<!-- SUPERVISION-TABLE-END -->
+
+HUMAN-FACING means all three of: the row may go red and reach the owner, it counts in the needs-you
+total, and the wingman reads it aloud. SUPERVISED means it parks as "Snoozed" when it stops working -
+still fully visible and readable on every screen, just out of his queue - and the wingman leaves it
+alone. Nothing outranks WORKING: a supervised session mid-turn is still blue, and an exited or
+crashed one never hides behind a snoozed label.
+
+A scheduled run is supervised whatever seat it occupies, which is why the origin rows are exhaustive
+rather than "any". Nobody was at a keyboard when a cron fired, so there is nobody it can report to.
+
 ## Attention routing table
 
 | Role | Signal | Layer | Who sees it |
 |---|---|---|---|
 | Manager | Waiting / needs-perm | global color (fold) | human, red allowed |
 | Standalone | Waiting / needs-perm | global color (fold) | human, red allowed |
-| Architect | any | global color (fold) | does NOT push to the human (like a worker); human may PULL a design chat |
+| Architect | Waiting / needs-perm | global color (fold) | human, red allowed (Soren, 2026-09-06: "the architect is always the session i talk to") |
 | Worker (manager alive) | any | global color (fold) | everyone: quiet/receded, red suppressed |
 | Worker (manager alive) | Waiting OR NeedsManager | manager-facing highlight (my rail) | ONLY its manager, never human |
 | Worker (manager DEAD) | Waiting / blocked | global color (fold) | human, red allowed (escape hatch) |
 | Worker | Working, no flag | - | nobody |
+| Scheduled run (any role) | any | global color (fold) | nobody: parked, escalates by email |
 
-## Attention hard rules (settled 2026-07-09; the Mission doc is authoritative)
+## Attention hard rules (settled 2026-07-09, Rule 1 amended 2026-09-06; the Mission doc is authoritative)
 
 Mirror of the "Attention hard rules" section in the Architect's `mission-as-first-class-unit-of-work.md`
 (the authority). Summarized here for the roles implementation:
 
-- Rule 1 - The human-facing PUSH channel is MANAGER + STANDALONE ONLY (amended 2026-07-09). A WORKER
-  never surfaces to the human in NORMAL operation (structural - the fold suppresses worker red); the
-  ONE deliberate exception is Rule 3 (dead manager + blocked worker), because an exception always
-  involves the operator. An ARCHITECT also never PUSHES to the human (same as a worker); it differs
-  only in that the human may PULL it into a human-initiated design conversation. So Worker and
-  Architect are both silent-by-default to the human; only Manager and Standalone push
-  needs-you/status.
-- Rule 2 - MANAGER / Standalone are NEVER auto-muted. A manager raises "need you" by its OWN
-  judgment - to get a decision OR simply to report an update - on the SAME single "need you".
-  Involving the operator when the manager judges it worthwhile is the point of a manager, not clutter.
+- Rule 1 - The human-facing PUSH channel is MANAGER + STANDALONE + ARCHITECT (settled 2026-09-06). A
+  WORKER never surfaces to the human in NORMAL operation (structural - the fold suppresses worker
+  red); the ONE deliberate exception is Rule 3 (dead manager + blocked worker), because an exception
+  always involves the operator. An ARCHITECT pushes exactly like a Manager - it is the seat the owner
+  addresses, so it surfaces, it counts in the needs-you total, and the wingman reads it aloud.
+  *Amended 2026-07-09 to put the Architect on the worker's side of this line, built 2026-09-03, and
+  reversed by the owner on 2026-09-06 once he saw it running. Recorded rather than overwritten,
+  because the round trip is the interesting part.*
+- Rule 2 - MANAGER / Standalone / Architect are NEVER auto-muted BY THEIR SEAT. A manager raises
+  "need you" by its OWN judgment - to get a decision OR simply to report an update - on the SAME
+  single "need you". Involving the operator when the manager judges it worthwhile is the point of a
+  manager, not clutter. *The one thing that quietens any of the three is ORIGIN, not seat: a run a
+  SCHEDULE started is supervised whatever seat it occupies, because nobody was at a keyboard for it.
+  See the supervision table above, which states all eight cases.*
 - Rule 2a - NO NEW STATES. "Need you" covers both "I need a decision" and "here is an update".
   Auto-hold vs stay is QUEUE ROUTING over the existing Waiting + pending-ask signal, not a new
   user-facing state.

@@ -172,31 +172,55 @@ public static class SessionOrdering
     /// TRUE WHEN THIS SESSION ANSWERS TO SOMETHING OTHER THAN THE OWNER - the one question that decides
     /// whether a stopped session is allowed to ask for him.
     ///
-    /// Three kinds, and they are three because they are three different reasons, not one rule stretched:
+    /// TWO kinds, and they are two because they are two different reasons, not one rule stretched:
     ///  - <see cref="SessionRoles.Worker"/> - it has a LIVE supervisor. The role is resolved by
     ///    <c>FleetRoleResolver</c> from the WHOLE fleet, so "Worker" already means "controlled AND the
     ///    controller is still alive". A worker whose supervisor DIED resolves to Standalone/Manager and is
     ///    therefore NOT supervised here - which is the escape hatch, unchanged and deliberate: an orphan
     ///    reaches the owner, because a dead supervisor is an exception and an exception always involves him.
-    ///  - <see cref="SessionRoles.Architect"/> - a design seat. The owner ruled on 2026-07-09 that an
-    ///    Architect never PUSHES to him; he PULLS it into a conversation when he wants one. It is explicit
-    ///    and sticky, so it can never be inferred by accident.
     ///  - <c>OriginKind == "schedule"</c> - a cron firing or a work-list item. Nobody was at a keyboard and
     ///    no session made the call, so there is nobody it can be reporting to. The owner's standing rule for
     ///    scheduled runs is that they reap themselves and escalate BY EMAIL, never by sitting red on the
     ///    roster; this makes the roster agree with that rule instead of contradicting it.
     ///
-    /// A MANAGER AND A STANDALONE ARE NEVER SUPERVISED, and that is the whole point. They are the two
-    /// human-facing seats: a Manager surfaces on its own judgement (a decision OR an update), a Standalone
-    /// is the ordinary single session. Everything the fleet does reaches the owner through one of those two,
-    /// consolidated - which is what makes the rest of the roster safe to quieten.
+    /// THE ROLE IS NO LONGER ONE OF THE KINDS, and that is the owner's ruling of 2026-09-06, which overturns
+    /// the one of 2026-07-09 that this list used to carry:
+    ///
+    ///   "parking the architect seat is wrong. the architect is always the session i talk to."
+    ///   "no the architect should push to me it is what i talk to."
+    ///
+    /// The July ruling said an Architect never PUSHES and is only ever PULLED into a conversation. It reached
+    /// the design document, and then reached this predicate two months later - by which time the owner had
+    /// seen it running and disagreed with it. An Architect is the seat he addresses, so it surfaces, it
+    /// counts in the needs-you total, and the wingman reads it aloud, exactly like a Manager or a Standalone.
+    ///
+    /// SO NO ROLE IS SUPERVISED ANY MORE EXCEPT WORKER. Manager, Standalone and Architect are the three
+    /// human-facing seats: a Manager surfaces on its own judgement (a decision OR an update), a Standalone is
+    /// the ordinary single session, and an Architect is the design seat the owner talks to. Everything the
+    /// fleet does reaches him through one of those three, consolidated - which is what makes the rest of the
+    /// roster safe to quieten.
+    ///
+    /// THE SCHEDULE ARM IS ORTHOGONAL TO ALL OF THAT, AND IT STILL WINS. It asks a different question - not
+    /// "which seat is this?" but "was anyone at a keyboard when it started?" - so a session a cron fired is
+    /// supervised WHATEVER seat it occupies, an Architect included. That is not an oversight and it is not a
+    /// hole in the 2026-09-06 ruling: a scheduled run has nobody it can report to by construction, and the
+    /// owner's standing rule is that it escalates by email rather than by sitting red on his roster. Say "an
+    /// Architect that a person started is human-facing", never the unqualified "an Architect is never
+    /// supervised" - the supervision table in docs/new_architecture/session-roles-semantics.md spells out
+    /// all eight cases and is the statement this method is held to.
     ///
     /// Reads only facts already on the wire. It adds no state, arms no timer, and writes nothing: a session
     /// stops being supervised the instant its role resolves differently, with no latch to get stuck.
+    ///
+    /// THE WRITTEN RULE AND THIS METHOD ARE MACHINE-CHECKED AGAINST EACH OTHER by
+    /// <c>SupervisionRuleMatchesTheDesignDocumentTests</c>, which reads the attention table out of
+    /// <c>docs/new_architecture/session-roles-semantics.md</c> and fails when the document and this method
+    /// disagree about any seat. That guard exists because the July amendment sat in the document,
+    /// unimplemented and uncontradicted, for two months: every test of the day asserted the SHIPPED
+    /// behaviour in the present tense, so a document saying something else could not make anything go red.
     /// </summary>
     public static bool IsSupervised(SessionDto s) =>
         string.Equals(s.SessionRole, SessionRoles.Worker, StringComparison.OrdinalIgnoreCase)
-        || string.Equals(s.SessionRole, SessionRoles.Architect, StringComparison.OrdinalIgnoreCase)
         || string.Equals(s.OriginKind, "schedule", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
@@ -278,8 +302,9 @@ public static class SessionOrdering
         // meaningful at a prompt. Mid-turn it is invisible anyway: blue already won above.
         : (DictationPhaseLabel(s) != null || s.Transcribing || s.IsTranscribing) ? "orange"
         // SUPERVISED AND STOPPED -> SLATE (owner's ruling, 2026-09-02). A session that answers to another
-        // session, to a design seat, or to a schedule has nobody to ask when it stops, so it presents as
-        // snoozed: it keeps its row on every screen, and it sinks out of the owner's queue.
+        // session or to a schedule has nobody to ask when it stops, so it presents as snoozed: it keeps its
+        // row on every screen, and it sinks out of the owner's queue. An Architect is NOT one of these - see
+        // IsSupervised for the owner's 2026-09-06 ruling that put the design seat back in front of him.
         //
         // ABOVE the two yellows on purpose. A supervised session must never read "Wingman reading" or
         // "Preparing voice" at the owner, and this arm must be true on its own rather than by trusting the
@@ -357,8 +382,9 @@ public static class SessionOrdering
     {
         // THE WORKER RED-SUPPRESSION ARM THAT USED TO LIVE HERE HAS MOVED UP THE LADDER, NOT BEEN DELETED.
         // It read: a live-controlled Worker that is red recedes to "supporting" instead of surfacing. The
-        // owner widened that rule on 2026-09-02 - it now covers every SUPERVISED session (Worker, Architect,
-        // scheduled run), and it puts them in the parked bucket rather than merely recolouring them. A rule
+        // owner widened that rule on 2026-09-02 - it now covers every SUPERVISED session (a Worker with a
+        // live supervisor, or a scheduled run; an Architect was in that set until the owner took it out again
+        // on 2026-09-06), and it puts them in the parked bucket rather than merely recolouring them. A rule
         // that answers "may this session ask the owner?" belongs beside the other rules that suppress
         // attention, above the two yellows, not at the bottom underneath them; down here it could recolour a
         // row the wingman had already claimed for a narration nobody wanted.
@@ -440,13 +466,13 @@ public static class SessionOrdering
         if (s.Transcribing || s.IsTranscribing) return "Transcribing";
         // Mirrors EffectiveColor's supervised arm, in the same position, so the dot and the words are folded
         // from the same inputs in the same order. "Snoozed" is the owner's own word for this state and it is
-        // true of all three kinds; the row's role badge says WHOSE it is.
+        // true of both kinds; the row's role badge says WHOSE it is.
         //
         // This retires the label "Sub-agent", which was the answer here while the rule fired only for a
-        // Worker. It was wrong for the two kinds this arm adds - an Architect is not a sub-agent and neither
-        // is a cron firing - and it described the session's PARENTAGE where every other label on this ladder
-        // describes its STATE. The slate dot still carries "not yours to watch"; the word now carries what
-        // the session is actually doing, which is nothing.
+        // Worker. It described the session's PARENTAGE where every other label on this ladder describes its
+        // STATE, and it was plainly wrong for the scheduled run this arm also covers - a cron firing is not a
+        // sub-agent. The slate dot still carries "not yours to watch"; the word now carries what the session
+        // is actually doing, which is nothing.
         if (IsSupervisedAndStopped(s)) return "Snoozed";
         // No "Explaining" arm: BriefingState can never be "Explaining" - see the tombstone in
         // EffectiveColor above. The label and the dot are folded from the same inputs in the same
@@ -595,8 +621,35 @@ public static class SessionOrdering
         // exists to own, and asking it a second way here would be a second answer to it.
         if (string.Equals(s.SessionRole, SessionRoles.Worker, StringComparison.OrdinalIgnoreCase)) return null;
 
-        // An explicit Architect that happens to carry a controller is a design seat, not an abandoned
-        // worker. It is supervised by declaration, so losing a spawner strands nothing.
+        // AN EXPLICIT ARCHITECT THAT HAPPENS TO CARRY A CONTROLLER IS A DESIGN SEAT, NOT AN ABANDONED WORKER,
+        // and this arm is CHECKED AND KEPT under the owner's 2026-09-06 ruling rather than carried over
+        // unread. Its old justification died with that ruling: it used to say "it is supervised by
+        // declaration, so losing a spawner strands nothing", and an Architect is no longer supervised at all.
+        //
+        // The behaviour is right for a reason that never depended on supervision. This notice exists to
+        // explain a session that was QUIET WHILE SUPERVISED and has suddenly started asking - "nothing is
+        // supervising it now, so it came back to you". An Architect never went away: it surfaces at the owner
+        // the whole time, by declaration, whoever spawned it and whether or not that spawner is still alive.
+        // It takes its direction from him, not from the session that happened to open it, so there is nothing
+        // to be stranded from. Saying "the session that was driving this one has gone" about the seat the
+        // owner talks to would be false about the seat AND would tell him to hand off or stop the one thing
+        // he is holding the conversation with.
+        //
+        // THE ARGUMENT ABOVE RESTS ON A PRODUCT FACT, NOT ON GOOD INTENTIONS, because "the controller means
+        // nothing to an Architect" is exactly the kind of claim that is true when written and quietly false
+        // a year later. The fact: an Architect is the TOP of a mission. It settles the design, writes the
+        // brief and hires the Manager (.claude/skills/mission/SKILL.md), and the resolver enforces the
+        // direction - Manager-derivation EXCLUDES Architect, so the session on the other end of that
+        // controller id is a session that OPENED this one, never a seat this one answers to. That is what
+        // makes losing it provenance rather than supervision.
+        //
+        // If that ever stops being true - if an Architect comes to take direction from the session that
+        // spawned it - this arm is wrong and the answer is a notice written for the seat, not this generic
+        // one. The generic sentence would still be unusable: "it came back to you" is false about a session
+        // that was never away.
+        //
+        // The role is EXPLICIT and sticky, so this arm cannot be reached by accident: a session is only ever
+        // an Architect because somebody said so.
         if (string.Equals(s.SessionRole, SessionRoles.Architect, StringComparison.OrdinalIgnoreCase)) return null;
 
         // Working: getting on with it. Nothing to decide until it stops.

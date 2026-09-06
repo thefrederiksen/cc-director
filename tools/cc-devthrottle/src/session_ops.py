@@ -417,10 +417,11 @@ def hold_session(target: Optional[str], release: bool = False, minutes: Optional
 def raise_hand(reason: Optional[str], target: Optional[str] = None, clear: bool = False) -> Dict[str, Any]:
     """Put your hand up to the session that is driving you, or take it back down.
 
-    A supervised session (a worker with a live supervisor, an architect, a scheduled run) is quiet
-    toward the owner BY CONSTRUCTION - it is parked on every screen the moment it stops working, and
-    it has no channel to him. This is the channel it has instead: it tells the session that started
-    it, in its own words, what decision it is blocked on.
+    A supervised session (a worker with a live supervisor, or a scheduled run) is quiet toward the
+    owner BY CONSTRUCTION - it is parked on every screen the moment it stops working, and it has no
+    channel to him. This is the channel it has instead: it tells the session that started it, in its
+    own words, what decision it is blocked on. An ARCHITECT is NOT supervised (the owner's ruling,
+    2026-09-06: "the architect is always the session i talk to"), so it reaches him directly.
 
     Your hand LOWERS ITSELF when you stop working. That is not a shortcut - stopping already tells
     your supervisor to look at you, so a flag that outlived the turn would just be noise nobody

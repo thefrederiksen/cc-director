@@ -29,10 +29,20 @@ public static class VoiceModeAllSweep
     /// Sessions that are already on are left alone, so a steady fleet produces an empty sweep and no traffic.</param>
     /// <remarks>
     /// A SUPERVISED SESSION IS NEVER SWITCHED ON (owner's ruling, 2026-09-02). Voice mode reads a finished
-    /// turn aloud to the owner, and a session that answers to another session, to a design seat, or to a
-    /// schedule is not his to be read. Before this, "voice mode for all" meant literally all: every worker's
-    /// turn was narrated at him even though the roster had already receded the row - the suppression was in
-    /// the colour and nowhere else.
+    /// turn aloud to the owner, and a session that answers to another session or to a schedule is not his to
+    /// be read. Before this, "voice mode for all" meant literally all: every worker's turn was narrated at
+    /// him even though the roster had already receded the row - the suppression was in the colour and
+    /// nowhere else.
+    ///
+    /// AN ARCHITECT A PERSON STARTED IS READ ALOUD (owner's ruling, 2026-09-06: "the architect is always the
+    /// session i talk to"). The role was in the supervised set for three days and therefore silent; it is not
+    /// any more, and this method needs no arm of its own to say so - it asks
+    /// <see cref="SessionOrdering.IsSupervised"/>, which is where that ruling lives. An Architect that was
+    /// switched OFF while the earlier rule stood is switched back ON by the next sweep, because this method
+    /// enrols every session that is not supervised and not already marked. Nothing has to be repaired by hand.
+    ///
+    /// An Architect a SCHEDULE started is still skipped, because the schedule arm asks a different question
+    /// and outranks the seat: nobody was at a keyboard, so there is nobody for the wingman to read it to.
     ///
     /// THE ROLES ARE RESOLVED HERE, AND THAT IS NOT BELT-AND-BRACES - IT IS THE WHOLE CORRECTNESS OF THE
     /// CHECK. <c>PushedSessionStore</c> NULLS <see cref="SessionDto.SessionRole"/> at ingest, deliberately, so

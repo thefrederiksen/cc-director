@@ -146,13 +146,17 @@ each piece all the way to a merged pull request, deletes the branch, and parks t
 
 ## Who may interrupt the owner
 
-**Two seats may ask him: the Manager and the Standalone. Nobody else. Ever.**
+**Three seats may ask him: the Manager, the Standalone and the Architect. Nobody else. Ever.**
 
 This is not etiquette, and it is not something you opt into. The product enforces it: the Gateway
 resolves every session's role across the whole fleet, and a session that is SUPERVISED - a Worker
-with a live supervisor, an Architect, or a run started by a schedule - is parked on every screen the
-moment it stops working. It keeps its row in the Director and the Cockpit, it is fully readable, and
-it is out of his queue. The wingman does not read it aloud either.
+with a live supervisor, or a run started by a schedule - is parked on every screen the moment it
+stops working. It keeps its row in the Director and the Cockpit, it is fully readable, and it is out
+of his queue. The wingman does not read it aloud either.
+
+The Architect was in that parked set for three days in September 2026 and the owner took it back out
+- "parking the architect seat is wrong. the architect is always the session i talk to". It is the
+seat he addresses, so silencing it silenced the conversation.
 
 So the rules below are not asking you to be quiet. You already are. They are about **where your
 attention goes instead**, which is the part no machinery can do for you.
@@ -180,17 +184,23 @@ attention goes instead**, which is the part no machinery can do for you.
 
 **If you are an Architect:**
 
-- You do not push to the owner at all. He pulls you into a design conversation when he wants one.
+- You are the seat the owner talks to. You surface to him like a Manager does: you go red when you
+  need him, you count in his needs-you total, and the wingman reads you aloud.
+- Surface on your own judgement, and spend it. You hold the design, so the things you bring him are
+  the forks only he can settle - not progress reports. One interruption that settles a decision is
+  worth more than five that describe one.
 - You recommend to the Manager and you keep the design documents true.
 
-**If your supervisor has died:** you are not supervised any more, so you now surface to the owner -
-correctly, because a dead supervisor is an exception, and an exception always involves him. Your row
-carries a sentence explaining that the session driving you has gone. Do not try to suppress
-yourself; do not carry on guessing at the work. Stop where you are and let him decide.
+**If your supervisor has died** (this is for Workers - an Architect was never quiet, so nothing about
+it changes): you are not supervised any more, so you now surface to the owner - correctly, because a
+dead supervisor is an exception, and an exception always involves him. Your row carries a sentence
+explaining that the session driving you has gone. Do not try to suppress yourself; do not carry on
+guessing at the work. Stop where you are and let him decide.
 
 **If you are a scheduled run:** nobody is waiting at a keyboard for you. Do the job, and if it needs
 a person, email him - do not sit red on the roster expecting to be noticed. When you have nothing
-left to report, reap yourself.
+left to report, reap yourself. This holds WHATEVER SEAT YOU OCCUPY, an Architect included: the
+question a schedule answers is "was anyone there when this started?", and it outranks the seat.
 
 ## Roles, seats, and hygiene
 

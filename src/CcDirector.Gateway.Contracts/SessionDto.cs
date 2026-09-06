@@ -129,8 +129,9 @@ public sealed class SessionDto
     /// from other fields.
     /// Values: "blue" (agent is working), "red" (needs the user - input/permission/idle),
     /// "yellow" (the Wingman is reading the screen and narrating), "purple" (parked on its
-    /// own background task, will resume itself), "supporting" (a SUPERVISED session - one another session, a design seat or a schedule owns, and which therefore
-    /// session is driving - issue #815, rendered as a recessive slate #64748B), "unknown"
+    /// own background task, will resume itself), "supporting" (a SUPERVISED session that has STOPPED -
+    /// one that answers to another live session, or that a schedule started - so it parks instead of
+    /// asking the owner; issue #815, rendered as a recessive slate #64748B), "unknown"
     /// (process exited, or source unreachable/unparseable - rendered gray). On-hold is separate:
     /// see <see cref="OnHold"/>. ("green" is legacy and no longer emitted.)
     /// </summary>
