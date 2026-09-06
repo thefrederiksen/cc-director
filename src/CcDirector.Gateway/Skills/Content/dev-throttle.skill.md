@@ -25,6 +25,20 @@ All tools are on PATH after install. For exact flags and examples, run any tool 
 ### Web
 `cc-crawl4ai` (clean markdown extraction for RAG), `cc-websiteaudit`, `cc-brandingrecommendations`.
 
+### Browsers you are signed in to
+`cc-devthrottle browser` owns this machine's drivable browser profiles - a real Chrome the user signed into ONCE, which any agent can then drive as the user. `browser-harness` drives the page.
+
+**Never launch a browser yourself** - not `chrome.exe` with a debugging switch, not a hand-written CDP state file, and not `cc-playwright` (retired). Those all succeed into a browser signed in as NOBODY, which surfaces as a login page and tempts the next agent into typing the user's password.
+
+```bash
+cc-devthrottle browser list --json                      # what exists, and whose account each one is
+cc-devthrottle browser start centerconsulting           # launch it if down
+eval "$(cc-devthrottle browser attach 'centerconsulting')"   # BU_NAME / BU_CDP_URL for the harness
+cc-devthrottle browser stop centerconsulting            # done; the login is kept
+```
+
+Pick the profile by its `account` field, never by name or port. **The browsers skill is the full reference** - read it before driving one.
+
 ### Desktop automation
 `cc-click` (Windows UI: click, type, screenshot, OCR), `cc-trisight` (3-tier UI element detection: UIA + OCR + pixel), `cc-computer` (AI desktop agent with screenshot-in-the-loop).
 
@@ -184,6 +198,8 @@ use the identity the preamble gave you. If no user is named (nobody signed in), 
 
 - "What cc-* tools do I have for X?" - look in the tool list above; run the tool with `--help` for syntax.
 - "How do I list / message / create / close sessions?" - use `cc-devthrottle` (details in the fleet-comms skill).
+- "I need a page that requires the user's login" - do NOT launch a browser. `cc-devthrottle browser
+  list --json`, then the **browsers** skill.
 - "Is the app running?" - the Director binds no port, so there is nothing to curl. Read the
   instance registration the running process writes
   (`%LOCALAPPDATA%\cc-director\instances\<slug>\config\director\instances\<directorId>.json`,
@@ -194,10 +210,13 @@ use the identity the preamble gave you. If no user is named (nobody signed in), 
 
 - It does not replace `<tool> --help`, which has the authoritative flags and examples for each tool.
 - It does not replace the **fleet-comms** skill, which is the full reference for `cc-devthrottle`.
+- It does not replace the **browsers** skill, which is the full reference for driving a signed-in browser.
 
 
-**Skill Version:** 6.0 (no Director listener)
-**Last Updated:** 2026-08-03
+**Skill Version:** 6.1 (drivable browser profiles)
+**Last Updated:** 2026-09-06
+**Changes in 6.1:** Added the drivable browser profiles. `cc-devthrottle browser` registers, starts, attaches and stops a real browser the user signed into once, and `browser-harness` drives the page. This is written down because the absence of it caused a live failure on 2026-09-06: with a signed-in `centerconsulting` profile registered and stopped, an agent that never ran `browser list` hand-launched Chrome against a retired `cc-playwright` folder and handed the user a LOGIN page for the site it was asked to work in. Hand-rolling a browser does not fail loudly, it succeeds into the wrong session - so the rule is that the Director owns the profiles and an agent never launches one. Full reference: the **browsers** skill.
+
 **Changes in 6.0:** The remove-the-network-port mission deleted the Director's listener entirely.
 There is no loopback floor, no `/healthz`, no `/fleet/*` relay, no `/reconnect`, no local settings
 routes, and no `CC_DIRECTOR_API` or `CC_DIRECTOR_TOKEN` in any session's environment. Agents reach
