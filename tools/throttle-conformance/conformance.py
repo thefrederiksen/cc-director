@@ -42,10 +42,14 @@ Options:
                     (default: D:/ReposFred/devthrottle_internal/tools/mentor)
   --connection-file a file holding the Gateway database connection string (default: the
                     DEVTHROTTLE_GATEWAY_DB_CONNECTION key from the credentials file named in the mentor config)
-  --library-json    skip running the library and read its figure from this file (for re-checks)
   --report          write a markdown report here as well as printing the verdict
   --break-predicate DELIBERATELY misapply the predicate on the mentor side (drop null-send-source rows), to
                     prove the check goes red. Never green with this flag.
+
+The library is BUILT FROM THE PINNED SOURCE AND RUN on every check (final inspection finding F-03). There is
+no option to read its figure from a file: a check over a saved answer is a check of whatever produced that
+file, not of the library in this checkout, and the fix-round inspector found the previous saved-answer option
+labelling exactly that as "built from source this run".
 
 Exit 0 when every number agrees. Exit 1 on any difference. Exit 2 on a usage or setup error.
 """
@@ -125,8 +129,8 @@ def build_library():
 
 def run_library(tenant, start, end, connection, out_path):
     """Run the Gateway's own definition through tools/throttle-conformance, built from source first. Returns
-    the figure dict."""
-    dll, _ = build_library()
+    the figure dict and the digest of the dll that answered."""
+    dll, dll_sha256 = build_library()
     cmd = ["dotnet", str(dll), "--tenant", tenant, "--from", start.isoformat(), "--to", end.isoformat(),
            "--connection", connection, "--out", str(out_path)]
     run = subprocess.run(cmd, capture_output=True, text=True)
@@ -135,7 +139,7 @@ def run_library(tenant, start, end, connection, out_path):
         print("  [library] " + line)
     if run.returncode != 0:
         fail("the library tool exited " + str(run.returncode), code=1)
-    return json.loads(Path(out_path).read_text(encoding="utf-8"))
+    return json.loads(Path(out_path).read_text(encoding="utf-8")), dll_sha256
 
 
 def mentor_side(metrics, origin, account, tz, extract, start, end, break_predicate):
@@ -399,7 +403,6 @@ def main():
     ap.add_argument("--week", required=True, help="ISO week, e.g. 2026-W35")
     ap.add_argument("--mentor-dir", default=str(DEFAULT_MENTOR))
     ap.add_argument("--connection-file")
-    ap.add_argument("--library-json")
     ap.add_argument("--report")
     ap.add_argument("--break-predicate", action="store_true")
     args = ap.parse_args()
@@ -427,16 +430,13 @@ def main():
     print("account %s (tenant %s, %s)  week %s = %s .. %s" % (account["label"], tenant, tz, args.week,
                                                              start_utc.isoformat(), end_utc.isoformat()))
 
+    # The library, built from this checkout's source and run, every time (finding F-03). run_library builds
+    # before it runs and returns the digest of the dll that answered, so the provenance line below names the
+    # code that produced THIS figure and nothing else.
     provenance = library_provenance()
-    if args.library_json:
-        library = json.loads(Path(args.library_json).read_text(encoding="utf-8"))
-        provenance["dll_sha256"] = None
-        provenance["note"] = "read from --library-json; the dll was not run for this check"
-    else:
-        connection = read_connection(args, cfg)
-        out_path = Path(os.environ.get("TEMP", ".")) / ("throttle-library-%s-%s.json" % (account["label"], args.week))
-        library = run_library(tenant, start_utc, end_utc, connection, out_path)
-        provenance["dll_sha256"] = build_library()[1]
+    connection = read_connection(args, cfg)
+    out_path = Path(os.environ.get("TEMP", ".")) / ("throttle-library-%s-%s.json" % (account["label"], args.week))
+    library, provenance["dll_sha256"] = run_library(tenant, start_utc, end_utc, connection, out_path)
 
     mentor = mentor_side(metrics, origin, account, tz, extract_events, start, end, args.break_predicate)
     raw = raw_side(extract_events, extract_sessions, start, end)
@@ -452,7 +452,7 @@ def main():
     lines.append("")
     lines.append("Library provenance: built from source this run; product checkout commit %s%s; dll sha256 %s."
                  % (provenance["commit"], " (DIRTY - uncommitted changes under the library's source)" if provenance["dirty"] else "",
-                    provenance.get("dll_sha256")))
+                    provenance["dll_sha256"]))
     lines.append("")
     lines.append("| figure | library (Gateway code over the hosted database) | mentor side (harness reader over its extract) |")
     lines.append("|---|---:|---:|")
