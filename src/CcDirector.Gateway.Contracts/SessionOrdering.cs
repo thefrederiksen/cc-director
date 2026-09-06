@@ -183,8 +183,8 @@ public static class SessionOrdering
     ///    scheduled runs is that they reap themselves and escalate BY EMAIL, never by sitting red on the
     ///    roster; this makes the roster agree with that rule instead of contradicting it.
     ///
-    /// AN ARCHITECT IS NOT SUPERVISED, and that is the owner's ruling of 2026-09-06, which overturns the one
-    /// of 2026-07-09 that this list used to carry:
+    /// THE ROLE IS NO LONGER ONE OF THE KINDS, and that is the owner's ruling of 2026-09-06, which overturns
+    /// the one of 2026-07-09 that this list used to carry:
     ///
     ///   "parking the architect seat is wrong. the architect is always the session i talk to."
     ///   "no the architect should push to me it is what i talk to."
@@ -194,11 +194,20 @@ public static class SessionOrdering
     /// seen it running and disagreed with it. An Architect is the seat he addresses, so it surfaces, it
     /// counts in the needs-you total, and the wingman reads it aloud, exactly like a Manager or a Standalone.
     ///
-    /// A MANAGER, A STANDALONE AND AN ARCHITECT ARE NEVER SUPERVISED, and that is the whole point. They are
-    /// the three human-facing seats: a Manager surfaces on its own judgement (a decision OR an update), a
-    /// Standalone is the ordinary single session, and an Architect is the design seat the owner talks to.
-    /// Everything the fleet does reaches the owner through one of those three, consolidated - which is what
-    /// makes the rest of the roster safe to quieten.
+    /// SO NO ROLE IS SUPERVISED ANY MORE EXCEPT WORKER. Manager, Standalone and Architect are the three
+    /// human-facing seats: a Manager surfaces on its own judgement (a decision OR an update), a Standalone is
+    /// the ordinary single session, and an Architect is the design seat the owner talks to. Everything the
+    /// fleet does reaches him through one of those three, consolidated - which is what makes the rest of the
+    /// roster safe to quieten.
+    ///
+    /// THE SCHEDULE ARM IS ORTHOGONAL TO ALL OF THAT, AND IT STILL WINS. It asks a different question - not
+    /// "which seat is this?" but "was anyone at a keyboard when it started?" - so a session a cron fired is
+    /// supervised WHATEVER seat it occupies, an Architect included. That is not an oversight and it is not a
+    /// hole in the 2026-09-06 ruling: a scheduled run has nobody it can report to by construction, and the
+    /// owner's standing rule is that it escalates by email rather than by sitting red on his roster. Say "an
+    /// Architect that a person started is human-facing", never the unqualified "an Architect is never
+    /// supervised" - the supervision table in docs/new_architecture/session-roles-semantics.md spells out
+    /// all eight cases and is the statement this method is held to.
     ///
     /// Reads only facts already on the wire. It adds no state, arms no timer, and writes nothing: a session
     /// stops being supervised the instant its role resolves differently, with no latch to get stuck.
@@ -625,6 +634,19 @@ public static class SessionOrdering
         // to be stranded from. Saying "the session that was driving this one has gone" about the seat the
         // owner talks to would be false about the seat AND would tell him to hand off or stop the one thing
         // he is holding the conversation with.
+        //
+        // THE ARGUMENT ABOVE RESTS ON A PRODUCT FACT, NOT ON GOOD INTENTIONS, because "the controller means
+        // nothing to an Architect" is exactly the kind of claim that is true when written and quietly false
+        // a year later. The fact: an Architect is the TOP of a mission. It settles the design, writes the
+        // brief and hires the Manager (.claude/skills/mission/SKILL.md), and the resolver enforces the
+        // direction - Manager-derivation EXCLUDES Architect, so the session on the other end of that
+        // controller id is a session that OPENED this one, never a seat this one answers to. That is what
+        // makes losing it provenance rather than supervision.
+        //
+        // If that ever stops being true - if an Architect comes to take direction from the session that
+        // spawned it - this arm is wrong and the answer is a notice written for the seat, not this generic
+        // one. The generic sentence would still be unusable: "it came back to you" is false about a session
+        // that was never away.
         //
         // The role is EXPLICIT and sticky, so this arm cannot be reached by accident: a session is only ever
         // an Architect because somebody said so.

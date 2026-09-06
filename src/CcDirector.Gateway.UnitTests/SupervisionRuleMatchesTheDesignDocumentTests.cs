@@ -99,6 +99,23 @@ public sealed class SupervisionRuleMatchesTheDesignDocumentTests
     }
 
     [Fact]
+    public void TheScheduledArchitectRow_SaysSupervised_becauseTheOriginOutranksTheSeat()
+    {
+        // THE EXCEPTION TO THE ROW BELOW, NAMED so it is deliberate rather than a side effect of two arms
+        // sharing one predicate. The schedule arm asks "was anyone at a keyboard when this started?", which
+        // is a different question from "which seat is this?", and it wins: an Architect a cron fired has
+        // nobody it can report to, and the owner's standing rule is that scheduled runs escalate by email
+        // rather than sit red on his roster.
+        //
+        // This is why the code and this document must both say "an Architect A PERSON STARTED is
+        // human-facing", and never the unqualified "an Architect is never supervised".
+        var rows = ReadTable();
+
+        var scheduled = Assert.Single(rows, r => r.Role == SessionRoles.Architect && r.Origin == "schedule");
+        Assert.True(scheduled.Supervised);
+    }
+
+    [Fact]
     public void TheArchitectRow_SaysHumanFacing_TheOwnersRulingOf6September2026()
     {
         // The one row this change is about, asserted BY NAME rather than only through the sweep above. The
@@ -145,16 +162,35 @@ public sealed class SupervisionRuleMatchesTheDesignDocumentTests
         var end = text.IndexOf(End, begin, StringComparison.Ordinal);
         Assert.True(end > begin, $"{DocRelativePath} contains {Begin} but no closing {End}.");
 
+        var body = text[(begin + Begin.Length)..end];
+
+        // THE FENCE IS NOT ENOUGH ON ITS OWN - IT MUST BE A REAL MARKDOWN TABLE. Eight pipe-prefixed lines
+        // inside a fenced code block would parse here perfectly and render as a code sample: the document a
+        // person opens would state NO RULE at all while this test went on passing. So a code fence between
+        // the markers is refused outright, and the header and separator rows are REQUIRED, in that order,
+        // with nothing above the header counted as a row.
+        Assert.DoesNotContain("```", body, StringComparison.Ordinal);
+
+        var lines = body.Split('\n').Select(l => l.Trim()).ToList();
+        var headerAt = lines.FindIndex(l => l.StartsWith("| Resolved role", StringComparison.Ordinal));
+        Assert.True(headerAt >= 0,
+            $"The supervision table in {DocRelativePath} has no \"| Resolved role | Origin kind | Verdict |\" " +
+            "header row between its markers. Without a header the rows are not a table, so the document " +
+            "would render as nothing while this test carried on reading the raw lines.");
+        Assert.True(headerAt + 1 < lines.Count && lines[headerAt + 1].StartsWith("|---", StringComparison.Ordinal),
+            $"The supervision table in {DocRelativePath} has a header with no separator row beneath it, so " +
+            "markdown will not render it as a table.");
+
         var rows = new List<Row>();
-        foreach (var line in text[(begin + Begin.Length)..end].Split('\n'))
+        foreach (var trimmed in lines.Skip(headerAt + 2))
         {
-            var trimmed = line.Trim();
             if (trimmed.Length == 0 || trimmed[0] != '|') continue;
 
             var cells = trimmed.Trim('|').Split('|').Select(c => c.Trim()).ToArray();
-            if (cells.Length != 3) continue;
-            if (cells[0] == "Resolved role") continue;                          // the header
-            if (cells[0].StartsWith("---", StringComparison.Ordinal)) continue; // the separator
+            Assert.True(cells.Length == 3,
+                $"A row of the supervision table in {DocRelativePath} has {cells.Length} cells, not 3: " +
+                $"\"{trimmed}\". A malformed row FAILS rather than being skipped - skipping is how a seat " +
+                "silently stops being covered while everything stays green.");
 
             var verdict = cells[2];
             Assert.True(verdict is "SUPERVISED" or "HUMAN-FACING",
@@ -166,15 +202,48 @@ public sealed class SupervisionRuleMatchesTheDesignDocumentTests
         }
 
         Assert.NotEmpty(rows);
+        // A seat named twice, with two different verdicts, would let the coverage check pass while the
+        // document contradicted itself. One row per seat.
+        Assert.Equal(rows.Count, rows.Select(r => (r.Role, r.Origin)).Distinct().Count());
         return rows;
     }
 
-    /// <summary>The repository root, located from this source file's own path - the tests always run from a
-    /// checkout, and bin-relative paths would break under different runners.</summary>
+    /// <summary>
+    /// The repository root, located from this source file's own path - the pattern the other document guards
+    /// in this repository already use (<c>WorkflowStoreTests</c>, <c>SpokenPhraseTests</c>), because the
+    /// suites are run with <c>dotnet test</c> from a checkout and a bin-relative path breaks under different
+    /// runners.
+    ///
+    /// WHAT THIS DOES NOT COVER, said plainly rather than left to be discovered. <c>CallerFilePath</c> is
+    /// baked in at COMPILE time, so it names the tree this assembly was BUILT from, not one sitting beside
+    /// the assembly as it runs. Copy the built binaries to another machine and the path is simply absent -
+    /// which fails, loudly, and is the safe direction. The unsafe direction is narrow but real: build here,
+    /// then change the checkout underneath, and this reads that checkout rather than the code under test. It
+    /// can only pass WRONGLY when the other tree's table happens to agree with this assembly's rule, in
+    /// which case there was nothing to report anyway.
+    ///
+    /// The check below closes the remaining gap - a path that exists but is not this repository at all. It
+    /// asserts both files this guard is about are present, so a stale or unrelated directory fails with the
+    /// path named instead of being read as though it were the product.
+    /// </summary>
     private static string RepoRoot([CallerFilePath] string thisFile = "")
     {
         // this file: <repo>/src/CcDirector.Gateway.UnitTests/SupervisionRuleMatchesTheDesignDocumentTests.cs
         var dir = Path.GetDirectoryName(thisFile)!;
-        return Path.GetFullPath(Path.Combine(dir, "..", ".."));
+        var root = Path.GetFullPath(Path.Combine(dir, "..", ".."));
+
+        foreach (var marker in new[]
+                 {
+                     Path.Combine("src", "CcDirector.Gateway.Contracts", "SessionOrdering.cs"),
+                     Path.Combine("docs", "new_architecture", "session-roles-semantics.md"),
+                 })
+        {
+            Assert.True(File.Exists(Path.Combine(root, marker)),
+                $"Resolved the repository root to {root}, but it does not contain {marker}. This guard was " +
+                "built from a tree it can no longer find, so it is not reading the product - it is reading " +
+                "whatever happens to sit at that path. Run the suites from a checkout.");
+        }
+
+        return root;
     }
 }

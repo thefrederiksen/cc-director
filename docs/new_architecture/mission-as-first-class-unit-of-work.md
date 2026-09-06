@@ -354,8 +354,14 @@ SETTLED (Soren, 2026-09-06): the ARCHITECT IS A HUMAN-FACING SEAT and pushes exa
 > "no the architect should push to me it is what i talk to."
 
 So the human-facing status / attention channel belongs to the MANAGER, the STANDALONE and the
-ARCHITECT. Only a Worker with a live supervisor - and a run started by a schedule, which has nobody
-at a keyboard to report to - stays out of the human's queue.
+ARCHITECT. Only a Worker with a live supervisor - and a run started by a SCHEDULE - stays out of the
+human's queue.
+
+The schedule half is not a fourth seat and it is not an exception to the ruling above; it asks a
+DIFFERENT QUESTION. The seat question is "who does this session answer to?"; the origin question is
+"was anyone at a keyboard when it started?". A cron firing has nobody to report to whatever seat it
+occupies, so it is quiet even as an Architect, and it escalates BY EMAIL. Write "an Architect a
+person started is human-facing" - never the unqualified "an Architect is never supervised".
 
 SUPERSEDED AMENDMENT (Soren, 2026-07-09), kept because deleting it invites somebody to derive it
 again from the surrounding prose: it said the Architect likewise does NOT push needs-you or status to

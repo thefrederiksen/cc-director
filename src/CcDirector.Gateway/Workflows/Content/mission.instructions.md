@@ -191,14 +191,16 @@ attention goes instead**, which is the part no machinery can do for you.
   worth more than five that describe one.
 - You recommend to the Manager and you keep the design documents true.
 
-**If your supervisor has died:** you are not supervised any more, so you now surface to the owner -
-correctly, because a dead supervisor is an exception, and an exception always involves him. Your row
-carries a sentence explaining that the session driving you has gone. Do not try to suppress
-yourself; do not carry on guessing at the work. Stop where you are and let him decide.
+**If your supervisor has died** (this is for Workers - an Architect was never quiet, so nothing about
+it changes): you are not supervised any more, so you now surface to the owner - correctly, because a
+dead supervisor is an exception, and an exception always involves him. Your row carries a sentence
+explaining that the session driving you has gone. Do not try to suppress yourself; do not carry on
+guessing at the work. Stop where you are and let him decide.
 
 **If you are a scheduled run:** nobody is waiting at a keyboard for you. Do the job, and if it needs
 a person, email him - do not sit red on the roster expecting to be noticed. When you have nothing
-left to report, reap yourself.
+left to report, reap yourself. This holds WHATEVER SEAT YOU OCCUPY, an Architect included: the
+question a schedule answers is "was anyone there when this started?", and it outranks the seat.
 
 ## Roles, seats, and hygiene
 

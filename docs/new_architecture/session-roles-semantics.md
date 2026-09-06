@@ -286,7 +286,7 @@ rather than "any". Nobody was at a keyboard when a cron fired, so there is nobod
 | Worker | Working, no flag | - | nobody |
 | Scheduled run (any role) | any | global color (fold) | nobody: parked, escalates by email |
 
-## Attention hard rules (settled 2026-07-09; the Mission doc is authoritative)
+## Attention hard rules (settled 2026-07-09, Rule 1 amended 2026-09-06; the Mission doc is authoritative)
 
 Mirror of the "Attention hard rules" section in the Architect's `mission-as-first-class-unit-of-work.md`
 (the authority). Summarized here for the roles implementation:
@@ -299,9 +299,12 @@ Mirror of the "Attention hard rules" section in the Architect's `mission-as-firs
   *Amended 2026-07-09 to put the Architect on the worker's side of this line, built 2026-09-03, and
   reversed by the owner on 2026-09-06 once he saw it running. Recorded rather than overwritten,
   because the round trip is the interesting part.*
-- Rule 2 - MANAGER / Standalone are NEVER auto-muted. A manager raises "need you" by its OWN
-  judgment - to get a decision OR simply to report an update - on the SAME single "need you".
-  Involving the operator when the manager judges it worthwhile is the point of a manager, not clutter.
+- Rule 2 - MANAGER / Standalone / Architect are NEVER auto-muted BY THEIR SEAT. A manager raises
+  "need you" by its OWN judgment - to get a decision OR simply to report an update - on the SAME
+  single "need you". Involving the operator when the manager judges it worthwhile is the point of a
+  manager, not clutter. *The one thing that quietens any of the three is ORIGIN, not seat: a run a
+  SCHEDULE started is supervised whatever seat it occupies, because nobody was at a keyboard for it.
+  See the supervision table above, which states all eight cases.*
 - Rule 2a - NO NEW STATES. "Need you" covers both "I need a decision" and "here is an update".
   Auto-hold vs stay is QUEUE ROUTING over the existing Waiting + pending-ask signal, not a new
   user-facing state.

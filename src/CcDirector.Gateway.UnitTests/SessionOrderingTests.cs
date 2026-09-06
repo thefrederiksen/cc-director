@@ -740,6 +740,28 @@ public sealed class SessionOrderingTests
         Assert.Equal(SessionOrdering.TriageBucket.NeedsYou, SessionOrdering.Classify(s));
     }
 
+    [Fact]
+    public void Architect_StartedByASchedule_IsStillSupervised_TheOriginOutranksTheSeat()
+    {
+        // THE ONE ARCHITECT THAT STAYS PARKED, PINNED BY NAME so the exception is deliberate rather than a
+        // side effect of two arms happening to sit in one predicate.
+        //
+        // The schedule arm asks a DIFFERENT QUESTION from the role arm - not "which seat is this?" but "was
+        // anyone at a keyboard when it started?" - and it wins. An Architect a cron fired has nobody it can
+        // report to by construction, and the owner's standing rule for scheduled runs is that they escalate
+        // by email rather than sit red on his roster. So "the architect is always the session i talk to" is
+        // about the seat HE opens; it does not make a cron firing into a conversation.
+        //
+        // Say "an Architect a person started is human-facing". The unqualified "an Architect is never
+        // supervised" is false, and this test is here so nobody writes it into the code again.
+        var s = Raw("WaitingForInput", sessionRole: SessionRoles.Architect, originKind: "schedule");
+
+        Assert.True(SessionOrdering.IsSupervised(s));
+        Assert.Equal("supporting", SessionOrdering.EffectiveColor(s));
+        Assert.Equal("Snoozed", SessionOrdering.StateLabel(s));
+        Assert.Equal(SessionOrdering.TriageBucket.OnHold, SessionOrdering.Classify(s));
+    }
+
     // ===================================================================================================
     // SUPERVISED SESSIONS DO NOT ASK THE OWNER (owner's ruling, 2026-09-02):
     //   "supervised still show up in Director and Cockpit, session should go to onhold when not working"
@@ -782,6 +804,7 @@ public sealed class SessionOrderingTests
     [Theory]
     [InlineData(SessionRoles.Worker, null)]
     [InlineData(SessionRoles.Standalone, "schedule")]
+    [InlineData(SessionRoles.Architect, "schedule")]
     public void Supervised_Working_IsStillBlue_NothingOutranksWorking(string role, string? origin)
     {
         // THE LAW, asserted against the new rule for every kind it added. Widening an attention rule is
