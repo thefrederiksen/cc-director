@@ -13,11 +13,11 @@
       on the machine. Vite copies public/ verbatim into the build output, which the Gateway's
       BuildCockpitApp target stages into wwwroot/c - and /favicon.ico is already in the public path
       set in AuthMiddleware, so the mark also shows on the sign-in screen, before anyone has signed
-      in. The icon is declared here rather than left to the site-root convention because the Cockpit
-      is a single-page application served under deep paths such as /session/{id}, and a declared
-      icon is resolved against the document rather than the path the reader happens to be on.
+      in. The icon is declared here rather than left to the browser's silent fallback so that the
+      page states what its icon is, and the address begins with a slash so it means the same file
+      from every depth the Cockpit is served at, including deep paths such as /session/{id}.
     -->
-    <link rel="icon" href="/favicon.ico" sizes="any" />
+    <link rel="icon" type="image/x-icon" href="/favicon.ico" />
     <title>DevThrottle Cockpit</title>
     <!--
       Epic #967: this is the React Cockpit, served same-origin by the Gateway at the site root "/"
