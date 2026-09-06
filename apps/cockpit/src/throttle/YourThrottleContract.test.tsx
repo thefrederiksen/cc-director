@@ -86,7 +86,9 @@ function overviewFromDom(container: HTMLElement) {
   const [voiceRing, phoneRing] = heroes;
   const legend = (ring: Element) => Array.from(ring.querySelectorAll(".thr-hero-leg b")).map((b) => count(b.textContent));
   const [voiceTurns, typedTurns] = legend(voiceRing);
-  const [phoneTurns, phoneRemainder] = legend(phoneRing);
+  // The phone ring names its other side surface by surface now (owner's ask, 2026-09-06), so the legend is
+  // the phone count followed by one count per remaining surface that has a turn.
+  const [phoneTurns, ...restOfPhoneRing] = legend(phoneRing);
   const sub = container.querySelector(".thr-panel-sub")!.textContent ?? "";
   const denominator = count(/^(\S+) turns across every surface$/.exec(sub)?.[1]);
   const segments = Array.from(container.querySelectorAll(".thr-split-seg")).map((seg) => {
@@ -100,7 +102,8 @@ function overviewFromDom(container: HTMLElement) {
   }));
   return {
     denominator,
-    voiceTurns, typedTurns, phoneTurns, phoneRemainder,
+    voiceTurns, typedTurns, phoneTurns,
+    restOfPhoneRing,
     voiceShare: arcShare(voiceRing), phoneShare: arcShare(phoneRing),
     voicePercent: percent(voiceRing.querySelector(".thr-ring-pct")!.textContent),
     phonePercent: percent(phoneRing.querySelector(".thr-ring-pct")!.textContent),
@@ -162,7 +165,9 @@ describe("the Your Throttle contract, on the rendered Cockpit page - the whole a
       expect(overview).toEqual({
         denominator: expected.denominator,
         voiceTurns: expected.voiceTurns, typedTurns: expected.typedTurns,
-        phoneTurns: expected.phoneTurns, phoneRemainder: expected.phoneRemainder,
+        phoneTurns: expected.phoneTurns,
+        // Each remaining surface with a turn, named on its own - never one added-up "Desktop + Cockpit".
+        restOfPhoneRing: expected.surfaces.filter((s) => s.surface !== "phone" && s.turns > 0).map((s) => s.turns),
         voiceShare: expected.voiceShare, phoneShare: expected.phoneShare,
         voicePercent: expected.voicePercent, phonePercent: expected.phonePercent,
         segments: expected.segments.map((s) => ({ label: s.label, turns: s.turns, percent: s.percent, share: s.share, printed: s.share !== null && s.share * 100 >= 8 ? s.percent : null })),

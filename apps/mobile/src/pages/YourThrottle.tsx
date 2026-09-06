@@ -124,7 +124,10 @@ export function YourThrottle() {
               percent={summary.phonePercent}
               color={RING_MOBILE}
               primary={{ label: "Phone", count: summary.turnsBySurface.phone }}
-              secondary={{ label: "Desk + Cockpit", count: summary.phoneRemainder }}
+              // Broken out, exactly as on the Cockpit (owner's ask, 2026-09-06): the desk and the Cockpit
+              // are named separately rather than added together, so the two surfaces say the same thing.
+              rest={summary.surfaces.filter((s) => s.surface !== "phone" && s.turns > 0)
+                .map((s) => ({ label: s.label, count: s.turns }))}
             />
           </div>
 
@@ -210,6 +213,7 @@ function MetricRing({
   color,
   primary,
   secondary,
+  rest,
   note,
 }: {
   title: string;
@@ -217,20 +221,25 @@ function MetricRing({
   percent: number | null;
   color: string;
   primary: { label: string; count: number };
-  secondary: { label: string; count: number };
+  /** The single remainder, for a ring whose other side is one thing ("Typed"). */
+  secondary?: { label: string; count: number };
+  /** The remainder broken out, each surface named with its own count. */
+  rest?: { label: string; count: number }[];
   note?: string;
 }) {
   const R = 42;
   const C = 2 * Math.PI * R;
   const filled = share === null ? 0 : share * C;
   const pctText = formatPercent(percent);
+  const others = rest ?? (secondary === undefined ? [] : [secondary]);
+  const othersTotal = others.reduce((t, e) => t + e.count, 0);
 
   return (
     <section className="mthr-metric">
       <div
         className="mthr-ring"
         role="img"
-        aria-label={`${title}: ${primary.label} ${pctText} (${primary.count} of ${primary.count + secondary.count} turns)`}
+        aria-label={`${title}: ${primary.label} ${pctText} (${primary.count} of ${primary.count + othersTotal} turns)`}
       >
         <svg viewBox="0 0 100 100" className="mthr-ring-svg" style={{ ["--mthr-arc" as string]: color } as CSSProperties}>
           <circle className="mthr-ring-track" cx="50" cy="50" r={R} />
@@ -245,10 +254,12 @@ function MetricRing({
             <span className="mthr-dot" style={{ background: color }} />
             {primary.label} <b>{primary.count.toLocaleString()}</b>
           </span>
-          <span className="mthr-leg">
-            <span className="mthr-dot mthr-dot-muted" />
-            {secondary.label} <b>{secondary.count.toLocaleString()}</b>
-          </span>
+          {others.map((entry) => (
+            <span key={entry.label} className="mthr-leg">
+              <span className="mthr-dot mthr-dot-muted" />
+              {entry.label} <b>{entry.count.toLocaleString()}</b>
+            </span>
+          ))}
         </div>
         {note !== undefined && <div className="mthr-metric-note">{note}</div>}
       </div>
