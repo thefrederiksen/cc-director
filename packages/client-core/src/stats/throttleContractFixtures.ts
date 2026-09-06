@@ -58,8 +58,11 @@ function findContractDir(): string {
 
 export const CONTRACT_DIR = findContractDir();
 
+/** The digest of a fixture's TEXT with line endings normalised to LF: this repository stores LF and git
+ * writes CRLF into a fresh checkout on Windows, so a raw digest would be a digest of the checkout rather
+ * than of the fixture (the mentor harness's settled-module pins learnt the same lesson). */
 function sha256(text: string): string {
-  return createHash("sha256").update(text, "utf8").digest("hex");
+  return createHash("sha256").update(text.replace(/\r\n/g, "\n"), "utf8").digest("hex");
 }
 
 /** Every fixture, checked against manifest.json. A fixture whose digest is not the manifest's, or a manifest

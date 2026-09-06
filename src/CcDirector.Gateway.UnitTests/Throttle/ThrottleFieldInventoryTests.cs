@@ -100,7 +100,9 @@ public sealed class ThrottleFieldInventoryTests
         Assert.True(fixtures.EnumerateObject().Count() >= 6);
         foreach (var entry in fixtures.EnumerateObject())
         {
-            var text = File.ReadAllText(Path.Combine(dir, entry.Name));
+            // Digested with line endings normalised to LF: git writes CRLF into a fresh Windows checkout, and a
+            // raw digest would be a digest of the checkout rather than of the fixture.
+            var text = File.ReadAllText(Path.Combine(dir, entry.Name)).Replace("\r\n", "\n");
             var digest = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(text))).ToLowerInvariant();
             Assert.Equal(entry.Value.GetString(), digest);
             // Every fixture's wire object is the served shape, and the rendered ones carry the headline the
@@ -123,7 +125,7 @@ public sealed class ThrottleFieldInventoryTests
                 Assert.Equal(h.Denominator, expected.GetProperty("denominator").GetInt64());
             }
         }
-        var inventoryText = File.ReadAllText(Path.Combine(dir, "field-inventory.json"));
+        var inventoryText = File.ReadAllText(Path.Combine(dir, "field-inventory.json")).Replace("\r\n", "\n");
         var inventoryDigest = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(inventoryText))).ToLowerInvariant();
         Assert.Equal(manifest.GetProperty("inventory").GetString(), inventoryDigest);
     }

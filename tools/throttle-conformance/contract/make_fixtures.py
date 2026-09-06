@@ -253,6 +253,8 @@ INVENTORY = {
 
 
 def dump(path, value):
+    """Write one file with LF endings and return the digest of that LF text. Every reader of manifest.json
+    normalises CRLF to LF before digesting, because git writes CRLF into a fresh Windows checkout."""
     text = json.dumps(value, indent=2, sort_keys=True, ensure_ascii=True) + "\n"
     path.write_text(text, encoding="ascii", newline="\n")
     return hashlib.sha256(text.encode("ascii")).hexdigest()
