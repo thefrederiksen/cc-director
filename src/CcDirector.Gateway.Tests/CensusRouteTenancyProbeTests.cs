@@ -54,6 +54,7 @@ public sealed class CensusRouteTenancyProbeTests : IAsyncLifetime
     private HttpClient _http = null!;
     private string _keyA = "";
     private string _keyB = "";
+    private CcDirector.Core.Tenancy.TenantId _tenantA;
 
     private readonly string _instancesDir =
         Path.Combine(Path.GetTempPath(), "cc-census-" + Guid.NewGuid().ToString("N"));
@@ -80,6 +81,7 @@ public sealed class CensusRouteTenancyProbeTests : IAsyncLifetime
         var deviceB = HostedTestEnrollment.Enroll(_gateway, "sub-census-b", "census-b@example.com", "dev-cb", "MCB");
         _keyA = deviceA.DeviceKey;
         _keyB = deviceB.DeviceKey;
+        _tenantA = deviceA.Tenant;
 
         Assert.True(_gateway.TenantBoundary.IsHosted, "The harness must be running the HOSTED tenant boundary.");
         Assert.NotEqual(deviceA.Tenant.Value, deviceB.Tenant.Value);
@@ -532,5 +534,147 @@ public sealed class CensusRouteTenancyProbeTests : IAsyncLifetime
         var req = new HttpRequestMessage(new HttpMethod(method), absolute);
         req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", bearer);
         return _http.SendAsync(req);
+    }
+
+    // ============================================================ the rules family (session_rules, session_rule_firings)
+
+    /// <summary>
+    /// The THREE context-less Session Rules routes - <c>GET /gateway/rules/{id:guid}</c>,
+    /// <c>DELETE /gateway/rules/{id:guid}</c> and <c>GET /gateway/rules/{id:guid}/firings</c> - executed
+    /// against two accounts.
+    ///
+    /// They arrived on main in the Session Rules mission and were never ruled on, so the census went red
+    /// (issue #2679). The verdict the census now carries is that they are confined by the model rather than
+    /// by anything in the route: both tables are <c>TenantScopedEntity</c>, so
+    /// <c>TenantScopeGuardTests</c> - which reflects the real EF model - proves each carries
+    /// <c>tenant_id</c> and the deny-by-default global query filter. That is a strong argument and it is
+    /// still an argument. This is the execution.
+    ///
+    /// The id is the sharpest possible handle here: a rule id is a Gateway-minted GUID, so the other
+    /// account cannot guess one - but this probe HANDS it to them, which is the only way to ask whether
+    /// anything but the filter was stopping them.
+    ///
+    /// Every refusal is judged twice, because a route that refuses everybody proves nothing about tenancy:
+    /// an independent RE-READ by the owner after the other account's attempt, and a destructibility control
+    /// in which the owner performs the SAME operation successfully.
+    /// </summary>
+    [Fact]
+    public async Task RuleReadFamily_ContextLess_ServesTheOwnerTheExactSeededRule_AndIsANotFoundForTheOtherTenant()
+    {
+        var id = await CreateRule(_keyA, "when the screen says it is rate limited, wait");
+
+        // OWNER CONTROL, on the exact fingerprint rather than a bare 200.
+        var mine = await Json(await Send("GET", $"gateway/rules/{id}", _keyA, null),
+            HttpStatusCode.OK, "owner reads its own rule");
+        Assert.Equal("when the screen says it is rate limited, wait",
+            mine.GetProperty("rule").GetProperty("instruction").GetString());
+
+        // THE OTHER ACCOUNT, handed the id.
+        var theirs = await Send("GET", $"gateway/rules/{id}", _keyB, null);
+        Assert.Equal(HttpStatusCode.NotFound, theirs.StatusCode);
+
+        // ...and it is not in their list either, which is the read that would leak without the filter.
+        var listB = await Json(await Send("GET", "gateway/rules", _keyB, null),
+            HttpStatusCode.OK, "the other account's own rule list");
+        Assert.Empty(listB.GetProperty("rules").EnumerateArray());
+
+        // INDEPENDENT RE-READ: the owner's rule is untouched by the attempt.
+        var again = await Json(await Send("GET", $"gateway/rules/{id}", _keyA, null),
+            HttpStatusCode.OK, "owner re-reads after the other account's attempt");
+        Assert.Equal("when the screen says it is rate limited, wait",
+            again.GetProperty("rule").GetProperty("instruction").GetString());
+    }
+
+    /// <summary>
+    /// DELETE is the destructive half, and the one where a missing filter costs a row rather than a
+    /// secret. The other account is handed the id and asked to delete it; the owner's rule must survive,
+    /// and the owner must then be able to delete it themselves - so the refusal is a refusal and not an
+    /// inert route.
+    /// </summary>
+    [Fact]
+    public async Task RuleDelete_ContextLess_CannotRemoveTheOtherTenantsRule_AndTheOwnerStillCan()
+    {
+        var id = await CreateRule(_keyA, "a rule the other account will try to delete");
+
+        // The other account's delete must not remove it. The route answers with what it deleted, and the
+        // honest answer for a rule it cannot see is "nothing".
+        var attempt = await Json(await Send("DELETE", $"gateway/rules/{id}", _keyB, null),
+            HttpStatusCode.OK, "the other account attempts the delete");
+        Assert.False(attempt.GetProperty("deleted").GetBoolean());
+
+        // INDEPENDENT RE-READ: still there, and still the owner's.
+        var survived = await Json(await Send("GET", $"gateway/rules/{id}", _keyA, null),
+            HttpStatusCode.OK, "owner re-reads after the other account's delete");
+        Assert.Equal("a rule the other account will try to delete",
+            survived.GetProperty("rule").GetProperty("instruction").GetString());
+
+        // DESTRUCTIBILITY CONTROL: the owner CAN delete it, so the refusal above was about tenancy and not
+        // about a route that refuses everyone.
+        var owned = await Json(await Send("DELETE", $"gateway/rules/{id}", _keyA, null),
+            HttpStatusCode.OK, "owner deletes its own rule");
+        Assert.True(owned.GetProperty("deleted").GetBoolean());
+        Assert.Equal(HttpStatusCode.NotFound, (await Send("GET", $"gateway/rules/{id}", _keyA, null)).StatusCode);
+    }
+
+    /// <summary>
+    /// THE FIRING RECORD, which is the product - and the row that cannot be probed honestly without
+    /// seeding, because no route creates a firing. Two empty lists compared against each other pass with
+    /// or without the filter, so the owner's firing is seeded through the store (inside its own tenant
+    /// scope) and the owner's read asserts THAT fingerprint. Only then does the other account's empty list
+    /// carry any weight.
+    /// </summary>
+    [Fact]
+    public async Task RuleFirings_ContextLess_ServeOnlyTheOwningTenants_Record()
+    {
+        var id = await CreateRule(_keyA, "a rule whose record the other account will ask for");
+        _gateway.SeedRuleFiringForTest(_tenantA, Guid.Parse(id), "sess-a", "the owner's own firing", DateTime.UtcNow);
+
+        // OWNER CONTROL on the exact seeded fingerprint.
+        var mine = await Json(await Send("GET", $"gateway/rules/{id}/firings", _keyA, null),
+            HttpStatusCode.OK, "owner reads its own firing record");
+        var firings = mine.GetProperty("firings").EnumerateArray().ToList();
+        Assert.Single(firings);
+        Assert.Equal("the owner's own firing", firings[0].GetProperty("reason").GetString());
+
+        // THE OTHER ACCOUNT, handed the same rule id: an empty record, not the owner's.
+        var theirs = await Json(await Send("GET", $"gateway/rules/{id}/firings", _keyB, null),
+            HttpStatusCode.OK, "the other account asks for that rule's record");
+        Assert.Empty(theirs.GetProperty("firings").EnumerateArray());
+
+        // INDEPENDENT RE-READ: the owner's record is intact.
+        var again = await Json(await Send("GET", $"gateway/rules/{id}/firings", _keyA, null),
+            HttpStatusCode.OK, "owner re-reads its record");
+        Assert.Single(again.GetProperty("firings").EnumerateArray());
+    }
+
+    /// <summary>Create a rule for one account over the real route, and hand back its id. Every field the
+    /// write gate insists on is supplied, so a refusal here is a real defect rather than a malformed
+    /// fixture - and the refusal reason is surfaced, because the store returns it verbatim.</summary>
+    private async Task<string> CreateRule(string key, string instruction)
+    {
+        var body = JsonSerializer.Serialize(new
+        {
+            instruction,
+            screenDescription = "the screen says it is rate limited",
+            triggerWords = new[] { "rate limited" },
+            checks = new object[]
+            {
+                new
+                {
+                    name = "matches_any",
+                    arguments = new Dictionary<string, object>
+                    {
+                        ["text"] = "the screen says it is rate limited",
+                        ["terms"] = new[] { "rate limited" },
+                    },
+                },
+            },
+            scope = "all-sessions",
+            cooldownSeconds = 60,
+            dailyCap = 5,
+        });
+        var created = await Json(await Send("POST", "gateway/rules", key, body),
+            HttpStatusCode.OK, "create a rule");
+        return created.GetProperty("rule").GetProperty("id").GetString()!;
     }
 }

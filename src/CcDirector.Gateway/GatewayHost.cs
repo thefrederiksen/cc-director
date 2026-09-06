@@ -811,6 +811,7 @@ public sealed class GatewayHost : IAsyncDisposable
     // when off, nothing here runs and a turn ends identically.
     private TurnLog.TurnLogRecorder? _turnLogRecorder;
     private TurnLog.TurnLogSwitchStore? _turnLogSwitches;
+    private Timer? _turnLogRetentionTimer;
     private Wingman.WingmanVoiceService? _voiceService;
     // Voice mode is a standing intent, not a one-time action: a tenant that is in voice mode wants EVERY one
     // of its sessions narrating, including the ones that do not exist yet. This timer is how that intent
@@ -857,6 +858,45 @@ public sealed class GatewayHost : IAsyncDisposable
             }).ToList(),
         };
         _sessionTurns.Append(directorId, batch, DateTime.UtcNow);
+    }
+
+    /// <summary>
+    /// Record a rule firing for one account, as the evaluator's own write would.
+    ///
+    /// A test needs this because there is NO ROUTE that creates a firing - the record is written by the
+    /// evaluator, and the only firing route is the READ. Without a seeded firing, a cross-tenant probe of
+    /// <c>GET /gateway/rules/{id}/firings</c> compares one empty list against another and passes whether or
+    /// not the tenant filter is there at all: an absence standing in for a refusal. Seeding one gives the
+    /// owner's read a specific fingerprint to assert, which is what makes the other account's empty list
+    /// mean something.
+    ///
+    /// Enters the tenant's scope itself, so a test cannot write one account's firing into another's
+    /// partition by forgetting to - the same reason <see cref="SeedStoredConversationForTest"/> does.
+    ///
+    /// WHAT A PROBE BUILT ON THIS DOES NOT COVER, said here so nobody reads more into a green than it
+    /// carries (raised in review). It writes through the REAL store, so the entity mapping, the tenant
+    /// column, the save guard and the read projection are all the production ones - which is what makes it
+    /// evidence about the query filter. It says NOTHING about whether the evaluator enters the right
+    /// ambient tenant before recording a firing of its own; that is the evaluator's own integration
+    /// question and needs its own test.
+    /// </summary>
+    internal Rules.SessionRuleFiring SeedRuleFiringForTest(
+        TenantId tenant, Guid ruleId, string sessionId, string reason, DateTime nowUtc)
+    {
+        using var scope = _tenantBoundary?.EnterScope(tenant);
+        return _sessionRules.RecordFiring(
+            ruleId, sessionId,
+            screenText: "a screen the rule looked at",
+            understanding: "what the rule made of it",
+            // A dry-run rule may not claim to have typed anything, so the decision is the one that records
+            // a rule choosing NOT to act. The store refuses anything outside act/decline/abandoned/refused.
+            decision: "decline",
+            reason: reason,
+            primitiveRuns: Array.Empty<Rules.RulePrimitiveRun>(),
+            typedText: "",
+            outcome: "dry-run",
+            grounding: "seeded by a test",
+            nowUtc: nowUtc);
     }
 
     /// <summary>Test-only: the session supervisor (issue #915), so a test can drive a real Working -&gt; idle
@@ -2688,6 +2728,17 @@ public sealed class GatewayHost : IAsyncDisposable
             enterTenantScope: tenant => _tenantBoundary.EnterScope(tenant));
         FileLog.Write("[GatewayHost] StartAsync: turn log armed (records nothing unless an administrator has switched a machine on)");
 
+        // Retention on the captured records. Without it the copy on the Gateway is permanent - every screen
+        // and both sides of every conversation, for every account capture was switched on for, on a shared
+        // file system behind a management endpoint. Anything worth keeping has already been pulled daily,
+        // so a bounded window costs nothing and turns an unbounded exposure into a bounded one.
+        var turnLogRetention = new TurnLog.TurnLogRetention(Core.Storage.CcStorage.TurnLog());
+        _turnLogRetentionTimer = new Timer(_ =>
+        {
+            try { turnLogRetention.Sweep(); }
+            catch (Exception ex) { FileLog.Write($"[GatewayHost] turn-log retention sweep FAILED: {ex.Message}"); }
+        }, null, TimeSpan.FromMinutes(5), TimeSpan.FromHours(6));
+
         _turnEndWatcher = new TurnEndWatcher(
             onTurnEnd: signal =>
             {
@@ -3708,7 +3759,7 @@ public sealed class GatewayHost : IAsyncDisposable
         // route is never mapped against a null - a switch screen that answers 503 because the routes were
         // mapped in the wrong order would read as a broken feature rather than as an ordering mistake.
         _turnLogSwitches ??= new TurnLog.TurnLogSwitchStore(_gatewayDb);
-        AdminTurnLogEndpoint.Map(_app, _turnLogSwitches);
+        AdminTurnLogEndpoint.Map(_app, _turnLogSwitches, TenantRegistry, Registry);
         // The bridge between an administrator's world (emails) and the Gateway's (account ids, Directors).
         // Without it the turn-log switch above can only be addressed for the administrator's OWN fleet.
         AdminAccountLookupEndpoint.Map(_app, TenantRegistry, Registry);
@@ -4840,6 +4891,8 @@ public sealed class GatewayHost : IAsyncDisposable
         _turnLogRecorder = null;
         try { _turnLogSwitches?.Dispose(); } catch (Exception ex) { FileLog.Write($"[GatewayHost] turn log switch dispose error: {ex.Message}"); }
         _turnLogSwitches = null;
+        try { _turnLogRetentionTimer?.Dispose(); } catch (Exception ex) { FileLog.Write($"[GatewayHost] turn log retention dispose error: {ex.Message}"); }
+        _turnLogRetentionTimer = null;
         try { _turnEndWatcher?.Dispose(); } catch (Exception ex) { FileLog.Write($"[GatewayHost] watcher dispose error: {ex.Message}"); }
         // Issue #915: cancel any recovery wait in flight, so a Gateway shutdown does not leave a background
         // ladder holding a token and re-sending into a fleet this process no longer owns.

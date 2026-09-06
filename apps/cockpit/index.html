@@ -4,6 +4,20 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="theme-color" content="#0B1020" />
+    <!--
+      The browser tab icon. Without this the Cockpit tab showed the browser's generic grey globe:
+      the page declared no icon, so the browser fell back to asking for /favicon.ico at the site
+      root, and CockpitReactApp answered 404 because no such file existed under wwwroot/c.
+      public/favicon.ico is the Director's own application icon, written from the same drawing by
+      scripts/branding/generate_director_icon.py, so the tab carries the same mark as the Director
+      on the machine. Vite copies public/ verbatim into the build output, which the Gateway's
+      BuildCockpitApp target stages into wwwroot/c - and /favicon.ico is already in the public path
+      set in AuthMiddleware, so the mark also shows on the sign-in screen, before anyone has signed
+      in. The icon is declared here rather than left to the browser's silent fallback so that the
+      page states what its icon is, and the address begins with a slash so it means the same file
+      from every depth the Cockpit is served at, including deep paths such as /session/{id}.
+    -->
+    <link rel="icon" type="image/x-icon" href="/favicon.ico" />
     <title>DevThrottle Cockpit</title>
     <!--
       Epic #967: this is the React Cockpit, served same-origin by the Gateway at the site root "/"

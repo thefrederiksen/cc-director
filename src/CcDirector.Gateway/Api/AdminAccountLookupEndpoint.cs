@@ -115,10 +115,11 @@ internal static class AdminAccountLookupEndpoint
             // for an account nobody named.
             if (match.Count > 1)
             {
+                // The COUNT is deliberately not returned. It answered a question nobody needs and told a
+                // caller how many accounts share an address.
                 return Results.Json(new
                 {
                     error = "more than one account is recorded against that email; name the account by ?subject= instead",
-                    count = match.Count,
                 }, statusCode: StatusCodes.Status409Conflict);
             }
             if (match.Count == 1) tenant = new TenantId(match[0].TenantId);
@@ -145,20 +146,27 @@ internal static class AdminAccountLookupEndpoint
         // an account lookup should quietly do on the way past.
         var computers = directors.ListDirectors(found)
             .OrderBy(d => d.MachineName ?? "", StringComparer.OrdinalIgnoreCase)
+            // MINIMISED. The operating-system username was here and is gone: nothing an administrator does
+            // with this needs it, and a lookup that hands back more than the job requires turns a shared
+            // credential into a better reconnaissance tool than it has to be. What is left is what the
+            // capture switch actually takes plus the name a human recognises.
             .Select(d => new
             {
                 director_id = d.DirectorId,
                 machine_name = d.MachineName,
-                user = d.User,
                 last_seen_utc = d.LastSeen,
             })
             .ToList();
+
+        // EVERY LOOKUP IS LOGGED. This route exists to name other people's accounts, so the fact that it
+        // was used is itself worth recording - a shared credential with no trail behind it cannot answer
+        // "who went looking, and when". The tenant is written in its log-safe form, never raw.
+        FileLog.Write($"[AdminAccountLookupEndpoint] account lookup by {(hasSubject ? "subject" : "email")} -> {found.ToLogString()}");
 
         return Results.Json(new
         {
             found = true,
             account = found.Value,
-            email = tenants.EmailForTenant(found),
             computers,
             // Said out loud because an empty list has two meanings and only one of them is a problem: an
             // account that has never connected a computer, and an account whose computers are all currently
