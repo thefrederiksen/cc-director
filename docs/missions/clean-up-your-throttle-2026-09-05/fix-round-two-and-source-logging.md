@@ -192,9 +192,17 @@ choke point not digesting (2); the store dropping a column (1).
 | suite | result |
 |---|---|
 | default local gate (`scripts\test-local.ps1`) | all nine projects green: 206, 3697 (2 skipped), 377, 63, 88, 113, 25, 25, 456 |
-| Gateway.Tests (parked), in foreground chunks by first letter | recorded in the closing note below |
-| Core.Tests (parked), in foreground chunks | recorded in the closing note below |
-| web workspaces (`vitest run`) | client-core, cockpit, mobile, cc-assistant - recorded below; `typecheck` clean on all four |
+| Gateway.Tests (parked), whole suite in seven foreground chunks by first letter | 2,354 run, 2 failed - the pre-existing `ContextLessRouteCensusTests` pair recorded in `state.md`, red on main before this branch |
+| Core.Tests (parked), whole suite in seven foreground chunks | 4,742 run, 8 skipped, 0 failed |
+| web workspaces (`vitest run`, all four) | client-core 1002, cockpit 293, mobile 30, cc-assistant 106, all green; `typecheck` clean on all four |
 | mentor harness (`pytest tests`) | 876 passed, 8 skipped |
 | conformance command tests (`pytest tools/throttle-conformance/tests`) | 4 passed |
 | EF snapshots | both providers: no pending model changes |
+
+**One source pin was updated, deliberately.** `TerminalPromptInjectionChokepointTests` pins the exact text of
+each submit call, so requiring the door argument turned it red on three tests - which is the pin doing its
+job, and is recorded here as the observation that it is not vacuous. The pinned strings now name the new
+call shape. One assertion was deliberately weakened: the desktop composer's origin is a VARIABLE at the call
+site now, not a literal `InputOrigin.DesktopTyped`, because ruling R20 moved that decision to the compose
+box's per-character provenance. What the decision produces is pinned where it can be observed - through the
+real window and the real send in `ComposerSendRouteTests` - rather than by reading a literal out of the source.

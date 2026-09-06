@@ -11,15 +11,21 @@ public sealed class TerminalPromptInjectionChokepointTests
         var root = RepoRoot();
         var main = File.ReadAllText(Path.Combine(root, "src", "CcDirector.Avalonia", "MainWindow.axaml.cs"));
 
-        // DevThrottle Stats threaded an InputOrigin through the desktop choke-point calls: the composer is
-        // typed-desktop and the background dictation submit is voice-desktop.
+        // DevThrottle Stats threaded an InputOrigin through the desktop choke-point calls, and source logging
+        // (2026-09-05) added the door each one came through as a required argument.
         // The chokepoint (SendTextAsync only, no Enter-retry, no raw SendInput) is unchanged - the calls still
-        // funnel here; they now also carry the honest origin tag. (The VoiceModeController this audit used
-        // to read was deleted: it was orphaned code no shipping app instantiated, and it pushed the
-        // transcript through a language-model summarize step the product removed everywhere else.)
-        Assert.Contains("await _activeSession.Session.SendTextAsync(text, origin: InputOrigin.DesktopTyped);", main);
-        Assert.Contains("await target.SendTextAsync(text, origin: InputOrigin.DesktopVoice);", main);
-        Assert.Contains("await _activeSession.Session.SendTextAsync(\"/handover\", SendSource.Framework);", main);
+        // funnel here; they now also carry the honest origin tag and the door's own record. (The
+        // VoiceModeController this audit used to read was deleted: it was orphaned code no shipping app
+        // instantiated, and it pushed the transcript through a language-model summarize step the product
+        // removed everywhere else.)
+        //
+        // The origin is a VARIABLE at both sites now, not a literal, and that is ruling R20: which modality a
+        // desktop send carries is decided by the compose box's own per-character provenance, never by which
+        // method was called. What that decision produces is pinned where it can actually be observed - through
+        // the real window and the real send, in ComposerSendRouteTests - not by reading a literal here.
+        Assert.Contains("await _activeSession.Session.SendTextAsync(text, provenance, origin: origin);", main);
+        Assert.Contains("await target.SendTextAsync(text, provenance, origin: origin);", main);
+        Assert.Contains("await _activeSession.Session.SendTextAsync(\"/handover\", SubmissionProvenance.FrameworkText(), SendSource.Framework);", main);
 
         Assert.DoesNotContain("ScheduleEnterRetry", main);
         Assert.DoesNotContain("RetryEnterAfterDelay", main);
@@ -50,17 +56,17 @@ public sealed class TerminalPromptInjectionChokepointTests
         // PromptAsync funnels submitted text through the session submit chokepoint.
         // effectiveSource, not source: a relayed fleet prompt marks itself agent-driven in the DTO, and the
         // executor resolves that before the send (issue #1636). Still the same one chokepoint.
-        Assert.Contains("await session.SendTextAsync(request.Text, effectiveSource, origin);", executor);
+        Assert.Contains("await session.SendTextAsync(request.Text, provenance, effectiveSource, origin);", executor);
         // The queue-send and chat submit paths use the SAME chokepoint. (Fleet-message delivery is now
         // Gateway-native and rides the prompt verb above, so it funnels through the same chokepoint; the
         // VoiceTurn endpoint was retired at the cut.)
-        Assert.Contains("await session.SendTextAsync(text, SendSource.Framework);", queueGit);
-        Assert.Contains("await session.SendTextAsync(req.Text, SendSource.Framework);", chat);
+        Assert.Contains("await session.SendTextAsync(text, SubmissionProvenance.FrameworkText(SubmissionRoutes.QueueDrain), SendSource.Framework);", queueGit);
+        Assert.Contains("await session.SendTextAsync(req.Text, SubmissionProvenance.FrameworkText(), SendSource.Framework);", chat);
 
         // Raw SendInput is still allowed when the caller explicitly asked not to append Enter; that is
         // terminal typing, not prompt submission.
         Assert.Contains("if (request.AppendEnter)", executor);
-        Assert.Contains("session.SendInput(Encoding.UTF8.GetBytes(request.Text), origin);", executor);
+        Assert.Contains("session.SendInput(Encoding.UTF8.GetBytes(request.Text), origin, provenance);", executor);
     }
 
     [Fact]
@@ -101,8 +107,9 @@ public sealed class TerminalPromptInjectionChokepointTests
         Assert.Contains("const body: PromptRequest & { menuGuard: boolean } = { text, appendEnter: true, menuGuard: true };", client);
 
         Assert.Contains("await sendPrompt(this.sessionId, chunk, false);", interactive);
-        // Raw browser keystrokes go through the terminal-input verb, which calls SendInput (no submit/Enter).
-        Assert.Contains("session.SendInput(bytes);", writeExec);
+        // Raw browser keystrokes go through the terminal-input verb, which calls SendInput (no submit/Enter),
+        // naming its door: the Gateway's terminal relay, whose credential kind it honestly does not know.
+        Assert.Contains("session.SendInput(bytes, null, SubmissionProvenance.Typed(SubmissionRoutes.GatewayTerminal, SubmissionIdentityKinds.Unknown));", writeExec);
 
         // The Gateway prompt route submits over the tunnel prompt verb, never raw input.
         // Matched WITHOUT the closing parenthesis: the guarded invariant is "the prompt verb carries req through
