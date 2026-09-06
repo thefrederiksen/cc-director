@@ -1,4 +1,5 @@
 using System.Net;
+using System.Net.WebSockets;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text;
@@ -155,6 +156,17 @@ public sealed class PromptAttributionIsGatewayAuthoritativeTests : IAsyncLifetim
         var req = new HttpRequestMessage(HttpMethod.Post, $"sessions/{sid ?? _sid}/prompt") { Content = JsonContent.Create(body) };
         if (bearer is not null) req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", bearer);
         return await _http.SendAsync(req);
+    }
+
+    private static async Task WaitUntil(Func<bool> condition, TimeSpan within)
+    {
+        var deadline = DateTime.UtcNow + within;
+        while (DateTime.UtcNow < deadline)
+        {
+            if (condition()) return;
+            await Task.Delay(50);
+        }
+        Assert.True(condition(), "the condition did not become true within " + within);
     }
 
     private static async Task AssertOk(HttpResponseMessage resp)
@@ -449,5 +461,173 @@ public sealed class PromptAttributionIsGatewayAuthoritativeTests : IAsyncLifetim
         var entry = Assert.Single(_ledger);
         Assert.Equal(SendSource.Delivery, entry.Source);
         Assert.Equal(InputModality.Voice, entry.Origin!.Value.Modality);
+    }
+
+    // ---- source logging: a browser's per-character claims, verified before they are believed --------------
+
+    /// <summary>
+    /// The browser composer's case (owner's ruling, 2026-09-05): a person dictates INTO a typed sentence and
+    /// sends it. The turn is typed - a mixture is not speech (ruling R20) - and it must still say WHICH
+    /// characters came from the microphone. The composer claims the range; the Gateway verifies those
+    /// characters ARE the transcript it registered, and only then records them.
+    /// </summary>
+    [Fact]
+    public async Task A_verified_span_claim_records_which_characters_were_spoken_although_the_turn_is_typed()
+    {
+        var id = await TranscribeAnUtterance();
+        var text = "please " + Transcript + " now";
+
+        var resp = await PostPrompt(new
+        {
+            text,
+            appendEnter = true,
+            spokenSpans = new[] { new { start = 7, length = Transcript.Length, transcriptId = id } },
+        });
+        await AssertOk(resp);
+
+        // The turn is TYPED: no whole-text claim was made, and a mixture is not spoken.
+        var entry = Assert.Single(_ledger);
+        Assert.Equal(InputModality.Typed, entry.Origin!.Value.Modality);
+        Assert.Equal(1, Bucket("typed", "unknown").Turns);
+        // And the ledger row says exactly which characters were spoken, and which transcript they came from.
+        var p = entry.Evidence.Provenance;
+        Assert.Equal(id, p.TranscriptId);
+        var span = Assert.Single(p.SpokenSpans);
+        Assert.Equal(Transcript, text.Substring(span.Start, span.Length));
+    }
+
+    [Fact]
+    public async Task A_span_claim_over_characters_that_are_not_the_transcript_is_refused_and_the_words_still_arrive()
+    {
+        var id = await TranscribeAnUtterance();
+        // The id is real; the characters it names are the person's own typing. Nothing about them was spoken.
+        var text = "I typed every word of this myself";
+
+        var resp = await PostPrompt(new
+        {
+            text,
+            appendEnter = true,
+            spokenSpans = new[] { new { start = 0, length = 7, transcriptId = id } },
+        });
+        await AssertOk(resp);
+
+        Assert.Equal(text, LastArrived().Text);
+        var entry = Assert.Single(_ledger);
+        Assert.Empty(entry.Evidence.Provenance.SpokenSpans);
+        Assert.Null(entry.Evidence.Provenance.TranscriptId);
+        Assert.Equal(1, Bucket("typed", "unknown").Turns);
+    }
+
+    [Fact]
+    public async Task A_span_claim_naming_an_invented_transcript_or_lying_outside_the_text_is_refused()
+    {
+        var resp = await PostPrompt(new
+        {
+            text = Transcript,
+            appendEnter = true,
+            spokenSpans = new[]
+            {
+                new { start = 0, length = Transcript.Length, transcriptId = Guid.NewGuid().ToString("N") },
+                new { start = 0, length = 9_000, transcriptId = "anything" },
+                new { start = -4, length = 5, transcriptId = "anything" },
+            },
+        });
+        await AssertOk(resp);
+
+        var entry = Assert.Single(_ledger);
+        Assert.Empty(entry.Evidence.Provenance.SpokenSpans);
+        Assert.Null(entry.Evidence.Provenance.TranscriptId);
+    }
+
+    [Fact]
+    public async Task A_session_credential_cannot_claim_that_any_of_its_characters_were_spoken()
+    {
+        // A session did not speak - the same rule the whole-text claim already follows, applied to spans.
+        var id = await TranscribeAnUtterance();
+        var key = GatewaySessionKey.Mint();
+        Assert.True(_gateway.SessionKeys.Register(TenantId.Local, DirectorId, Guid.NewGuid().ToString(),
+            GatewaySessionKey.Hash(key), DateTime.UtcNow.AddHours(1)));
+
+        var resp = await PostPrompt(new
+        {
+            text = Transcript,
+            appendEnter = true,
+            spokenSpans = new[] { new { start = 0, length = Transcript.Length, transcriptId = id } },
+        }, bearer: key);
+        await AssertOk(resp);
+
+        var entry = Assert.Single(_ledger);
+        Assert.Equal(SubmissionRoutes.FleetMessage, entry.Evidence.Provenance.Route);
+        Assert.Empty(entry.Evidence.Provenance.SpokenSpans);
+        Assert.Null(entry.Evidence.Provenance.TranscriptId);
+    }
+
+    [Fact]
+    public async Task A_client_cannot_set_the_route_or_the_credential_kind_by_sending_its_own_provenance()
+    {
+        // The body carries a whole provenance block claiming to be the desktop's local user. The route owns
+        // both fields and overwrites them from what IT verified.
+        var resp = await PostPrompt(new
+        {
+            text = "hello",
+            appendEnter = true,
+            provenance = new
+            {
+                route = SubmissionRoutes.DesktopComposer,
+                identityKind = SubmissionIdentityKinds.LocalUser,
+                transcriptId = "invented",
+                spokenSpans = new[] { new { start = 0, length = 5 } },
+            },
+        });
+        await AssertOk(resp);
+
+        var p = Assert.Single(_ledger).Evidence.Provenance;
+        Assert.Equal(SubmissionRoutes.GatewayPrompt, p.Route);
+        Assert.Equal(SubmissionIdentityKinds.MachineToken, p.IdentityKind);
+        Assert.Null(p.TranscriptId);
+        Assert.Empty(p.SpokenSpans);
+    }
+
+    /// <summary>
+    /// The browser terminal relay (source logging): the Gateway stamps the credential kind of the person
+    /// typing when their socket opens, and every keystroke frame carries it to the Director. Driven through
+    /// the REAL websocket route, with the real tunnel legs and the real Director executor.
+    /// </summary>
+    [Fact]
+    public async Task The_browser_terminal_relay_carries_the_credential_kind_of_the_person_typing()
+    {
+        var arrived = new TaskCompletionSource<TerminalInputRequest>(TaskCreationOptions.RunContinuationsAsynchronously);
+        _conn.Remove("Command");
+        _conn.On<DirectorCommand, DirectorCommandResult>("Command", async cmd =>
+        {
+            if (cmd.Verb == "terminal-input" && cmd.PayloadJson is { } json)
+            {
+                var body = JsonSerializer.Deserialize<TerminalInputRequest>(json, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+                if (body is not null) arrived.TrySetResult(body);
+            }
+            if (cmd.Verb == "open-terminal-stream") return DirectorCommandResult.Success();
+            return await SessionCommandExecutor.DispatchAsync(_sm, DirectorId, cmd);
+        });
+
+        using var ws = new ClientWebSocket();
+        ws.Options.SetRequestHeader("Authorization", "Bearer " + Token);
+        await ws.ConnectAsync(new Uri($"ws://127.0.0.1:{_gateway.Port}/sessions/{_sid}/stream"), CancellationToken.None);
+        await ws.SendAsync(System.Text.Encoding.UTF8.GetBytes("ls\r"), WebSocketMessageType.Binary, true, CancellationToken.None);
+
+        var frame = await arrived.Task.WaitAsync(TimeSpan.FromSeconds(20));
+        Assert.NotNull(frame.Provenance);
+        Assert.Equal(SubmissionRoutes.GatewayTerminal, frame.Provenance!.Route);
+        // The shared machine token authenticated this socket, and the relay says so rather than "unknown".
+        Assert.Equal(SubmissionIdentityKinds.MachineToken, frame.Provenance.IdentityKind);
+
+        // AND THE ROW THE SESSION RECORDED, which is the point: the keystrokes carried a carriage return, so
+        // they are a submitted turn, and what the Director wrote on it is what the relay verified - not an
+        // "unknown" it invented, and not something the wire said that the Director then ignored.
+        await WaitUntil(() => _ledger.Count > 0, TimeSpan.FromSeconds(20));
+        var recorded = Assert.Single(_ledger).Evidence.Provenance;
+        Assert.Equal(SubmissionRoutes.GatewayTerminal, recorded.Route);
+        Assert.Equal(SubmissionIdentityKinds.MachineToken, recorded.IdentityKind);
+        Assert.Null(Assert.Single(_ledger).Evidence.ContentSha256);
+        await ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "done", CancellationToken.None);
     }
 }

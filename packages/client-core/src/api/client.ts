@@ -7,6 +7,7 @@
 // the system. No token is injected into the page; the shell carries no secret until the person
 // signs in on devthrottle.com and the device enrolls with the Gateway.
 import type { components } from "./schema";
+import type { SpokenSpan } from "../dictation/composerProvenance";
 import type { SessionHistoryDto } from "../history/types";
 import { planUploadChunks } from "./chunking";
 import { getDeviceKey } from "../auth/deviceKey";
@@ -732,6 +733,15 @@ export async function getSessionHistory(
 
 // Write text (or a raw key escape sequence) to the session's PTY. appendEnter=true submits a typed
 // line (the Send button); appendEnter=false writes the bytes verbatim (Enter "\r", arrow keys
+// A composer's spoken ranges as the wire carries them: only spans that name a transcript the Gateway can
+// verify are worth sending, so a span with no id is dropped here rather than refused there.
+function spokenSpanClaims(spans?: readonly SpokenSpan[]): { start: number; length: number; transcriptId: string }[] {
+  if (spans === undefined) return [];
+  return spans
+    .filter((s) => s.transcriptId !== undefined && s.transcriptId !== "" && s.length > 0)
+    .map((s) => ({ start: s.start, length: s.length, transcriptId: s.transcriptId as string }));
+}
+
 // ESC[A/B/C/D) so the session reacts as if the key were pressed at the terminal.
 // `spokenDeliveryId` says this text was SPOKEN, not typed: it is the id of the utterance the Gateway
 // just transcribed, handed back by transcribeUtterance and passed straight through here. Without it a
@@ -749,10 +759,17 @@ export async function sendPrompt(
   appendEnter: boolean,
   signal?: AbortSignal,
   spokenDeliveryId?: string,
+  spokenSpans?: readonly SpokenSpan[],
 ): Promise<void> {
   const sid = encodeURIComponent(sessionId);
   const body: PromptRequest = { text, appendEnter };
   if (spokenDeliveryId) body.deliveryUploadId = spokenDeliveryId;
+  // WHICH characters were spoken, when the composer tracked them (source logging, 2026-09-05). Sent whether
+  // or not the turn is wholly spoken: a turn typed around a dictation is TYPED, and still says which of its
+  // characters came from a microphone. Claims, not facts - the Gateway verifies each against the transcript
+  // it registered and drops any it cannot.
+  const claims = spokenSpanClaims(spokenSpans);
+  if (claims.length > 0) body.spokenSpans = claims;
   const res = await gatewayFetch(`/sessions/${sid}/prompt`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Accept: "application/json", ...authHeaders() },
@@ -829,9 +846,12 @@ export async function sendVoicePrompt(
   text: string,
   signal?: AbortSignal,
   spokenDeliveryId?: string,
+  spokenSpans?: readonly SpokenSpan[],
 ): Promise<VoicePromptResult> {
   const sid = encodeURIComponent(sessionId);
   const body: PromptRequest & { menuGuard: boolean } = { text, appendEnter: true, menuGuard: true };
+  const claims = spokenSpanClaims(spokenSpans);
+  if (claims.length > 0) body.spokenSpans = claims;
   // A voice-mode reply is speech by definition, yet it reaches the session as an ordinary prompt, and
   // the Director reads modality off the send source - so without the delivery id it was recorded as
   // TYPED. Passed through, never invented here: the dialog withholds it the moment the words stop

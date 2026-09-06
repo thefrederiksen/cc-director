@@ -70,11 +70,34 @@ public sealed class PromptRequest
     /// </summary>
     public bool MenuGuard { get; set; }
 
+    /// <summary>
+    /// A client's CLAIM about which characters of <see cref="Text"/> came from which transcript (source logging,
+    /// 2026-09-05). A browser composer tracks the ranges its dictation occupies as the person edits around them
+    /// and sends them here, so a turn that mixes typing and speech still says WHICH characters were spoken.
+    ///
+    /// This is a claim, not a fact, and the Gateway treats it as one: each span is verified against the spoken
+    /// claim registry - the characters it names must BE the transcript that id registered - and only verified
+    /// spans reach <see cref="Provenance"/>. An unverified span is dropped and logged, never recorded. The route
+    /// and the credential kind are never taken from a client at all; the Gateway owns both.
+    /// </summary>
+    public List<SpokenSpanClaimDto>? SpokenSpans { get; set; }
+
     /// <summary>What the Gateway's door knew at entry (source logging, 2026-09-05): the route, the credential
     /// kind, the transcript claim and where its characters stand in <see cref="Text"/>. Built by the Gateway
     /// route that accepted the request; the Director records it on the ledger row untouched. Null only from a
-    /// Gateway older than this field, which the Director records as the unknown it is.</summary>
+    /// Gateway older than this field, which the Director records as the unknown it is.
+    ///
+    /// A client cannot set this: whatever arrives here is overwritten by the route from what it verified.</summary>
     public SubmissionProvenanceDto? Provenance { get; set; }
+}
+
+/// <summary>One client claim: the text from <see cref="Start"/> for <see cref="Length"/> characters is the
+/// transcript the Gateway registered under <see cref="TranscriptId"/>. Verified before it is believed.</summary>
+public sealed class SpokenSpanClaimDto
+{
+    public int Start { get; set; }
+    public int Length { get; set; }
+    public string? TranscriptId { get; set; }
 }
 
 /// <summary>
@@ -168,6 +191,12 @@ public sealed class TerminalInputRequest
 {
     /// <summary>The raw keystroke bytes, base64-encoded.</summary>
     public string Bytes { get; set; } = "";
+
+    /// <summary>What the Gateway's terminal relay knew when the browser opened this socket (source logging,
+    /// 2026-09-05): the route, and the kind of credential the gate verified for the person typing. Stamped at
+    /// the socket, not per frame - one browser holds one identity for the life of its terminal. Null only from
+    /// a Gateway older than this field, which the Director records as the unknown it is.</summary>
+    public SubmissionProvenanceDto? Provenance { get; set; }
 }
 
 /// <summary>Body of the git stage/unstage/discard endpoints. Empty paths means "all" (stage/unstage only).</summary>

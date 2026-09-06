@@ -10801,6 +10801,16 @@ export interface components {
             surface?: null | string;
             deliveryUploadId?: null | string;
             menuGuard?: boolean;
+            /** A client's claim about which characters of `text` came from which transcript (source logging).
+             *  Verified by the Gateway against the transcript it registered; unverified claims are dropped. */
+            spokenSpans?: null | components["schemas"]["SpokenSpanClaimDto"][];
+        };
+        SpokenSpanClaimDto: {
+            /** Format: int32 */
+            start?: number;
+            /** Format: int32 */
+            length?: number;
+            transcriptId?: null | string;
         };
         RepoAddRequest: {
             path?: string;

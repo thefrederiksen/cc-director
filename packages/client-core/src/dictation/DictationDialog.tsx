@@ -68,7 +68,10 @@ const MIC_SILENT_MESSAGE =
 export interface DictationDialogProps {
   /** Commit the transcript WITHOUT submitting (drop into the view's text box for editing). Required
    *  only when Insert is shown; ignored when showInsert is false. */
-  onInsert?: (text: string) => void;
+  /** Insert receives the utterance id alongside the text (the commit path has always passed it; the type
+   *  hid it), so a composer can record WHICH characters it just inserted came from which transcript -
+   *  source logging, 2026-09-05. A host that does not care takes the text alone. */
+  onInsert?: (text: string, spokenDeliveryId?: string) => void;
   /** Commit the transcript AND submit it (the view's Send path). Used for the instant PAUSED-stage
    *  Send (the text is already transcribed) and as the fallback Send when onSendAudio is not wired.
    *

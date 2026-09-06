@@ -2861,19 +2861,62 @@ internal static class GatewayEndpoints
                 FileLog.Write($"[GatewayEndpoints] POST prompt: sid={sid} spoken claim ignored - the caller is a session, and a session did not speak");
             }
 
+            // WHICH CHARACTERS WERE SPOKEN (source logging, 2026-09-05). A browser composer tracks the ranges its
+            // dictation occupies as the person types around them and CLAIMS them here. A claim is not a fact: each
+            // one is verified against the registry - the characters it names must BE the transcript that id
+            // registered, in this tenant, unexpired - and only verified spans are recorded. A claim that fails is
+            // dropped and logged, so a hostile body can mark nothing as spoken that it cannot already reproduce
+            // verbatim. Verification is read-only and spends nothing: whether the TURN counts as spoken is still
+            // decided by the reservation above and by nothing else.
+            var claimedSpans = req.SpokenSpans ?? new List<SpokenSpanClaimDto>();
+            req.SpokenSpans = null;
+            var verifiedSpans = new List<SpokenSpanDto>();
+            var verifiedTranscriptIds = new HashSet<string>(StringComparer.Ordinal);
+            if (claimedSpans.Count > 0 && callingSessionForAttribution is null && spokenClaims is not null
+                && ResolveReadTenant(httpCtx, tenantBoundary) is { } spanTenant)
+            {
+                var text = req.Text ?? "";
+                foreach (var claim in claimedSpans.OrderBy(c => c.Start))
+                {
+                    if (claim.Start < 0 || claim.Length <= 0 || (long)claim.Start + claim.Length > text.Length)
+                    {
+                        FileLog.Write($"[GatewayEndpoints] POST prompt: sid={sid} spoken span claim REFUSED - {claim.Start}+{claim.Length} lies outside {text.Length} characters");
+                        continue;
+                    }
+                    if (!spokenClaims.Matches(spanTenant, claim.TranscriptId, text.Substring(claim.Start, claim.Length)))
+                    {
+                        FileLog.Write($"[GatewayEndpoints] POST prompt: sid={sid} spoken span claim REFUSED - the characters {claim.Start}+{claim.Length} are not the transcript of upload {claim.TranscriptId}");
+                        continue;
+                    }
+                    verifiedSpans.Add(new SpokenSpanDto { Start = claim.Start, Length = claim.Length });
+                    if (!string.IsNullOrWhiteSpace(claim.TranscriptId)) verifiedTranscriptIds.Add(claim.TranscriptId!.Trim());
+                }
+                FileLog.Write($"[GatewayEndpoints] POST prompt: sid={sid} spoken span claims: {verifiedSpans.Count} of {claimedSpans.Count} verified");
+            }
+            else if (claimedSpans.Count > 0)
+            {
+                FileLog.Write($"[GatewayEndpoints] POST prompt: sid={sid} {claimedSpans.Count} spoken span claim(s) ignored - the caller is a session, or no registry or tenant resolved");
+            }
+
             // WHAT THIS DOOR KNEW AT ENTRY (owner's ruling, 2026-09-05: source logging), onto the wire for the
             // Director to record on the ledger row: the route (a session calling is a fleet message; anyone else
-            // is the prompt route), the credential kind this gate verified, and - when a spoken claim was
-            // reserved above - the transcript's id and its characters, which are the whole text (the registry
-            // reserves a claim only for text that IS the transcript). Nothing here is inferred later.
+            // is the prompt route), the credential kind this gate verified, and the spoken characters - the
+            // verified span claims, or, when a whole-text claim was reserved above and the client named no spans,
+            // the whole text (the registry reserves a claim only for text that IS the transcript). Nothing here
+            // is inferred later.
+            if (verifiedSpans.Count == 0 && spokenReservation is not null && !string.IsNullOrEmpty(req.Text))
+            {
+                verifiedSpans.Add(new SpokenSpanDto { Start = 0, Length = req.Text.Length });
+                if (!string.IsNullOrWhiteSpace(claimedUploadId)) verifiedTranscriptIds.Add(claimedUploadId!.Trim());
+            }
             req.Provenance = new SubmissionProvenanceDto
             {
                 Route = callingSessionForAttribution is not null ? Core.Sessions.SubmissionRoutes.FleetMessage : Core.Sessions.SubmissionRoutes.GatewayPrompt,
                 IdentityKind = AuthMiddleware.IdentityKind(httpCtx),
-                TranscriptId = spokenReservation is not null ? claimedUploadId : null,
-                SpokenSpans = spokenReservation is not null && !string.IsNullOrEmpty(req.Text)
-                    ? new List<SpokenSpanDto> { new() { Start = 0, Length = req.Text.Length } }
-                    : new List<SpokenSpanDto>(),
+                // One id names the transcript this turn came from; several means it was composed of more than
+                // one, and no single id is the truth - the spans carry that detail instead of a guess.
+                TranscriptId = verifiedTranscriptIds.Count == 1 ? verifiedTranscriptIds.First() : null,
+                SpokenSpans = verifiedSpans,
             };
 
             var accepted = false;

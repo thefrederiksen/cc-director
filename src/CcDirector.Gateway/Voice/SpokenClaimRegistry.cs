@@ -116,6 +116,21 @@ public sealed class SpokenClaimRegistry
 
     /// <summary>The prompt entered a session: the claim is spent for good. A reservation this registry does
     /// not hold is a programming error and throws, never a silent no-op.</summary>
+    /// <summary>
+    /// Are these characters the transcript that id registered? A READ-ONLY check for a client's span claim
+    /// (source logging, 2026-09-05): it changes no state, spends nothing, and answers only about text the
+    /// caller already holds. A SPENT claim still matches - the words in that range did come from that
+    /// transcript, which is what a span records; whether the TURN counts as spoken is decided by
+    /// <see cref="TryReserve"/> and by nothing else.
+    /// </summary>
+    public bool Matches(TenantId tenant, string? uploadId, string? text)
+    {
+        if (string.IsNullOrWhiteSpace(uploadId) || !tenant.IsValid || text is null) return false;
+        if (!_claims.TryGetValue((tenant.Value, uploadId.Trim()), out var claim)) return false;
+        if (_clock() - claim.CreatedUtc > ClaimLifetime) return false;
+        return string.Equals(claim.Transcript, Normalize(text), StringComparison.Ordinal);
+    }
+
     public void Commit(Reservation reservation)
     {
         var claim = Held(reservation);

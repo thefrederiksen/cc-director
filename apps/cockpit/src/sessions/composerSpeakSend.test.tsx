@@ -202,10 +202,14 @@ describe("Cockpit Speak Send-direct (recording-stage)", () => {
     // snapshotted caret - no audio round trip, and the background pipeline stays untouched.
     fireEvent.click(within(dialog).getByText("Send"));
     await waitFor(() =>
-      // The last argument is the SPOKEN claim (ruling R10, "Clean up Your Throttle"), and it is
-      // undefined here on purpose: the box held typed text, so this turn is a mixture of speech and
+      // The fifth argument is the whole-turn SPOKEN claim (ruling R10, "Clean up Your Throttle"), and it
+      // is undefined here on purpose: the box held typed text, so this turn is a mixture of speech and
       // typing and is not claimed as spoken. See the test below for the pure-dictation case.
-      expect(sendPrompt).toHaveBeenCalledWith("sess-42", "A the dictated words B", true, undefined, undefined),
+      //
+      // The SIXTH is which characters were spoken (source logging, 2026-09-05): a mixture is a typed turn
+      // that still says where the speech was, so the transcript's own range rides even though the claim
+      // above does not. Both halves of the same honesty.
+      expect(sendPrompt).toHaveBeenCalledWith("sess-42", "A the dictated words B", true, undefined, undefined, [{ start: 2, length: 18, transcriptId: "utt-77" }]),
     );
     expect(backgroundTranscribeAndSend).not.toHaveBeenCalled();
   });
@@ -227,7 +231,8 @@ describe("Cockpit Speak Send-direct (recording-stage)", () => {
 
     fireEvent.click(within(dialog).getByText("Send"));
     await waitFor(() =>
-      expect(sendPrompt).toHaveBeenCalledWith("sess-42", "the dictated words", true, undefined, "utt-77"),
+      // A pure dictation: the whole-turn claim AND the range covering the whole text.
+      expect(sendPrompt).toHaveBeenCalledWith("sess-42", "the dictated words", true, undefined, "utt-77", [{ start: 0, length: 18, transcriptId: "utt-77" }]),
     );
   });
 
@@ -248,7 +253,9 @@ describe("Cockpit Speak Send-direct (recording-stage)", () => {
 
     fireEvent.click(within(dialog).getByText("Send"));
     await waitFor(() =>
-      expect(sendPrompt).toHaveBeenCalledWith("sess-42", "the dictated words, reworded", true, undefined, undefined),
+      // Edited in the dialog before it ever reached the box: neither the whole-turn claim nor a range
+      // survives, because those are no longer the characters the transcription produced.
+      expect(sendPrompt).toHaveBeenCalledWith("sess-42", "the dictated words, reworded", true, undefined, undefined, []),
     );
   });
 });

@@ -156,9 +156,10 @@ internal sealed class SessionWriteExecutor : ISessionCommandArea
         if (session is null)
             return DirectorCommandResult.Fail(DirectorCommandStatus.NotFound, "session not found");
 
-        // Raw bytes from a browser terminal, relayed by the Gateway. The relay carries no credential kind yet,
-        // so the door records the route and an honest unknown identity (source logging, 2026-09-05).
-        session.SendInput(bytes, null, SubmissionProvenance.Typed(SubmissionRoutes.GatewayTerminal, SubmissionIdentityKinds.Unknown));
+        // Raw bytes from a browser terminal, relayed by the Gateway, which stamped the credential kind of the
+        // person typing when their socket opened (source logging, 2026-09-05). A relay older than that field
+        // sends none, and that is recorded as the unknown it is - never guessed here.
+        session.SendInput(bytes, null, SubmissionProvenance.FromWire(request.Provenance, SubmissionRoutes.GatewayTerminal));
         return DirectorCommandResult.Success();
     }
 

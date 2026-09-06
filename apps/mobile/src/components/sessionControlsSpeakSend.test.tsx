@@ -206,7 +206,9 @@ describe("Mobile Speak Send-direct (recording-stage)", () => {
     await within(clean).findByText("PAUSED");
     fireEvent.click(within(clean).getByText("Send"));
     await waitFor(() =>
-      expect(sendPrompt).toHaveBeenCalledWith("sess-42", "the dictated words", true, undefined, "utt-77"),
+      // The sixth argument is which characters were spoken (source logging, 2026-09-05): a pure dictation
+      // claims the whole turn AND names the range that covers it.
+      expect(sendPrompt).toHaveBeenCalledWith("sess-42", "the dictated words", true, undefined, "utt-77", [{ start: 0, length: 18, transcriptId: "utt-77" }]),
     );
 
     // Now with typed text around it: a mixture is not a spoken turn, and the page's own disclosure
@@ -217,7 +219,8 @@ describe("Mobile Speak Send-direct (recording-stage)", () => {
     await within(mixed).findByText("PAUSED");
     fireEvent.click(within(mixed).getByText("Send"));
     await waitFor(() =>
-      expect(sendPrompt).toHaveBeenCalledWith("sess-42", "A the dictated words B", true, undefined, undefined),
+      // A mixture is a TYPED turn (no whole-turn claim) that still says where the speech was.
+      expect(sendPrompt).toHaveBeenCalledWith("sess-42", "A the dictated words B", true, undefined, undefined, [{ start: 2, length: 18, transcriptId: "utt-77" }]),
     );
   });
 });
