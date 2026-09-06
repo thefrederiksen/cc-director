@@ -1373,6 +1373,9 @@ public sealed class SessionManager : IDisposable
                 CustomColor = s.CustomColor,
                 Number = s.Number,
                 PendingPromptText = s.PendingPromptText,
+                PendingPromptSpokenSpans = s.PendingPromptSpokenSpans.Count == 0
+                    ? null
+                    : s.PendingPromptSpokenSpans.Select(span => new PersistedSpokenSpan { Start = span.Start, Length = span.Length }).ToList(),
                 EmbeddedProcessId = s.ProcessId,
                 ConsoleHwnd = getHwnd != null && s.BackendType == SessionBackendType.Embedded ? getHwnd(s.Id) : 0,
                 ClaudeSessionId = s.ClaudeSessionId,
@@ -1436,6 +1439,9 @@ public sealed class SessionManager : IDisposable
             embeddedBackend, ps.ClaudeSessionId, ps.ActivityState, ps.CreatedAt,
             ps.CustomName, ps.CustomColor, ps.PendingPromptText);
 
+        // The dictated ranges of the pending text (ruling R20), after the text that was set in the constructor.
+        if (ps.PendingPromptSpokenSpans is { Count: > 0 } spans)
+            session.PendingPromptSpokenSpans = spans.Select(span => new SpokenTurnRule.SpokenSpan(span.Start, span.Length)).ToList();
         session.AgentKind = ps.AgentKind;
         session.GroupId = ps.GroupId;
         session.GroupRole = ps.GroupRole;

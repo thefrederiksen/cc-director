@@ -777,7 +777,36 @@ public sealed class Session : IDisposable
     {
         if (_pendingPromptText == value) return;
         _pendingPromptText = value;
+        // A different text is a different box: whatever was spoken in the old one is not in this one. The
+        // desktop composer sets the spans right after the text when it saves a box that still holds a
+        // dictation (ruling R20); any other writer - the wingman, a restore of an older snapshot - leaves none.
+        _pendingPromptSpokenSpans = Array.Empty<SpokenTurnRule.SpokenSpan>();
         OnPendingPromptTextChanged?.Invoke(value, source ?? "user");
+    }
+
+    private IReadOnlyList<SpokenTurnRule.SpokenSpan> _pendingPromptSpokenSpans = Array.Empty<SpokenTurnRule.SpokenSpan>();
+
+    /// <summary>
+    /// Which characters of <see cref="PendingPromptText"/> came from a microphone (ruling R20): the compose
+    /// box's provenance, saved with the text when the user switches away and put back when they return, and
+    /// persisted across restarts beside the text. Without it a dictation inserted, switched away from and
+    /// sent later counted as typed. Set AFTER the text, because setting the text clears it; a span outside
+    /// the text is refused.
+    /// </summary>
+    public IReadOnlyList<SpokenTurnRule.SpokenSpan> PendingPromptSpokenSpans
+    {
+        get => _pendingPromptSpokenSpans;
+        set
+        {
+            ArgumentNullException.ThrowIfNull(value);
+            var length = (_pendingPromptText ?? "").Length;
+            foreach (var span in value)
+                if (span.Start < 0 || span.Length <= 0 || span.End > length)
+                    throw new ArgumentException(
+                        $"A spoken span {span.Start}+{span.Length} lies outside the pending prompt text of {length} characters " +
+                        $"on session {Id}. The spans are set after the text they describe, never before.", nameof(value));
+            _pendingPromptSpokenSpans = value.OrderBy(s => s.Start).ToArray();
+        }
     }
 
     /// <summary>Name of the last selected tab (e.g. "Terminal", "Agent", "SourceControl"). Persisted across switches and restarts.</summary>
@@ -2277,39 +2306,32 @@ public sealed class Session : IDisposable
     public SessionInputStats InputStats { get; } = new();
 
     /// <summary>Send raw bytes to the backend. <paramref name="origin"/> tags this input for the
-    /// DevThrottle Stats tally as typed CHARACTER volume for its surface (never a turn - a bare keystroke
-    /// is the user composing, not a submitted turn). Null origin = framework-internal, not counted.</summary>
+    /// DevThrottle Stats tally. A bare keystroke is the user COMPOSING and is not a turn; the write that
+    /// carries the Enter IS the submitted turn and is counted as one, with the character volume of the
+    /// whole line. Null origin = framework-internal, not counted.</summary>
     /// <summary>Printable characters typed at the terminal since the last submission, accumulated so
-    /// the origin event written on Enter carries the size of the whole line rather than of the final
-    /// keystroke. Reset at each submission. See <see cref="RecordOrigin"/>.</summary>
+    /// the turn counted on Enter carries the size of the whole line rather than of the final keystroke.
+    /// Reset at each submission. See <see cref="StampSubmission"/>.</summary>
     private int _pendingOriginChars;
 
-    public void SendInput(byte[] data, InputOrigin? origin = null)
+    public void SendInput(byte[] data, InputOrigin? origin, SubmissionProvenance provenance)
     {
+        ArgumentNullException.ThrowIfNull(provenance);
         if (_disposed || Status is SessionStatus.Exited or SessionStatus.Failed) return;
         FileLog.Write($"[Session] SendInput: session={Id}, bytes={data.Length}, firstByte=0x{(data.Length > 0 ? data[0].ToString("X2") : "00")}");
         _backend.Write(data);
-        if (origin is InputOrigin o)
-        {
-            InputStats.RecordCharacters(o, CountPrintable(data));
+        // Accumulate only. The tally is written at the submission below, by the one method that also
+        // stamps the submission event, so the two can never disagree about how many turns there were
+        // (see StampSubmission). Characters composed and never submitted are not counted, exactly as
+        // text typed into the composer and never sent is not counted.
+        if (origin is not null)
             _pendingOriginChars += CountPrintable(data);
-        }
         // Only promote to Working when the write contains an actual submission
         // (CR or LF). A bare keystroke is the user composing at the prompt --
         // Claude Code hasn't received a turn yet. Treating every byte as Working
         // flickered the sidebar dot blue on every character typed.
         if (ContainsSubmit(data))
         {
-            // A submission is the moment to note the origin (issue #1551). Terminal typing arrives
-            // here one keystroke at a time, so the prompt TEXT cannot be reconstructed from these
-            // bytes - backspace, arrow-key edits, history recall, paste and the agent's own
-            // autocomplete all mutate the line invisibly, and replaying keystrokes would silently
-            // record prompts the user never sent. Only the provenance is recorded here; the text is
-            // read back from the agent's own transcript by the conversation ingest and joined to
-            // this event by timestamp.
-            if (origin is InputOrigin so)
-                RecordOrigin(so, _pendingOriginChars);
-            _pendingOriginChars = 0;
             IsBrandNew = false;
             // A submission supersedes a hold only when the OWNER made it. SendInput carries no SendSource,
             // so the origin IS the whole signal here: non-null means a person typed this (the desktop
@@ -2318,7 +2340,15 @@ public sealed class Session : IDisposable
             // session the owner parked. See IsOwnerDriven for the same rule on the text path.
             if (origin is not null)
                 StampOwnerTurn();
-            StampSubmission(source: null, origin);
+            // The origin is noted at the submission (issue #1551) and the turn is counted with it.
+            // Terminal typing arrives here one keystroke at a time, so the prompt TEXT cannot be
+            // reconstructed from these bytes - backspace, arrow-key edits, history recall, paste and
+            // the agent's own autocomplete all mutate the line invisibly, and replaying keystrokes
+            // would silently record prompts the user never sent. Only the provenance and the size are
+            // recorded here; the text is read back from the agent's own transcript by the conversation
+            // ingest and joined to this event by timestamp.
+            StampSubmission(source: null, origin, SubmissionEvidence.OfKeystrokes(provenance, _pendingOriginChars));
+            _pendingOriginChars = 0;
             SetActivityState(ActivityState.Working);
         }
     }
@@ -2501,15 +2531,58 @@ public sealed class Session : IDisposable
     /// <see cref="SendInput"/> carries no <see cref="SendSource"/>) and the input origin (null when no
     /// human surface tagged it). The activity producer subscribes to record turn-submitted evidence.
     /// </summary>
-    public event Action<SendSource?, InputOrigin?>? OnTurnSubmitted;
+    public event Action<SendSource?, InputOrigin?, SubmissionEvidence>? OnTurnSubmitted;
 
-    /// <summary>Stamp the submission fact and notify observers. An observer's fault must never break the
-    /// submission that already happened, so the fan-out is guarded like every other session event.</summary>
-    private void StampSubmission(SendSource? source, InputOrigin? origin)
+    /// <summary>
+    /// Stamp the submission fact, COUNT THE TURN, note its origin, and notify observers. An observer's
+    /// fault must never break the submission that already happened, so the fan-out is guarded like every
+    /// other session event.
+    ///
+    /// ONE CHOKE POINT, ONE WRITE. The submission event and the DevThrottle Stats turn tally are the same
+    /// fact, so they are written HERE, together, and nowhere else. They used to be written eight lines
+    /// apart by each caller, and <see cref="SendInput"/> wrote only one of the two: over the owner's week
+    /// of 2026-W35 that left 594 typed turns - 77 per cent of his typing - out of the ring's denominator
+    /// and moved his published spoken share by 28.3 points, while the submission ledger written in the
+    /// same method had them all. A caller can no longer record a submission without recording its turn,
+    /// because it has no way to do one without the other.
+    ///
+    /// <paramref name="characters"/> is the character volume of THIS submission: the length of the text on
+    /// the text path, and the printable keystrokes accumulated since the last submission on the raw-byte
+    /// path. Zero is legitimate - a line recalled from history is submitted without any new printable
+    /// keystroke - and it still counts as one turn. The turn tally and the submission event agree on the
+    /// COUNT unconditionally; only the character volume depends on the size.
+    /// </summary>
+    private void StampSubmission(SendSource? source, InputOrigin? origin, SubmissionEvidence evidence)
     {
+        ArgumentNullException.ThrowIfNull(evidence);
+        var characters = (int)Math.Min(evidence.ContentLength, int.MaxValue);
         LastSubmissionAtUtc = DateTime.UtcNow;
-        try { OnTurnSubmitted?.Invoke(source, origin); }
-        catch (Exception ex) { FileLog.Write($"[Session] OnTurnSubmitted handler failed: session={Id}, {ex.Message}"); }
+        // A human origin is a human turn, on its own (modality, surface) bucket.
+        if (origin is InputOrigin o)
+        {
+            InputStats.RecordTurn(o, characters);
+            RecordOrigin(o, characters);
+        }
+        // Issue #1636: one agent prompting another IS a real turn - the sending agent decided to send it -
+        // so it is counted, but never into the human buckets above. Framework text (handover, queue drain,
+        // pre-prompt) carries nobody's decision and is not counted at all, which is the remaining case.
+        else if (source == SendSource.Agent)
+        {
+            InputStats.RecordAgentTurn(characters);
+        }
+        // EACH OBSERVER ON ITS OWN (final inspection finding F-06). A multicast delegate invoked once stops at
+        // the first subscriber that throws, and a single try/catch around it hid that loss: a subscriber
+        // registered ahead of the activity producer could keep the submission ledger from ever hearing about
+        // a turn the tally had already counted - the exact split the earlier fix for InputStats.Changed was
+        // meant to close, one subscriber further along. So the invocation list is walked and every subscriber
+        // is called and guarded on its own; a fault in one is logged and the rest still run.
+        var observers = OnTurnSubmitted;
+        if (observers is null) return;
+        foreach (var observer in observers.GetInvocationList())
+        {
+            try { ((Action<SendSource?, InputOrigin?, SubmissionEvidence>)observer)(source, origin, evidence); }
+            catch (Exception ex) { FileLog.Write($"[Session] OnTurnSubmitted handler failed: session={Id}, handler={observer.Method.DeclaringType?.Name}.{observer.Method.Name}, {ex.Message}"); }
+        }
     }
 
     /// <summary>
@@ -2526,8 +2599,11 @@ public sealed class Session : IDisposable
         catch (Exception ex) { FileLog.Write($"[Session] OnPromptDeliveryChanged handler failed: session={Id}, {ex.Message}"); }
     }
 
-    public async Task SendTextAsync(string text, SendSource source = SendSource.UserInput, InputOrigin? origin = null)
+    /// <param name="provenance">What the door this text came through knew at entry (source logging): required,
+    /// so no door can send text without saying which door it is.</param>
+    public async Task SendTextAsync(string text, SubmissionProvenance provenance, SendSource source = SendSource.UserInput, InputOrigin? origin = null)
     {
+        ArgumentNullException.ThrowIfNull(provenance);
         if (_disposed || Status is SessionStatus.Exited or SessionStatus.Failed) return;
 
         FileLog.Write($"[Session] SendTextAsync: session={Id}, source={source}, driver={Driver.Kind}, text=\"{(text.Length > 60 ? text[..60] + "..." : text)}\", len={text.Length}");
@@ -2581,23 +2657,10 @@ public sealed class Session : IDisposable
         // hold die 90 seconds later when another agent messaged it. See IsOwnerDriven.
         if (IsOwnerDriven(source, origin))
             StampOwnerTurn();
-        StampSubmission(source, origin);
+        // A SendTextAsync is exactly one submitted turn. StampSubmission stamps the submission event AND
+        // counts the turn, in that one place, so this path and the raw-byte path cannot drift apart.
+        StampSubmission(source, origin, SubmissionEvidence.OfText(provenance, text ?? ""));
         SetActivityState(ActivityState.Working);
-        // DevThrottle Stats: a SendTextAsync is exactly one submitted turn. Count it (plus its character
-        // volume) for the tagged origin. Null origin = not a human turn - either another agent (counted on
-        // its own lane below) or framework text (handover, queue drain), which carries nobody's decision
-        // and is not counted at all.
-        if (origin is InputOrigin o)
-        {
-            InputStats.RecordTurn(o, text?.Length ?? 0);
-            RecordOrigin(o, text?.Length ?? 0);
-        }
-        else if (source == SendSource.Agent)
-        {
-            // Issue #1636: one agent prompting another IS a real turn - the sending agent decided to send
-            // it - so it is counted, but never into the human buckets above.
-            InputStats.RecordAgentTurn(text?.Length ?? 0);
-        }
     }
 
     /// <summary>
@@ -2620,13 +2683,13 @@ public sealed class Session : IDisposable
     }
 
     /// <summary>Send text followed by Enter (sync wrapper). See
-    /// <see cref="SendTextAsync(string, SendSource, InputOrigin?)"/> for what <paramref name="source"/> and
+    /// <see cref="SendTextAsync(string, SubmissionProvenance, SendSource, InputOrigin?)"/> for what <paramref name="source"/> and
     /// <paramref name="origin"/> mean.</summary>
-    public void SendText(string text, SendSource source = SendSource.UserInput, InputOrigin? origin = null)
+    public void SendText(string text, SubmissionProvenance provenance, SendSource source = SendSource.UserInput, InputOrigin? origin = null)
     {
         if (_disposed || Status is SessionStatus.Exited or SessionStatus.Failed) return;
         // Fire and forget for sync API
-        _ = SendTextAsync(text, source, origin);
+        _ = SendTextAsync(text, provenance, source, origin);
     }
 
     /// <summary>Send just an Enter keystroke to the backend.</summary>
@@ -2833,7 +2896,7 @@ public sealed class Session : IDisposable
                 // Framework, not Agent or UserInput: this text is the product's own follow-up to a
                 // compaction it ran. It must not clear the owner's hold and must not be counted as
                 // anybody's turn.
-                await SendTextAsync(continuePrompt!, SendSource.Framework);
+                await SendTextAsync(continuePrompt!, SubmissionProvenance.FrameworkText(), SendSource.Framework);
                 FileLog.Write($"[Session] CompactContextAsync: continuation submitted (session={Id})");
                 return new CompactContextOutcome(true, true, waited, true,
                     $"Compacted in {waited:F0} seconds, then sent the follow-up.");

@@ -1,0 +1,216 @@
+{
+  "expected": {
+    "outcome": "refused"
+  },
+  "name": "a-surface-the-consumers-do-not-know-is-refused",
+  "why": "The headline lists a fifth surface, 'watch'. Neither consumer may fold it into 'unknown' or drop it; both must refuse the answer, the same way the library refuses a bucket on that surface.",
+  "wire": {
+    "agentDrivenTurns": 4,
+    "agents": [
+      {
+        "agent": "ClaudeCode",
+        "agentDrivenTurns": 4,
+        "agentName": "Claude Code",
+        "sessionPercent": 33,
+        "sessionShare": 0.3333333333333333,
+        "sessions": 3,
+        "turnPercent": 57,
+        "turnShare": 0.5683090705487122,
+        "turns": 1786,
+        "typedTurns": 771,
+        "voicePercent": 61,
+        "voiceShare": 0.612,
+        "voiceTurns": 1015
+      }
+    ],
+    "agentsSummary": {
+      "agentCount": 3,
+      "agentDrivenTurns": 4,
+      "hasData": true,
+      "leverage": 0.0022396416573348264,
+      "leverageText": "0.0x",
+      "topAgentName": "Claude Code",
+      "topPercent": 92,
+      "topShare": 0.9182530794,
+      "totalSessions": 129,
+      "totalTurns": 1786,
+      "voicePercent": 57,
+      "voiceShare": 0.5683090705487122,
+      "voiceTurns": 1015
+    },
+    "buckets": [
+      {
+        "modality": "typed",
+        "surface": "desktop",
+        "turns": 696
+      },
+      {
+        "modality": "typed",
+        "surface": "phone",
+        "turns": 68
+      },
+      {
+        "modality": "typed",
+        "surface": "unknown",
+        "turns": 7
+      },
+      {
+        "modality": "voice",
+        "surface": "desktop",
+        "turns": 835
+      },
+      {
+        "modality": "voice",
+        "surface": "phone",
+        "turns": 180
+      }
+    ],
+    "definition": "The shared figure is computed over activity_events rows where EventType is turn-submitted and InputOrigin is present, grouped by the origin's modality and surface.",
+    "excluded": {
+      "agentDriven": 4,
+      "framework": 160,
+      "noInputOrigin": 662,
+      "unresolved": 498
+    },
+    "headline": {
+      "denominator": 1786,
+      "hasData": true,
+      "phone": {
+        "percent": 14,
+        "remainder": 1500,
+        "share": 0.13885778275475924,
+        "turns": 248
+      },
+      "surfaces": [
+        {
+          "label": "Desktop",
+          "percent": 86,
+          "remainder": 217,
+          "share": 0.8572228443449048,
+          "surface": "desktop",
+          "turns": 1531
+        },
+        {
+          "label": "Cockpit",
+          "percent": 0,
+          "remainder": 1748,
+          "share": 0.0,
+          "surface": "cockpit",
+          "turns": 0
+        },
+        {
+          "label": "Phone",
+          "percent": 14,
+          "remainder": 1500,
+          "share": 0.13885778275475924,
+          "surface": "phone",
+          "turns": 248
+        },
+        {
+          "label": "Unknown",
+          "percent": 0,
+          "remainder": 1741,
+          "share": 0.003919372900335946,
+          "surface": "unknown",
+          "turns": 7
+        },
+        {
+          "label": "Watch",
+          "percent": 0,
+          "remainder": 1786,
+          "share": 0.0,
+          "surface": "watch",
+          "turns": 0
+        }
+      ],
+      "typed": {
+        "percent": 43,
+        "share": 0.4316909294512878,
+        "turns": 771
+      },
+      "voice": {
+        "percent": 57,
+        "share": 0.5683090705487122,
+        "turns": 1015
+      }
+    },
+    "hourlyTurns": [
+      {
+        "hour": "2026-08-30T13",
+        "turns": 1786,
+        "typedShare": 0.4316909294512878,
+        "typedTurns": 771,
+        "voiceShare": 0.5683090705487122,
+        "voiceTurns": 1015
+      }
+    ],
+    "ledger": {
+      "earliestUtc": "2026-08-06T14:17:15Z",
+      "retentionDays": 30
+    },
+    "repos": [
+      {
+        "checkouts": [
+          "D:/repo-alpha"
+        ],
+        "repo": "owner/repo-alpha",
+        "repoName": "repo-alpha",
+        "sessionPercent": 33,
+        "sessionShare": 0.3333333333333333,
+        "sessions": 3,
+        "turnPercent": 57,
+        "turnShare": 0.5683090705487122,
+        "turns": 1786,
+        "typedTurns": 771,
+        "voicePercent": 61,
+        "voiceShare": 0.612,
+        "voiceTurns": 1015
+      }
+    ],
+    "reposSummary": {
+      "hasData": true,
+      "repoCount": 4,
+      "topPercent": 74,
+      "topRepoName": "repo-alpha",
+      "topShare": 0.7368421052631579,
+      "totalSessions": 129,
+      "totalTurns": 1786,
+      "voicePercent": 57,
+      "voiceShare": 0.5683090705487122,
+      "voiceTurns": 1015
+    },
+    "reposUnattributedTurns": 0,
+    "sessions": 3,
+    "turns": 1786,
+    "typedTurns": 771,
+    "unit": "submitted turns",
+    "voiceTurns": 1015,
+    "window": {
+      "choices": [
+        {
+          "days": 1,
+          "label": "Last 24 hours"
+        },
+        {
+          "days": 7,
+          "label": "Last 7 days"
+        },
+        {
+          "days": 14,
+          "label": "Last 14 days"
+        },
+        {
+          "days": 30,
+          "label": "Last 30 days"
+        }
+      ],
+      "days": null,
+      "fromUtc": "2026-08-24T04:00:00Z",
+      "isDefault": false,
+      "kind": "explicit",
+      "label": "2026-08-24 04:00 to 2026-08-31 04:00 UTC",
+      "toUtc": "2026-08-31T04:00:00Z",
+      "week": null
+    }
+  }
+}

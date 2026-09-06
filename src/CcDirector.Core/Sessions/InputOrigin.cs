@@ -30,8 +30,8 @@ public enum InputSurface
 /// <summary>
 /// The origin of one unit of user input: its <see cref="InputModality"/> (typed vs voice) and its
 /// <see cref="InputSurface"/> (desktop / cockpit / phone). Threaded from each entry point into the two
-/// Session choke points (<see cref="Session.SendInput(byte[], InputOrigin?)"/> and
-/// <see cref="Session.SendTextAsync(string, SendSource, InputOrigin?)"/>) so the Director can tally, at
+/// Session choke points (<see cref="Session.SendInput(byte[], InputOrigin?, SubmissionProvenance)"/> and
+/// <see cref="Session.SendTextAsync(string, SubmissionProvenance, SendSource, InputOrigin?)"/>) so the Director can tally, at
 /// the ONE place that sees desktop-local input too, how the operator is actually driving development.
 ///
 /// A <c>null</c> origin at a choke point means the caller is framework-internal (handover text, queue
@@ -39,7 +39,9 @@ public enum InputSurface
 /// </summary>
 public readonly record struct InputOrigin(InputModality Modality, InputSurface Surface)
 {
-    /// <summary>Typed at the desktop app - the by-construction origin of local desktop input.</summary>
+    /// <summary>Typed at the desktop app. NOT the origin of everything the desktop composer sends: a
+    /// transcript inserted into the compose box is spoken, and the box's provenance decides
+    /// (<see cref="SpokenTurnRule.ComposerProvenance"/>, ruling R20).</summary>
     public static InputOrigin DesktopTyped => new(InputModality.Typed, InputSurface.Desktop);
 
     /// <summary>Spoken at the desktop app (desktop dictation / voice mode).</summary>

@@ -20,6 +20,11 @@ namespace CcDirector.Terminal;
 /// </summary>
 public class TerminalControl : FrameworkElement
 {
+
+    /// <summary>What every byte from this control says about itself (source logging, 2026-09-05): the desktop
+    /// terminal door, the person at the keyboard.</summary>
+    private static readonly CcDirector.Core.Sessions.SubmissionProvenance DesktopTerminalDoor =
+        CcDirector.Core.Sessions.SubmissionProvenance.Typed(CcDirector.Core.Sessions.SubmissionRoutes.DesktopTerminal, CcDirector.Core.Sessions.SubmissionIdentityKinds.LocalUser);
     private const int DefaultCols = 120;
     private const int DefaultRows = 30;
     private const int ScrollbackLines = 1000;
@@ -596,7 +601,7 @@ public class TerminalControl : FrameworkElement
             byte[]? data = MapKeyToBytes(e.Key, Keyboard.Modifiers);
             if (data != null)
             {
-                _session.SendInput(data);
+                _session.SendInput(data, null, DesktopTerminalDoor);
                 e.Handled = true;
             }
         }
@@ -682,7 +687,7 @@ public class TerminalControl : FrameworkElement
             if (_session == null || string.IsNullOrEmpty(e.Text)) return;
 
             var bytes = System.Text.Encoding.UTF8.GetBytes(e.Text);
-            _session.SendInput(bytes);
+            _session.SendInput(bytes, null, DesktopTerminalDoor);
             e.Handled = true;
         }
         catch (Exception ex)
@@ -1011,7 +1016,7 @@ public class TerminalControl : FrameworkElement
                 if (!_isPasting) break; // Cancelled
 
                 var bytes = Encoding.UTF8.GetBytes(new[] { ch });
-                _session.SendInput(bytes);
+                _session.SendInput(bytes, null, DesktopTerminalDoor);
                 await Task.Delay(15);
             }
 

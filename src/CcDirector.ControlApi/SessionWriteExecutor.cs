@@ -127,7 +127,7 @@ internal sealed class SessionWriteExecutor : ISessionCommandArea
 
     /// <summary>
     /// The <c>terminal-input</c> verb: forward a browser keystroke frame to the session's PTY, the same call
-    /// the live terminal stream's input pump made (<see cref="Session.SendInput(byte[])"/>). The payload is a
+    /// the live terminal stream's input pump made (<see cref="Session.SendInput(byte[], InputOrigin?, SubmissionProvenance)"/>). The payload is a
     /// base64 byte blob so control bytes (arrows, Ctrl+C, Esc) survive the JSON envelope. Invalid id -&gt;
     /// BadRequest, missing/undecodable bytes -&gt; BadRequest, missing session -&gt; NotFound. This is a plain
     /// unary write; it is NOT a stream verb (Architect ruling A). The Gateway wires the browser's keystrokes
@@ -156,7 +156,10 @@ internal sealed class SessionWriteExecutor : ISessionCommandArea
         if (session is null)
             return DirectorCommandResult.Fail(DirectorCommandStatus.NotFound, "session not found");
 
-        session.SendInput(bytes);
+        // Raw bytes from a browser terminal, relayed by the Gateway, which stamped the credential kind of the
+        // person typing when their socket opened (source logging, 2026-09-05). A relay older than that field
+        // sends none, and that is recorded as the unknown it is - never guessed here.
+        session.SendInput(bytes, null, SubmissionProvenance.FromWire(request.Provenance, SubmissionRoutes.GatewayTerminal));
         return DirectorCommandResult.Success();
     }
 
@@ -531,7 +534,7 @@ internal sealed class SessionWriteExecutor : ISessionCommandArea
             if (existing.Status is SessionStatus.Exited or SessionStatus.Failed)
                 return DirectorCommandResult.Fail(DirectorCommandStatus.Conflict, "target session has exited");
             target = existing;
-            await target.SendTextAsync(contextText, SendSource.Framework);
+            await target.SendTextAsync(contextText, SubmissionProvenance.FrameworkText(), SendSource.Framework);
         }
         else
         {
@@ -585,7 +588,7 @@ internal sealed class SessionWriteExecutor : ISessionCommandArea
                     if (st is ActivityState.Exited) { FileLog.Write($"[SessionWriteExecutor] handover-generate target exited before idle, sid={capturedTarget.Id}"); return; }
                     await Task.Delay(500);
                 }
-                try { await capturedTarget.SendTextAsync(capturedText, SendSource.Framework); }
+                try { await capturedTarget.SendTextAsync(capturedText, SubmissionProvenance.FrameworkText(), SendSource.Framework); }
                 catch (Exception ex) { FileLog.Write($"[SessionWriteExecutor] handover-generate dispatch FAILED: {ex.Message}"); }
             });
         }

@@ -13,6 +13,7 @@ import { DictationStatusStrip } from "@devthrottle/client-core/dictation/Dictati
 import { backgroundTranscribeAndSend, type CapturedUtterance } from "@devthrottle/client-core/dictation/backgroundSend";
 import { useDictationBaseline } from "@devthrottle/client-core/dictation/baseline";
 import { insertAt, joinText } from "@devthrottle/client-core/dictation/transcript";
+import { ComposerProvenance } from "@devthrottle/client-core/dictation/composerProvenance";
 
 // The composer (issue #972, completed in issue #1210) - the React port of the Blazor Cockpit composer.
 // It drives the selected session's reply through the shared Gateway client:
@@ -114,6 +115,18 @@ export function SessionComposer({ sessionId, value, onChange, onQueued, focusHan
   useEffect(() => {
     valueRef.current = value;
   }, [value]);
+  // WHICH CHARACTERS CAME FROM A MICROPHONE (source logging, owner's ruling 2026-09-05). The textarea is a
+  // plain control, so the record sits beside it and follows every change: an inserted transcript is a
+  // character RANGE, typing around it moves it, editing inside it forgets it. The ranges ride to the Gateway
+  // with the send as CLAIMS, which it verifies against the transcript it registered - so a turn that mixes
+  // typing and speech still says which of its characters were spoken, instead of saying nothing at all.
+  const provenanceRef = useRef(new ComposerProvenance());
+  // The parent owns the text, so a change can reach this component without passing through its own handler
+  // (the Source Control tab inserts a path; a failed send restores the box). The record is told about the
+  // text on every render it has not seen, so it never describes a string the box no longer holds.
+  useEffect(() => {
+    provenanceRef.current.textChanged(value, caretRef.current);
+  }, [value]);
   // The session's terminal-byte position, snapshotted when Speak is pressed, so the Gateway's
   // "session moved on" guard can judge a clip resumed later against where the terminal stood when it
   // was recorded (issue #2478 - this flow used to omit the field, so the guard never armed).
@@ -133,11 +146,15 @@ export function SessionComposer({ sessionId, value, onChange, onQueued, focusHan
     if (!sessionId || busy) return;
     const text = value;
     if (text.trim().length === 0) return;
+    // The text as sent and the spoken ranges over THAT text, from one projection: the claim can never
+    // describe a different string from the one submitted.
+    const sent = provenanceRef.current.forSend();
     setBusy(true);
     setError(null);
     onChange(""); // clear immediately, like the desktop composer
+    provenanceRef.current.reset();
     try {
-      await sendPrompt(sessionId, text, true);
+      await sendPrompt(sessionId, text, true, undefined, undefined, sent.spans);
       setStatus("Sent");
     } catch (err) {
       onChange(text); // restore so a failed send never loses the typed text
@@ -268,26 +285,50 @@ export function SessionComposer({ sessionId, value, onChange, onQueued, focusHan
   }, [value, baseline]);
 
   const onDictateInsert = useCallback(
-    (text: string) => {
+    (text: string, spokenDeliveryId?: string) => {
       setDictating(false);
       if (text.trim().length === 0) return;
-      onChange(insertAt(value, caretRef.current, text));
+      const composed = insertAt(value, caretRef.current, text);
+      const at = composed.indexOf(text, Math.max(0, Math.min(caretRef.current, composed.length)));
+      provenanceRef.current.textChanged(value, caretRef.current);
+      // A range is only worth recording when it names a transcript the Gateway can verify. The dialog
+      // withholds the id the moment the words stop being one unedited transcription, and those characters
+      // are then exactly as unattributable as typing - so nothing is marked.
+      if (at >= 0 && spokenDeliveryId !== undefined) provenanceRef.current.inserted(composed, text, at, spokenDeliveryId);
+      else provenanceRef.current.textChanged(composed);
+      onChange(composed);
       setStatus("Inserted");
     },
     [value, onChange],
   );
 
   const onDictateSend = useCallback(
-    async (text: string) => {
+    async (text: string, spokenDeliveryId?: string) => {
       setDictating(false);
       if (!sessionId) return;
-      const combined = insertAt(value, caretRef.current, text).trim();
+      const composed = insertAt(value, caretRef.current, text);
+      const at = composed.indexOf(text, Math.max(0, Math.min(caretRef.current, composed.length)));
+      provenanceRef.current.textChanged(value, caretRef.current);
+      // A range is only worth recording when it names a transcript the Gateway can verify. The dialog
+      // withholds the id the moment the words stop being one unedited transcription, and those characters
+      // are then exactly as unattributable as typing - so nothing is marked.
+      if (at >= 0 && spokenDeliveryId !== undefined) provenanceRef.current.inserted(composed, text, at, spokenDeliveryId);
+      else provenanceRef.current.textChanged(composed);
+      const sent = provenanceRef.current.forSend();
+      const combined = sent.text;
       if (combined.length === 0) return;
+      // The turn is SPOKEN only when the dictation is the whole of it. Send behaves like
+      // Insert-then-Enter, so anything already in the box is typed text this person composed, and a
+      // mixture is not a spoken turn - the page's own disclosure says so (ruling R10, "Clean up Your
+      // Throttle", 2026-09-05). The dialog has already withheld the id if the transcript itself was
+      // edited or came from more than one segment; this is the other half of the same test.
+      const spoken = value.trim().length === 0 ? spokenDeliveryId : undefined;
       setBusy(true);
       setError(null);
       onChange("");
+      provenanceRef.current.reset();
       try {
-        await sendPrompt(sessionId, combined, true);
+        await sendPrompt(sessionId, combined, true, undefined, spoken, sent.spans);
         setStatus("Sent");
       } catch (err) {
         onChange(combined); // restore so a failed send never loses the typed + dictated text
@@ -353,7 +394,12 @@ export function SessionComposer({ sessionId, value, onChange, onQueued, focusHan
         rows={3}
         placeholder="Type a message... (Ctrl+Enter to send, Ctrl+Shift+Enter to queue)"
         value={value}
-        onChange={(e) => onChange(e.target.value)}
+        onChange={(e) => {
+          // The caret AFTER the change is what tells a deletion of the first of two identical copies from a
+          // deletion of the second; the record cannot know it from the text alone.
+          provenanceRef.current.textChanged(e.target.value, e.target.selectionStart ?? undefined);
+          onChange(e.target.value);
+        }}
         onKeyDown={onKeyDown}
         onPaste={onPaste}
         spellCheck={false}

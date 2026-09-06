@@ -1,8 +1,7 @@
 import { useMemo, useState } from "react";
 import {
-  summarizeAgents,
-  formatShare,
-  type ThrottleData,
+  formatPercent,
+  type ThrottleFigure,
   type AgentStat,
   type AgentSummary,
 } from "@devthrottle/client-core/stats/statsClient";
@@ -10,53 +9,21 @@ import {
 // The "Agents" tab of Your Throttle (owner ask): which agent CLI the work actually goes through - how
 // driving splits across Claude Code, Codex, Gemini and the rest, ranked by submitted turns.
 //
-// Data arrives as a prop: Your Throttle already polls GET /stats/data (the agent tally rides on that
-// envelope), so the tab reads its parent's snapshot rather than opening a second poll of the same feed.
-// Counts only - never any message text.
-//
-// This tab does not reconcile with the Overview tab's totals, and says so on its face rather than letting
-// the owner read a smaller number as a drop in usage. A session the Gateway still knows about is attributed
-// in FULL, including the turns it had already driven before the breakdown existed (issue #1633). What is
-// missing is the sessions that had already finished by then: their turns are in the all-time totals, but
-// nothing ever recorded which agent they ran under, so they cannot honestly be split by agent.
-// It reuses the Repos tab's row and segmented-control styles so the two read as one page.
+// The figure arrives as a prop: Your Throttle already polls GET /stats/data, and the per-agent split is
+// part of the one figure that feed carries (mission "Clean up Your Throttle", ruling R9: the same
+// submission ledger as the rings above, which records the agent kind on every submission). So this tab
+// adds up to the Overview tab's totals, over the same window - the "attributing since" caveat the old
+// tally needed is gone with the tally. Counts only - never any message text, and no character volume
+// (ruling R16). It reuses the Repos tab's row and segmented-control styles so the two read as one page.
 
-// The three honest metrics the system actually measures per agent. Tokens are intentionally absent: the
-// tally counts turns and characters, never tokens, and this tab never fabricates a number.
-type Metric = "turns" | "characters" | "sessions";
-const METRIC_LABEL: Record<Metric, string> = {
-  turns: "Turns",
-  characters: "Characters",
-  sessions: "Sessions",
-};
-const METRIC_WORD: Record<Metric, string> = {
-  turns: "turns",
-  characters: "characters",
-  sessions: "sessions",
-};
+// The two honest metrics the ledger actually measures per agent. Tokens and characters are intentionally
+// absent: the figure counts turns, and this tab never fabricates a number.
+type Metric = "turns" | "sessions";
+const METRIC_LABEL: Record<Metric, string> = { turns: "Turns", sessions: "Sessions" };
+const METRIC_WORD: Record<Metric, string> = { turns: "turns", sessions: "sessions" };
 
 function metricValue(a: AgentStat, metric: Metric): number {
-  return metric === "turns" ? a.turns : metric === "characters" ? a.characters : a.sessions;
-}
-
-function formatValue(value: number, metric: Metric): string {
-  return metric === "characters" ? compactNumber(value) : value.toLocaleString();
-}
-
-/** Compact large character counts (e.g. 48200 -> "48.2K", 1_200_000 -> "1.2M"); plain below 1,000. */
-function compactNumber(n: number): string {
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
-  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
-  return String(n);
-}
-
-/** The since-stamp as a plain date the owner can read ("15 Jul 2026"). Returns null when the Gateway sent
- * no stamp or an unparseable one, so the caller states nothing rather than inventing a start date. */
-function sinceDate(iso: string): string | null {
-  if (iso === "") return null;
-  const t = Date.parse(iso);
-  if (Number.isNaN(t)) return null;
-  return new Date(t).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
+  return metric === "turns" ? a.turns : a.sessions;
 }
 
 /** A big headline metric card, built from the same thr-stat tokens the Overview and Repos tabs use. */
@@ -77,35 +44,30 @@ function AgentRow({
   agent,
   metric,
   max,
-  total,
 }: {
   rank: number;
   agent: AgentStat;
   metric: Metric;
   max: number;
-  total: number;
 }) {
   const value = metricValue(agent, metric);
+  // The bar's length against the longest bar is layout; every RATIO printed or drawn is the Gateway's own
+  // row share (fix-round finding F-01): the row's share of the metric, and its spoken share.
   const width = max > 0 ? (value / max) * 100 : 0;
-  const share = total > 0 ? Math.round((value / total) * 100) : 0;
-  const voicePct = agent.turns > 0 ? Math.round((agent.voiceTurns / agent.turns) * 100) : 0;
+  const share = formatPercent(metric === "turns" ? agent.turnPercent : agent.sessionPercent);
+  const voicePct = formatPercent(agent.voicePercent);
+  const voiceWidth = agent.voiceShare === null ? 0 : agent.voiceShare;
   const showSplit = metric === "turns" && agent.turns > 0;
 
-  // The secondary facts depend on which metric is the headline, so the row never just repeats the big
-  // number - it shows the other two honest measures alongside it.
-  // Turns other agents drove into this agent's sessions. Stated as its own fact next to the human turns,
+  // Turns other sessions drove into this agent's sessions. Stated as its own fact next to the human turns,
   // never added to them: "you drove 14, the fleet drove 300 into it" is the honest pair.
   const agentDriven =
-    agent.agentDrivenTurns > 0
-      ? ` - ${agent.agentDrivenTurns.toLocaleString()} from agents`
-      : "";
+    agent.agentDrivenTurns > 0 ? ` - ${agent.agentDrivenTurns.toLocaleString()} from agents` : "";
 
   const meta =
     metric === "turns"
-      ? `${compactNumber(agent.characters)} chars - ${agent.sessions} session${agent.sessions === 1 ? "" : "s"} - ${voicePct}% voice${agentDriven}`
-      : metric === "characters"
-        ? `${agent.turns.toLocaleString()} turns - ${agent.sessions} session${agent.sessions === 1 ? "" : "s"}${agentDriven}`
-        : `${agent.turns.toLocaleString()} turns - ${compactNumber(agent.characters)} chars${agentDriven}`;
+      ? `${agent.sessions} session${agent.sessions === 1 ? "" : "s"} - ${voicePct} voice${agentDriven}`
+      : `${agent.turns.toLocaleString()} turns - ${voicePct} voice${agentDriven}`;
 
   return (
     <div className="repo-row">
@@ -118,11 +80,11 @@ function AgentRow({
           )}
         </div>
         <div className="repo-meta">{meta}</div>
-        <div className="repo-bar-track" title={`${formatValue(value, metric)} ${METRIC_WORD[metric]}`}>
+        <div className="repo-bar-track" title={`${value.toLocaleString()} ${METRIC_WORD[metric]}`}>
           {showSplit ? (
             <>
-              <div className="repo-bar-voice" style={{ width: `${(width * voicePct) / 100}%` }} />
-              <div className="repo-bar-typed" style={{ width: `${(width * (100 - voicePct)) / 100}%` }} />
+              <div className="repo-bar-voice" style={{ width: `${width * voiceWidth}%` }} />
+              <div className="repo-bar-typed" style={{ width: `${width * (1 - voiceWidth)}%` }} />
             </>
           ) : (
             <div className="repo-bar-voice" style={{ width: `${width}%` }} />
@@ -130,37 +92,33 @@ function AgentRow({
         </div>
       </div>
       <div className="repo-val">
-        <div className="repo-val-num">{formatValue(value, metric)}</div>
-        <div className="repo-val-share">{share}%</div>
+        <div className="repo-val-num">{value.toLocaleString()}</div>
+        <div className="repo-val-share">{share}</div>
       </div>
     </div>
   );
 }
 
-export function AgentsTab({ data }: { data: ThrottleData }) {
+export function AgentsTab({ figure }: { figure: ThrottleFigure }) {
   const [metric, setMetric] = useState<Metric>("turns");
 
-  const agents = data.agents ?? [];
-  const summary: AgentSummary = summarizeAgents(agents);
-  const since = sinceDate(data.agentsSinceUtc ?? "");
+  const agents = figure.agents;
+  // The headline cards are the Gateway's (fix-round finding F-01): nothing here totals a row.
+  const summary: AgentSummary = figure.agentsSummary;
 
-  // Rank by the active metric (the feed arrives ranked by turns; re-sort so switching to characters or
-  // sessions re-orders the list honestly).
+  // Rank by the active metric (the feed arrives ranked by turns; re-sort so switching to sessions
+  // re-orders the list honestly).
   const ranked = useMemo(
     () => [...agents].sort((a, b) => metricValue(b, metric) - metricValue(a, metric)),
     [agents, metric],
   );
   const max = ranked.length > 0 ? metricValue(ranked[0], metric) : 0;
-  const total = ranked.reduce((t, a) => t + metricValue(a, metric), 0);
 
   if (!summary.hasData) {
     return (
       <div className="thr-empty">
-        No agent usage counted yet
-        {since !== null ? ` since ${since}, when this breakdown started counting` : ""}. Drive a session -
-        Claude Code, Codex, or any other agent - and the split will appear here, ranked. Turns from sessions
-        that had already finished before this breakdown existed are not included: nothing recorded which
-        agent they ran under.
+        No agent usage counted in this window. Drive a session - Claude Code, Codex, or any other agent -
+        and the split will appear here, ranked.
       </div>
     );
   }
@@ -174,10 +132,8 @@ export function AgentsTab({ data }: { data: ThrottleData }) {
 
       <p className="repos-intro">
         Which agent you actually drive: how your driving splits across the agent CLIs you run, ranked by{" "}
-        {METRIC_WORD[metric]}. Counted at the Director, so desktop typing is included.
-        {since !== null
-          ? ` Attributing since ${since}, when this breakdown was added - so these numbers can be smaller than your all-time totals on the other tabs.`
-          : ""}
+        {METRIC_WORD[metric]}. {figure.window.label}, the same turns as the rings on the Overview tab -
+        desktop typing included.
       </p>
 
       <div className="thr-stats repos-cards">
@@ -189,16 +145,16 @@ export function AgentsTab({ data }: { data: ThrottleData }) {
         <HeadlineCard
           label="Turns counted"
           value={summary.totalTurns.toLocaleString()}
-          sub={since !== null ? `since ${since}` : `${compactNumber(summary.totalCharacters)} characters`}
+          sub={figure.window.label.toLowerCase()}
         />
         <HeadlineCard
           label="Most driven"
-          value={formatShare(summary.topShare)}
+          value={formatPercent(summary.topPercent)}
           sub={summary.topAgentName !== null ? `${summary.topAgentName} leads` : "of your turns"}
         />
         <HeadlineCard
           label="Voice-driven"
-          value={formatShare(summary.totalTurns > 0 ? summary.voiceTurns / summary.totalTurns : null)}
+          value={formatPercent(summary.voicePercent)}
           sub="of turns spoken, not typed"
         />
         {/* Leverage (issue #1636): what the fleet did off the back of each turn the owner spent. Shown
@@ -207,7 +163,7 @@ export function AgentsTab({ data }: { data: ThrottleData }) {
         {summary.agentDrivenTurns > 0 && (
           <HeadlineCard
             label="Leverage"
-            value={summary.leverage !== null ? `${summary.leverage.toFixed(1)}x` : "-"}
+            value={summary.leverageText !== null ? summary.leverageText : "-"}
             sub={`${summary.agentDrivenTurns.toLocaleString()} turns agents drove agents`}
           />
         )}
@@ -216,7 +172,7 @@ export function AgentsTab({ data }: { data: ThrottleData }) {
       <div className="repos-controls">
         <span className="repos-controls-label">Rank by</span>
         <div className="repos-seg" role="tablist" aria-label="Rank agents by">
-          {(["turns", "characters", "sessions"] as Metric[]).map((m) => (
+          {(["turns", "sessions"] as Metric[]).map((m) => (
             <button
               key={m}
               type="button"
@@ -237,7 +193,7 @@ export function AgentsTab({ data }: { data: ThrottleData }) {
         </div>
         <div className="repo-rows">
           {ranked.map((a, i) => (
-            <AgentRow key={a.agent} rank={i + 1} agent={a} metric={metric} max={max} total={total} />
+            <AgentRow key={a.agent} rank={i + 1} agent={a} metric={metric} max={max} />
           ))}
         </div>
       </div>
@@ -247,20 +203,12 @@ export function AgentsTab({ data }: { data: ThrottleData }) {
       <div className="thr-caveats">
         <h2>What this does and doesn&apos;t count</h2>
         <ul>
-          {since !== null && (
-            <li>
-              Attribution started {since}. A session still running then is counted in full, including the
-              turns it had already driven. Turns from sessions that had already finished by then are not
-              here at all - nothing recorded which agent they ran under - so this tab does not add up to the
-              all-time totals on the other tabs.
-            </li>
-          )}
           <li>
             On the turns view, each bar splits that agent&apos;s turns: the blue part is the share you
             spoke, the grey part is the share you typed.
           </li>
           <li>
-            Agents are grouped by the CLI the session runs. A session the Director reported no agent for is
+            Agents are grouped by the CLI the session runs. A session whose agent was not recorded is
             counted under &quot;(unknown)&quot; rather than dropped - the turns are real either way.
           </li>
           <li>
@@ -270,7 +218,7 @@ export function AgentsTab({ data }: { data: ThrottleData }) {
             is not a turn and is counted by neither.
           </li>
           <li>
-            Tokens are not shown - the tally counts turns and characters, never tokens, and this tab never
+            Tokens and characters are not shown - the figure counts submitted turns, and this tab never
             fabricates a number it did not measure.
           </li>
         </ul>

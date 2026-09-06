@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using CcDirector.Core.HostedAi;
 using CcDirector.Core.Storage;
+using CcDirector.Core.Sessions;
 using CcDirector.Core.Tenancy;
 using CcDirector.Core.Utilities;
 using CcDirector.Gateway.Contracts;
@@ -277,6 +278,9 @@ internal static class GatewayDictationEndpoint
             // Captured here (in request context) and threaded into the cached single-flight run; all completes
             // for one upload id come from the same device, so the value is stable across retries.
             var deliverySurface = ctx.Items.TryGetValue(AuthMiddleware.DeviceTypeItemKey, out var dt) ? dt as string : null;
+            // And the credential kind the gate verified, captured in request scope for the same reason and
+            // recorded on the ledger row (source logging, 2026-09-05).
+            var deliveryIdentityKind = AuthMiddleware.IdentityKind(ctx);
 
             // Durable de-dupe (issue #1183): a DELIVERED or ABANDONED upload id has a terminal tombstone on
             // disk. Return its cached outcome and NEVER inject a second turn - even past the old one-hour
@@ -309,7 +313,7 @@ internal static class GatewayDictationEndpoint
             {
                 OnCompleteEntryCreatedForTests?.Invoke(completeKey);
                 return new CompleteEntry(new Lazy<Task<DictationOutcome>>(() => RunCompleteCoreAsync(
-                    uploadId, tenant, req, store, registry, owners, transcription, transcribingSessions, deliverySurface,
+                    uploadId, tenant, req, store, registry, owners, transcription, transcribingSessions, deliverySurface, deliveryIdentityKind,
                     pushedSessions, sendCommand, stale)));
             });
 
@@ -490,7 +494,7 @@ internal static class GatewayDictationEndpoint
     private static async Task<DictationOutcome> RunCompleteCoreAsync(
         string uploadId, TenantId tenant, DictationCompleteRequest req, VoiceUploadStore store, DirectorRegistry registry,
         SessionOwnerCache? owners, GatewayTranscriptionService transcription,
-        TranscribingSessions transcribingSessions, string? deliverySurface,
+        TranscribingSessions transcribingSessions, string? deliverySurface, string deliveryIdentityKind,
         Streaming.PushedSessionStore? pushedSessions, DirectorCommandRouter.SendDirectorCommandAsync? sendCommand,
         TimeSpan streamStale)
     {
@@ -537,10 +541,22 @@ internal static class GatewayDictationEndpoint
             // Compose the final message: any typed text the caret split the dictation around (before /
             // after), any earlier paused dictation segments already turned to text (prefix), and this
             // clip's transcript, space-joined skipping empties. The common voice case is transcript alone.
-            var parts = new[] { req.Before, req.Prefix, transcript, req.After }
-                .Where(p => !string.IsNullOrWhiteSpace(p))
-                .Select(p => p!.Trim());
-            var message = string.Join(" ", parts).Trim();
+            // Each part's place in the joined message is recorded as it is composed (source logging, 2026-09-05):
+            // the earlier dictated segments and this clip's transcript are the SPOKEN characters, the typed
+            // halves are not, and the ledger row carries exactly those ranges over the text delivered.
+            var spokenSpans = new List<SpokenSpanDto>();
+            var pieces = new List<string>();
+            var at = 0;
+            foreach (var (piece, spoken) in new[] { (req.Before, false), (req.Prefix, true), (transcript, true), (req.After, false) })
+            {
+                if (string.IsNullOrWhiteSpace(piece)) continue;
+                var trimmed = piece!.Trim();
+                if (pieces.Count > 0) at += 1;
+                if (spoken) spokenSpans.Add(new SpokenSpanDto { Start = at, Length = trimmed.Length });
+                pieces.Add(trimmed);
+                at += trimmed.Length;
+            }
+            var message = string.Join(" ", pieces);
             if (message.Length == 0)
             {
                 // Silent/empty clip with no typed text: nothing to submit, but the turn is genuinely done -
@@ -604,7 +620,34 @@ internal static class GatewayDictationEndpoint
             // one voice turn from the resolved surface. A dictation is always a real operator turn, so when
             // the device key did not resolve we stamp "unknown" (never null) - it is counted into the honest
             // "unknown" surface bucket, never silently dropped (decision 9).
-            var (ok, _, err) = await route.PostPromptAsync(sid, new PromptRequest { Text = message, AppendEnter = true, Surface = deliverySurface ?? "unknown", DeliveryUploadId = uploadId });
+            //
+            // SPOKEN ONLY WHEN THE WORDS ARE THE TRANSCRIPT AND NOTHING ELSE (ruling R10; inspection finding I2-01 of
+            // the "Clean up Your Throttle" mission, 2026-09-05). The Director reads a nonblank DeliveryUploadId as
+            // "a voice turn", and this path used to stamp it on the WHOLE composed message - so typed text the
+            // caret split the dictation around (before / after) and any earlier segment already turned to text
+            // (prefix) were all counted as speech, while the same words sent from the paused dialog were typed.
+            // The rule the page discloses is applied here, at the one place the message is composed: the id
+            // rides only when before, prefix and after are all empty. A mixed message is delivered exactly the
+            // same, as one typed turn from the same surface. The upload's own durable record is untouched.
+            // THE RULE IS THE ONE THE DESKTOP APPLIES TOO (ruling R20): SpokenTurnRule, in Core, and its
+            // Examples table is what both surfaces' tests feed through their real paths.
+            var spokenAlone = SpokenTurnRule.IsSpokenAlone(req.Before, req.Prefix, req.After);
+            if (!spokenAlone)
+                FileLog.Write($"[GatewayDictation] complete sid={sid} uploadId={uploadId}: composed with typed text around the transcript; delivered as ONE TYPED turn (ruling R10)");
+            var (ok, _, err) = await route.PostPromptAsync(sid, new PromptRequest
+            {
+                Text = message,
+                AppendEnter = true,
+                Surface = deliverySurface ?? "unknown",
+                DeliveryUploadId = spokenAlone ? uploadId : null,
+                Provenance = new SubmissionProvenanceDto
+                {
+                    Route = SubmissionRoutes.GatewayDictation,
+                    IdentityKind = deliveryIdentityKind,
+                    TranscriptId = uploadId,
+                    SpokenSpans = spokenSpans,
+                },
+            });
             if (!ok)
             {
                 // THE ATTEMPT WE JUST MADE INVALIDATED THE PHONE'S BASELINE (Lost Dictations mission, #1593).

@@ -63,7 +63,15 @@ internal sealed class TunnelStreamLegs
         // The browser is "gone" when the request aborts OR the keystroke receive loop ends (a close frame or a
         // socket fault). Either tears the stream down and sends close-stream.
         using var browserGone = CancellationTokenSource.CreateLinkedTokenSource(ctx.RequestAborted);
-        var keystrokes = PumpKeystrokesAsync(ws, sid, directorId, browserGone);
+        // WHO IS TYPING (source logging, 2026-09-05): the credential kind this request's gate verified, read
+        // here in request scope - the socket outlives the HttpContext, and one browser holds one identity for
+        // the life of its terminal, so it is stamped once and carried on every frame.
+        var typist = new SubmissionProvenanceDto
+        {
+            Route = Core.Sessions.SubmissionRoutes.GatewayTerminal,
+            IdentityKind = Util.AuthMiddleware.IdentityKind(ctx),
+        };
+        var keystrokes = PumpKeystrokesAsync(ws, sid, directorId, typist, browserGone);
 
         FileLog.Write($"[TunnelStreamLegs] terminal open sid={sid} director={directorId} stream={streamId}");
         DirectorCommandResult? open;
@@ -104,7 +112,7 @@ internal sealed class TunnelStreamLegs
         FileLog.Write($"[TunnelStreamLegs] terminal closed sid={sid} stream={streamId}");
     }
 
-    private async Task PumpKeystrokesAsync(WebSocket ws, string sid, string directorId, CancellationTokenSource browserGone)
+    private async Task PumpKeystrokesAsync(WebSocket ws, string sid, string directorId, SubmissionProvenanceDto typist, CancellationTokenSource browserGone)
     {
         var buffer = new byte[4096];
         using var message = new MemoryStream();
@@ -120,7 +128,7 @@ internal sealed class TunnelStreamLegs
 
                 var bytes = message.ToArray();
                 message.SetLength(0);
-                var payload = new TerminalInputRequest { Bytes = Convert.ToBase64String(bytes) };
+                var payload = new TerminalInputRequest { Bytes = Convert.ToBase64String(bytes), Provenance = typist };
                 try
                 {
                     await DirectorCommandRouter.TrySendAsync(_sendCommand, directorId, "terminal-input", sid, payload, browserGone.Token);

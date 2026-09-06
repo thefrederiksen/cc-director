@@ -602,6 +602,21 @@ internal static class AuthMiddleware
     /// ONE way to ask "which session is calling" - see <see cref="AuthenticatedSessionItemKey"/> for why it
     /// must never be re-derived from the raw request.
     /// </summary>
+    /// <summary>
+    /// The KIND of credential this gate verified on the request, for the submission's ledger row (source
+    /// logging, 2026-09-05): a session credential, a per-device key, the shared machine token, or - when
+    /// the gate is off and nothing was verified - unknown. Read off the items this gate stamped, never off
+    /// the raw headers, for the reason every other identity here is: two parsers of one request disagree.
+    /// </summary>
+    public static string IdentityKind(HttpContext? ctx)
+    {
+        if (ctx is null) return CcDirector.Core.Sessions.SubmissionIdentityKinds.Unknown;
+        if (ctx.Items.ContainsKey(AuthenticatedSessionItemKey)) return CcDirector.Core.Sessions.SubmissionIdentityKinds.Session;
+        if (ctx.Items.ContainsKey(AuthenticatedDeviceItemKey)) return CcDirector.Core.Sessions.SubmissionIdentityKinds.Device;
+        if (ctx.Items.ContainsKey(AuthenticatedCredentialItemKey)) return CcDirector.Core.Sessions.SubmissionIdentityKinds.MachineToken;
+        return CcDirector.Core.Sessions.SubmissionIdentityKinds.Unknown;
+    }
+
     public static SessionCredentialIdentity? CallingSession(HttpContext? ctx)
         => ctx?.Items.TryGetValue(AuthenticatedSessionItemKey, out var value) == true
             ? value as SessionCredentialIdentity

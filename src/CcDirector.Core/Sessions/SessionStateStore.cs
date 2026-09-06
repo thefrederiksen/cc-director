@@ -16,6 +16,11 @@ public class PersistedSession
     public string? CustomName { get; set; }
     public string? CustomColor { get; set; }
     public string? PendingPromptText { get; set; }
+
+    /// <summary>Which characters of <see cref="PendingPromptText"/> were dictated (ruling R20), as start and
+    /// length pairs, so a dictation left in the box survives a restart as dictation. Null or empty when none.</summary>
+    public List<PersistedSpokenSpan>? PendingPromptSpokenSpans { get; set; }
+
     public int EmbeddedProcessId { get; set; }
     public long ConsoleHwnd { get; set; }
     public string? ClaudeSessionId { get; set; }
@@ -125,6 +130,13 @@ public class PersistedSession
     /// one. Null for sessions persisted before this field existed (they are backfilled on restore).
     /// </summary>
     public int? Number { get; set; }
+}
+
+/// <summary>One dictated range of a persisted pending prompt (ruling R20).</summary>
+public class PersistedSpokenSpan
+{
+    public int Start { get; set; }
+    public int Length { get; set; }
 }
 
 public class PersistedPromptQueueItem

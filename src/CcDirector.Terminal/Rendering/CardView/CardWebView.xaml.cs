@@ -17,6 +17,11 @@ namespace CcDirector.Terminal.Rendering.CardView;
 /// </summary>
 public partial class CardWebView : UserControl
 {
+
+    /// <summary>What every byte from this control says about itself (source logging, 2026-09-05): the desktop
+    /// terminal door, the person at the keyboard.</summary>
+    private static readonly CcDirector.Core.Sessions.SubmissionProvenance DesktopTerminalDoor =
+        CcDirector.Core.Sessions.SubmissionProvenance.Typed(CcDirector.Core.Sessions.SubmissionRoutes.DesktopTerminal, CcDirector.Core.Sessions.SubmissionIdentityKinds.LocalUser);
     private Session? _session;
     private long _bufferPosition;
     private DispatcherTimer? _pollTimer;
@@ -226,11 +231,11 @@ public partial class CardWebView : UserControl
             bool ctrl = (Keyboard.Modifiers & ModifierKeys.Control) != 0;
             bool shift = (Keyboard.Modifiers & ModifierKeys.Shift) != 0;
 
-            if (ctrl && e.Key == Key.C) { _session.SendInput(new byte[] { 0x03 }); e.Handled = true; return; }
-            if (ctrl && e.Key == Key.D) { _session.SendInput(new byte[] { 0x04 }); e.Handled = true; return; }
-            if (ctrl && e.Key == Key.Z) { _session.SendInput(new byte[] { 0x1A }); e.Handled = true; return; }
-            if (ctrl && e.Key == Key.L) { _session.SendInput(new byte[] { 0x0C }); e.Handled = true; return; }
-            if (shift && e.Key == Key.Tab) { _session.SendInput("\x1b[Z"u8.ToArray()); e.Handled = true; return; }
+            if (ctrl && e.Key == Key.C) { _session.SendInput(new byte[] { 0x03 }, null, DesktopTerminalDoor); e.Handled = true; return; }
+            if (ctrl && e.Key == Key.D) { _session.SendInput(new byte[] { 0x04 }, null, DesktopTerminalDoor); e.Handled = true; return; }
+            if (ctrl && e.Key == Key.Z) { _session.SendInput(new byte[] { 0x1A }, null, DesktopTerminalDoor); e.Handled = true; return; }
+            if (ctrl && e.Key == Key.L) { _session.SendInput(new byte[] { 0x0C }, null, DesktopTerminalDoor); e.Handled = true; return; }
+            if (shift && e.Key == Key.Tab) { _session.SendInput("\x1b[Z"u8.ToArray(), null, DesktopTerminalDoor); e.Handled = true; return; }
 
             byte[]? data = e.Key switch
             {
@@ -252,7 +257,7 @@ public partial class CardWebView : UserControl
 
             if (data != null)
             {
-                _session.SendInput(data);
+                _session.SendInput(data, null, DesktopTerminalDoor);
                 e.Handled = true;
             }
         }
@@ -268,7 +273,7 @@ public partial class CardWebView : UserControl
         {
             if (_session == null || string.IsNullOrEmpty(e.Text)) return;
             var bytes = Encoding.UTF8.GetBytes(e.Text);
-            _session.SendInput(bytes);
+            _session.SendInput(bytes, null, DesktopTerminalDoor);
             e.Handled = true;
         }
         catch (Exception ex)

@@ -21,7 +21,7 @@ import { render, screen, fireEvent, waitFor, within, cleanup } from "@testing-li
 const { assistantTurn, postBrainWarmup, transcribeUtterance } = vi.hoisted(() => ({
   assistantTurn: vi.fn(async () => ({ spoken: "Four sessions are open.", actions: [], pendingConfirmation: false })),
   postBrainWarmup: vi.fn(async () => {}),
-  transcribeUtterance: vi.fn(async () => "how many sessions are open"),
+  transcribeUtterance: vi.fn(async () => ({ text: "how many sessions are open", deliveryId: "utt-11" })),
 }));
 
 // The brain (POST /assistant/turn) and the keep-warm ping.

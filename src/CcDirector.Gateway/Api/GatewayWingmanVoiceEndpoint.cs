@@ -144,7 +144,14 @@ internal static class GatewayWingmanVoiceEndpoint
         Voice.VoiceUploadStore? uploadStore = null,
         Transcription.TranscriptionHistoryLog? history = null,
         Transcription.TranscriptionAudioArchive? audioArchive = null,
-        Transcription.TranscriptStore? transcripts = null)
+        Transcription.TranscriptStore? transcripts = null,
+        // Inspection finding I2-03: the Gateway records what each utterance upload transcribed, so the prompt
+        // route can verify a spoken claim instead of trusting a nonblank id. Null means nothing is recorded.
+        Voice.SpokenClaimRegistry? spokenClaims = null,
+        // The transcription service the utterance and one-shot routes call. Null builds the production one
+        // over the vault; a caller (the host, a test) may hand in its own so the routes can be driven end to
+        // end against a faked provider - the routes are what is under test, not the provider behind them.
+        Transcription.GatewayTranscriptionService? transcriptionService = null)
     {
         // The speech transport: the shared static in production, an injected stub in a test. This is the
         // same seam WingmanVoiceService already exposes for its narration leg (ttsHttpClient) and it
@@ -180,7 +187,7 @@ internal static class GatewayWingmanVoiceEndpoint
         // (the resumable /wingman/utterance/complete and the one-shot /wingman/transcribe) go through
         // it, so they resolve the mode + key and pick the hosted endpoint exactly the same way every
         // other batch caller does - no second resolver.
-        var transcription = new Transcription.GatewayTranscriptionService(vault, history: history, audioArchive: audioArchive, transcripts: transcripts);
+        var transcription = transcriptionService ?? new Transcription.GatewayTranscriptionService(vault, history: history, audioArchive: audioArchive, transcripts: transcripts);
 
         // Which voice sessions have a ready, playable spoken summary right now (the phone's list
         // shows a play button on these and can play without entering).
@@ -392,7 +399,7 @@ internal static class GatewayWingmanVoiceEndpoint
         // resolution refuses on hosted when it is null or not hosted-wired, so a missing boundary is a refusal,
         // never a downgrade to the shared root.
         var utteranceGate = new DictationTenantGate(uploads, tenantBoundary!);
-        MapUtteranceRoutes(app, utteranceGate, transcription);
+        MapUtteranceRoutes(app, utteranceGate, transcription, spokenClaims);
 
         // Text-to-speech for the mobile Voice screen + Cockpit: turn the wingman's spoken summary into
         // natural-sounding audio (the browser's own voice is robotic). Returns audio/mpeg bytes the
@@ -965,7 +972,7 @@ internal static class GatewayWingmanVoiceEndpoint
     /// before any leg body runs - on hosted that means no bound tenant, never a downgrade to Local.
     /// </summary>
     private static void MapUtteranceRoutes(IEndpointRouteBuilder app, DictationTenantGate gate,
-        Transcription.GatewayTranscriptionService transcription)
+        Transcription.GatewayTranscriptionService transcription, Voice.SpokenClaimRegistry? spokenClaims)
     {
         app.MapPost("/wingman/utterance/upload", (HttpContext ctx) =>
         {
@@ -1066,7 +1073,10 @@ internal static class GatewayWingmanVoiceEndpoint
             // same dictation session log the desktop and overlay write, tagged Source="mobile". The
             // assembled WAV byte count is the audio the server actually transcribed. Fire-and-forget.
             PersistMobileCaptureHealth(uploadId, req, assembledAudio.Length, result.Text);
-
+            // The id the client will hand back as its spoken claim is now bound, for THIS tenant, to exactly
+            // these words, once (inspection finding I2-03). The prompt route spends the claim; a replay, a
+            // different text, or another account's prompt finds nothing to spend.
+            spokenClaims?.Register(reqTenant, uploadId, result.Text ?? "");
             return Results.Json(new { transcript = result.Text });
         });
     }

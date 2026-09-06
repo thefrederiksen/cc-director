@@ -11,6 +11,11 @@ using CcDirector.Gateway;
 using CcDirector.Gateway.Contracts;
 using CcDirector.Gateway.Stats;
 using CcDirector.Gateway.Stats.Data;
+using CcDirector.Gateway.Tests.Data;
+using CcDirector.Gateway.Throttle;
+using SessionHistoryStore = CcDirector.Gateway.History.SessionHistoryStore;
+using CcDirector.Gateway.Data;
+using System.Net.Http.Json;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
@@ -41,8 +46,15 @@ namespace CcDirector.Gateway.Tests;
 ///
 ///     powershell -NoProfile -File scripts\pg-stats-proof-rig.ps1 -Instance &lt;yours&gt; -Port &lt;yours&gt; -Verb up
 ///
+/// SINCE THE "CLEAN UP YOUR THROTTLE" MISSION (2026-09-05, ruling R9) the feed's counts of TURNS come from the
+/// submission ledger in the Gateway database, not from the statistics store this file proves. What the
+/// statistics store still feeds is concurrency and token spend, and what this file still proves about the
+/// tally is that the production ingress WRITES it to PostgreSQL and a cold reader recovers it - the tally is
+/// still kept, it just no longer feeds the page. The served-feed assertions read the ledger figure, fed
+/// through the ledger's own production ingress alongside the roster push.
+///
 /// The three facts, on a real HOSTED GatewayHost with TWO fully enrolled tenants and one unbound device:
-///   1. SERVE - the data route answers 200 with the caller's OWN totals, read back out of PostgreSQL.
+///   1. SERVE - the data route answers 200 with the caller's OWN figure, read from the caller's own partition.
 ///   2. ISOLATED - turns fed for tenant A are visible on A's read and INVISIBLE on B's read of the same feed.
 ///   3. FAIL CLOSED - a caller who cannot be attributed to a tenant is REFUSED, never served the Local
 ///      partition.
@@ -222,6 +234,29 @@ public sealed class HostedStatsServeTests : IAsyncLifetime
         using var body = JsonDocument.Parse(await roster.Content.ReadAsStringAsync());
         Assert.Contains(body.RootElement.EnumerateArray(),
             s => s.GetProperty("sessionId").GetString() == sessionId);
+
+        // THE LEDGER (ruling R9): the same turns, as the Director's activity producer records them at the
+        // submission choke point, pushed through the ledger's own production ingress. The feed's turn
+        // figures read THIS, so the served numbers below are the ledger's, not the tally's.
+        var at = DateTime.UtcNow.AddMinutes(-30);
+        var events = Enumerable.Range(0, (int)turns).Select(i => new ActivityEventRecord
+        {
+            EventId = Guid.NewGuid(), DirectorSequence = i + 1, OccurredUtc = at.AddSeconds(i), DirectorId = directorId,
+            SessionId = sessionId, Machine = "MACHINE-" + directorId, AgentKind = "ClaudeCode",
+            EventType = ActivityEventTypes.TurnSubmitted, Cause = ActivityCauses.OwnerSubmit,
+            InputOrigin = "voice/phone", SendSource = "Delivery",
+        }).ToList();
+        var ingest = await http.PostAsJsonAsync("activity-events/batch", new ActivityEventIngestRequest { Events = events });
+        Assert.Equal(HttpStatusCode.OK, ingest.StatusCode);
+
+        // And the session's repository, in the tenant's own session history, which the repository split joins
+        // on. The history recorder itself runs on the SignalR push path, which this HTTP-level test does not
+        // drive, so the row is written through the real store over the Gateway's own database file.
+        new SessionHistoryStore(new GatewayDatabase(new FixedTenantContext(tenant))).UpsertLive(directorId, new SessionDto
+        {
+            SessionId = sessionId, Name = sessionId, RepoPath = repo, RepoName = repo, Agent = "ClaudeCode",
+            CreatedAt = at, ActivityState = "Working", Status = "Running",
+        }, DateTime.UtcNow);
     }
 
     /// <summary>A reader that shares NOTHING with the Gateway's own aggregator except the database: its own
@@ -307,9 +342,11 @@ public sealed class HostedStatsServeTests : IAsyncLifetime
         Assert.Equal(700, recoveredBucket.Characters);
         Assert.Equal("voice", recoveredBucket.Modality);
 
-        // 3. AND THE SERVED FEED agrees with both.
+        // 3. AND THE SERVED FEED agrees with both - from the ledger the same ingress fed (ruling R9), not
+        //    from the tally the two readings above proved. The two substrates carry the same seven turns
+        //    here because one Director wrote both at one choke point, which is the whole design.
         using var doc = JsonDocument.Parse(await (await _httpA.GetAsync("stats/data")).Content.ReadAsStringAsync());
-        Assert.Equal(7, Assert.Single(doc.RootElement.GetProperty("buckets").EnumerateArray())
+        Assert.Equal(7, Assert.Single(doc.RootElement.GetProperty("throttle").GetProperty("buckets").EnumerateArray())
             .GetProperty("turns").GetInt64());
     }
 
@@ -357,15 +394,20 @@ public sealed class HostedStatsServeTests : IAsyncLifetime
         using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
         var root = doc.RootElement;
 
-        var bucket = Assert.Single(root.GetProperty("buckets").EnumerateArray());
+        Assert.True(root.GetProperty("available").GetBoolean());
+        var figure = root.GetProperty("throttle");
+        var bucket = Assert.Single(figure.GetProperty("buckets").EnumerateArray());
         Assert.Equal("voice", bucket.GetProperty("modality").GetString());
         Assert.Equal("phone", bucket.GetProperty("surface").GetString());
         Assert.Equal(7, bucket.GetProperty("turns").GetInt64());
-        Assert.Equal(700, bucket.GetProperty("characters").GetInt64());
 
-        var repo = Assert.Single(root.GetProperty("repos").EnumerateArray());
+        var repo = Assert.Single(figure.GetProperty("repos").EnumerateArray());
         Assert.Equal("alpha-only-repo", repo.GetProperty("repoName").GetString());
         Assert.Equal(7, repo.GetProperty("turns").GetInt64());
+
+        // The statistics store is up on this Gateway, so the blocks it feeds are served, not null.
+        Assert.Equal(JsonValueKind.Null, root.GetProperty("statisticsUnavailableReason").ValueKind);
+        Assert.Equal(JsonValueKind.Object, root.GetProperty("tokenSpend").ValueKind);
     }
 
     /// <summary>
@@ -380,7 +422,7 @@ public sealed class HostedStatsServeTests : IAsyncLifetime
 
         // A sees them.
         using (var a = JsonDocument.Parse(await (await _httpA.GetAsync("stats/data")).Content.ReadAsStringAsync()))
-            Assert.NotEmpty(a.RootElement.GetProperty("buckets").EnumerateArray());
+            Assert.NotEmpty(a.RootElement.GetProperty("throttle").GetProperty("buckets").EnumerateArray());
 
         // B does not - and this is a 200 that serves B's OWN (empty) partition, never a 200 carrying A's.
         var respB = await _httpB.GetAsync("stats/data");
@@ -389,8 +431,8 @@ public sealed class HostedStatsServeTests : IAsyncLifetime
 
         Assert.DoesNotContain("alpha-only-repo", bodyB, StringComparison.Ordinal);
         using var b = JsonDocument.Parse(bodyB);
-        Assert.Empty(b.RootElement.GetProperty("buckets").EnumerateArray());
-        Assert.Empty(b.RootElement.GetProperty("repos").EnumerateArray());
+        Assert.Empty(b.RootElement.GetProperty("throttle").GetProperty("buckets").EnumerateArray());
+        Assert.Empty(b.RootElement.GetProperty("throttle").GetProperty("repos").EnumerateArray());
     }
 
     /// <summary>
@@ -440,13 +482,14 @@ public sealed class HostedStatsServeTests : IAsyncLifetime
 /// <summary>
 /// Boots ONLY the stats group on an ephemeral port, exactly as <see cref="StatsPageEndpointTests"/> does, and
 /// hands the caller the route group back so a test can map routes onto it. Used by the self-host control
-/// below; on self-host the data route resolves to the single Local tenant (a null tenant boundary), so it
-/// serves its real payload.
+/// below; on self-host the data route answers the one sentence (rulings R1 and R6) before it resolves a
+/// tenant or reads a store.
 /// </summary>
 internal static class StatsGroupProbeHost
 {
     public static async Task<(WebApplication app, HttpClient http)> StartAsync(
         GatewayInputStatsAggregator aggregator,
+        ThrottleLedgerReader throttle,
         Action<RouteGroupBuilder>? mapIntoGroup = null,
         Action<IEndpointRouteBuilder>? mapOutsideGroup = null)
     {
@@ -460,7 +503,8 @@ internal static class StatsGroupProbeHost
         // SingleTenantContext, it always resolves the single Local tenant.
         var group = StatsPageEndpoint.Map(app, aggregator,
             new CcDirector.Gateway.Tenancy.HostedTenantBoundary(
-                new CcDirector.Core.Tenancy.SingleTenantContext(), new CcDirector.Gateway.Pairing.DeviceRegistry()));
+                new CcDirector.Core.Tenancy.SingleTenantContext(), new CcDirector.Gateway.Pairing.DeviceRegistry()),
+            throttle);
         mapIntoGroup?.Invoke(group);
         mapOutsideGroup?.Invoke(app);
 
@@ -489,6 +533,7 @@ public sealed class HostedStatsSelfHostControlTests : IDisposable
 {
     private readonly string _dir;
     private readonly string? _priorHosted;
+    private readonly GatewayDbTestHarness _harness = new();
 
     public HostedStatsSelfHostControlTests()
     {
@@ -500,8 +545,11 @@ public sealed class HostedStatsSelfHostControlTests : IDisposable
     public void Dispose()
     {
         Environment.SetEnvironmentVariable("CC_GATEWAY_HOSTED", _priorHosted);
+        _harness.Dispose();
         try { Directory.Delete(_dir, recursive: true); } catch (Exception) { /* best effort */ }
     }
+
+    private ThrottleLedgerReader Reader() => new(_harness.Open());
 
     /// <summary>
     /// Puts the process into a stated non-hosted mode and proves it took, so no test below can silently be
@@ -542,7 +590,7 @@ public sealed class HostedStatsSelfHostControlTests : IDisposable
     {
         DeclareSelfHost(hostedValue);
 
-        var (app, http) = await StatsGroupProbeHost.StartAsync(SeededAggregator());
+        var (app, http) = await StatsGroupProbeHost.StartAsync(SeededAggregator(), Reader());
         try
         {
             using var handler = new HttpClientHandler { AllowAutoRedirect = false };
@@ -554,42 +602,34 @@ public sealed class HostedStatsSelfHostControlTests : IDisposable
         finally { http.Dispose(); await app.DisposeAsync(); }
     }
 
+    /// <summary>
+    /// THE SELF-HOST CONTROL AFTER RULING R1: Your Throttle is a hosted-Gateway feature, so a self-hosted
+    /// Gateway - the variable absent OR explicitly "0" - answers the data route with one sentence and no
+    /// figure (ruling R6). It is a 200, because the absence of a figure is a fact about this Gateway and not
+    /// a fault in the request; and the aggregator that was seeded with real numbers is never consulted, so
+    /// those numbers do not leak into the answer.
+    /// </summary>
     [Theory]
     [MemberData(nameof(NonHostedValues))]
-    public async Task The_stats_feed_still_serves_its_real_totals_on_self_host(string? hostedValue)
+    public async Task The_stats_feed_on_self_host_answers_the_one_sentence_and_no_figure(string? hostedValue)
     {
         DeclareSelfHost(hostedValue);
 
-        var (app, http) = await StatsGroupProbeHost.StartAsync(SeededAggregator());
+        var (app, http) = await StatsGroupProbeHost.StartAsync(SeededAggregator(), Reader());
         try
         {
             var resp = await http.GetAsync("/stats/data");
             Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
 
-            using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
+            var body = await resp.Content.ReadAsStringAsync();
+            using var doc = JsonDocument.Parse(body);
             var root = doc.RootElement;
-
-            var properties = root.EnumerateObject().Select(p => p.Name).ToArray();
-            Assert.DoesNotContain("error", properties);
-            foreach (var expected in new[]
-                     {
-                         "buckets", "hourlyTurns", "wingman", "repos", "agents", "models",
-                         "tokenSpend", "tokenSpendByHour", "tokenSpendByModel", "notCaptured",
-                     })
-                Assert.Contains(expected, properties);
-
-            // The seeded numbers themselves, so an empty-but-shaped payload cannot pass as "serving".
-            var bucket = Assert.Single(root.GetProperty("buckets").EnumerateArray());
-            Assert.Equal("voice", bucket.GetProperty("modality").GetString());
-            Assert.Equal("phone", bucket.GetProperty("surface").GetString());
-            Assert.Equal(7, bucket.GetProperty("turns").GetInt64());
-            Assert.Equal(700, bucket.GetProperty("characters").GetInt64());
-
-            var repo = Assert.Single(root.GetProperty("repos").EnumerateArray());
-            Assert.Equal("devthrottle", repo.GetProperty("repoName").GetString());
-            Assert.Equal(7, repo.GetProperty("turns").GetInt64());
-
-            Assert.True(root.GetProperty("notCaptured").GetArrayLength() > 0);
+            Assert.False(root.GetProperty("available").GetBoolean());
+            Assert.Equal(StatsPageEndpoint.SelfHostReason, root.GetProperty("reason").GetString());
+            Assert.Equal(new[] { "available", "reason" }, root.EnumerateObject().Select(p => p.Name).ToArray());
+            // The seeded seven turns are nowhere in the answer.
+            Assert.DoesNotContain("\"turns\"", body, StringComparison.Ordinal);
+            Assert.DoesNotContain("devthrottle", body, StringComparison.Ordinal);
         }
         finally { http.Dispose(); await app.DisposeAsync(); }
     }
@@ -602,7 +642,7 @@ public sealed class HostedStatsSelfHostControlTests : IDisposable
         DeclareSelfHost(hostedValue);
 
         var (app, http) = await StatsGroupProbeHost.StartAsync(
-            SeededAggregator(),
+            SeededAggregator(), Reader(),
             mapIntoGroup: group => group.MapGet("/stats/added-later",
                 () => Results.Json(new { probe = "served" })));
         try

@@ -105,6 +105,12 @@ namespace CcDirector.Gateway.Migrations.Postgres.Migrations
                         .IsRequired()
                         .HasColumnType("text");
 
+                    b.Property<long?>("ContentLength")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("ContentSha256")
+                        .HasColumnType("text");
+
                     b.Property<string>("ContextId")
                         .HasColumnType("text");
 
@@ -128,6 +134,9 @@ namespace CcDirector.Gateway.Migrations.Postgres.Migrations
                         .IsRequired()
                         .HasColumnType("text");
 
+                    b.Property<string>("IdentityKind")
+                        .HasColumnType("text");
+
                     b.Property<string>("InputOrigin")
                         .HasColumnType("text");
 
@@ -149,11 +158,20 @@ namespace CcDirector.Gateway.Migrations.Postgres.Migrations
                     b.Property<DateTime>("RecordedUtc")
                         .HasColumnType("timestamp with time zone");
 
+                    b.Property<string>("Route")
+                        .HasColumnType("text");
+
                     b.Property<string>("SendSource")
                         .HasColumnType("text");
 
                     b.Property<string>("SessionId")
                         .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("SpokenSpans")
+                        .HasColumnType("text");
+
+                    b.Property<string>("TranscriptId")
                         .HasColumnType("text");
 
                     b.HasKey("TenantId", "EventId");

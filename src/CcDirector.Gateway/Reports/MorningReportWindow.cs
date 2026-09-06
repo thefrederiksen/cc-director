@@ -100,7 +100,10 @@ public sealed class MorningReportWindow
     /// one the day actually starts at - <see cref="TimeZoneInfo.ConvertTimeToUtc"/> resolves ambiguity to
     /// standard time, and standard time is the later offset, so the earlier instant is taken explicitly.
     /// </summary>
-    private static DateTime StartOfLocalDayUtc(DateTime localDate, TimeZoneInfo zone)
+    /// <remarks>Internal rather than private because the Your Throttle week window
+    /// (<see cref="Stats.StatsPageEndpoint"/>) resolves a Monday midnight in the caller's zone the same way,
+    /// and two copies of a midnight rule diverge the moment one is corrected.</remarks>
+    internal static DateTime StartOfLocalDayUtc(DateTime localDate, TimeZoneInfo zone)
     {
         var local = DateTime.SpecifyKind(localDate, DateTimeKind.Unspecified);
 

@@ -3676,6 +3676,19 @@ a.banner-btn {
   font-size: 14px;
   padding: 20px 14px;
 }
+/* The period selector is SHARED with the Cockpit and carries its own stylesheet
+   (client-core/stats/throttleWindow.css). This is only the phone's touch re-tuning of that one baseline -
+   bigger targets, the page's own inset - scoped under .screen so it outranks the shared single-class rules
+   on specificity rather than on stylesheet order. */
+.screen .thr-window {
+  padding: 0 14px;
+  margin: 0 0 8px;
+  gap: 8px;
+}
+.screen .thr-window-choice {
+  font-size: 14px;
+  padding: 9px 16px;
+}
 .thr-cards {
   display: grid;
   grid-template-columns: repeat(3, 1fr);

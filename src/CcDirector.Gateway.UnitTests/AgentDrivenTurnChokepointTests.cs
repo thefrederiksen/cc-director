@@ -190,4 +190,12 @@ public sealed class AgentDrivenTurnChokepointTests
         }
         finally { sm.Dispose(); }
     }
+
+    // The source-reading test that used to sit here - counting "new PromptRequest" expressions in
+    // GatewayEndpoints.cs and grepping for two assignments - was DELETED on the independent inspection of
+    // phase two ("Clean up Your Throttle", 2026-09-05, finding I2-02): it was proof over the wrong surface.
+    // A factory extraction would have failed it while a deserialization path accepting an untrusted
+    // AgentDriven field stayed green, which is exactly the defect it did not catch. The producer is now
+    // proven where it lives: CcDirector.Gateway.Tests PromptAttributionIsGatewayAuthoritativeTests posts
+    // hostile bodies at the mapped route and reads what reaches the Director.
 }

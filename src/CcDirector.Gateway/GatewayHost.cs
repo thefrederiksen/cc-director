@@ -279,6 +279,11 @@ public sealed class GatewayHost : IAsyncDisposable
     /// </summary>
     public Pairing.SessionKeyRegistry SessionKeys { get; }
 
+    /// <summary>The Gateway's record of what each utterance upload transcribed (inspection finding I2-03), spent
+    /// by the prompt route when a prompt claims to be that utterance. One per process, shared by the utterance
+    /// completion route that writes it and the prompt route that spends it. In memory by design.</summary>
+    public Voice.SpokenClaimRegistry SpokenClaims { get; } = new();
+
     /// <summary>
     /// Issue #288: which Director last owned each session, so the per-session WS proxy can answer
     /// 503 (owner offline) instead of 404 (unknown session). Populated by the /sessions aggregator
@@ -3188,6 +3193,8 @@ public sealed class GatewayHost : IAsyncDisposable
             // Issue #2017: the snooze-default consumer at POST /sessions/{sid}/hold reads the caller tenant's
             // default through the resolver instead of the process-global config.
             tenantSettings: _tenantSettingsResolver,
+            // Inspection finding I2-03: the prompt route spends spoken claims against this record.
+            spokenClaims: SpokenClaims,
             // Issue #2022: the live process diagnostics the About page shows read-only on both surfaces,
             // after the machine settings left the Cockpit Settings page.
             gatewayStartedAtUtc: StartedAtUtc,
@@ -3529,6 +3536,11 @@ public sealed class GatewayHost : IAsyncDisposable
             // Store injection points: hand the endpoint the host's single voice-turn upload store and the
             // host's transcription history + audio archive, so it stops newing its own copies.
             uploadStore: _voiceTurnUploads,
+            // Inspection finding I2-03: the utterance completion route records each transcription here.
+            spokenClaims: SpokenClaims,
+            // The same transcription service the dictation endpoint uses, when the host was handed one (tests
+            // fake its provider); null builds the production service as before.
+            transcriptionService: _dictationTranscription,
             history: _transcriptionHistory,
             audioArchive: _transcriptionAudioArchive,
             tenantBoundary: _tenantBoundary,
@@ -3939,7 +3951,12 @@ public sealed class GatewayHost : IAsyncDisposable
         // 503 for the life of the process. The handle is passed in instead and asked on each request, so the
         // routes start serving the moment there is something to serve, and still answer the named 503 with
         // the store's own reason while there is not.
-        Stats.StatsPageEndpoint.Map(_app, InputStatsHandle, _tenantBoundary, () => SessionConcurrency,
+        // Every count of turns the feed serves comes from the submission ledger through the one definition
+        // in Throttle.ThrottleDefinition (mission "Clean up Your Throttle", ruling R9); the reader below is
+        // the only thing that feeds it from the store. The statistics handle still supplies what counts no
+        // turn - concurrency, token spend, the per-model split - and is asked per request as before.
+        Stats.StatsPageEndpoint.Map(_app, InputStatsHandle, _tenantBoundary,
+            new Throttle.ThrottleLedgerReader(_gatewayDb), () => SessionConcurrency,
             _tenantSettingsResolver, _sessionHistory);
 
         // The prompt log (issue #1551): Directors push what they captured to POST /prompts, and anyone

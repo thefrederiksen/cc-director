@@ -225,10 +225,17 @@ internal static class SessionCommandExecutor
                 InputOrigin.RemoteSurfaceFromDeviceType(request.Surface))
             : null;
 
+        // WHAT THE DOOR KNEW (source logging, 2026-09-05): the Gateway's route built it from what it verified and
+        // sent it on the wire; it is recorded as it arrived. A Gateway older than the field sends none, and that
+        // is recorded as the unknown it is - never guessed from the surface or the send source.
+        var provenance = SubmissionProvenance.FromWire(request.Provenance,
+            request.AgentDriven ? SubmissionRoutes.FleetMessage
+            : !string.IsNullOrWhiteSpace(request.DeliveryUploadId) ? SubmissionRoutes.GatewayDictation
+            : SubmissionRoutes.GatewayPrompt);
         if (request.AppendEnter)
-            await session.SendTextAsync(request.Text, effectiveSource, origin);
+            await session.SendTextAsync(request.Text, provenance, effectiveSource, origin);
         else
-            session.SendInput(Encoding.UTF8.GetBytes(request.Text), origin);
+            session.SendInput(Encoding.UTF8.GetBytes(request.Text), origin, provenance);
 
         var response = new PromptResponse
         {
@@ -679,7 +686,7 @@ internal static class SessionCommandExecutor
                     }
                     FileLog.Write($"[SessionCommandExecutor] PrePrompt: dispatching to sid={capturedSession.Id}, len={prePrompt.Length}");
                     // Framework pre-prompt (not a human racing the dictation): exempt (issue #1181, Task 3b).
-                    await capturedSession.SendTextAsync(prePrompt, SendSource.Framework);
+                    await capturedSession.SendTextAsync(prePrompt, SubmissionProvenance.FrameworkText(), SendSource.Framework);
                 }
                 catch (Exception ex)
                 {

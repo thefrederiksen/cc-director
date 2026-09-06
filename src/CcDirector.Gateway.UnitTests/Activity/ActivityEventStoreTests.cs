@@ -226,4 +226,45 @@ public sealed class ActivityEventStoreTests : IDisposable
         Assert.Empty(storeA.Read(sessionId: "s1"));
         Assert.Equal("bravo-account-secret-rows", Assert.Single(storeB.Read(sessionId: "s1")).BoundedScreenDiff);
     }
+
+    // ---- source logging (owner's ruling, 2026-09-05): what the door knew survives the ledger round trip
+
+    [Fact]
+    public void The_doors_provenance_and_the_choke_points_digest_survive_the_roundtrip()
+    {
+        var store = NewStore();
+        var row = Rec(eventType: ActivityEventTypes.TurnSubmitted, cause: ActivityCauses.OwnerSubmit) with
+        {
+            InputOrigin = "voice/phone",
+            SendSource = "Delivery",
+            Route = "gateway-dictation",
+            IdentityKind = "device",
+            TranscriptId = "upload-42",
+            SpokenSpans = "0+44",
+            ContentSha256 = new string('a', 64),
+            ContentLength = 44,
+        };
+        store.AppendBatch(new[] { row });
+
+        var read = Assert.Single(store.Read(sessionId: "s1"));
+        Assert.Equal("gateway-dictation", read.Route);
+        Assert.Equal("device", read.IdentityKind);
+        Assert.Equal("upload-42", read.TranscriptId);
+        Assert.Equal("0+44", read.SpokenSpans);
+        Assert.Equal(new string('a', 64), read.ContentSha256);
+        Assert.Equal(44, read.ContentLength);
+    }
+
+    [Fact]
+    public void A_row_from_a_director_older_than_the_fields_reads_back_with_them_null()
+    {
+        var store = NewStore();
+        store.AppendBatch(new[] { Rec(eventType: ActivityEventTypes.TurnSubmitted, cause: ActivityCauses.OwnerSubmit) });
+        var read = Assert.Single(store.Read(sessionId: "s1"));
+        Assert.Null(read.Route);
+        Assert.Null(read.IdentityKind);
+        Assert.Null(read.SpokenSpans);
+        Assert.Null(read.ContentSha256);
+        Assert.Null(read.ContentLength);
+    }
 }

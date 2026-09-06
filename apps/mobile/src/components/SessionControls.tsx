@@ -4,6 +4,7 @@ import { backgroundTranscribeAndSend, type CapturedUtterance } from "@devthrottl
 import { useDictationBaseline } from "@devthrottle/client-core/dictation/baseline";
 import { DictationDialog } from "@devthrottle/client-core/dictation/DictationDialog";
 import { insertAt, joinText } from "@devthrottle/client-core/dictation/transcript";
+import { ComposerProvenance } from "@devthrottle/client-core/dictation/composerProvenance";
 import {
   KEY_ARROW_DOWN,
   KEY_ARROW_LEFT,
@@ -57,6 +58,10 @@ export function SessionControls({ sessionId, onFlash, onError, showKeyRows }: Se
   // box cannot change while it is open). Dictation is inserted here, exactly like the desktop Insert
   // button, instead of being appended at the end.
   const caretRef = useRef(0);
+  // WHICH CHARACTERS CAME FROM A MICROPHONE (source logging, owner's ruling 2026-09-05) - the same record the
+  // Cockpit composer and the desktop compose box keep, so all three surfaces say which characters were spoken
+  // rather than only whether the whole turn was. The ranges ride with the send as claims the Gateway verifies.
+  const provenanceRef = useRef(new ComposerProvenance());
   // Where to move the caret after an Insert drops text mid-box; applied post-render below. Null except
   // in the render right after an Insert.
   const pendingCaretRef = useRef<number | null>(null);
@@ -105,7 +110,7 @@ export function SessionControls({ sessionId, onFlash, onError, showKeyRows }: Se
     if (text.trim().length === 0) return;
     setInput(""); // clear immediately (the Android tab clears the box before the call returns)
     try {
-      await sendPrompt(sessionId, text, true);
+      await sendPrompt(sessionId, text, true, undefined, undefined, provenanceRef.current.forSend().spans);
       onFlash("Sent");
     } catch (err) {
       onError(err instanceof Error ? err.message : "Send failed");
@@ -176,7 +181,7 @@ export function SessionControls({ sessionId, onFlash, onError, showKeyRows }: Se
   // submit); Send inserts it at the caret and submits via the same POST /prompt path the Send button
   // uses. Both use the caret snapshotted when Speak was pressed, exactly like the desktop Insert.
   const onDictateInsert = useCallback(
-    (text: string) => {
+    (text: string, spokenDeliveryId?: string) => {
       setDictating(false);
       if (text.trim().length === 0) return;
       const caret = caretRef.current;
@@ -184,6 +189,13 @@ export function SessionControls({ sessionId, onFlash, onError, showKeyRows }: Se
         const composed = insertAt(cur, caret, text);
         const clamped = caret < 0 || caret > cur.length ? cur.length : caret;
         pendingCaretRef.current = composed.length - (cur.length - clamped);
+        // The inserted characters ARE the transcript; where they landed is where the record marks them.
+        const at = composed.indexOf(text, Math.max(0, Math.min(caret, composed.length)));
+        provenanceRef.current.textChanged(cur, caret);
+        // Only a range that names a verifiable transcript is worth recording; the dialog withholds the id
+        // the moment the words were edited, and those characters are then no different from typing.
+        if (at >= 0 && spokenDeliveryId !== undefined) provenanceRef.current.inserted(composed, text, at, spokenDeliveryId);
+        else provenanceRef.current.textChanged(composed);
         return composed;
       });
       onFlash("Inserted");
@@ -192,17 +204,29 @@ export function SessionControls({ sessionId, onFlash, onError, showKeyRows }: Se
   );
 
   const onDictateSend = useCallback(
-    async (text: string) => {
+    async (text: string, spokenDeliveryId?: string) => {
       setDictating(false);
       if (!sessionId) return;
       // Send behaves like Insert-then-Enter: the dictation is inserted at the caret inside any typed
       // text (like the Insert button), then submitted. Clear the box, exactly like the normal Send
       // path, so the user does not re-send what just went out.
-      const combined = insertAt(input, caretRef.current, text).trim();
+      const composed = insertAt(input, caretRef.current, text);
+      const at = composed.indexOf(text, Math.max(0, Math.min(caretRef.current, composed.length)));
+      provenanceRef.current.textChanged(input, caretRef.current);
+      // Only a range that names a verifiable transcript is worth recording (see the Insert path above).
+      if (at >= 0 && spokenDeliveryId !== undefined) provenanceRef.current.inserted(composed, text, at, spokenDeliveryId);
+      else provenanceRef.current.textChanged(composed);
+      const sent = provenanceRef.current.forSend();
+      const combined = sent.text;
       if (combined.length === 0) return;
+      // SPOKEN only when the dictation is the whole turn - the same test the Cockpit composer makes,
+      // because this is the same act on the other surface (ruling R10, "Clean up Your Throttle").
+      // Typed text already in the box makes it a mixture, and a mixture counts as typed.
+      const spoken = input.trim().length === 0 ? spokenDeliveryId : undefined;
       setInput("");
+      provenanceRef.current.reset();
       try {
-        await sendPrompt(sessionId, combined, true);
+        await sendPrompt(sessionId, combined, true, undefined, spoken, sent.spans);
         onFlash("Sent");
       } catch (err) {
         setInput(combined); // restore so a failed send never loses the typed + dictated text
@@ -262,7 +286,12 @@ export function SessionControls({ sessionId, onFlash, onError, showKeyRows }: Se
           spellCheck={false}
           placeholder="type a message..."
           value={input}
-          onChange={(e) => setInput(e.target.value)}
+          onChange={(e) => {
+            // The caret AFTER the change is what tells a deletion of the first of two identical copies from
+            // a deletion of the second; the record cannot know it from the text alone.
+            provenanceRef.current.textChanged(e.target.value, e.target.selectionStart ?? undefined);
+            setInput(e.target.value);
+          }}
         />
       </div>
 

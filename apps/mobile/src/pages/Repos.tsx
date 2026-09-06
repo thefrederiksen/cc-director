@@ -2,41 +2,32 @@ import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import {
   getThrottle,
-  summarizeRepos,
-  formatShare,
+  formatPercent,
   type ThrottleData,
+  type ThrottleFigure,
   type RepoStat,
   type RepoSummary,
 } from "@devthrottle/client-core/stats/statsClient";
 import { gatewayErrorMessage } from "@devthrottle/client-core/api/client";
 
-// The private "Repos" page for the phone (devthrottle-stats mission): where the owner's development
-// actually happens - how driving splits across the codebases worked in, ranked by submitted turns. Its
-// own page, deliberately separate from Your Throttle, because which repos take the owner's time is
-// private (unlike the shareable voice/surface splits). Reads the same GET /stats/data feed (repos ride
-// on it now) as the Cockpit Repos page, so both shells show one identical, single-source view. Renders
-// immediately with a loading state, loads asynchronously, shows an explicit error banner on failure
-// (no-fallback rule), and auto-refreshes. Counts only - never any message text.
+// The private "Repos" page for the phone: where the owner's development actually happens - how driving
+// splits across the codebases worked in, ranked by submitted turns. Its own page, deliberately separate
+// from Your Throttle, because which repos take the owner's time is private (unlike the shareable
+// voice/surface splits). Reads the same GET /stats/data feed as the Cockpit Repos tab: the per-repository
+// split is part of the one figure the Gateway computes from the submission ledger (mission "Clean up Your
+// Throttle", ruling R9), so both shells show one identical view over one stated window. A self-hosted
+// Gateway answers with a sentence, and this page shows it (rulings R1 and R6). Renders immediately with a
+// loading state, loads asynchronously, shows an explicit error banner on failure (no-fallback rule), and
+// auto-refreshes. Counts only - never any message text, and no character volume (ruling R16).
 
 const REFRESH_MS = 10_000;
 
-type Metric = "turns" | "characters" | "sessions";
-const METRIC_LABEL: Record<Metric, string> = { turns: "Turns", characters: "Characters", sessions: "Sessions" };
-const METRIC_WORD: Record<Metric, string> = { turns: "turns", characters: "characters", sessions: "sessions" };
+type Metric = "turns" | "sessions";
+const METRIC_LABEL: Record<Metric, string> = { turns: "Turns", sessions: "Sessions" };
+const METRIC_WORD: Record<Metric, string> = { turns: "turns", sessions: "sessions" };
 
 function metricValue(r: RepoStat, metric: Metric): number {
-  return metric === "turns" ? r.turns : metric === "characters" ? r.characters : r.sessions;
-}
-
-/** Compact large counts (48200 -> "48.2K", 1_200_000 -> "1.2M"); plain below 1,000. */
-function compactNumber(n: number): string {
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
-  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
-  return String(n);
-}
-
-function formatValue(value: number, metric: Metric): string {
-  return metric === "characters" ? compactNumber(value) : value.toLocaleString();
+  return metric === "turns" ? r.turns : r.sessions;
 }
 
 export function Repos() {
@@ -69,15 +60,16 @@ export function Repos() {
     };
   }, []);
 
-  const repos = data?.repos ?? [];
-  const summary: RepoSummary | null = data === null ? null : summarizeRepos(repos);
+  const figure: ThrottleFigure | null = data !== null && data.available ? data.throttle : null;
+  const repos = figure?.repos ?? [];
+  // The headline cards are the Gateway's (fix-round finding F-01): nothing here totals a row.
+  const summary: RepoSummary | null = figure === null ? null : figure.reposSummary;
 
   const ranked = useMemo(
     () => [...repos].sort((a, b) => metricValue(b, metric) - metricValue(a, metric)),
     [repos, metric],
   );
   const max = ranked.length > 0 ? metricValue(ranked[0], metric) : 0;
-  const total = ranked.reduce((t, r) => t + metricValue(r, metric), 0);
 
   return (
     <div className="screen">
@@ -99,16 +91,23 @@ export function Repos() {
         </div>
       )}
 
-      {summary === null && error === null && <div className="thr-note">Loading...</div>}
+      {data === null && error === null && <div className="thr-note">Loading...</div>}
 
-      {summary !== null && !summary.hasData && (
-        <div className="thr-note">
-          No input counted yet. Drive a session in any repo and the codebases you work in will appear here,
-          ranked.
+      {/* The Gateway has no figure to show here and said why, in one sentence. Rendered verbatim. */}
+      {data !== null && !data.available && (
+        <div className="thr-note" role="status">
+          {data.reason}
         </div>
       )}
 
-      {summary !== null && summary.hasData && (
+      {figure !== null && summary !== null && !summary.hasData && (
+        <div className="thr-note">
+          No turn counted in this window ({figure.window.label.toLowerCase()}). Drive a session in any repo
+          and the codebases you work in will appear here, ranked.
+        </div>
+      )}
+
+      {figure !== null && summary !== null && summary.hasData && (
         <>
           <section className="thr-cards" aria-label="Repo headlines">
             <div className="thr-card">
@@ -120,23 +119,30 @@ export function Repos() {
               <div className="thr-card-label">Turns</div>
             </div>
             <div className="thr-card">
-              <div className="thr-card-value">{formatShare(summary.topShare)}</div>
+              <div className="thr-card-value">{formatPercent(summary.topPercent)}</div>
               <div className="thr-card-label">Busiest</div>
             </div>
           </section>
 
           <div className="thr-caption">
+            {figure.window.label}.{" "}
             {summary.topRepoName !== null && (
               <>
                 {summary.topRepoName} leads;{" "}
               </>
             )}
-            {summary.totalSessions} session{summary.totalSessions === 1 ? "" : "s"},{" "}
-            {compactNumber(summary.totalCharacters)} characters in total.
+            {summary.totalSessions} session{summary.totalSessions === 1 ? "" : "s"} in total.
+            {figure.reposUnattributedTurns > 0 && (
+              <>
+                {" "}
+                {figure.reposUnattributedTurns.toLocaleString()} of your turns went into sessions with no
+                repository on record and are in no row here.
+              </>
+            )}
           </div>
 
           <div className="repos-seg" role="tablist" aria-label="Rank repositories by">
-            {(["turns", "characters", "sessions"] as Metric[]).map((m) => (
+            {(["turns", "sessions"] as Metric[]).map((m) => (
               <button
                 key={m}
                 type="button"
@@ -154,9 +160,11 @@ export function Repos() {
             <div className="thr-list-title">By {METRIC_WORD[metric]}</div>
             {ranked.map((r, i) => {
               const value = metricValue(r, metric);
+              // The bar's length against the longest bar is layout; every RATIO printed or drawn is the
+              // Gateway's own row share (fix-round finding F-01).
               const width = max > 0 ? (value / max) * 100 : 0;
-              const share = total > 0 ? Math.round((value / total) * 100) : 0;
-              const voicePct = r.turns > 0 ? Math.round((r.voiceTurns / r.turns) * 100) : 0;
+              const share = formatPercent(metric === "turns" ? r.turnPercent : r.sessionPercent);
+              const voiceWidth = r.voiceShare === null ? 0 : r.voiceShare;
               const showSplit = metric === "turns" && r.turns > 0;
               return (
                 <div className="repo-item" key={r.repo}>
@@ -164,15 +172,15 @@ export function Repos() {
                     <span className="repo-item-rank">{i + 1}</span>
                     <span className="repo-item-name">{r.repoName}</span>
                     <span className="repo-item-val">
-                      {formatValue(value, metric)}
-                      <span className="repo-item-share"> - {share}%</span>
+                      {value.toLocaleString()}
+                      <span className="repo-item-share"> - {share}</span>
                     </span>
                   </div>
                   <div className="repo-item-bar">
                     {showSplit ? (
                       <>
-                        <span className="repo-item-voice" style={{ width: `${(width * voicePct) / 100}%` }} />
-                        <span className="repo-item-typed" style={{ width: `${(width * (100 - voicePct)) / 100}%` }} />
+                        <span className="repo-item-voice" style={{ width: `${width * voiceWidth}%` }} />
+                        <span className="repo-item-typed" style={{ width: `${width * (1 - voiceWidth)}%` }} />
                       </>
                     ) : (
                       <span className="repo-item-voice" style={{ width: `${width}%` }} />
@@ -185,26 +193,28 @@ export function Repos() {
         </>
       )}
 
-      <section className="thr-caveats" aria-label="What this does and doesn't count">
-        <div className="thr-list-title">What this does and doesn't count</div>
-        <ul>
-          <li>
-            A turn is one submitted message; the amber part of each bar is the share driven by voice.
-            Repos are grouped by their GitHub repository, so every worktree and machine rolls up into one row.
-          </li>
-          <li>
-            Time is not shown (an idle hour looks like a busy one), and tokens are not shown - the tally
-            counts turns and characters, never tokens. Nothing here is fabricated.
-          </li>
-        </ul>
-        {data !== null && data.notCaptured.length > 0 && (
+      {figure !== null && (
+        <section className="thr-caveats" aria-label="What this does and doesn't count">
+          <div className="thr-list-title">What this does and doesn't count</div>
           <ul>
-            {data.notCaptured.map((c, i) => (
-              <li key={i}>{c}</li>
-            ))}
+            <li>
+              A turn is one submitted message; the amber part of each bar is the share driven by voice.
+              Repos are grouped by their GitHub repository, so every worktree and machine rolls up into one row.
+            </li>
+            <li>
+              Time is not shown (an idle hour looks like a busy one), and tokens and characters are not shown -
+              the figure counts submitted turns. Nothing here is fabricated.
+            </li>
           </ul>
-        )}
-      </section>
+          {data !== null && data.available && data.notCaptured.length > 0 && (
+            <ul>
+              {data.notCaptured.map((c, i) => (
+                <li key={i}>{c}</li>
+              ))}
+            </ul>
+          )}
+        </section>
+      )}
     </div>
   );
 }

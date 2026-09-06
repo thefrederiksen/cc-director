@@ -214,7 +214,11 @@ internal static class GatewayEndpoints
         // ran, and a value read here would freeze the answer at startup. Null computes none, which OMITS
         // the block; that is what every self-host and test caller gets, and it is honest: a responder that
         // was given nothing to report must not report that everything is fine. See HealthDto.Subsystems.
-        Func<IReadOnlyDictionary<string, string>>? subsystems = null)
+        Func<IReadOnlyDictionary<string, string>>? subsystems = null,
+        // Inspection finding I2-03 ("Clean up Your Throttle", 2026-09-05): the Gateway's own record of what it
+        // transcribed, so a prompt's spoken claim is verified against it rather than trusted. Null (older
+        // callers, tests) means no claim can ever be honoured - fail closed, every prompt is typed.
+        Voice.SpokenClaimRegistry? spokenClaims = null)
     {
         // The old issue #1188 "session lock" (423 Locked on human input while a PENDING dictation record
         // existed) was removed deliberately (issue #1308). This is a single-operator tool: a collision
@@ -2535,7 +2539,10 @@ internal static class GatewayEndpoints
         // phase 2 so the new POST /sessions/{sid}/message shares ONE delivery path with it: a message is a
         // framed prompt, and two copies of "send it and wait" would be two behaviours to keep equal. The
         // caller has already located the session and decided what the text is.
-        async Task<IResult> DeliverPromptAsync(DirectorDto director, SessionDto session, string sid, PromptRequest req)
+        // `outcome`, when given, is told exactly once whether the Director ACCEPTED the prompt - true only on a
+        // 200 whose body says Accepted; false on a dropped tunnel, a Director failure, or a Director refusal.
+        // The spoken-claim reservation is committed or released on that answer (finding F-07).
+        async Task<IResult> DeliverPromptAsync(DirectorDto director, SessionDto session, string sid, PromptRequest req, Action<bool>? outcome = null)
         {
             // Post-cut: tunnel-only. A null result means the Director is not connected -> 502. The WaitForIdle
             // poll below is unchanged - it observes the session regardless of how the prompt was delivered.
@@ -2554,12 +2561,16 @@ internal static class GatewayEndpoints
                 err = streamResult.Ok ? null : DirectorCommandRouter.DescribeFailure(streamResult);
             }
             if (!ok || body is null)
+            {
+                outcome?.Invoke(false);
                 return Results.Json(new PromptResponse
                 {
                     Accepted = false,
                     Error = err,
                     ActivityState = session.ActivityState,
                 }, statusCode: StatusCodes.Status502BadGateway);
+            }
+            outcome?.Invoke(body.Accepted);
 
             if (!req.WaitForIdle)
                 return Results.Json(body);
@@ -2700,6 +2711,15 @@ internal static class GatewayEndpoints
                 AppendEnter = true,
                 WaitForIdle = req.WaitForIdle,
                 TimeoutMs = req.TimeoutMs,
+                // ONE AGENT PROMPTING ANOTHER, SAID OUT LOUD. This route is reached only by a caller that
+                // authenticated with a SESSION key, so the sender is a session by construction and there is
+                // nothing to infer. Without the marker the Director records the turn as an ordinary
+                // UserInput with no origin, and it is then left out of the person's figures only because no
+                // surface resolved for it - the right answer by the wrong road - while the agent-driven
+                // lane, which exists precisely to count these, never sees it at all. Over the owner's week
+                // of 2026-W35 that was 292 of 296 fleet messages: absent from both numbers. See ruling R12
+                // of the "Clean up Your Throttle" mission (2026-09-05).
+                AgentDriven = true,
             });
         });
 
@@ -2797,7 +2817,124 @@ internal static class GatewayEndpoints
             // Machine-to-machine traffic (fanout/broadcast) never reaches this handler and never sets Surface,
             // so it stays null and is correctly excluded.
             req.Surface = (httpCtx.Items.TryGetValue(AuthMiddleware.DeviceTypeItemKey, out var dt) ? dt as string : null) ?? "unknown";
+            // THE TWO ATTRIBUTION MARKERS ARE THE GATEWAY'S TO SET, NEVER THE BODY'S (inspection findings I2-02
+            // and I2-03 of the "Clean up Your Throttle" mission, 2026-09-05). The Director believes both fields
+            // of this DTO unconditionally: AgentDriven relabels the turn as another agent's and takes it out of
+            // the person's figures; a nonblank DeliveryUploadId makes it a voice delivery. Before this, both were
+            // forwarded exactly as the caller sent them, so a device-authenticated body could count its own
+            // typed prompt as agent traffic, or as speech under a made-up or replayed id.
+            //
+            // Who drove it is decided from the AUTHENTICATED credential, the same way the fanout decides: a
+            // session key is one agent prompting another; anything else is the person. Whether it was spoken is
+            // decided by spending the Gateway's own claim for the utterance id - known, this tenant's, unspent,
+            // young, and the submitted words are the transcript - and an agent never spoke. Anything that does
+            // not clear that bar is a typed turn (ruling R10: an edited, mixed, or replayed dictation is typed).
+            // The text is still delivered either way; nothing here refuses the prompt.
+            var callingSessionForAttribution = AuthMiddleware.CallingSession(httpCtx);
+            req.AgentDriven = callingSessionForAttribution is not null;
+            var claimedUploadId = req.DeliveryUploadId;
+            req.DeliveryUploadId = null;
+            // RESERVED HERE, COMMITTED OR RELEASED BELOW (final inspection finding F-07). The claim used to be spent
+            // at this line, before the session was located or the menu guard ran, so a prompt that never entered a
+            // session burned the only proof and the person's retry of the same words was filed as typed. Now the
+            // claim is held until the Director answers: accepted commits it, anything else releases it.
+            Voice.SpokenClaimRegistry.Reservation? spokenReservation = null;
+            if (!string.IsNullOrWhiteSpace(claimedUploadId) && callingSessionForAttribution is null)
+            {
+                var claimTenant = ResolveReadTenant(httpCtx, tenantBoundary);
+                var refusal = Voice.SpokenClaimRegistry.Refusal.None;
+                if (spokenClaims is not null && claimTenant is { } ct
+                    && spokenClaims.TryReserve(ct, claimedUploadId, req.Text, out refusal, out var reserved))
+                {
+                    req.DeliveryUploadId = claimedUploadId;
+                    spokenReservation = reserved;
+                    FileLog.Write($"[GatewayEndpoints] POST prompt: sid={sid} spoken claim reserved (upload={claimedUploadId})");
+                }
+                else
+                {
+                    FileLog.Write($"[GatewayEndpoints] POST prompt: sid={sid} spoken claim REFUSED, delivered as typed " +
+                                  $"(upload={claimedUploadId}, reason={(spokenClaims is null ? "no-registry" : claimTenant is null ? "no-tenant" : refusal.ToString())})");
+                }
+            }
+            else if (!string.IsNullOrWhiteSpace(claimedUploadId))
+            {
+                FileLog.Write($"[GatewayEndpoints] POST prompt: sid={sid} spoken claim ignored - the caller is a session, and a session did not speak");
+            }
 
+            // WHICH CHARACTERS WERE SPOKEN (source logging, 2026-09-05). A browser composer tracks the ranges its
+            // dictation occupies as the person types around them and CLAIMS them here. A claim is not a fact: each
+            // one is verified against the registry - the characters it names must BE the transcript that id
+            // registered, in this tenant, unexpired - and only verified spans are recorded. A claim that fails is
+            // dropped and logged, so a hostile body can mark nothing as spoken that it cannot already reproduce
+            // verbatim. Verification is read-only and spends nothing: whether the TURN counts as spoken is still
+            // decided by the reservation above and by nothing else.
+            var claimedSpans = req.SpokenSpans ?? new List<SpokenSpanClaimDto>();
+            req.SpokenSpans = null;
+            var verifiedSpans = new List<SpokenSpanDto>();
+            var verifiedTranscriptIds = new HashSet<string>(StringComparer.Ordinal);
+            if (claimedSpans.Count > 0 && callingSessionForAttribution is null && spokenClaims is not null
+                && ResolveReadTenant(httpCtx, tenantBoundary) is { } spanTenant)
+            {
+                var text = req.Text ?? "";
+                foreach (var claim in claimedSpans.OrderBy(c => c.Start))
+                {
+                    if (claim.Start < 0 || claim.Length <= 0 || (long)claim.Start + claim.Length > text.Length)
+                    {
+                        FileLog.Write($"[GatewayEndpoints] POST prompt: sid={sid} spoken span claim REFUSED - {claim.Start}+{claim.Length} lies outside {text.Length} characters");
+                        continue;
+                    }
+                    if (!spokenClaims.Matches(spanTenant, claim.TranscriptId, text.Substring(claim.Start, claim.Length)))
+                    {
+                        FileLog.Write($"[GatewayEndpoints] POST prompt: sid={sid} spoken span claim REFUSED - the characters {claim.Start}+{claim.Length} are not the transcript of upload {claim.TranscriptId}");
+                        continue;
+                    }
+                    verifiedSpans.Add(new SpokenSpanDto { Start = claim.Start, Length = claim.Length });
+                    if (!string.IsNullOrWhiteSpace(claim.TranscriptId)) verifiedTranscriptIds.Add(claim.TranscriptId!.Trim());
+                }
+                FileLog.Write($"[GatewayEndpoints] POST prompt: sid={sid} spoken span claims: {verifiedSpans.Count} of {claimedSpans.Count} verified");
+            }
+            else if (claimedSpans.Count > 0)
+            {
+                FileLog.Write($"[GatewayEndpoints] POST prompt: sid={sid} {claimedSpans.Count} spoken span claim(s) ignored - the caller is a session, or no registry or tenant resolved");
+            }
+
+            // WHAT THIS DOOR KNEW AT ENTRY (owner's ruling, 2026-09-05: source logging), onto the wire for the
+            // Director to record on the ledger row: the route (a session calling is a fleet message; anyone else
+            // is the prompt route), the credential kind this gate verified, and the spoken characters - the
+            // verified span claims, or, when a whole-text claim was reserved above and the client named no spans,
+            // the whole text (the registry reserves a claim only for text that IS the transcript). Nothing here
+            // is inferred later.
+            if (verifiedSpans.Count == 0 && spokenReservation is not null && !string.IsNullOrEmpty(req.Text))
+            {
+                verifiedSpans.Add(new SpokenSpanDto { Start = 0, Length = req.Text.Length });
+                if (!string.IsNullOrWhiteSpace(claimedUploadId)) verifiedTranscriptIds.Add(claimedUploadId!.Trim());
+            }
+            req.Provenance = new SubmissionProvenanceDto
+            {
+                Route = callingSessionForAttribution is not null ? Core.Sessions.SubmissionRoutes.FleetMessage : Core.Sessions.SubmissionRoutes.GatewayPrompt,
+                IdentityKind = AuthMiddleware.IdentityKind(httpCtx),
+                // One id names the transcript this turn came from; several means it was composed of more than
+                // one, and no single id is the truth - the spans carry that detail instead of a guess.
+                TranscriptId = verifiedTranscriptIds.Count == 1 ? verifiedTranscriptIds.First() : null,
+                SpokenSpans = verifiedSpans,
+            };
+
+            var accepted = false;
+            try
+            {
+                return await PromptAfterAttributionAsync();
+            }
+            finally
+            {
+                if (spokenReservation is { } held && spokenClaims is not null)
+                {
+                    if (accepted) spokenClaims.Commit(held);
+                    else spokenClaims.Release(held);
+                }
+            }
+
+            async Task<IResult> PromptAfterAttributionAsync()
+            {
             var (director, session) = await LocateSessionForRequestAsync(httpCtx, tenantBoundary, registry, sid, pushedSessions, streamStaleResolved, owners);
             if (session is null || director is null)
                 return SessionUnavailable(httpCtx, tenantBoundary, pushedSessions, sid);
@@ -2852,7 +2989,8 @@ internal static class GatewayEndpoints
                 }
             }
 
-            return await DeliverPromptAsync(director, session, sid, req);
+            return await DeliverPromptAsync(director, session, sid, req, wasAccepted => accepted = wasAccepted);
+            }
         });
 
         app.MapPost("/sessions/{sid}/interrupt", async (HttpContext ctx, string sid) =>
@@ -3964,7 +4102,22 @@ internal static class GatewayEndpoints
                     };
                 }
 
-                var promptReq = new PromptRequest { Text = req.Text, AppendEnter = req.AppendEnter };
+                // AGENT-DRIVEN WHEN THE SENDER IS A SESSION, and not otherwise (ruling R12 of the "Clean up
+                // Your Throttle" mission, 2026-09-05). A fanout from a session key is one agent prompting
+                // others and must be recorded as agent traffic; left unmarked the Director records it as
+                // ordinary UserInput with no origin, so it falls out of the person's figures only because
+                // no surface resolved for it, and out of the agent-driven lane entirely. That was 292 of
+                // the owner's 296 fleet messages in 2026-W35: absent from both numbers.
+                //
+                // The test is the AUTHENTICATED caller, never req.FromSessionId. A device key acts for the
+                // account - a person broadcasting from the desktop or the phone - and it can put any string
+                // in that field, so trusting it would let a caller decide whether its own turns count.
+                var promptReq = new PromptRequest
+                {
+                    Text = req.Text,
+                    AppendEnter = req.AppendEnter,
+                    AgentDriven = callingSession is not null,
+                };
                 // Fanout delivery rides the tunnel (prompt verb). Tunnel-only: there is no HTTP arm.
                 bool ok; PromptResponse? body; string? err;
                 var deliverSr = await DirectorCommandRouter.TrySendAsync(sendCommand, director.DirectorId, "prompt", sid, promptReq, CancellationToken.None, machineName: director.MachineName);

@@ -14,7 +14,20 @@ namespace CcDirector.Avalonia.Tests;
 /// </summary>
 internal sealed class HeadlessTestApp : Application
 {
-    public override void Initialize() => Styles.Add(new FluentTheme());
+    public override void Initialize()
+    {
+        Styles.Add(new FluentTheme());
+        // The brushes App.axaml defines, so a real MainWindow can be constructed and driven here (ruling
+        // R20's compose-box route). Same keys, same values; a window that reads one it does not find
+        // gets Avalonia's unset marker, which is not a brush.
+        Resources["PanelBackground"] = new global::Avalonia.Media.SolidColorBrush(global::Avalonia.Media.Color.Parse("#1E1E1E"));
+        Resources["SidebarBackground"] = new global::Avalonia.Media.SolidColorBrush(global::Avalonia.Media.Color.Parse("#252526"));
+        Resources["ButtonBackground"] = new global::Avalonia.Media.SolidColorBrush(global::Avalonia.Media.Color.Parse("#3C3C3C"));
+        Resources["ButtonHover"] = new global::Avalonia.Media.SolidColorBrush(global::Avalonia.Media.Color.Parse("#505050"));
+        Resources["TextForeground"] = new global::Avalonia.Media.SolidColorBrush(global::Avalonia.Media.Color.Parse("#CCCCCC"));
+        Resources["AccentBrush"] = new global::Avalonia.Media.SolidColorBrush(global::Avalonia.Media.Color.Parse("#007ACC"));
+        Resources["SelectedItemBrush"] = new global::Avalonia.Media.SolidColorBrush(global::Avalonia.Media.Color.Parse("#094771"));
+    }
 }
 
 internal static class TestAppBuilder

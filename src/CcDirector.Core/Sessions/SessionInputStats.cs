@@ -1,13 +1,15 @@
 using System.Collections.Concurrent;
 using CcDirector.Gateway.Contracts;
 
+using CcDirector.Core.Utilities;
+
 namespace CcDirector.Core.Sessions;
 
 /// <summary>
 /// Per-session tally of how the operator drove this session: submitted TURNS and CHARACTER volume, split
 /// by (<see cref="InputModality"/>, <see cref="InputSurface"/>). This is the honest instrumentation heart
 /// of the DevThrottle Stats mission: the count is taken at the Session choke point
-/// (<see cref="Session.SendInput(byte[], InputOrigin?)"/> / <see cref="Session.SendTextAsync(string, SendSource, InputOrigin?)"/>),
+/// (<see cref="Session.SendInput(byte[], InputOrigin?, SubmissionProvenance)"/> / <see cref="Session.SendTextAsync(string, SubmissionProvenance, SendSource, InputOrigin?)"/>),
 /// the one place that sees desktop-local input too, so a published phone/voice share is never silently
 /// inflated by a surface the Gateway cannot see.
 ///
@@ -15,9 +17,14 @@ namespace CcDirector.Core.Sessions;
 /// - A submitted turn (a whole message that ends with Enter, or a dictation/voice-turn delivery) is one
 ///   turn via <see cref="RecordTurn"/>. One spoken utterance and one typed message each count as one turn,
 ///   so neither modality is inflated by its mechanics.
-/// - Raw keystrokes (a <see cref="Session.SendInput(byte[], InputOrigin?)"/> that is terminal typing, not a
-///   prompt submission) are counted as typed CHARACTER volume only via <see cref="RecordCharacters"/> -
-///   NEVER synthesized into turns.
+/// - A bare keystroke is the user COMPOSING and is not a turn and not counted. It is the write carrying
+///   the Enter that is the turn, and it is recorded exactly like any other submission, with the character
+///   volume of the whole line.
+/// - There is ONE writer: <see cref="Session"/>.StampSubmission, which stamps the submission event and
+///   counts the turn together. There is deliberately no method here for recording characters without a
+///   turn. One existed, terminal typing was the only caller of it, and the result was that 594 of the
+///   owner's 771 typed submissions in 2026-W35 reached the character total and never the turn total -
+///   28.3 points of a published spoken share (see the mission reconciliation of 2026-09-05).
 ///
 /// Thread-safe: several PTY/stream callers can record concurrently.
 /// </summary>
@@ -40,9 +47,27 @@ public sealed class SessionInputStats
     public event Action? Changed;
 
     /// <summary>
+    /// Fan out <see cref="Changed"/> with a subscriber's fault CONTAINED (inspection finding I2-04 of the "Clean up
+    /// Your Throttle" mission, 2026-09-05). The counters are advanced before this is raised, and the caller -
+    /// <c>Session.StampSubmission</c> - stamps the submission ledger event AFTER it returns. A subscriber that
+    /// threw here therefore left the tally advanced, the backend already holding the text, and the ledger
+    /// without the submission: the one invariant this class exists to keep, split by an observer. The fault
+    /// is logged and swallowed, exactly as the ledger's own fan-out already does.
+    /// </summary>
+    private void RaiseChanged()
+    {
+        try { Changed?.Invoke(); }
+        catch (Exception ex) { FileLog.Write($"[SessionInputStats] Changed subscriber failed (contained; the tally and the submission ledger both stand): {ex.Message}"); }
+    }
+
+    /// <summary>
     /// Record one submitted turn from <paramref name="origin"/>, plus its <paramref name="characters"/> of
-    /// text volume. Used by <see cref="Session.SendTextAsync(string, SendSource, InputOrigin?)"/> and by a
-    /// dictation/voice-turn delivery.
+    /// text volume. The ONE caller is <see cref="Session"/>.StampSubmission, which stamps the submission
+    /// event in the same breath - both the text path
+    /// (<see cref="Session.SendTextAsync(string, SubmissionProvenance, SendSource, InputOrigin?)"/>, a dictation or voice-turn
+    /// delivery) and the raw-byte path (<see cref="Session.SendInput(byte[], InputOrigin?, SubmissionProvenance)"/>, terminal
+    /// typing) reach it there. A submission with no new characters (a line recalled from history) is still
+    /// one turn: the count must match the submission ledger exactly.
     /// </summary>
     public void RecordTurn(InputOrigin origin, int characters)
     {
@@ -50,20 +75,7 @@ public sealed class SessionInputStats
         Interlocked.Increment(ref c.Turns);
         if (characters > 0)
             Interlocked.Add(ref c.Characters, characters);
-        Changed?.Invoke();
-    }
-
-    /// <summary>
-    /// Record <paramref name="characters"/> of raw typed keystrokes from <paramref name="origin"/> with NO
-    /// turn (mission rule: a bare keystroke is the user composing, not a submitted turn). Used by
-    /// <see cref="Session.SendInput(byte[], InputOrigin?)"/> for terminal typing.
-    /// </summary>
-    public void RecordCharacters(InputOrigin origin, int characters)
-    {
-        if (characters <= 0) return;
-        var c = _buckets.GetOrAdd((origin.Modality, origin.Surface), static _ => new Counters());
-        Interlocked.Add(ref c.Characters, characters);
-        Changed?.Invoke();
+        RaiseChanged();
     }
 
     /// <summary>
@@ -79,7 +91,7 @@ public sealed class SessionInputStats
         Interlocked.Increment(ref _agentDriven.Turns);
         if (characters > 0)
             Interlocked.Add(ref _agentDriven.Characters, characters);
-        Changed?.Invoke();
+        RaiseChanged();
     }
 
     /// <summary>An immutable snapshot of the tally as the shared wire DTO, buckets in a stable order.</summary>

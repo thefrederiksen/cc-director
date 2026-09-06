@@ -236,7 +236,7 @@ internal sealed class QueueGitExecutor : ISessionCommandArea
         var text = item.Text;
         session.PromptQueue.Remove(itemGuid);
         FileLog.Write($"[QueueGitExecutor] queue-send: session={guid} item={itemGuid}");
-        await session.SendTextAsync(text, SendSource.Framework);
+        await session.SendTextAsync(text, SubmissionProvenance.FrameworkText(SubmissionRoutes.QueueDrain), SendSource.Framework);
         return DirectorCommandResult.Success(SerializeQueue(session));
     }
 
