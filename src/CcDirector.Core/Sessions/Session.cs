@@ -777,7 +777,36 @@ public sealed class Session : IDisposable
     {
         if (_pendingPromptText == value) return;
         _pendingPromptText = value;
+        // A different text is a different box: whatever was spoken in the old one is not in this one. The
+        // desktop composer sets the spans right after the text when it saves a box that still holds a
+        // dictation (ruling R20); any other writer - the wingman, a restore of an older snapshot - leaves none.
+        _pendingPromptSpokenSpans = Array.Empty<SpokenTurnRule.SpokenSpan>();
         OnPendingPromptTextChanged?.Invoke(value, source ?? "user");
+    }
+
+    private IReadOnlyList<SpokenTurnRule.SpokenSpan> _pendingPromptSpokenSpans = Array.Empty<SpokenTurnRule.SpokenSpan>();
+
+    /// <summary>
+    /// Which characters of <see cref="PendingPromptText"/> came from a microphone (ruling R20): the compose
+    /// box's provenance, saved with the text when the user switches away and put back when they return, and
+    /// persisted across restarts beside the text. Without it a dictation inserted, switched away from and
+    /// sent later counted as typed. Set AFTER the text, because setting the text clears it; a span outside
+    /// the text is refused.
+    /// </summary>
+    public IReadOnlyList<SpokenTurnRule.SpokenSpan> PendingPromptSpokenSpans
+    {
+        get => _pendingPromptSpokenSpans;
+        set
+        {
+            ArgumentNullException.ThrowIfNull(value);
+            var length = (_pendingPromptText ?? "").Length;
+            foreach (var span in value)
+                if (span.Start < 0 || span.Length <= 0 || span.End > length)
+                    throw new ArgumentException(
+                        $"A spoken span {span.Start}+{span.Length} lies outside the pending prompt text of {length} characters " +
+                        $"on session {Id}. The spans are set after the text they describe, never before.", nameof(value));
+            _pendingPromptSpokenSpans = value.OrderBy(s => s.Start).ToArray();
+        }
     }
 
     /// <summary>Name of the last selected tab (e.g. "Terminal", "Agent", "SourceControl"). Persisted across switches and restarts.</summary>

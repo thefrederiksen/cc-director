@@ -76,7 +76,9 @@ public class ScreenshotViewModel
 public partial class MainWindow : Window
 {
     private SessionManager _sessionManager = null!;
-    private readonly ObservableCollection<SessionViewModel> _sessions = new();
+    // Internal, not private: the compose-box route test (ruling R20) adds a session here and drives the
+    // real SelectSession, insert and send through it.
+    internal readonly ObservableCollection<SessionViewModel> _sessions = new();
     private SessionViewModel? _activeSession;
 
     // Slash command autocomplete
@@ -164,6 +166,11 @@ public partial class MainWindow : Window
 
         // Register KeyDown as tunnel so it fires before AcceptsReturn consumes Ctrl+Enter
         PromptInput.AddHandler(KeyDownEvent, PromptInput_KeyDown, global::Avalonia.Interactivity.RoutingStrategies.Tunnel);
+        // Every change to the box's text - typing, a paste, a session switch, the clear after a send - passes
+        // through this one hook: slash-command autocomplete, and the compose box's own record of which of
+        // its characters came from a microphone (ruling R20). Wired here, not in Loaded, so it is live
+        // before any code sets the box's text.
+        PromptInput.TextChanged += PromptInput_TextChanged;
 
         // Window-level Ctrl+H = open Speak dialog. Tunnel routing so the embedded
         // terminal panel does not eat the keystroke (xterm treats Ctrl+H as
@@ -395,8 +402,10 @@ public partial class MainWindow : Window
         BrowsersRail.ManageRequested += (_, _) => _ = OpenSettingsAsync(onBrowsersTab: true);
         BrowsersRail.Notified += (_, message) => Dispatcher.UIThread.Post(() => ShowNotification(message));
 
-        // Wire prompt input text changes for slash command autocomplete
-        PromptInput.TextChanged += PromptInput_TextChanged;
+        // The prompt box's text-changed hook (slash-command autocomplete AND the compose box's provenance,
+        // ruling R20) is wired in the CONSTRUCTOR with the box's other handlers, so it is live from the first
+        // character the box ever holds - a session selected before Loaded fires restores its pending text
+        // through that hook too.
         PromptInput.LostFocus += (_, _) => SlashCommandPopup.IsOpen = false;
         PromptInput.GotFocus += PromptInput_GotFocus;
 
@@ -2079,7 +2088,7 @@ public partial class MainWindow : Window
         return (plugin.DisplayName, plugin.Detection.InstallHint);
     }
 
-    private void SelectSession(SessionViewModel? vm)
+    internal void SelectSession(SessionViewModel? vm)
     {
         // Selecting a session returns to its terminal, dismissing an on-demand status view.
         if (vm != null && _statusRequested)
@@ -2112,7 +2121,7 @@ public partial class MainWindow : Window
         // Save prompt text and selected tab for outgoing session
         if (_activeSession != null)
         {
-            _activeSession.Session.PendingPromptText = PromptInput.Text;
+            SavePendingPrompt(_activeSession.Session);
             _activeSession.Session.SelectedTabName = _activeLeftTab;
             FileLog.Write($"[MainWindow] SelectSession: saved prompt and tab={_activeLeftTab} for {_activeSession.Session.Id}");
 
@@ -2173,9 +2182,12 @@ public partial class MainWindow : Window
         // Show prompt bar
         PromptBarBorder.IsVisible = true;
 
-        // Restore prompt text for incoming session
+        // Restore prompt text for incoming session - and which of its characters were dictated (ruling
+        // R20). The box's own hook will hear the new text later (it is posted, not raised inline) and find
+        // nothing to change, because the record is told the text and its spans here, first.
         PromptInput.Text = vm.Session.PendingPromptText ?? "";
         PromptInput.CaretIndex = PromptInput.Text.Length;
+        _composerProvenance.Restore(PromptInput.Text, vm.Session.PendingPromptSpokenSpans);
 
         // Restore last selected tab. The Session/Agent tabs, the Voice/History tabs, and the
         // Wingman tab were removed. Normalize any persisted values from older builds and default
@@ -2873,9 +2885,21 @@ public partial class MainWindow : Window
 
         if (_activeSession != null)
         {
-            _activeSession.Session.PendingPromptText = PromptInput.Text;
+            SavePendingPrompt(_activeSession.Session);
             _activeSession.Session.SelectedTabName = _activeLeftTab;
         }
+    }
+
+    /// <summary>The compose box's text AND its provenance onto the session, text first because setting the
+    /// text clears the spans (ruling R20). Runs on the UI thread.</summary>
+    private void SavePendingPrompt(Session session)
+    {
+        var text = PromptInput.Text ?? "";
+        // The provenance hears the box's changes on the dispatcher; make sure it has heard this text before its
+        // spans are saved as describing it.
+        _composerProvenance.TextChanged(text);
+        session.PendingPromptText = text;
+        session.PendingPromptSpokenSpans = _composerProvenance.Spans;
     }
 
     // ==================== SESSION HEADER ====================
@@ -3338,7 +3362,7 @@ public partial class MainWindow : Window
     /// BEFORE any focus change (e.g. before opening a modal dialog), because
     /// CaretIndex on a TextBox that has just lost focus can be 0.
     /// </summary>
-    private void InsertIntoPromptInputAt(string text, int caret)
+    private int InsertIntoPromptInputAt(string text, int caret)
     {
         var existing = PromptInput.Text ?? "";
         if (caret < 0 || caret > existing.Length) caret = existing.Length;
@@ -3349,6 +3373,9 @@ public partial class MainWindow : Window
         // the insertion ends at composed.Length - suffixLen.
         PromptInput.CaretIndex = composed.Length - suffixLen;
         PromptInput.Focus();
+        // Where the inserted characters themselves begin: at the caret, after the one separating space
+        // InsertAt adds when the character before the caret is not whitespace.
+        return composed.IndexOf(text, caret, StringComparison.Ordinal);
     }
 
     /// <summary>
@@ -3359,13 +3386,14 @@ public partial class MainWindow : Window
     /// stored transcript verbatim. Every transcript inserted is registered here; the box's text-changed
     /// hook forgets one the text no longer holds; Send asks it what the text IS.
     /// </summary>
-    private readonly SpokenTurnRule.ComposerProvenance _composerProvenance = new();
+    internal readonly SpokenTurnRule.ComposerProvenance _composerProvenance = new();
 
-    /// <summary>Insert a TRANSCRIPT at the caret and remember that these words were spoken.</summary>
-    private void InsertTranscriptIntoPromptInputAt(string transcript, int caret)
+    /// <summary>Insert a TRANSCRIPT at the caret and record exactly which characters of the box are now
+    /// spoken. Internal so the route test can insert a dictation the way the Speak dialog's Insert does.</summary>
+    internal void InsertTranscriptIntoPromptInputAt(string transcript, int caret)
     {
-        InsertIntoPromptInputAt(transcript, caret);
-        _composerProvenance.Inserted(transcript);
+        var at = InsertIntoPromptInputAt(transcript, caret);
+        _composerProvenance.Inserted(PromptInput.Text ?? "", transcript, at);
     }
 
     /// <summary>
@@ -3448,7 +3476,14 @@ public partial class MainWindow : Window
                         InsertIntoPromptInputAt(restore, 0);
                 }
                 else
+                {
+                    // The restored text goes in front of whatever that session already held; when it is one
+                    // untouched transcript its characters are recorded as spoken there too (ruling R20), so
+                    // switching to that session and pressing Send counts it as the dictation it was.
                     target.PendingPromptText = global::CcDirector.Avalonia.Voice.DictationText.Join(restore, target.PendingPromptText ?? "");
+                    if (composedText is not null && spokenAlone)
+                        target.PendingPromptSpokenSpans = new[] { new SpokenTurnRule.SpokenSpan(0, restore.Length) };
+                }
             }
             var whatSurvived = composedText is not null
                 ? "The transcribed text has been put in the message box - review it and press Send when you are ready."
@@ -4763,10 +4798,10 @@ public partial class MainWindow : Window
     private void PromptInput_TextChanged(object? sender, TextChangedEventArgs e)
     {
         var text = PromptInput.Text ?? "";
-        // The box's provenance follows its text (ruling R20): a transcript the text no longer holds -
-        // deleted, replaced by a session switch, overwritten by a slash command - is forgotten here, in
-        // the one place every change to the box passes through.
-        _composerProvenance.TextChanged(text);
+        // The box's provenance follows its text (ruling R20): every change to the box passes through here, and
+        // the record moves or forgets its spoken ranges accordingly. The caret says WHERE the change happened
+        // when the text alone cannot (the same words twice over, one copy deleted).
+        _composerProvenance.TextChanged(text, PromptInput.CaretIndex);
 
         // Only trigger when / is the first non-whitespace character
         var trimmed = text.TrimStart();
@@ -4985,7 +5020,7 @@ public partial class MainWindow : Window
         }
     }
 
-    private async Task SendPromptCoreAsync()
+    internal async Task SendPromptCoreAsync()
     {
         // Re-checked rather than assumed from the caller: this method must stand on its own, which is the
         // whole point of not relying on a distant line to hold a property true.
@@ -4998,8 +5033,17 @@ public partial class MainWindow : Window
             return;
         }
 
+        // THE COMPOSITION IS TAKEN HERE, WHOLE: the text and what it is (ruling R20), read together from the
+        // box BEFORE the box is cleared. The fix-round inspector found the origin asked for after the clear;
+        // that happened to work only because the toolkit posts the box's text-changed hook rather than raising
+        // it inline, and the hook would have forgotten the dictation had it run first. Nothing between reading
+        // the box and asking its provenance may yield. DesktopVoice when the box holds one inserted transcript
+        // and nothing else, DesktopTyped otherwise - never from which button was pressed.
+        var boxText = PromptInput.Text ?? "";
+        _composerProvenance.TextChanged(boxText, PromptInput.CaretIndex);
+        var origin = _composerProvenance.OriginFor(boxText);
         // Strip newlines -- Claude Code prompt expects single-line input
-        var text = PromptInput.Text.ReplaceLineEndings(" ").Trim();
+        var text = boxText.ReplaceLineEndings(" ").Trim();
         if (string.IsNullOrEmpty(text)) return;
 
         // Intercept slash commands and show native dialogs
@@ -5009,9 +5053,10 @@ public partial class MainWindow : Window
             return;
         }
 
-        FileLog.Write($"[MainWindow] SendPrompt: {text.Length} chars to session {_activeSession.Session.Id}");
+        FileLog.Write($"[MainWindow] SendPrompt: {text.Length} chars to session {_activeSession.Session.Id}, origin={origin.Modality}/{origin.Surface}");
 
         PromptInput.Text = "";
+        _composerProvenance.Reset();
 
         // Clear saved prompt text so switching away and back shows empty box
         _activeSession.Session.PendingPromptText = string.Empty;
@@ -5040,13 +5085,6 @@ public partial class MainWindow : Window
         // Backends send Enter (CR/LF) explicitly after the text -- don't append a submit
         // newline here. Appending one used to trip LargeInputHandler's multi-line check
         // and route short single-line prompts through a temp file.
-        // DevThrottle Stats: what the composer holds is what the box's own provenance says it is (ruling
-        // R20) - DesktopVoice when the text is one inserted transcript and nothing else, DesktopTyped
-        // otherwise. It was stamped DesktopTyped unconditionally, under a comment asserting the composer is
-        // typed "by construction"; it is not, the moment a transcript has been inserted into it.
-        var origin = _composerProvenance.OriginFor(text);
-        _composerProvenance.Reset();
-        FileLog.Write($"[MainWindow] SendPrompt: origin={origin.Modality}/{origin.Surface}");
         await _activeSession.Session.SendTextAsync(text, origin: origin);
 
         if (isInteractiveCommand)

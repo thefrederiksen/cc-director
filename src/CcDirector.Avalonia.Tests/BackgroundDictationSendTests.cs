@@ -169,9 +169,10 @@ public sealed class BackgroundDictationSendTests : IDisposable
 
     /// <summary>
     /// THE SAME MIXTURES THE PHONE IS FED. SpokenTurnRule.Examples is one table; the phone's durable
-    /// dictation route test feeds every row through the real Gateway and reads the ledger, and this feeds
-    /// every row through the real background Send and reads the origin it stamps. Neither surface can
-    /// classify a row differently from the other without one of the two tests going red.
+    /// dictation route test feeds every row through the real Gateway and reads the ledger, this feeds
+    /// every row through the real background Send and reads the origin it stamps, and ComposerSendRouteTests
+    /// feeds every row through the real compose box and the real MainWindow send. No surface can classify a
+    /// row differently from another without one of the three tests going red.
     /// </summary>
     [Fact]
     public async Task TheBackgroundSend_StampsEveryExampleMixture_ExactlyAsTheSharedRuleSays()
@@ -197,35 +198,6 @@ public sealed class BackgroundDictationSendTests : IDisposable
             Assert.True(example.Expected == stamped.Value.Modality,
                 $"'{example.Name}': the desktop background Send stamped {stamped.Value.Modality}, the shared rule says {example.Expected}");
             Assert.Contains(example.Transcript, submitted!);
-        }
-    }
-
-    /// <summary>The compose box path - a transcript INSERTED and sent with the ordinary Send - is held to
-    /// the same table: the text the box would hold for each row is classified by its provenance.</summary>
-    [Fact]
-    public void TheComposeBox_ClassifiesEveryExampleMixture_ExactlyAsTheSharedRuleSays()
-    {
-        foreach (var example in SpokenTurnRule.Examples)
-        {
-            var provenance = new SpokenTurnRule.ComposerProvenance();
-            // What the box holds after the Speak dialog inserted the transcript at the caret between the
-            // typed halves, with any earlier dictated segment inserted first.
-            var text = example.Before;
-            if (example.Prefix.Length > 0)
-            {
-                text = DictationText.InsertAt(text, text.Length, example.Prefix);
-                provenance.Inserted(example.Prefix);
-                provenance.TextChanged(text);
-            }
-            var caret = text.Length;
-            text = DictationText.InsertAt(text + example.After, caret, example.Transcript);
-            provenance.Inserted(example.Transcript);
-            provenance.TextChanged(text);
-
-            var origin = provenance.OriginFor(text);
-            Assert.Equal(InputSurface.Desktop, origin.Surface);
-            Assert.True(example.Expected == origin.Modality,
-                $"'{example.Name}': the compose box classified {origin.Modality}, the shared rule says {example.Expected}");
         }
     }
 }

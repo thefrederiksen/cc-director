@@ -1,5 +1,7 @@
 using System.Text.RegularExpressions;
+using CcDirector.Core.Activity;
 using CcDirector.Core.Backends;
+using CcDirector.Core.Configuration;
 using CcDirector.Core.Memory;
 using CcDirector.Core.Sessions;
 using CcDirector.Gateway.Contracts;
@@ -179,5 +181,96 @@ public sealed class SubmissionObserverFaultTests
         var entry = Assert.Single(ledger);
         Assert.Equal(SendSource.Agent, entry.Source);
         Assert.Null(entry.Origin);
+    }
+
+    // ---- fix-round finding F-06: the throwing subscriber ahead of the REAL activity producer ------------
+
+    /// <summary>
+    /// The real ledger observer, wired the way the Director wires it. ActivityEventProducer.Wire is the
+    /// production subscription seam; a lambda standing in for it proved only that some later subscriber ran,
+    /// and a regression that removed or changed the producer's own subscription would have left that green.
+    /// </summary>
+    private sealed class RealProducer : IDisposable
+    {
+        private readonly string _dir = Path.Combine(Path.GetTempPath(), "cc-director-tests", Guid.NewGuid().ToString("N"));
+        public ActivityEventOutbox Outbox { get; }
+        public ActivityEventProducer Producer { get; }
+
+        public RealProducer()
+        {
+            Directory.CreateDirectory(_dir);
+            Outbox = new ActivityEventOutbox(Path.Combine(_dir, "outbox.jsonl"));
+            Producer = new ActivityEventProducer(new SessionManager(new AgentOptions()) { DirectorId = "dir-test" }, Outbox);
+        }
+
+        public IReadOnlyList<ActivityEventRecord> TurnsSubmitted(Session s) =>
+            Outbox.PendingBatch(100).Where(e => e.EventType == ActivityEventTypes.TurnSubmitted && e.SessionId == s.Id.ToString()).ToList();
+
+        public void Dispose()
+        {
+            Producer.Dispose();
+            try { Directory.Delete(_dir, recursive: true); } catch { /* scratch dir; best effort */ }
+        }
+    }
+
+    [Fact]
+    public async Task AThrowingSubscriber_RegisteredBeforeTheRealActivityProducer_CannotKeepTheLedgerFromTheTurn_OnTheTextPath()
+    {
+        using var real = new RealProducer();
+        var backend = new RecordingBackend();
+        var s = NewSession(backend);
+        var faults = 0;
+        // FIRST in the invocation list: the fault. THEN the real producer subscribes, exactly as it does for
+        // every session the manager announces.
+        s.OnTurnSubmitted += (_, _) => { faults++; throw new InvalidOperationException("an earlier observer is broken"); };
+        real.Producer.Wire(s);
+
+        await s.SendTextAsync("hello", SendSource.UserInput, InputOrigin.DesktopVoice);
+
+        Assert.Equal(1, faults);
+        Assert.Single(backend.SentTexts);
+        Assert.Equal(1, Assert.Single(s.InputStats.Snapshot().Buckets).Turns);
+        // THE INVARIANT, on the durable ledger the Gateway's figure is computed from: the real producer heard
+        // the turn and recorded it, with its origin, although the subscriber ahead of it threw.
+        var recorded = Assert.Single(real.TurnsSubmitted(s));
+        Assert.Equal("voice/desktop", recorded.InputOrigin);
+        Assert.Equal("UserInput", recorded.SendSource);
+        Assert.Equal("dir-test", recorded.DirectorId);
+    }
+
+    [Fact]
+    public void AThrowingSubscriber_RegisteredBeforeTheRealActivityProducer_CannotKeepTheLedgerFromTheTurn_OnTheTerminalPath()
+    {
+        using var real = new RealProducer();
+        var backend = new RecordingBackend();
+        var s = NewSession(backend);
+        s.OnTurnSubmitted += (_, _) => throw new InvalidOperationException("an earlier observer is broken");
+        real.Producer.Wire(s);
+
+        foreach (var ch in "typed at the terminal")
+            s.SendInput(System.Text.Encoding.UTF8.GetBytes(ch.ToString()), InputOrigin.DesktopTyped);
+        s.SendInput(new byte[] { 0x0D }, InputOrigin.DesktopTyped);
+
+        Assert.Equal(1, Assert.Single(s.InputStats.Snapshot().Buckets).Turns);
+        var recorded = Assert.Single(real.TurnsSubmitted(s));
+        Assert.Equal("typed/desktop", recorded.InputOrigin);
+        Assert.Null(recorded.SendSource);
+    }
+
+    [Fact]
+    public async Task TheRealActivityProducer_UnwiredFromTheSession_HearsNothing_SoTheProofAboveIsOfItsSubscription()
+    {
+        // The control for the two tests above: it is the producer's subscription that records the turn, not
+        // something else on the path. Unwire it and the same submission leaves the ledger empty.
+        using var real = new RealProducer();
+        var backend = new RecordingBackend();
+        var s = NewSession(backend);
+        s.OnTurnSubmitted += (_, _) => throw new InvalidOperationException("an earlier observer is broken");
+        real.Producer.Wire(s);
+        real.Producer.Unwire(s);
+
+        await s.SendTextAsync("hello", SendSource.UserInput, InputOrigin.DesktopVoice);
+
+        Assert.Empty(real.TurnsSubmitted(s));
     }
 }
