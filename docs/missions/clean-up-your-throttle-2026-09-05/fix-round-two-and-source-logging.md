@@ -173,14 +173,44 @@ door dropping its spans (1); the terminal door naming another route (1); the pro
 provenance (4); the dictation route dropping its spans (1); the producer dropping the fields (3); the
 choke point not digesting (2); the store dropping a column (1).
 
-**Not done, said plainly.**
+**The two gaps this section first reported are now CLOSED** - the owner asked for them the same day.
 
-- The Cockpit's and the phone's TYPED composers do not track transcript ranges in the browser; a
-  transcript inserted into a browser composer and edited is recorded only as far as the Gateway knows
-  it (a reserved claim covers the whole text or nothing). Per-character provenance in the browser
-  composers is the next piece.
-- The browser terminal relay carries no credential kind; its rows say `unknown` until the relay does.
+*The browser composers track character ranges.* `ComposerProvenance` in client-core is the browser's copy of
+the desktop's range record, with the same semantics: an inserted transcript is a character RANGE, typing
+around it moves it, editing inside it forgets it, and the caret decides when the text alone cannot. The
+Cockpit composer and the phone's controls each keep one and send the ranges with the prompt, so a turn that
+mixes typing and speech is TYPED and still says which of its characters were spoken - it used to say nothing
+at all. A range is recorded only when it names a transcript the Gateway can verify: the dictation dialog
+withholds the id the moment the words were edited, and those characters are then no different from typing.
+That case was found by an existing test whose exact-argument assertion caught a range being recorded with no
+id to attribute it to.
+
+*The ranges are CLAIMS, and the Gateway verifies them.* `PromptRequest.SpokenSpans` carries them; the prompt
+route checks each against the spoken claim registry - the characters named must BE the transcript that id
+registered, in this tenant, unexpired - and only verified spans reach the ledger row. The check is read-only
+and spends nothing, so whether the TURN counts as spoken is still decided by the single-use reservation and
+by nothing else. A session credential can claim no speech at all. The route and the credential kind are never
+taken from a client: a body that sends its own provenance block has it overwritten by what the Gateway verified.
+
+*The browser terminal relay carries a credential kind.* The Gateway stamps the kind it verified when the
+socket opens - one browser holds one identity for the life of its terminal - and every keystroke frame carries
+it to the Director, which records it rather than an invented unknown.
+
+Proven through the real routes: the rendered Cockpit composer and the rendered phone controls with the real
+dictation dialog, reading the spans off the real send; the real Gateway prompt route for a verified claim, a
+claim over characters that are not the transcript, an invented transcript, a span outside the text, a session
+credential, and a client-sent provenance block; and the real websocket terminal route, reading the identity
+off the ledger row the session recorded. Watched red by eleven more mutations: each composer sending no spans,
+the Cockpit composer forgetting the insert, the record ignoring an edit inside a span, the record ignoring the
+caret, the Gateway believing a claim unverified, keeping a client's provenance, letting a session claim
+speech, the registry matching any text, the relay sending no identity, and the Director ignoring what it sent.
+
+**Still not done, said plainly.**
+
 - The desktop transcriber returns no transcript identifier, so desktop rows carry ranges and a null id.
+- A verified span says those characters came from that transcript; it does not prove the person did not type
+  them by hand, because a claim is verified by reproducing the transcript exactly. The TURN'S modality is
+  still gated by the single-use reservation, which is what the ring counts.
 - The ledger rows already written have none of these fields; they read back null. Nothing is restated.
 - The EF migration slot: the migration was generated on the chain head that matched `origin/main` at the
   time; if another migration lands on main first, this one must be regenerated on the new head.
