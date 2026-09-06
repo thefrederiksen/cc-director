@@ -54,6 +54,14 @@ public sealed class ThrottleFigureDto
     /// <summary>The counted turns per repository through the session-history join, most-driven first.</summary>
     public List<ThrottleRepoDto> Repos { get; set; } = new();
 
+    /// <summary>The Agents page's headline cards, finished here (fix-round finding F-01): the totals, the
+    /// leading agent and its share, the voice share of the driving, and the leverage - every ratio the page
+    /// prints, with its rounding done and its empty state decided.</summary>
+    public ThrottleAgentsSummaryDto AgentsSummary { get; set; } = new();
+
+    /// <summary>The Repos page's headline cards, finished here (fix-round finding F-01).</summary>
+    public ThrottleReposSummaryDto ReposSummary { get; set; } = new();
+
     /// <summary>Counted turns whose session history holds no repository for. Disclosed beside the split
     /// (R7), never folded into a guessed row.</summary>
     public long ReposUnattributedTurns { get; set; }
@@ -150,6 +158,13 @@ public sealed class ThrottleHourDto
     public long Turns { get; set; }
     public long VoiceTurns { get; set; }
     public long TypedTurns { get; set; }
+
+    /// <summary>The spoken fraction of this hour's turns, in [0, 1]; null when the hour has none. The hourly
+    /// chart draws its voice segment from this rather than dividing the counts (fix-round finding F-01).</summary>
+    public double? VoiceShare { get; set; }
+
+    /// <summary>The typed fraction of this hour's turns; null when the hour has none.</summary>
+    public double? TypedShare { get; set; }
 }
 
 public sealed class ThrottleAgentDto
@@ -169,6 +184,19 @@ public sealed class ThrottleAgentDto
 
     /// <summary>Turns OTHER sessions drove into the sessions running this agent.</summary>
     public long AgentDrivenTurns { get; set; }
+
+    /// <summary>This agent's share of every counted turn, and the whole-number percent the row prints; null when
+    /// nothing was counted (fix-round finding F-01: the row divides nothing).</summary>
+    public double? TurnShare { get; set; }
+    public int? TurnPercent { get; set; }
+
+    /// <summary>This agent's share of every counted session, and its printed percent; null when none.</summary>
+    public double? SessionShare { get; set; }
+    public int? SessionPercent { get; set; }
+
+    /// <summary>The spoken fraction of THIS agent's turns, and its printed percent; null when it has no turns.</summary>
+    public double? VoiceShare { get; set; }
+    public int? VoicePercent { get; set; }
 }
 
 public sealed class ThrottleRepoDto
@@ -189,6 +217,90 @@ public sealed class ThrottleRepoDto
 
     /// <summary>The checkout paths those sessions ran in, sorted.</summary>
     public List<string> Checkouts { get; set; } = new();
+
+    /// <summary>This repository's share of every turn placed in a repository, and the whole-number percent the
+    /// row prints; null when nothing was counted (fix-round finding F-01: the row divides nothing).</summary>
+    public double? TurnShare { get; set; }
+    public int? TurnPercent { get; set; }
+
+    /// <summary>This repository's share of every session placed in a repository, and its printed percent.</summary>
+    public double? SessionShare { get; set; }
+    public int? SessionPercent { get; set; }
+
+    /// <summary>The spoken fraction of THIS repository's turns, and its printed percent; null when it has none.</summary>
+    public double? VoiceShare { get; set; }
+    public int? VoicePercent { get; set; }
+}
+
+/// <summary>
+/// The Agents page's headline, finished in the library (fix-round finding F-01). The browser used to total the
+/// rows and divide for the leading agent's share, the voice share and the leverage; now it prints these.
+/// </summary>
+public sealed class ThrottleAgentsSummaryDto
+{
+    /// <summary>Agents with at least one counted turn.</summary>
+    public int AgentCount { get; set; }
+
+    /// <summary>Every counted turn, across every agent (the headline denominator).</summary>
+    public long TotalTurns { get; set; }
+
+    /// <summary>Every counted session, across every agent.</summary>
+    public int TotalSessions { get; set; }
+
+    public long VoiceTurns { get; set; }
+
+    /// <summary>The spoken share of every counted turn, and its printed percent; null when none.</summary>
+    public double? VoiceShare { get; set; }
+    public int? VoicePercent { get; set; }
+
+    /// <summary>The most-driven agent's display name, or null when no agent has a counted turn.</summary>
+    public string? TopAgentName { get; set; }
+
+    /// <summary>The most-driven agent's share of every counted turn, and its printed percent; null when none.</summary>
+    public double? TopShare { get; set; }
+    public int? TopPercent { get; set; }
+
+    /// <summary>Turns the fleet drove into itself over the window (issue #1636).</summary>
+    public long AgentDrivenTurns { get; set; }
+
+    /// <summary>Agent-driven turns per turn the person drove; null when they drove none - a ratio with nothing
+    /// underneath it is a fabricated number, not a big one.</summary>
+    public double? Leverage { get; set; }
+
+    /// <summary>The leverage as the page prints it ("3.0x"), one decimal, or null when there is none.</summary>
+    public string? LeverageText { get; set; }
+
+    /// <summary>True when there is something to show: a counted turn, or a fleet driving itself while the
+    /// person drove nothing - a real state, not an empty one.</summary>
+    public bool HasData { get; set; }
+}
+
+/// <summary>The Repos page's headline, finished in the library (fix-round finding F-01).</summary>
+public sealed class ThrottleReposSummaryDto
+{
+    /// <summary>Repositories with a row.</summary>
+    public int RepoCount { get; set; }
+
+    /// <summary>Every turn placed in a repository (the denominator of the row shares).</summary>
+    public long TotalTurns { get; set; }
+
+    /// <summary>Every session placed in a repository.</summary>
+    public int TotalSessions { get; set; }
+
+    public long VoiceTurns { get; set; }
+
+    /// <summary>The spoken share of every turn placed in a repository, and its printed percent; null when none.</summary>
+    public double? VoiceShare { get; set; }
+    public int? VoicePercent { get; set; }
+
+    /// <summary>The most-driven repository's display name, or null when there is no row.</summary>
+    public string? TopRepoName { get; set; }
+
+    /// <summary>The most-driven repository's share of every placed turn, and its printed percent; null when none.</summary>
+    public double? TopShare { get; set; }
+    public int? TopPercent { get; set; }
+
+    public bool HasData { get; set; }
 }
 
 /// <summary>
@@ -212,8 +324,9 @@ public sealed class ThrottleHeadlineDto
 
     public ThrottleShareDto Typed { get; set; } = new();
 
-    /// <summary>The phone's entry of <see cref="Surfaces"/>, at the top because it is the second ring.</summary>
-    public ThrottleShareDto Phone { get; set; } = new();
+    /// <summary>The phone's entry of <see cref="Surfaces"/>, at the top because it is the second ring - with
+    /// the count on the ring's other side (everywhere else), so no consumer subtracts.</summary>
+    public ThrottleRingDto Phone { get; set; } = new();
 
     /// <summary>Every surface, in the order the pages draw them, each with its turns and its share of the
     /// denominator. Always all four known surfaces, zero or not, so a consumer never keeps a list of its own.</summary>
@@ -234,6 +347,14 @@ public class ThrottleShareDto
     public int? Percent { get; set; }
 }
 
+/// <summary>A share drawn as a ring: the count on its other side is served too (fix-round finding F-01), because a
+/// ring names both sides and a consumer that subtracts the one from the denominator is computing a headline.</summary>
+public sealed class ThrottleRingDto : ThrottleShareDto
+{
+    /// <summary>The counted turns NOT in this share: the denominator less <see cref="ThrottleShareDto.Turns"/>.</summary>
+    public long Remainder { get; set; }
+}
+
 public sealed class ThrottleSurfaceShareDto : ThrottleShareDto
 {
     /// <summary>The surface token the ledger recorded: desktop, cockpit, phone or unknown.</summary>
@@ -241,4 +362,8 @@ public sealed class ThrottleSurfaceShareDto : ThrottleShareDto
 
     /// <summary>The Gateway's own display name for the surface, rendered verbatim (the dumb-client rule).</summary>
     public string Label { get; set; } = "";
+
+    /// <summary>The counted turns on every OTHER surface: the denominator less this surface's turns. A ring drawn
+    /// for a surface (the report's Cockpit ring) prints this as its other side.</summary>
+    public long Remainder { get; set; }
 }

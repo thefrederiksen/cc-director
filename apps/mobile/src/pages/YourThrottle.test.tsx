@@ -2,7 +2,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
-import { loadContractFixtures, servedBodyFor } from "@devthrottle/client-core/stats/throttleContractFixtures";
 
 // The phone's Your Throttle page inside a real router, at the URL the mentor report's link carries on
 // the phone (mission "Clean up Your Throttle", rulings R4 and R5): /throttle?week=2026-W35 asks the
@@ -58,12 +57,12 @@ function bodyFor(url: string) {
         hasData: true,
         voice: { turns: 3, share: 0.75, percent: 75 },
         typed: { turns: 1, share: 0.25, percent: 25 },
-        phone: { turns: 3, share: 0.75, percent: 75 },
+        phone: { turns: 3, share: 0.75, percent: 75, remainder: 1 },
         surfaces: [
-          { surface: "desktop", label: "Desktop", turns: 1, share: 0.25, percent: 25 },
-          { surface: "cockpit", label: "Cockpit", turns: 0, share: 0, percent: 0 },
-          { surface: "phone", label: "Phone", turns: 3, share: 0.75, percent: 75 },
-          { surface: "unknown", label: "Unknown", turns: 0, share: 0, percent: 0 },
+          { surface: "desktop", label: "Desktop", turns: 1, share: 0.25, percent: 25, remainder: 3 },
+          { surface: "cockpit", label: "Cockpit", turns: 0, share: 0, percent: 0, remainder: 4 },
+          { surface: "phone", label: "Phone", turns: 3, share: 0.75, percent: 75, remainder: 1 },
+          { surface: "unknown", label: "Unknown", turns: 0, share: 0, percent: 0, remainder: 4 },
         ],
       },
       turns: 4,
@@ -77,6 +76,8 @@ function bodyFor(url: string) {
       hourlyTurns: [],
       agents: [],
       repos: [],
+      agentsSummary: { agentCount: 0, totalTurns: 0, totalSessions: 0, voiceTurns: 0, voiceShare: null, voicePercent: null, topAgentName: null, topShare: null, topPercent: null, agentDrivenTurns: 0, leverage: null, leverageText: null, hasData: false },
+      reposSummary: { repoCount: 0, totalTurns: 0, totalSessions: 0, voiceTurns: 0, voiceShare: null, voicePercent: null, topRepoName: null, topShare: null, topPercent: null, hasData: false },
       reposUnattributedTurns: 0,
       excluded: { noInputOrigin: 0, agentDriven: 0, framework: 0, unresolved: 0 },
       agentDrivenTurns: 0,
@@ -163,33 +164,5 @@ describe("YourThrottle on the phone at the mentor report's link", () => {
   });
 });
 
-// THE CONTRACT ON THE RENDERED PAGE (final inspection finding F-01). Every fixture in the product's
-// tools/throttle-conformance/contract directory is served to the REAL page over the real client, and the
-// number each ring PRINTS is read off the DOM and compared with the answer the fixture records - the same
-// answer the mentor report's suite compares its rendered ring row against. A page that divided a count or
-// rounded a share for itself prints a different number here and fails.
-describe("the Your Throttle contract, on the rendered phone page", () => {
-  for (const fixture of loadContractFixtures()) {
-    it(fixture.name.replace(/-/g, " "), async () => {
-      vi.stubGlobal("fetch", vi.fn(async () =>
-        new Response(JSON.stringify(servedBodyFor(fixture.wire)), { status: 200, headers: { "Content-Type": "application/json" } }),
-      ));
-      const { container } = renderAt("/throttle?week=2026-W35");
-      if (fixture.expected.outcome === "refused") {
-        const banner = await screen.findByRole("alert");
-        expect(banner.textContent).toMatch(/GET \/stats\/data answered/);
-        expect(container.querySelectorAll(".mthr-ring-pct")).toHaveLength(0);
-        return;
-      }
-      if (fixture.expected.outcome === "empty") {
-        await screen.findByText(/No turn counted in this window/);
-        expect(container.querySelectorAll(".mthr-ring-pct")).toHaveLength(0);
-        return;
-      }
-      await waitFor(() => expect(container.querySelectorAll(".mthr-ring-pct")).toHaveLength(2));
-      const printed = Array.from(container.querySelectorAll(".mthr-ring-pct")).map((el) => el.textContent);
-      const expected = fixture.expected.rendered!;
-      expect(printed).toEqual([`${expected.voicePercent}%`, `${expected.phonePercent}%`]);
-    });
-  }
-});
+// The contract on the rendered page - every value the page prints from the fixtures - is in the
+// *Contract.test.tsx file beside this one (fix-round finding F-01).

@@ -256,7 +256,7 @@ function OverviewTab({ summary, data }: { summary: ThrottleSummary; data: Thrott
           primary={{ label: "Phone", count: summary.turnsBySurface.phone }}
           secondary={{
             label: "Desktop + Cockpit",
-            count: summary.totalTurns - summary.turnsBySurface.phone,
+            count: summary.phoneRemainder,
           }}
         />
       </div>
@@ -586,8 +586,9 @@ function TurnsPerHourChart({ hourly, timeZone }: { hourly: InputHour[]; timeZone
   const { niceMax, ticks } = niceScale(Math.max(...hourly.map((h) => h.turns), 0));
   const columns: BarColumn[] = hourly.map((h, i) => {
     const heightPct = (h.turns / niceMax) * 100;
-    const voicePortion = h.turns > 0 ? (h.voiceTurns / h.turns) * 100 : 0;
-    const typedPortion = h.turns > 0 ? (h.typedTurns / h.turns) * 100 : 0;
+    // The split is the Gateway's own per-hour share (fix-round finding F-01); the chart divides nothing.
+    const voicePortion = h.voiceShare === null ? 0 : h.voiceShare * 100;
+    const typedPortion = h.typedShare === null ? 0 : h.typedShare * 100;
     const label = localHourLabel(h.hour, timeZone);
     return {
       key: h.hour,

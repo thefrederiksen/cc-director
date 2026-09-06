@@ -4,10 +4,18 @@ ONE WIRE OBJECT, TWO REAL CONSUMERS, ONE RENDERED ANSWER. Each fixture here is a
 "throttle" object and the answer a correct consumer renders from it. The browser client (client-core's
 real normalizer, then the real Cockpit and mobile pages) and the mentor report (the real throttle.py
 checker, metrics.py adapter and render_report ring row) are each fed the SAME object and must print the
-SAME headline - or refuse it the same way. The fixtures are hostile on purpose: the headline disagrees
-with the counts and the buckets, so a consumer that recomputes anything prints a different number and
-fails. That is the class of defect the inspector reproduced by changing one constant in the browser
-normalizer while every test stayed green.
+SAME answer - or refuse it the same way. The fixtures are hostile on purpose: the headline disagrees with
+the counts and the buckets, every per-row and per-hour share disagrees with the counts beside it, and the
+two page summaries disagree with the rows they summarise, so a consumer that recomputes ANYTHING prints a
+different number and fails. That is the class of defect the inspector reproduced by changing one constant
+in the browser normalizer while every test stayed green.
+
+THE RENDERED ANSWER IS THE WHOLE ANSWER (fix-round finding F-01). It used to be two percentages; the report
+was printing 57 per cent beside "you spoke 8" and the contract could not see it. Now it is every value a
+page or the report puts in front of the reader from this object: both rings' arcs, numbers and both counts,
+every surface segment's width, label, count and percent, every hour's split, every agent and repository
+row's printed shares, and both tab summaries. The browser tests read these off the rendered DOM; the
+report's tests read the headline part off the rendered page, the email parts and the metrics block.
 
 Run this file to regenerate the fixtures and manifest.json (the SHA-256 of each fixture). The mentor
 harness carries a copy of this directory under tools/mentor/tests/contract; its test pins the same
@@ -31,6 +39,7 @@ FROM_UTC = "2026-08-24T04:00:00Z"
 TO_UTC = "2026-08-31T04:00:00Z"
 CHOICES = [{"days": 1, "label": "Last 24 hours"}, {"days": 7, "label": "Last 7 days"},
            {"days": 14, "label": "Last 14 days"}, {"days": 30, "label": "Last 30 days"}]
+SURFACES = (("desktop", "Desktop"), ("cockpit", "Cockpit"), ("phone", "Phone"), ("unknown", "Unknown"))
 
 
 def share(turns, denominator):
@@ -40,27 +49,74 @@ def share(turns, denominator):
     return {"turns": turns, "share": fraction, "percent": int(fraction * 100.0 + 0.5)}
 
 
+def remainder(denominator, turns):
+    """The count on a ring's other side, HOSTILE: 38 less than the subtraction gives. A consumer that
+    subtracts the count from the denominator prints 1538 for the phone ring; one that renders prints 1500."""
+    return denominator - turns - 38 if denominator else 0
+
+
 def surfaces(counts, denominator):
     out = []
-    for surface, label in (("desktop", "Desktop"), ("cockpit", "Cockpit"), ("phone", "Phone"), ("unknown", "Unknown")):
+    for surface, label in SURFACES:
         entry = share(counts.get(surface, 0), denominator)
-        entry.update({"surface": surface, "label": label})
+        entry.update({"surface": surface, "label": label, "remainder": remainder(denominator, counts.get(surface, 0))})
         out.append(entry)
     return out
 
 
 def headline(denominator, voice, typed, by_surface):
+    phone = by_surface.get("phone", 0)
     return {
         "denominator": denominator,
         "hasData": denominator > 0,
         "voice": share(voice, denominator),
         "typed": share(typed, denominator),
-        "phone": share(by_surface.get("phone", 0), denominator),
+        "phone": dict(share(phone, denominator), remainder=remainder(denominator, phone)),
         "surfaces": surfaces(by_surface, denominator),
     }
 
 
+def row_shares(turn_share, session_share, voice_share):
+    """The three finished ratios on an agent or repository row, from the fractions given (None = no data)."""
+    def pair(fraction):
+        return (None, None) if fraction is None else (fraction, int(fraction * 100.0 + 0.5))
+    turn, turn_pct = pair(turn_share)
+    session, session_pct = pair(session_share)
+    voice, voice_pct = pair(voice_share)
+    return {"turnShare": turn, "turnPercent": turn_pct, "sessionShare": session, "sessionPercent": session_pct,
+            "voiceShare": voice, "voicePercent": voice_pct}
+
+
+# THE HOSTILE ROW SHARES: one agent, one repository, one hour, each with counts saying 10 turns, 8 spoken, 3
+# sessions - and shares that say something else entirely. A consumer that divides prints 100, 80, 100; one
+# that renders prints 57, 61, 33.
+HOSTILE_ROW = row_shares(0.5683090705487122, 1.0 / 3.0, 0.6120)
+HOSTILE_HOUR = {"voiceShare": 0.5683090705487122, "typedShare": 0.4316909294512878}
+
+
+def agents_summary(has_data):
+    if not has_data:
+        return {"agentCount": 0, "totalTurns": 0, "totalSessions": 0, "voiceTurns": 0, "voiceShare": None, "voicePercent": None,
+                "topAgentName": None, "topShare": None, "topPercent": None, "agentDrivenTurns": 0, "leverage": None,
+                "leverageText": None, "hasData": False}
+    # Hostile: the one row says 10 turns and 3 sessions; the summary says the owner's real week.
+    return {"agentCount": 3, "totalTurns": 1786, "totalSessions": 129, "voiceTurns": 1015,
+            "voiceShare": 0.5683090705487122, "voicePercent": 57,
+            "topAgentName": "Claude Code", "topShare": 0.9182530794, "topPercent": 92,
+            "agentDrivenTurns": 4, "leverage": 0.0022396416573348264, "leverageText": "0.0x", "hasData": True}
+
+
+def repos_summary(has_data):
+    if not has_data:
+        return {"repoCount": 0, "totalTurns": 0, "totalSessions": 0, "voiceTurns": 0, "voiceShare": None, "voicePercent": None,
+                "topRepoName": None, "topShare": None, "topPercent": None, "hasData": False}
+    return {"repoCount": 4, "totalTurns": 1786, "totalSessions": 129, "voiceTurns": 1015,
+            "voiceShare": 0.5683090705487122, "voicePercent": 57,
+            "topRepoName": "repo-alpha", "topShare": 0.7368421052631579, "topPercent": 74, "hasData": True}
+
+
 def wire(turns, voice, typed, buckets, head, excluded=None):
+    has_data = head["hasData"]
     return {
         "definition": DEFINITION,
         "unit": "submitted turns",
@@ -74,30 +130,48 @@ def wire(turns, voice, typed, buckets, head, excluded=None):
         "typedTurns": typed,
         "sessions": 3,
         "buckets": buckets,
-        "hourlyTurns": [{"hour": "2026-08-24T13", "turns": turns, "voiceTurns": voice, "typedTurns": typed}],
-        "agents": [{"agent": "ClaudeCode", "agentName": "Claude Code", "turns": turns, "voiceTurns": voice,
-                    "typedTurns": typed, "sessions": 3, "agentDrivenTurns": 4}],
-        "repos": [{"repo": "owner/repo-alpha", "repoName": "repo-alpha", "turns": turns, "voiceTurns": voice,
-                   "typedTurns": typed, "sessions": 3, "checkouts": ["D:/repo-alpha"]}],
+        "hourlyTurns": [dict({"hour": "2026-08-30T13", "turns": turns, "voiceTurns": voice, "typedTurns": typed}, **HOSTILE_HOUR)],
+        "agents": [dict({"agent": "ClaudeCode", "agentName": "Claude Code", "turns": turns, "voiceTurns": voice,
+                         "typedTurns": typed, "sessions": 3, "agentDrivenTurns": 4}, **HOSTILE_ROW)],
+        "repos": [dict({"repo": "owner/repo-alpha", "repoName": "repo-alpha", "turns": turns, "voiceTurns": voice,
+                        "typedTurns": typed, "sessions": 3, "checkouts": ["D:/repo-alpha"]}, **HOSTILE_ROW)],
+        "agentsSummary": agents_summary(has_data),
+        "reposSummary": repos_summary(has_data),
         "reposUnattributedTurns": 0,
         "excluded": excluded or {"noInputOrigin": 662, "agentDriven": 4, "framework": 160, "unresolved": 498},
         "agentDrivenTurns": 4,
     }
 
 
-def rendered(head):
-    """What a correct consumer renders from a headline: the fields, verbatim."""
+def rendered(w):
+    """What a correct consumer renders from a wire object: the fields, verbatim, nothing divided."""
+    head = w["headline"]
     return {
         "denominator": head["denominator"],
         "hasData": head["hasData"],
         "voiceTurns": head["voice"]["turns"],
         "typedTurns": head["typed"]["turns"],
         "phoneTurns": head["phone"]["turns"],
+        "phoneRemainder": head["phone"]["remainder"],
+        "voiceShare": head["voice"]["share"],
+        "phoneShare": head["phone"]["share"],
         "voicePercent": head["voice"]["percent"],
         "typedPercent": head["typed"]["percent"],
         "phonePercent": head["phone"]["percent"],
-        "surfaces": [{"surface": s["surface"], "label": s["label"], "turns": s["turns"], "percent": s["percent"]}
-                     for s in head["surfaces"]],
+        "surfaces": [{"surface": s["surface"], "label": s["label"], "turns": s["turns"], "share": s["share"],
+                      "percent": s["percent"], "remainder": s["remainder"]} for s in head["surfaces"]],
+        "hourly": [{"hour": h["hour"], "turns": h["turns"], "voiceTurns": h["voiceTurns"], "typedTurns": h["typedTurns"],
+                    "voiceShare": h["voiceShare"], "typedShare": h["typedShare"]} for h in w["hourlyTurns"]],
+        "agents": [{"agentName": a["agentName"], "turns": a["turns"], "sessions": a["sessions"],
+                    "agentDrivenTurns": a["agentDrivenTurns"], "turnShare": a["turnShare"], "turnPercent": a["turnPercent"],
+                    "sessionShare": a["sessionShare"], "sessionPercent": a["sessionPercent"],
+                    "voiceShare": a["voiceShare"], "voicePercent": a["voicePercent"]} for a in w["agents"]],
+        "agentsSummary": dict(w["agentsSummary"]),
+        "repos": [{"repoName": r["repoName"], "turns": r["turns"], "sessions": r["sessions"],
+                   "turnShare": r["turnShare"], "turnPercent": r["turnPercent"],
+                   "sessionShare": r["sessionShare"], "sessionPercent": r["sessionPercent"],
+                   "voiceShare": r["voiceShare"], "voicePercent": r["voicePercent"]} for r in w["repos"]],
+        "reposSummary": dict(w["reposSummary"]),
     }
 
 
@@ -118,13 +192,16 @@ FIXTURES = [
         "name": "the-headline-is-rendered-not-the-counts",
         "why": ("The counts and the buckets agree with each other and say 8 of 10 turns were spoken (80 per cent), "
                 "all 8 from the phone. The headline says 1015 of 1786 (57 per cent), 248 from the phone (14 per "
-                "cent). A consumer that renders the headline prints 57 and 14; one that divides the counts, or "
-                "re-totals the buckets, prints 80. Both consumers must print 57 and 14."),
+                "cent), and 1500 everywhere else (not the 1538 that subtracting gives). A consumer that renders the "
+                "headline prints 57, 14 and 1500 beside 1015 and 248; one that divides the counts, re-totals the "
+                "buckets, or subtracts for the other side of a ring prints 80, 100 and 1538 or 2. The one agent, repository and hour say 10 turns, 8 spoken, 3 "
+                "sessions, and carry shares of 57, 33 and 61 per cent; the two summaries describe a week of 1786 "
+                "turns the rows do not add up to. Both consumers must print every served field."),
         "wire": wire(10, 8, 2,
                      [{"modality": "voice", "surface": "phone", "turns": 8},
                       {"modality": "typed", "surface": "desktop", "turns": 2}],
                      W35_HEADLINE),
-        "expected": {"outcome": "rendered", "rendered": rendered(W35_HEADLINE)},
+        "expected": None,
     },
     {
         "name": "the-percent-field-is-printed-not-re-rounded",
@@ -139,7 +216,7 @@ FIXTURES = [
             "phone": {**W35_HEADLINE["phone"], "percent": 9},
             "surfaces": [dict(s, percent=9) if s["surface"] == "phone" else s for s in W35_HEADLINE["surfaces"]],
         }),
-        "expected": None,  # filled below from the wire's own headline
+        "expected": None,
     },
     {
         "name": "the-empty-state-is-the-librarys-ruling",
@@ -150,7 +227,7 @@ FIXTURES = [
                      [{"modality": "voice", "surface": "phone", "turns": 8},
                       {"modality": "typed", "surface": "desktop", "turns": 2}],
                      headline(0, 0, 0, {})),
-        "expected": {"outcome": "empty", "rendered": rendered(headline(0, 0, 0, {}))},
+        "expected": None,
     },
     {
         "name": "an-answer-without-a-headline-is-refused",
@@ -166,7 +243,7 @@ FIXTURES = [
                 "it; both must refuse the answer, the same way the library refuses a bucket on that surface."),
         "wire": wire(1786, 1015, 771, W35_BUCKETS, {
             **W35_HEADLINE,
-            "surfaces": W35_HEADLINE["surfaces"] + [dict(share(0, 1786), surface="watch", label="Watch")],
+            "surfaces": W35_HEADLINE["surfaces"] + [dict(share(0, 1786), surface="watch", label="Watch", remainder=1786)],
         }),
         "expected": {"outcome": "refused"},
     },
@@ -180,75 +257,121 @@ FIXTURES = [
         "expected": {"outcome": "refused"},
     },
 ]
-FIXTURES[1]["expected"] = {"outcome": "rendered", "rendered": rendered(FIXTURES[1]["wire"]["headline"])}
+for fixture in FIXTURES:
+    if fixture["expected"] is None:
+        outcome = "rendered" if fixture["wire"]["headline"]["hasData"] else "empty"
+        fixture["expected"] = {"outcome": outcome, "rendered": rendered(fixture["wire"])}
 
 # ---------------------------------------------------------------- the field inventory (finding F-08)
 #
 # Every field on the library's answer, as the feed serves it, and which real consumer reads it. The C#
 # side asserts the DTO has exactly these paths (a new DTO field must be added here on purpose); the
-# browser and the report each assert that every path marked for them survives their real normalizer with
-# the wire's value. A field nobody reads is written down as such rather than left unmentioned.
+# browser and the report each assert that every path marked for them reaches their RENDERED output with
+# the wire's value - the page's DOM, the report's page and email parts (fix-round finding F-08: the
+# adapter keeping a field is proof about the adapter, not about the reader).
+BOTH = ["browser", "report"]
+BROWSER = ["browser"]
+REPORT = ["report"]
 INVENTORY = {
-    "definition": ["browser", "report"],
-    "unit": ["browser", "report"],
-    "window.fromUtc": ["browser", "report"],
-    "window.toUtc": ["browser", "report"],
-    "window.isDefault": ["browser"],
-    "window.label": ["browser", "report"],
-    "window.kind": ["browser"],
-    "window.days": ["browser"],
-    "window.week": ["browser"],
-    "window.choices[].days": ["browser"],
-    "window.choices[].label": ["browser"],
-    "ledger.retentionDays": ["browser", "report"],
-    "ledger.earliestUtc": ["browser", "report"],
-    "headline.denominator": ["browser", "report"],
-    "headline.hasData": ["browser", "report"],
-    "headline.voice.turns": ["browser", "report"],
-    "headline.voice.share": ["browser", "report"],
-    "headline.voice.percent": ["browser", "report"],
-    "headline.typed.turns": ["browser", "report"],
-    "headline.typed.share": ["browser", "report"],
-    "headline.typed.percent": ["browser", "report"],
-    "headline.phone.turns": ["browser", "report"],
-    "headline.phone.share": ["browser", "report"],
-    "headline.phone.percent": ["browser", "report"],
-    "headline.surfaces[].surface": ["browser", "report"],
-    "headline.surfaces[].label": ["browser", "report"],
-    "headline.surfaces[].turns": ["browser", "report"],
-    "headline.surfaces[].share": ["browser", "report"],
-    "headline.surfaces[].percent": ["browser", "report"],
-    "turns": ["browser", "report"],
-    "voiceTurns": ["browser", "report"],
-    "typedTurns": ["browser", "report"],
-    "sessions": ["browser", "report"],
-    "buckets[].modality": ["browser", "report"],
-    "buckets[].surface": ["browser", "report"],
-    "buckets[].turns": ["browser", "report"],
-    "hourlyTurns[].hour": ["browser"],
-    "hourlyTurns[].turns": ["browser"],
-    "hourlyTurns[].voiceTurns": ["browser"],
-    "hourlyTurns[].typedTurns": ["browser"],
-    "agents[].agent": ["browser"],
-    "agents[].agentName": ["browser"],
-    "agents[].turns": ["browser"],
-    "agents[].voiceTurns": ["browser"],
-    "agents[].typedTurns": ["browser"],
-    "agents[].sessions": ["browser"],
-    "agents[].agentDrivenTurns": ["browser"],
-    "repos[].repo": ["browser"],
-    "repos[].repoName": ["browser"],
-    "repos[].turns": ["browser"],
-    "repos[].voiceTurns": ["browser"],
-    "repos[].typedTurns": ["browser"],
-    "repos[].sessions": ["browser"],
-    "repos[].checkouts[]": ["browser"],
-    "reposUnattributedTurns": ["browser"],
-    "excluded.noInputOrigin": ["browser", "report"],
-    "excluded.agentDriven": ["browser", "report"],
-    "excluded.framework": ["browser", "report"],
-    "excluded.unresolved": ["browser", "report"],
-    "agentDrivenTurns": ["browser", "report"],
+    "definition": BOTH,
+    "unit": BOTH,
+    "window.fromUtc": BOTH,
+    "window.toUtc": BOTH,
+    "window.isDefault": BROWSER,
+    "window.label": BOTH,
+    "window.kind": BROWSER,
+    "window.days": BROWSER,
+    "window.week": BROWSER,
+    "window.choices[].days": BROWSER,
+    "window.choices[].label": BROWSER,
+    "ledger.retentionDays": BOTH,
+    "ledger.earliestUtc": BOTH,
+    "headline.denominator": BOTH,
+    "headline.hasData": BOTH,
+    "headline.voice.turns": BOTH,
+    "headline.voice.share": BOTH,
+    "headline.voice.percent": BOTH,
+    "headline.typed.turns": BOTH,
+    "headline.typed.share": REPORT,
+    "headline.typed.percent": REPORT,
+    "headline.phone.turns": BOTH,
+    "headline.phone.share": BOTH,
+    "headline.phone.percent": BOTH,
+    "headline.phone.remainder": BOTH,
+    "headline.surfaces[].surface": BOTH,
+    "headline.surfaces[].label": BOTH,
+    "headline.surfaces[].turns": BOTH,
+    "headline.surfaces[].share": BOTH,
+    "headline.surfaces[].percent": BOTH,
+    "headline.surfaces[].remainder": REPORT,
+    "turns": BOTH,
+    "voiceTurns": BOTH,
+    "typedTurns": BOTH,
+    "sessions": BOTH,
+    "buckets[].modality": BOTH,
+    "buckets[].surface": BOTH,
+    "buckets[].turns": BOTH,
+    "hourlyTurns[].hour": BROWSER,
+    "hourlyTurns[].turns": BROWSER,
+    "hourlyTurns[].voiceTurns": BROWSER,
+    "hourlyTurns[].typedTurns": BROWSER,
+    "hourlyTurns[].voiceShare": BROWSER,
+    "hourlyTurns[].typedShare": BROWSER,
+    "agents[].agent": BROWSER,
+    "agents[].agentName": BROWSER,
+    "agents[].turns": BROWSER,
+    "agents[].voiceTurns": BROWSER,
+    "agents[].typedTurns": BROWSER,
+    "agents[].sessions": BROWSER,
+    "agents[].agentDrivenTurns": BROWSER,
+    "agents[].turnShare": BROWSER,
+    "agents[].turnPercent": BROWSER,
+    "agents[].sessionShare": BROWSER,
+    "agents[].sessionPercent": BROWSER,
+    "agents[].voiceShare": BROWSER,
+    "agents[].voicePercent": BROWSER,
+    "agentsSummary.agentCount": BROWSER,
+    "agentsSummary.totalTurns": BROWSER,
+    "agentsSummary.totalSessions": BROWSER,
+    "agentsSummary.voiceTurns": BROWSER,
+    "agentsSummary.voiceShare": BROWSER,
+    "agentsSummary.voicePercent": BROWSER,
+    "agentsSummary.topAgentName": BROWSER,
+    "agentsSummary.topShare": BROWSER,
+    "agentsSummary.topPercent": BROWSER,
+    "agentsSummary.agentDrivenTurns": BROWSER,
+    "agentsSummary.leverage": BROWSER,
+    "agentsSummary.leverageText": BROWSER,
+    "agentsSummary.hasData": BROWSER,
+    "repos[].repo": BROWSER,
+    "repos[].repoName": BROWSER,
+    "repos[].turns": BROWSER,
+    "repos[].voiceTurns": BROWSER,
+    "repos[].typedTurns": BROWSER,
+    "repos[].sessions": BROWSER,
+    "repos[].checkouts[]": BROWSER,
+    "repos[].turnShare": BROWSER,
+    "repos[].turnPercent": BROWSER,
+    "repos[].sessionShare": BROWSER,
+    "repos[].sessionPercent": BROWSER,
+    "repos[].voiceShare": BROWSER,
+    "repos[].voicePercent": BROWSER,
+    "reposSummary.repoCount": BROWSER,
+    "reposSummary.totalTurns": BROWSER,
+    "reposSummary.totalSessions": BROWSER,
+    "reposSummary.voiceTurns": BROWSER,
+    "reposSummary.voiceShare": BROWSER,
+    "reposSummary.voicePercent": BROWSER,
+    "reposSummary.topRepoName": BROWSER,
+    "reposSummary.topShare": BROWSER,
+    "reposSummary.topPercent": BROWSER,
+    "reposSummary.hasData": BROWSER,
+    "reposUnattributedTurns": BROWSER,
+    "excluded.noInputOrigin": BOTH,
+    "excluded.agentDriven": BOTH,
+    "excluded.framework": BOTH,
+    "excluded.unresolved": BOTH,
+    "agentDrivenTurns": BOTH,
 }
 
 

@@ -301,6 +301,9 @@ public sealed class ThrottleDefinitionTests
         Assert.Equal(63, h.Typed.Percent);
         Assert.Equal(2, h.Phone.Turns);
         Assert.Equal(25, h.Phone.Percent);
+        // The phone ring's other side, served, so no consumer subtracts (fix-round finding F-01).
+        Assert.Equal(6, h.Phone.Remainder);
+        Assert.Equal(new long[] { 4, 7, 6, 7 }, h.Surfaces.Select(s => s.Remainder).ToArray());
         // Every surface, in the drawing order, zero or not, with the Gateway's own label.
         Assert.Equal(new[] { "desktop", "cockpit", "phone", "unknown" }, h.Surfaces.Select(s => s.Surface).ToArray());
         Assert.Equal(new[] { "Desktop", "Cockpit", "Phone", "Unknown" }, h.Surfaces.Select(s => s.Label).ToArray());
@@ -355,5 +358,133 @@ public sealed class ThrottleDefinitionTests
         }));
         Assert.Contains("watch", ex.Message);
         Assert.Contains("refused", ex.Message);
+    }
+
+    // ---- fix-round finding F-01: every ratio the pages print is finished here ------------------------------
+
+    [Fact]
+    public void EveryHour_CarriesItsOwnSpokenAndTypedShares_SoTheChartDividesNothing()
+    {
+        var rows = new List<LedgerSubmission>
+        {
+            Row("voice/phone", "Delivery", hoursIn: 1), Row("voice/desktop", "UserInput", hoursIn: 1), Row("typed/desktop", null, hoursIn: 1),
+            Row("typed/desktop", null, hoursIn: 2),
+        };
+        var hours = Fold(rows, From, To, NoSessions).HourlyTurns;
+        Assert.Equal(2, hours.Count);
+        Assert.Equal(3, hours[0].Turns);
+        Assert.Equal(2.0 / 3.0, hours[0].VoiceShare!.Value, 12);
+        Assert.Equal(1.0 / 3.0, hours[0].TypedShare!.Value, 12);
+        Assert.Equal(0.0, hours[1].VoiceShare);
+        Assert.Equal(1.0, hours[1].TypedShare);
+    }
+
+    [Fact]
+    public void EveryAgentRow_CarriesItsShareOfTurnsAndSessions_AndItsOwnVoiceShare_Rounded()
+    {
+        var rows = new List<LedgerSubmission>
+        {
+            Row("voice/phone", "Delivery", session: "a1", agent: "ClaudeCode"), Row("voice/desktop", "UserInput", session: "a1", agent: "ClaudeCode"),
+            Row("typed/desktop", null, session: "a2", agent: "ClaudeCode"),
+            Row("typed/desktop", null, session: "b1", agent: "Codex"),
+            Row(null, "Agent", session: "b1", agent: "Codex"), Row(null, "Agent", session: "b1", agent: "Codex"), Row(null, "Agent", session: "b1", agent: "Codex"),
+        };
+        var figure = Fold(rows, From, To, NoSessions);
+        var claude = figure.Agents[0];
+        var codex = figure.Agents[1];
+        Assert.Equal("ClaudeCode", claude.Agent);
+        Assert.Equal(0.75, claude.TurnShare);
+        Assert.Equal(75, claude.TurnPercent);
+        Assert.Equal(2.0 / 3.0, claude.SessionShare!.Value, 12);
+        Assert.Equal(67, claude.SessionPercent);
+        Assert.Equal(2.0 / 3.0, claude.VoiceShare!.Value, 12);
+        Assert.Equal(67, claude.VoicePercent);
+        Assert.Equal(0.25, codex.TurnShare);
+        Assert.Equal(25, codex.TurnPercent);
+        Assert.Equal(0.0, codex.VoiceShare);
+        Assert.Equal(0, codex.VoicePercent);
+
+        var summary = figure.AgentsSummary;
+        Assert.Equal(2, summary.AgentCount);
+        Assert.Equal(4, summary.TotalTurns);
+        Assert.Equal(3, summary.TotalSessions);
+        Assert.Equal(2, summary.VoiceTurns);
+        Assert.Equal(0.5, summary.VoiceShare);
+        Assert.Equal(50, summary.VoicePercent);
+        Assert.Equal("Claude Code", summary.TopAgentName);
+        Assert.Equal(0.75, summary.TopShare);
+        Assert.Equal(75, summary.TopPercent);
+        Assert.Equal(3, summary.AgentDrivenTurns);
+        Assert.Equal(0.75, summary.Leverage);
+        Assert.Equal("0.8x", summary.LeverageText);
+        Assert.True(summary.HasData);
+    }
+
+    [Fact]
+    public void TheAgentsSummary_WithNothingDriven_IsTheEmptyState_AndAFleetDrivingItselfIsNot()
+    {
+        var empty = Fold(Array.Empty<LedgerSubmission>(), From, To, NoSessions).AgentsSummary;
+        Assert.False(empty.HasData);
+        Assert.Equal(0, empty.AgentCount);
+        Assert.Null(empty.TopAgentName);
+        Assert.Null(empty.TopShare);
+        Assert.Null(empty.VoicePercent);
+        Assert.Null(empty.Leverage);
+        Assert.Null(empty.LeverageText);
+
+        var fleetOnly = Fold(new[] { Row(null, "Agent", agent: "Codex") }, From, To, NoSessions);
+        Assert.True(fleetOnly.AgentsSummary.HasData);
+        Assert.Equal(0, fleetOnly.AgentsSummary.AgentCount);
+        Assert.Equal(1, fleetOnly.AgentsSummary.AgentDrivenTurns);
+        Assert.Null(fleetOnly.AgentsSummary.Leverage);
+        Assert.Null(fleetOnly.AgentsSummary.TopAgentName);
+        // The row for Codex exists (it was driven into) and carries no share of a zero total.
+        var codex = Assert.Single(fleetOnly.Agents);
+        Assert.Null(codex.TurnShare);
+        Assert.Null(codex.TurnPercent);
+        Assert.Null(codex.VoicePercent);
+    }
+
+    [Fact]
+    public void EveryRepoRow_CarriesItsShares_AndTheReposSummaryIsFinished()
+    {
+        var sessions = new Dictionary<string, SessionFacts>
+        {
+            ["s1"] = new SessionFacts("owner/devthrottle", @"D:\devthrottle"),
+            ["s2"] = new SessionFacts("owner/devthrottle", @"D:\devthrottle-two"),
+            ["s3"] = new SessionFacts("owner/mindzie", @"D:\mindzie"),
+        };
+        var rows = new List<LedgerSubmission>
+        {
+            Row("voice/phone", "Delivery", session: "s1"), Row("voice/desktop", "UserInput", session: "s1"), Row("typed/desktop", null, session: "s2"),
+            Row("typed/desktop", null, session: "s3"),
+            Row("typed/desktop", null, session: "nowhere"),
+        };
+        var figure = Fold(rows, From, To, sessions);
+        var devthrottle = figure.Repos[0];
+        Assert.Equal(0.75, devthrottle.TurnShare);
+        Assert.Equal(75, devthrottle.TurnPercent);
+        Assert.Equal(2.0 / 3.0, devthrottle.SessionShare!.Value, 12);
+        Assert.Equal(67, devthrottle.SessionPercent);
+        Assert.Equal(67, devthrottle.VoicePercent);
+        Assert.Equal(25, figure.Repos[1].TurnPercent);
+        Assert.Equal(0, figure.Repos[1].VoicePercent);
+
+        var summary = figure.ReposSummary;
+        Assert.Equal(2, summary.RepoCount);
+        Assert.Equal(4, summary.TotalTurns);
+        Assert.Equal(3, summary.TotalSessions);
+        Assert.Equal(2, summary.VoiceTurns);
+        Assert.Equal(50, summary.VoicePercent);
+        Assert.Equal("devthrottle", summary.TopRepoName);
+        Assert.Equal(75, summary.TopPercent);
+        Assert.True(summary.HasData);
+        Assert.Equal(1, figure.ReposUnattributedTurns);
+
+        var empty = Fold(Array.Empty<LedgerSubmission>(), From, To, NoSessions).ReposSummary;
+        Assert.False(empty.HasData);
+        Assert.Null(empty.TopRepoName);
+        Assert.Null(empty.TopShare);
+        Assert.Null(empty.VoicePercent);
     }
 }

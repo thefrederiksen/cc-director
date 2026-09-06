@@ -11,12 +11,33 @@
         "agent": "ClaudeCode",
         "agentDrivenTurns": 4,
         "agentName": "Claude Code",
+        "sessionPercent": 33,
+        "sessionShare": 0.3333333333333333,
         "sessions": 3,
+        "turnPercent": 57,
+        "turnShare": 0.5683090705487122,
         "turns": 1786,
         "typedTurns": 771,
+        "voicePercent": 61,
+        "voiceShare": 0.612,
         "voiceTurns": 1015
       }
     ],
+    "agentsSummary": {
+      "agentCount": 3,
+      "agentDrivenTurns": 4,
+      "hasData": true,
+      "leverage": 0.0022396416573348264,
+      "leverageText": "0.0x",
+      "topAgentName": "Claude Code",
+      "topPercent": 92,
+      "topShare": 0.9182530794,
+      "totalSessions": 129,
+      "totalTurns": 1786,
+      "voicePercent": 57,
+      "voiceShare": 0.5683090705487122,
+      "voiceTurns": 1015
+    },
     "buckets": [
       {
         "modality": "typed",
@@ -53,9 +74,11 @@
     },
     "hourlyTurns": [
       {
-        "hour": "2026-08-24T13",
+        "hour": "2026-08-30T13",
         "turns": 1786,
+        "typedShare": 0.4316909294512878,
         "typedTurns": 771,
+        "voiceShare": 0.5683090705487122,
         "voiceTurns": 1015
       }
     ],
@@ -70,12 +93,30 @@
         ],
         "repo": "owner/repo-alpha",
         "repoName": "repo-alpha",
+        "sessionPercent": 33,
+        "sessionShare": 0.3333333333333333,
         "sessions": 3,
+        "turnPercent": 57,
+        "turnShare": 0.5683090705487122,
         "turns": 1786,
         "typedTurns": 771,
+        "voicePercent": 61,
+        "voiceShare": 0.612,
         "voiceTurns": 1015
       }
     ],
+    "reposSummary": {
+      "hasData": true,
+      "repoCount": 4,
+      "topPercent": 74,
+      "topRepoName": "repo-alpha",
+      "topShare": 0.7368421052631579,
+      "totalSessions": 129,
+      "totalTurns": 1786,
+      "voicePercent": 57,
+      "voiceShare": 0.5683090705487122,
+      "voiceTurns": 1015
+    },
     "reposUnattributedTurns": 0,
     "sessions": 3,
     "turns": 1786,

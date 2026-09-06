@@ -2,8 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import {
   getThrottle,
-  summarizeRepos,
-  formatShare,
+  formatPercent,
   type ThrottleData,
   type ThrottleFigure,
   type RepoStat,
@@ -63,14 +62,14 @@ export function Repos() {
 
   const figure: ThrottleFigure | null = data !== null && data.available ? data.throttle : null;
   const repos = figure?.repos ?? [];
-  const summary: RepoSummary | null = figure === null ? null : summarizeRepos(repos);
+  // The headline cards are the Gateway's (fix-round finding F-01): nothing here totals a row.
+  const summary: RepoSummary | null = figure === null ? null : figure.reposSummary;
 
   const ranked = useMemo(
     () => [...repos].sort((a, b) => metricValue(b, metric) - metricValue(a, metric)),
     [repos, metric],
   );
   const max = ranked.length > 0 ? metricValue(ranked[0], metric) : 0;
-  const total = ranked.reduce((t, r) => t + metricValue(r, metric), 0);
 
   return (
     <div className="screen">
@@ -120,7 +119,7 @@ export function Repos() {
               <div className="thr-card-label">Turns</div>
             </div>
             <div className="thr-card">
-              <div className="thr-card-value">{formatShare(summary.topShare)}</div>
+              <div className="thr-card-value">{formatPercent(summary.topPercent)}</div>
               <div className="thr-card-label">Busiest</div>
             </div>
           </section>
@@ -161,9 +160,11 @@ export function Repos() {
             <div className="thr-list-title">By {METRIC_WORD[metric]}</div>
             {ranked.map((r, i) => {
               const value = metricValue(r, metric);
+              // The bar's length against the longest bar is layout; every RATIO printed or drawn is the
+              // Gateway's own row share (fix-round finding F-01).
               const width = max > 0 ? (value / max) * 100 : 0;
-              const share = total > 0 ? Math.round((value / total) * 100) : 0;
-              const voicePct = r.turns > 0 ? Math.round((r.voiceTurns / r.turns) * 100) : 0;
+              const share = formatPercent(metric === "turns" ? r.turnPercent : r.sessionPercent);
+              const voiceWidth = r.voiceShare === null ? 0 : r.voiceShare;
               const showSplit = metric === "turns" && r.turns > 0;
               return (
                 <div className="repo-item" key={r.repo}>
@@ -172,14 +173,14 @@ export function Repos() {
                     <span className="repo-item-name">{r.repoName}</span>
                     <span className="repo-item-val">
                       {value.toLocaleString()}
-                      <span className="repo-item-share"> - {share}%</span>
+                      <span className="repo-item-share"> - {share}</span>
                     </span>
                   </div>
                   <div className="repo-item-bar">
                     {showSplit ? (
                       <>
-                        <span className="repo-item-voice" style={{ width: `${(width * voicePct) / 100}%` }} />
-                        <span className="repo-item-typed" style={{ width: `${(width * (100 - voicePct)) / 100}%` }} />
+                        <span className="repo-item-voice" style={{ width: `${width * voiceWidth}%` }} />
+                        <span className="repo-item-typed" style={{ width: `${width * (1 - voiceWidth)}%` }} />
                       </>
                     ) : (
                       <span className="repo-item-voice" style={{ width: `${width}%` }} />

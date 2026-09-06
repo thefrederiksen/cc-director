@@ -4,6 +4,45 @@
       "browser",
       "report"
     ],
+    "agentsSummary.agentCount": [
+      "browser"
+    ],
+    "agentsSummary.agentDrivenTurns": [
+      "browser"
+    ],
+    "agentsSummary.hasData": [
+      "browser"
+    ],
+    "agentsSummary.leverage": [
+      "browser"
+    ],
+    "agentsSummary.leverageText": [
+      "browser"
+    ],
+    "agentsSummary.topAgentName": [
+      "browser"
+    ],
+    "agentsSummary.topPercent": [
+      "browser"
+    ],
+    "agentsSummary.topShare": [
+      "browser"
+    ],
+    "agentsSummary.totalSessions": [
+      "browser"
+    ],
+    "agentsSummary.totalTurns": [
+      "browser"
+    ],
+    "agentsSummary.voicePercent": [
+      "browser"
+    ],
+    "agentsSummary.voiceShare": [
+      "browser"
+    ],
+    "agentsSummary.voiceTurns": [
+      "browser"
+    ],
     "agents[].agent": [
       "browser"
     ],
@@ -13,13 +52,31 @@
     "agents[].agentName": [
       "browser"
     ],
+    "agents[].sessionPercent": [
+      "browser"
+    ],
+    "agents[].sessionShare": [
+      "browser"
+    ],
     "agents[].sessions": [
+      "browser"
+    ],
+    "agents[].turnPercent": [
+      "browser"
+    ],
+    "agents[].turnShare": [
       "browser"
     ],
     "agents[].turns": [
       "browser"
     ],
     "agents[].typedTurns": [
+      "browser"
+    ],
+    "agents[].voicePercent": [
+      "browser"
+    ],
+    "agents[].voiceShare": [
       "browser"
     ],
     "agents[].voiceTurns": [
@@ -69,6 +126,10 @@
       "browser",
       "report"
     ],
+    "headline.phone.remainder": [
+      "browser",
+      "report"
+    ],
     "headline.phone.share": [
       "browser",
       "report"
@@ -85,6 +146,9 @@
       "browser",
       "report"
     ],
+    "headline.surfaces[].remainder": [
+      "report"
+    ],
     "headline.surfaces[].share": [
       "browser",
       "report"
@@ -98,11 +162,9 @@
       "report"
     ],
     "headline.typed.percent": [
-      "browser",
       "report"
     ],
     "headline.typed.share": [
-      "browser",
       "report"
     ],
     "headline.typed.turns": [
@@ -127,7 +189,13 @@
     "hourlyTurns[].turns": [
       "browser"
     ],
+    "hourlyTurns[].typedShare": [
+      "browser"
+    ],
     "hourlyTurns[].typedTurns": [
+      "browser"
+    ],
+    "hourlyTurns[].voiceShare": [
       "browser"
     ],
     "hourlyTurns[].voiceTurns": [
@@ -141,6 +209,36 @@
       "browser",
       "report"
     ],
+    "reposSummary.hasData": [
+      "browser"
+    ],
+    "reposSummary.repoCount": [
+      "browser"
+    ],
+    "reposSummary.topPercent": [
+      "browser"
+    ],
+    "reposSummary.topRepoName": [
+      "browser"
+    ],
+    "reposSummary.topShare": [
+      "browser"
+    ],
+    "reposSummary.totalSessions": [
+      "browser"
+    ],
+    "reposSummary.totalTurns": [
+      "browser"
+    ],
+    "reposSummary.voicePercent": [
+      "browser"
+    ],
+    "reposSummary.voiceShare": [
+      "browser"
+    ],
+    "reposSummary.voiceTurns": [
+      "browser"
+    ],
     "reposUnattributedTurns": [
       "browser"
     ],
@@ -153,13 +251,31 @@
     "repos[].repoName": [
       "browser"
     ],
+    "repos[].sessionPercent": [
+      "browser"
+    ],
+    "repos[].sessionShare": [
+      "browser"
+    ],
     "repos[].sessions": [
+      "browser"
+    ],
+    "repos[].turnPercent": [
+      "browser"
+    ],
+    "repos[].turnShare": [
       "browser"
     ],
     "repos[].turns": [
       "browser"
     ],
     "repos[].typedTurns": [
+      "browser"
+    ],
+    "repos[].voicePercent": [
+      "browser"
+    ],
+    "repos[].voiceShare": [
       "browser"
     ],
     "repos[].voiceTurns": [

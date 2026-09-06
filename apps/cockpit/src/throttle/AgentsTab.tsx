@@ -1,7 +1,6 @@
 import { useMemo, useState } from "react";
 import {
-  summarizeAgents,
-  formatShare,
+  formatPercent,
   type ThrottleFigure,
   type AgentStat,
   type AgentSummary,
@@ -45,18 +44,19 @@ function AgentRow({
   agent,
   metric,
   max,
-  total,
 }: {
   rank: number;
   agent: AgentStat;
   metric: Metric;
   max: number;
-  total: number;
 }) {
   const value = metricValue(agent, metric);
+  // The bar's length against the longest bar is layout; every RATIO printed or drawn is the Gateway's own
+  // row share (fix-round finding F-01): the row's share of the metric, and its spoken share.
   const width = max > 0 ? (value / max) * 100 : 0;
-  const share = total > 0 ? Math.round((value / total) * 100) : 0;
-  const voicePct = agent.turns > 0 ? Math.round((agent.voiceTurns / agent.turns) * 100) : 0;
+  const share = formatPercent(metric === "turns" ? agent.turnPercent : agent.sessionPercent);
+  const voicePct = formatPercent(agent.voicePercent);
+  const voiceWidth = agent.voiceShare === null ? 0 : agent.voiceShare;
   const showSplit = metric === "turns" && agent.turns > 0;
 
   // Turns other sessions drove into this agent's sessions. Stated as its own fact next to the human turns,
@@ -66,8 +66,8 @@ function AgentRow({
 
   const meta =
     metric === "turns"
-      ? `${agent.sessions} session${agent.sessions === 1 ? "" : "s"} - ${voicePct}% voice${agentDriven}`
-      : `${agent.turns.toLocaleString()} turns - ${voicePct}% voice${agentDriven}`;
+      ? `${agent.sessions} session${agent.sessions === 1 ? "" : "s"} - ${voicePct} voice${agentDriven}`
+      : `${agent.turns.toLocaleString()} turns - ${voicePct} voice${agentDriven}`;
 
   return (
     <div className="repo-row">
@@ -83,8 +83,8 @@ function AgentRow({
         <div className="repo-bar-track" title={`${value.toLocaleString()} ${METRIC_WORD[metric]}`}>
           {showSplit ? (
             <>
-              <div className="repo-bar-voice" style={{ width: `${(width * voicePct) / 100}%` }} />
-              <div className="repo-bar-typed" style={{ width: `${(width * (100 - voicePct)) / 100}%` }} />
+              <div className="repo-bar-voice" style={{ width: `${width * voiceWidth}%` }} />
+              <div className="repo-bar-typed" style={{ width: `${width * (1 - voiceWidth)}%` }} />
             </>
           ) : (
             <div className="repo-bar-voice" style={{ width: `${width}%` }} />
@@ -93,7 +93,7 @@ function AgentRow({
       </div>
       <div className="repo-val">
         <div className="repo-val-num">{value.toLocaleString()}</div>
-        <div className="repo-val-share">{share}%</div>
+        <div className="repo-val-share">{share}</div>
       </div>
     </div>
   );
@@ -103,7 +103,8 @@ export function AgentsTab({ figure }: { figure: ThrottleFigure }) {
   const [metric, setMetric] = useState<Metric>("turns");
 
   const agents = figure.agents;
-  const summary: AgentSummary = summarizeAgents(agents);
+  // The headline cards are the Gateway's (fix-round finding F-01): nothing here totals a row.
+  const summary: AgentSummary = figure.agentsSummary;
 
   // Rank by the active metric (the feed arrives ranked by turns; re-sort so switching to sessions
   // re-orders the list honestly).
@@ -112,7 +113,6 @@ export function AgentsTab({ figure }: { figure: ThrottleFigure }) {
     [agents, metric],
   );
   const max = ranked.length > 0 ? metricValue(ranked[0], metric) : 0;
-  const total = ranked.reduce((t, a) => t + metricValue(a, metric), 0);
 
   if (!summary.hasData) {
     return (
@@ -149,12 +149,12 @@ export function AgentsTab({ figure }: { figure: ThrottleFigure }) {
         />
         <HeadlineCard
           label="Most driven"
-          value={formatShare(summary.topShare)}
+          value={formatPercent(summary.topPercent)}
           sub={summary.topAgentName !== null ? `${summary.topAgentName} leads` : "of your turns"}
         />
         <HeadlineCard
           label="Voice-driven"
-          value={formatShare(summary.totalTurns > 0 ? summary.voiceTurns / summary.totalTurns : null)}
+          value={formatPercent(summary.voicePercent)}
           sub="of turns spoken, not typed"
         />
         {/* Leverage (issue #1636): what the fleet did off the back of each turn the owner spent. Shown
@@ -163,7 +163,7 @@ export function AgentsTab({ figure }: { figure: ThrottleFigure }) {
         {summary.agentDrivenTurns > 0 && (
           <HeadlineCard
             label="Leverage"
-            value={summary.leverage !== null ? `${summary.leverage.toFixed(1)}x` : "-"}
+            value={summary.leverageText !== null ? summary.leverageText : "-"}
             sub={`${summary.agentDrivenTurns.toLocaleString()} turns agents drove agents`}
           />
         )}
@@ -193,7 +193,7 @@ export function AgentsTab({ figure }: { figure: ThrottleFigure }) {
         </div>
         <div className="repo-rows">
           {ranked.map((a, i) => (
-            <AgentRow key={a.agent} rank={i + 1} agent={a} metric={metric} max={max} total={total} />
+            <AgentRow key={a.agent} rank={i + 1} agent={a} metric={metric} max={max} />
           ))}
         </div>
       </div>

@@ -69,11 +69,27 @@ export interface InputHour {
   turns: number;
   voiceTurns: number;
   typedTurns: number;
+  /** The spoken and typed fractions of this hour's turns, finished on the Gateway; null when the hour has
+   * none. The chart draws its segments from these and divides nothing (fix-round finding F-01). */
+  voiceShare: number | null;
+  typedShare: number | null;
+}
+
+/** The ratios a ranked row prints, finished on the Gateway (fix-round finding F-01): the row's share of every
+ * turn and of every session (with the whole-number percent it prints), and the spoken share of its own turns.
+ * Null when there is nothing underneath the ratio. */
+export interface RowShares {
+  turnShare: number | null;
+  turnPercent: number | null;
+  sessionShare: number | null;
+  sessionPercent: number | null;
+  voiceShare: number | null;
+  voicePercent: number | null;
 }
 
 /** One repository's count of submitted turns over the window, through the Gateway's session-history join.
  * Mirrors the Gateway ThrottleRepoDto. Counts only - never any message text. */
-export interface RepoStat {
+export interface RepoStat extends RowShares {
   /** Grouping key: the "owner/repo" name the session's checkout belongs to (e.g. "thefrederiksen/devthrottle"),
    * so worktrees and per-machine clones are one row; or the checkout's folder name when history holds a path
    * and no name. */
@@ -91,7 +107,7 @@ export interface RepoStat {
 }
 
 /** One agent CLI's count of submitted turns over the window. Mirrors the Gateway ThrottleAgentDto. */
-export interface AgentStat {
+export interface AgentStat extends RowShares {
   /** The agent token the ledger recorded ("ClaudeCode", "Codex", ...), or "" when none (the key). */
   agent: string;
   /** Display name of the agent, e.g. "Claude Code"; "(unknown)" when the session carried no agent. */
@@ -167,10 +183,19 @@ export interface ThrottleShare {
   percent: number | null;
 }
 
+/** A share drawn as a ring: the count on the ring's other side is served with it, so the page subtracts
+ * nothing (fix-round finding F-01). Mirrors the Gateway ThrottleRingDto. */
+export interface ThrottleRingShare extends ThrottleShare {
+  /** The counted turns NOT in this share: the denominator less `turns`. */
+  remainder: number;
+}
+
 /** One surface's share of the headline, with the Gateway's own display name. */
 export interface ThrottleSurfaceShare extends ThrottleShare {
   surface: Surface;
   label: string;
+  /** The counted turns on every other surface. */
+  remainder: number;
 }
 
 /** THE HEADLINE, finished on the Gateway (final inspection finding F-01): the two rings' shares with their
@@ -183,8 +208,9 @@ export interface ThrottleHeadline {
   hasData: boolean;
   voice: ThrottleShare;
   typed: ThrottleShare;
-  /** The phone entry of `surfaces`, at the top because it is the second ring. */
-  phone: ThrottleShare;
+  /** The phone entry of `surfaces`, at the top because it is the second ring - with the count on the ring's
+   * other side. */
+  phone: ThrottleRingShare;
   /** Every surface, in the Gateway's drawing order, zero or not. */
   surfaces: ThrottleSurfaceShare[];
 }
@@ -213,6 +239,10 @@ export interface ThrottleFigure {
   agents: AgentStat[];
   /** Per-repository split, most-driven first. */
   repos: RepoStat[];
+  /** The Agents tab's headline cards, finished on the Gateway (fix-round finding F-01). */
+  agentsSummary: AgentSummary;
+  /** The Repos tab's headline cards, finished on the Gateway. */
+  reposSummary: RepoSummary;
   /** Counted turns whose session has no repository on record - disclosed, never folded into a row. */
   reposUnattributedTurns: number;
   excluded: ThrottleExcluded;
@@ -268,6 +298,8 @@ export interface ThrottleSummary {
   phoneShare: number | null;
   /** The whole-number percentage the phone ring prints, as the Gateway rounded it; null when no turns. */
   phonePercent: number | null;
+  /** The counted turns NOT from the phone - the phone ring's other side, served, never subtracted. */
+  phoneRemainder: number;
   hasData: boolean;
 }
 
@@ -435,6 +467,8 @@ function normalizeFigure(raw: unknown): ThrottleFigure {
     hourlyTurns: Array.isArray(f.hourlyTurns) ? f.hourlyTurns.map(normalizeInputHour) : [],
     agents: Array.isArray(f.agents) ? f.agents.map(normalizeAgent) : [],
     repos: Array.isArray(f.repos) ? f.repos.map(normalizeRepo) : [],
+    agentsSummary: normalizeAgentsSummary(f.agentsSummary),
+    reposSummary: normalizeReposSummary(f.reposSummary),
     reposUnattributedTurns: num(f.reposUnattributedTurns),
     excluded: {
       noInputOrigin: num(x.noInputOrigin),
@@ -464,16 +498,32 @@ function normalizeHeadline(raw: unknown): ThrottleHeadline {
     if (surface === undefined || typeof entry.label !== "string") {
       throw new Error("GET /stats/data answered a headline surface this client does not know: " + String(entry.surface));
     }
-    return { surface, label: entry.label, ...normalizeShare(entry, "surface " + surface) };
+    if (typeof entry.remainder !== "number") throw new Error("GET /stats/data answered the surface " + surface + " without the count on every other surface");
+    return { surface, label: entry.label, remainder: entry.remainder, ...normalizeShare(entry, "surface " + surface) };
   });
   return {
     denominator: h.denominator,
     hasData: h.hasData,
     voice: normalizeShare(h.voice, "voice"),
     typed: normalizeShare(h.typed, "typed"),
-    phone: normalizeShare(h.phone, "phone"),
+    phone: normalizeRing(h.phone, "phone"),
     surfaces,
   };
+}
+
+/** A served ratio: a finite number, or null when the Gateway ruled there is nothing underneath it. Anything
+ * else - the field absent, a string, NaN - is an answer this client cannot render and is refused; it is never
+ * read as 0, because a 0% the Gateway did not say is a fabricated number (fix-round finding F-01). */
+function ratioOrNull(v: unknown, what: string): number | null {
+  if (v === null) return null;
+  if (typeof v === "number" && Number.isFinite(v)) return v;
+  throw new Error("GET /stats/data answered " + what + " that is neither a number nor null; this client does not compute one");
+}
+
+function textOrNull(v: unknown, what: string): string | null {
+  if (v === null) return null;
+  if (typeof v === "string") return v;
+  throw new Error("GET /stats/data answered " + what + " that is neither text nor null");
 }
 
 function normalizeShare(raw: unknown, what: string): ThrottleShare {
@@ -481,13 +531,26 @@ function normalizeShare(raw: unknown, what: string): ThrottleShare {
     throw new Error("GET /stats/data answered a headline without its " + what + " share");
   }
   const s = raw as Partial<Record<keyof ThrottleShare, unknown>>;
-  const numberOrNull = (v: unknown, field: string): number | null => {
-    if (v === null || v === undefined) return null;
-    if (typeof v === "number" && Number.isFinite(v)) return v;
-    throw new Error("GET /stats/data answered a headline " + what + " " + field + " that is neither a number nor null");
-  };
   if (typeof s.turns !== "number") throw new Error("GET /stats/data answered a headline " + what + " share without its turns");
-  return { turns: s.turns, share: numberOrNull(s.share, "share"), percent: numberOrNull(s.percent, "percent") };
+  return { turns: s.turns, share: ratioOrNull(s.share, "a headline " + what + " share"), percent: ratioOrNull(s.percent, "a headline " + what + " percent") };
+}
+
+function normalizeRing(raw: unknown, what: string): ThrottleRingShare {
+  const share = normalizeShare(raw, what);
+  const r = raw as Partial<Record<keyof ThrottleRingShare, unknown>>;
+  if (typeof r.remainder !== "number") throw new Error("GET /stats/data answered the " + what + " ring without the count on its other side; this client does not subtract");
+  return { ...share, remainder: r.remainder };
+}
+
+function normalizeRowShares(raw: Partial<Record<keyof RowShares, unknown>>, what: string): RowShares {
+  return {
+    turnShare: ratioOrNull(raw.turnShare, what + " turn share"),
+    turnPercent: ratioOrNull(raw.turnPercent, what + " turn percent"),
+    sessionShare: ratioOrNull(raw.sessionShare, what + " session share"),
+    sessionPercent: ratioOrNull(raw.sessionPercent, what + " session percent"),
+    voiceShare: ratioOrNull(raw.voiceShare, what + " voice share"),
+    voicePercent: ratioOrNull(raw.voicePercent, what + " voice percent"),
+  };
 }
 
 function normalizeAgent(raw: unknown): AgentStat {
@@ -500,6 +563,7 @@ function normalizeAgent(raw: unknown): AgentStat {
     typedTurns: num(a.typedTurns),
     sessions: num(a.sessions),
     agentDrivenTurns: num(a.agentDrivenTurns),
+    ...normalizeRowShares(a, "an agent row's"),
   };
 }
 
@@ -513,6 +577,7 @@ function normalizeRepo(raw: unknown): RepoStat {
     typedTurns: num(r.typedTurns),
     sessions: num(r.sessions),
     checkouts: Array.isArray(r.checkouts) ? r.checkouts.map((c) => String(c)) : [],
+    ...normalizeRowShares(r, "a repository row's"),
   };
 }
 
@@ -523,6 +588,47 @@ function normalizeInputHour(raw: unknown): InputHour {
     turns: num(h.turns),
     voiceTurns: num(h.voiceTurns),
     typedTurns: num(h.typedTurns),
+    voiceShare: ratioOrNull(h.voiceShare, "an hour's voice share"),
+    typedShare: ratioOrNull(h.typedShare, "an hour's typed share"),
+  };
+}
+
+function normalizeAgentsSummary(raw: unknown): AgentSummary {
+  if (raw === null || typeof raw !== "object") throw new Error("GET /stats/data answered without the Agents summary; this client does not total the rows");
+  const s = raw as Partial<Record<keyof AgentSummary, unknown>>;
+  if (typeof s.hasData !== "boolean") throw new Error("GET /stats/data answered an Agents summary without its empty state");
+  return {
+    agentCount: num(s.agentCount),
+    totalTurns: num(s.totalTurns),
+    totalSessions: num(s.totalSessions),
+    voiceTurns: num(s.voiceTurns),
+    voiceShare: ratioOrNull(s.voiceShare, "the Agents summary's voice share"),
+    voicePercent: ratioOrNull(s.voicePercent, "the Agents summary's voice percent"),
+    topAgentName: textOrNull(s.topAgentName, "the Agents summary's leading agent"),
+    topShare: ratioOrNull(s.topShare, "the Agents summary's leading share"),
+    topPercent: ratioOrNull(s.topPercent, "the Agents summary's leading percent"),
+    agentDrivenTurns: num(s.agentDrivenTurns),
+    leverage: ratioOrNull(s.leverage, "the Agents summary's leverage"),
+    leverageText: textOrNull(s.leverageText, "the Agents summary's leverage text"),
+    hasData: s.hasData,
+  };
+}
+
+function normalizeReposSummary(raw: unknown): RepoSummary {
+  if (raw === null || typeof raw !== "object") throw new Error("GET /stats/data answered without the Repos summary; this client does not total the rows");
+  const s = raw as Partial<Record<keyof RepoSummary, unknown>>;
+  if (typeof s.hasData !== "boolean") throw new Error("GET /stats/data answered a Repos summary without its empty state");
+  return {
+    repoCount: num(s.repoCount),
+    totalTurns: num(s.totalTurns),
+    totalSessions: num(s.totalSessions),
+    voiceTurns: num(s.voiceTurns),
+    voiceShare: ratioOrNull(s.voiceShare, "the Repos summary's voice share"),
+    voicePercent: ratioOrNull(s.voicePercent, "the Repos summary's voice percent"),
+    topRepoName: textOrNull(s.topRepoName, "the Repos summary's leading repository"),
+    topShare: ratioOrNull(s.topShare, "the Repos summary's leading share"),
+    topPercent: ratioOrNull(s.topPercent, "the Repos summary's leading percent"),
+    hasData: s.hasData,
   };
 }
 
@@ -581,114 +687,60 @@ export function summarizeThrottle(figure: ThrottleFigure): ThrottleSummary {
     surfaces: h.surfaces,
     phoneShare: h.phone.share,
     phonePercent: h.phone.percent,
+    phoneRemainder: h.phone.remainder,
     hasData: h.hasData,
   };
 }
 
-/** A derived, presentation-ready summary of the per-repo split for the Repos page headline cards. */
+/** The Repos page's headline cards, FINISHED ON THE GATEWAY (fix-round finding F-01). Mirrors the Gateway
+ * ThrottleReposSummaryDto. The browser used to total the rows and divide for the leading repository's share
+ * and the voice share; now it prints these. */
 export interface RepoSummary {
-  /** How many repos have any counted turn. */
+  /** Repositories with a row. */
   repoCount: number;
-  /** Total submitted turns across every repo. */
+  /** Every turn placed in a repository. */
   totalTurns: number;
-  /** Total distinct sessions across every repo (a session belongs to exactly one repo, so summing the
-   * per-repo distinct counts is itself a distinct total). */
+  /** Every session placed in a repository. */
   totalSessions: number;
-  /** Total voice-driven turns across every repo. */
   voiceTurns: number;
-  /** The most-driven repo's share of all turns, or null when no turns are counted. */
-  topShare: number | null;
-  /** The most-driven repo's display name, or null when there is no data. */
+  /** The spoken share of every placed turn, and the whole-number percent the card prints; null when none. */
+  voiceShare: number | null;
+  voicePercent: number | null;
+  /** The most-driven repository's display name, or null when there is no row. */
   topRepoName: string | null;
+  /** The most-driven repository's share of every placed turn, and its printed percent; null when none. */
+  topShare: number | null;
+  topPercent: number | null;
   hasData: boolean;
 }
 
-/** The Agents-page headline summary: how much you drive each agent CLI. */
+/** The Agents page's headline cards, FINISHED ON THE GATEWAY (fix-round finding F-01). Mirrors the Gateway
+ * ThrottleAgentsSummaryDto. */
 export interface AgentSummary {
-  /** How many agents have any counted turn. */
+  /** Agents with at least one counted turn. */
   agentCount: number;
-  /** Total submitted turns across every agent. */
+  /** Every counted turn, across every agent. */
   totalTurns: number;
-  /** Total distinct sessions across every agent (a session drives exactly one agent, so summing the
-   * per-agent distinct counts is itself a distinct total). */
+  /** Every counted session, across every agent. */
   totalSessions: number;
-  /** Total voice-driven turns across every agent. */
   voiceTurns: number;
-  /** The most-driven agent's share of all turns, or null when no turns are counted. */
-  topShare: number | null;
-  /** The most-driven agent's display name, or null when there is no data. */
+  /** The spoken share of every counted turn, and the whole-number percent the card prints; null when none. */
+  voiceShare: number | null;
+  voicePercent: number | null;
+  /** The most-driven agent's display name, or null when no agent has a counted turn. */
   topAgentName: string | null;
+  /** The most-driven agent's share of every counted turn, and its printed percent; null when none. */
+  topShare: number | null;
+  topPercent: number | null;
   /** Turns the fleet drove into itself - one agent prompting another (issue #1636). */
   agentDrivenTurns: number;
-  /** Leverage: agent-driven turns per turn YOU drove. 3 means the fleet spent three turns off the back of
-   *  each one of yours. Null when you have driven no turns - a ratio with nothing underneath it would be
-   *  a fabricated number, not a big one. */
+  /** Leverage: agent-driven turns per turn YOU drove; null when you drove none. */
   leverage: number | null;
+  /** The leverage as the card prints it ("3.0x"), finished on the Gateway; null when there is none. */
+  leverageText: string | null;
+  /** True when there is something to show - a counted turn, or a fleet driving itself while you drove
+   * nothing, which is a real state, not an empty one. */
   hasData: boolean;
-}
-
-/** Derive the Agents-page headline summary from the per-agent split. Shares are null (never a fabricated
- * 0%) when there are no counted turns. */
-export function summarizeAgents(agents: AgentStat[]): AgentSummary {
-  let totalTurns = 0;
-  let totalSessions = 0;
-  let voiceTurns = 0;
-  let agentDrivenTurns = 0;
-  let top: AgentStat | null = null;
-
-  for (const a of agents) {
-    totalTurns += a.turns;
-    totalSessions += a.sessions;
-    voiceTurns += a.voiceTurns;
-    agentDrivenTurns += a.agentDrivenTurns;
-    if (top === null || a.turns > top.turns) top = a;
-  }
-
-  return {
-    agentCount: agents.filter((a) => a.turns > 0).length,
-    totalTurns,
-    totalSessions,
-    voiceTurns,
-    topShare: totalTurns > 0 && top !== null ? top.turns / totalTurns : null,
-    topAgentName: top !== null && top.turns > 0 ? top.agentName : null,
-    agentDrivenTurns,
-    leverage: totalTurns > 0 ? agentDrivenTurns / totalTurns : null,
-    // Agent-driven turns alone are data worth showing: a fleet driving itself while the owner has driven
-    // nothing this window is a real state, not an empty one.
-    hasData: totalTurns > 0 || agentDrivenTurns > 0,
-  };
-}
-
-/** Derive the Repos-page headline summary from the per-repo split. Shares are null (never a fabricated
- * 0%) when there are no counted turns. */
-export function summarizeRepos(repos: RepoStat[]): RepoSummary {
-  let totalTurns = 0;
-  let totalSessions = 0;
-  let voiceTurns = 0;
-  let top: RepoStat | null = null;
-
-  for (const r of repos) {
-    totalTurns += r.turns;
-    totalSessions += r.sessions;
-    voiceTurns += r.voiceTurns;
-    if (top === null || r.turns > top.turns) top = r;
-  }
-
-  return {
-    repoCount: repos.length,
-    totalTurns,
-    totalSessions,
-    voiceTurns,
-    topShare: totalTurns > 0 && top !== null ? top.turns / totalTurns : null,
-    topRepoName: top !== null ? top.repoName : null,
-    hasData: totalTurns > 0,
-  };
-}
-
-/** Format a fraction share as a whole-number percent, or "n/a" when there is no data yet. ASCII only. */
-export function formatShare(fraction: number | null): string {
-  if (fraction === null) return "n/a";
-  return `${Math.round(fraction * 100)}%`;
 }
 
 /** The Gateway's rounded whole-number percentage as the ring prints it, or the ASCII no-data placeholder.
@@ -763,7 +815,7 @@ export function windowSeries<T extends { hour: string }>(
 
 /** A zero-filled turn-hour for an absent hour in the window. */
 export function emptyInputHour(hour: string): InputHour {
-  return { hour, turns: 0, voiceTurns: 0, typedTurns: 0 };
+  return { hour, turns: 0, voiceTurns: 0, typedTurns: 0, voiceShare: null, typedShare: null };
 }
 
 /** A zero-filled concurrency-hour for an absent hour in the window. */

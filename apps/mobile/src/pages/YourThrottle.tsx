@@ -124,7 +124,7 @@ export function YourThrottle() {
               percent={summary.phonePercent}
               color={RING_MOBILE}
               primary={{ label: "Phone", count: summary.turnsBySurface.phone }}
-              secondary={{ label: "Desk + Cockpit", count: summary.totalTurns - summary.turnsBySurface.phone }}
+              secondary={{ label: "Desk + Cockpit", count: summary.phoneRemainder }}
             />
           </div>
 

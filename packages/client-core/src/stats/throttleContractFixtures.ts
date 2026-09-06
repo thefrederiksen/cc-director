@@ -11,16 +11,76 @@ import { createHash } from "node:crypto";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 
+export interface ContractRowShares {
+  turnShare: number | null;
+  turnPercent: number | null;
+  sessionShare: number | null;
+  sessionPercent: number | null;
+  voiceShare: number | null;
+  voicePercent: number | null;
+}
+
+/** THE WHOLE RENDERED ANSWER a fixture records (fix-round finding F-01): every value a page or the report
+ * puts in front of the reader from the wire object. The browser tests read these off the rendered DOM; the
+ * report's tests read the headline part off its rendered page and email parts. */
 export interface ContractRendered {
   denominator: number;
   hasData: boolean;
   voiceTurns: number;
   typedTurns: number;
   phoneTurns: number;
+  phoneRemainder: number;
+  voiceShare: number | null;
+  phoneShare: number | null;
   voicePercent: number | null;
   typedPercent: number | null;
   phonePercent: number | null;
-  surfaces: { surface: string; label: string; turns: number; percent: number | null }[];
+  surfaces: { surface: string; label: string; turns: number; share: number | null; percent: number | null; remainder: number }[];
+  hourly: { hour: string; turns: number; voiceTurns: number; typedTurns: number; voiceShare: number | null; typedShare: number | null }[];
+  agents: ({ agentName: string; turns: number; sessions: number; agentDrivenTurns: number } & ContractRowShares)[];
+  agentsSummary: {
+    agentCount: number; totalTurns: number; totalSessions: number; voiceTurns: number;
+    voiceShare: number | null; voicePercent: number | null; topAgentName: string | null;
+    topShare: number | null; topPercent: number | null; agentDrivenTurns: number;
+    leverage: number | null; leverageText: string | null; hasData: boolean;
+  };
+  repos: ({ repoName: string; turns: number; sessions: number } & ContractRowShares)[];
+  reposSummary: {
+    repoCount: number; totalTurns: number; totalSessions: number; voiceTurns: number;
+    voiceShare: number | null; voicePercent: number | null; topRepoName: string | null;
+    topShare: number | null; topPercent: number | null; hasData: boolean;
+  };
+}
+
+/** What the recorded answer looks like from the browser's side: shares rounded the way a page's DOM lets
+ * them be read back (ten places, through a style's percentage), and the surface split as the pages draw
+ * it - surfaces with a turn, largest first. The report-only field (a surface's remainder) is left out. */
+export type BrowserRendered = Omit<ContractRendered, "voiceShare" | "phoneShare" | "surfaces" | "hourly" | "agents" | "repos"> & {
+  voiceShare: number | null;
+  phoneShare: number | null;
+  surfaces: { surface: string; label: string; turns: number; share: number | null; percent: number | null }[];
+  segments: { surface: string; label: string; turns: number; share: number | null; percent: number | null }[];
+  hourly: ContractRendered["hourly"];
+  agents: ContractRendered["agents"];
+  repos: ContractRendered["repos"];
+};
+
+function round10(n: number | null): number | null {
+  return n === null ? null : Math.round(n * 1e10) / 1e10;
+}
+
+export function browserRenderedAnswer(rendered: ContractRendered): BrowserRendered {
+  const surfaces = rendered.surfaces.map((s) => ({ surface: s.surface, label: s.label, turns: s.turns, share: round10(s.share), percent: s.percent }));
+  return {
+    ...rendered,
+    voiceShare: round10(rendered.voiceShare),
+    phoneShare: round10(rendered.phoneShare),
+    surfaces,
+    segments: surfaces.filter((s) => s.turns > 0).sort((a, b) => b.turns - a.turns),
+    hourly: rendered.hourly.map((h) => ({ ...h, voiceShare: round10(h.voiceShare), typedShare: round10(h.typedShare) })),
+    agents: rendered.agents.map((a) => ({ ...a, voiceShare: round10(a.voiceShare) })),
+    repos: rendered.repos.map((r) => ({ ...r, voiceShare: round10(r.voiceShare) })),
+  };
 }
 
 export interface ContractFixture {

@@ -33,20 +33,34 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-/** What the pages print from a figure, in the shape the fixtures record it. Every value is read off the
- * summary the rings and the split bar read - nothing is computed here either. */
+/** What the pages print from a figure, in the shape the fixtures record it - THE WHOLE ANSWER (fix-round
+ * finding F-01): the headline the rings and split bar read, the hours the Activity chart draws, the rows and
+ * summaries the Agents and Repos tabs print. Every value is read off the normalized figure; nothing is
+ * computed here either. */
 function renderedAnswer(figure: ThrottleFigure) {
   const summary = summarizeThrottle(figure);
+  const shares = (row: ThrottleFigure["agents"][number] | ThrottleFigure["repos"][number]) => ({
+    turnShare: row.turnShare, turnPercent: row.turnPercent, sessionShare: row.sessionShare, sessionPercent: row.sessionPercent,
+    voiceShare: row.voiceShare, voicePercent: row.voicePercent,
+  });
   return {
     denominator: summary.totalTurns,
     hasData: summary.hasData,
     voiceTurns: summary.voiceTurns,
     typedTurns: summary.typedTurns,
     phoneTurns: summary.turnsBySurface.phone,
+    phoneRemainder: summary.phoneRemainder,
+    voiceShare: summary.voiceShare,
+    phoneShare: summary.phoneShare,
     voicePercent: summary.voicePercent,
     typedPercent: figure.headline.typed.percent,
     phonePercent: summary.phonePercent,
-    surfaces: summary.surfaces.map((s) => ({ surface: s.surface, label: s.label, turns: s.turns, percent: s.percent })),
+    surfaces: summary.surfaces.map((s) => ({ surface: s.surface, label: s.label, turns: s.turns, share: s.share, percent: s.percent, remainder: s.remainder })),
+    hourly: figure.hourlyTurns.map((h) => ({ hour: h.hour, turns: h.turns, voiceTurns: h.voiceTurns, typedTurns: h.typedTurns, voiceShare: h.voiceShare, typedShare: h.typedShare })),
+    agents: figure.agents.map((a) => ({ agentName: a.agentName, turns: a.turns, sessions: a.sessions, agentDrivenTurns: a.agentDrivenTurns, ...shares(a) })),
+    agentsSummary: figure.agentsSummary,
+    repos: figure.repos.map((r) => ({ repoName: r.repoName, turns: r.turns, sessions: r.sessions, ...shares(r) })),
+    reposSummary: figure.reposSummary,
   };
 }
 
@@ -94,7 +108,7 @@ describe("the field inventory, through the real browser normalizer (finding F-08
     if (!data.available) throw new Error("expected a served figure");
 
     const browserPaths = Object.entries(inventory.fields).filter(([, readers]) => readers.includes("browser")).map(([p]) => p);
-    expect(browserPaths.length).toBeGreaterThan(40);
+    expect(browserPaths.length).toBeGreaterThan(80);
     for (const path of browserPaths) {
       const wireValues = valuesAt(fixture.wire, path);
       const figureValues = valuesAt(data.throttle, path);

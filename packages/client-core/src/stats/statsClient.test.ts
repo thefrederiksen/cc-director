@@ -5,9 +5,6 @@ import {
   throttleWindowFromSearch,
   hourlyChartEnd,
   summarizeThrottle,
-  summarizeRepos,
-  summarizeAgents,
-  formatShare,
   formatPercent,
   last24HourKeys,
   windowSeries,
@@ -18,8 +15,6 @@ import {
   type ThrottleFigure,
   type ThrottleHeadline,
   type ThrottleShare,
-  type RepoStat,
-  type AgentStat,
   type InputHour,
 } from "./statsClient";
 
@@ -52,9 +47,9 @@ function headline(denominator: number, voice: number, typed: number, bySurface: 
     hasData: denominator > 0,
     voice: shareOf(voice, denominator),
     typed: shareOf(typed, denominator),
-    phone: shareOf(bySurface.phone ?? 0, denominator),
+    phone: { ...shareOf(bySurface.phone ?? 0, denominator), remainder: denominator - (bySurface.phone ?? 0) },
     surfaces: (["desktop", "cockpit", "phone", "unknown"] as Surface[]).map((surface) => ({
-      surface, label: labels[surface], ...shareOf(bySurface[surface] ?? 0, denominator),
+      surface, label: labels[surface], remainder: denominator - (bySurface[surface] ?? 0), ...shareOf(bySurface[surface] ?? 0, denominator),
     })),
   };
 }
@@ -90,19 +85,12 @@ function figure(buckets: ThrottleFigure["buckets"], head?: ThrottleHeadline): Th
     hourlyTurns: [],
     agents: [],
     repos: [],
+    agentsSummary: { agentCount: 0, totalTurns: 0, totalSessions: 0, voiceTurns: 0, voiceShare: null, voicePercent: null, topAgentName: null, topShare: null, topPercent: null, agentDrivenTurns: 0, leverage: null, leverageText: null, hasData: false },
+    reposSummary: { repoCount: 0, totalTurns: 0, totalSessions: 0, voiceTurns: 0, voiceShare: null, voicePercent: null, topRepoName: null, topShare: null, topPercent: null, hasData: false },
     reposUnattributedTurns: 0,
     excluded: { noInputOrigin: 0, agentDriven: 0, framework: 0, unresolved: 0 },
     agentDrivenTurns: 0,
   };
-}
-
-function repo(repoName: string, turns: number, voiceTurns: number, sessions: number): RepoStat {
-  return { repo: `owner/${repoName}`, repoName, turns, voiceTurns, typedTurns: turns - voiceTurns, sessions, checkouts: [`D:/${repoName}`] };
-}
-
-function agent(agentToken: string, agentName: string, turns: number, voiceTurns: number, sessions: number,
-               agentDrivenTurns = 0): AgentStat {
-  return { agent: agentToken, agentName, turns, voiceTurns, typedTurns: turns - voiceTurns, sessions, agentDrivenTurns };
 }
 
 describe("summarizeThrottle", () => {
@@ -150,7 +138,6 @@ describe("summarizeThrottle", () => {
     const s = summarizeThrottle(figure([], head));
     expect(s.voiceShare).toBeCloseTo(0.375);
     expect(s.voicePercent).toBe(99);
-    expect(formatShare(s.voiceShare)).toBe("38%");
     expect(formatPercent(s.voicePercent)).toBe("99%");
   });
 
@@ -176,98 +163,10 @@ describe("summarizeThrottle", () => {
   });
 });
 
-describe("summarizeRepos", () => {
-  it("totals turns and distinct sessions, and finds the top repo's share", () => {
-    const s = summarizeRepos([
-      repo("devthrottle", 8, 6, 2),
-      repo("mindzieWeb", 2, 0, 1),
-    ]);
-    expect(s.repoCount).toBe(2);
-    expect(s.totalTurns).toBe(10);
-    expect(s.totalSessions).toBe(3);
-    expect(s.voiceTurns).toBe(6);
-    expect(s.topRepoName).toBe("devthrottle");
-    expect(s.topShare).toBeCloseTo(0.8);
-    expect(s.hasData).toBe(true);
-  });
-
-  it("reports a null top share (not 0%) when nothing is counted yet", () => {
-    const s = summarizeRepos([]);
-    expect(s.repoCount).toBe(0);
-    expect(s.totalTurns).toBe(0);
-    expect(s.topShare).toBeNull();
-    expect(s.topRepoName).toBeNull();
-    expect(s.hasData).toBe(false);
-  });
-});
-
-describe("summarizeAgents", () => {
-  it("totals turns and distinct sessions, and finds the most-driven agent's share", () => {
-    const s = summarizeAgents([
-      agent("ClaudeCode", "Claude Code", 8, 6, 2),
-      agent("Codex", "Codex", 2, 0, 1),
-    ]);
-    expect(s.agentCount).toBe(2);
-    expect(s.totalTurns).toBe(10);
-    expect(s.totalSessions).toBe(3);
-    expect(s.voiceTurns).toBe(6);
-    expect(s.topAgentName).toBe("Claude Code");
-    expect(s.topShare).toBeCloseTo(0.8);
-    expect(s.hasData).toBe(true);
-  });
-
-  // Issue #1636. Leverage is what the fleet did off the back of each turn the owner spent.
-  it("computes leverage as agent-driven turns per turn you drove", () => {
-    const s = summarizeAgents([
-      agent("ClaudeCode", "Claude Code", 8, 6, 2, 24),
-      agent("Codex", "Codex", 2, 0, 1, 6),
-    ]);
-    expect(s.agentDrivenTurns).toBe(30);
-    expect(s.leverage).toBeCloseTo(3); // 30 agent turns off the back of 10 of yours
-  });
-
-  // The trap: agent-driven turns must never inflate the human's own numbers, or the voice share moves
-  // because the definition moved rather than because the behaviour did.
-  it("keeps agent-driven turns out of the human totals and the voice share", () => {
-    const s = summarizeAgents([agent("Codex", "Codex", 4, 4, 1, 500)]);
-    expect(s.totalTurns).toBe(4);
-    expect(s.voiceTurns).toBe(4);
-    expect(s.agentDrivenTurns).toBe(500);
-    expect(s.topShare).toBeCloseTo(1); // still 100% of YOUR driving
-  });
-
-  // A ratio with nothing underneath it would be a fabricated number, not a big one. And an agent you drove
-  // nothing through is not an agent you drove, even when the fleet drove into it.
-  it("reports a null leverage (not Infinity) when you have driven no turns", () => {
-    const s = summarizeAgents([agent("Codex", "Codex", 0, 0, 1, 40)]);
-    expect(s.leverage).toBeNull();
-    expect(s.agentDrivenTurns).toBe(40);
-    expect(s.agentCount).toBe(0);
-    expect(s.topAgentName).toBeNull();
-    expect(s.hasData).toBe(true); // a fleet driving itself is a real state, not an empty one
-  });
-
-  it("reports a null top share (not 0%) when nothing is counted yet", () => {
-    const s = summarizeAgents([]);
-    expect(s.agentCount).toBe(0);
-    expect(s.totalTurns).toBe(0);
-    expect(s.topShare).toBeNull();
-    expect(s.topAgentName).toBeNull();
-    expect(s.hasData).toBe(false);
-  });
-});
-
-describe("formatShare", () => {
-  it("renders a fraction as a whole-number percent", () => {
-    expect(formatShare(0.75)).toBe("75%");
-    expect(formatShare(0)).toBe("0%");
-    expect(formatShare(1)).toBe("100%");
-  });
-
-  it("renders no-data as an ASCII placeholder, never a fabricated 0%", () => {
-    expect(formatShare(null)).toBe("n/a");
-  });
-});
+// The Agents and Repos tabs' headline cards used to be totalled and divided here (summarizeAgents,
+// summarizeRepos, formatShare). They are the Gateway's now (fix-round finding F-01): the tabs print
+// figure.agentsSummary and figure.reposSummary, and the contract tests hold the rendered tabs to the
+// fixtures' recorded values.
 
 describe("last24HourKeys", () => {
   it("returns 24 consecutive UTC hour keys ending at the current hour, oldest first", () => {
@@ -282,19 +181,19 @@ describe("last24HourKeys", () => {
 describe("windowSeries", () => {
   it("aligns a sparse series onto the window and zero-fills the gaps", () => {
     const keys = last24HourKeys(new Date("2026-07-13T02:00:00Z"));
-    const sparse: InputHour[] = [{ hour: "2026-07-13T01", turns: 5, voiceTurns: 4, typedTurns: 1 }];
+    const sparse: InputHour[] = [{ hour: "2026-07-13T01", turns: 5, voiceTurns: 4, typedTurns: 1, voiceShare: 0.8, typedShare: 0.2 }];
     const windowed = windowSeries(sparse, keys, emptyInputHour);
     expect(windowed).toHaveLength(24);
     // The one populated hour lands in its slot; every other hour is a real zero entry.
-    expect(windowed[23]).toEqual({ hour: "2026-07-13T02", turns: 0, voiceTurns: 0, typedTurns: 0 });
+    expect(windowed[23]).toEqual({ hour: "2026-07-13T02", turns: 0, voiceTurns: 0, typedTurns: 0, voiceShare: null, typedShare: null });
     expect(windowed[22]).toEqual(sparse[0]);
     expect(windowed[0].turns).toBe(0);
   });
 
   it("gives two different series the SAME aligned window so charts line up", () => {
     const keys = last24HourKeys(new Date("2026-07-13T10:00:00Z"));
-    const a = windowSeries([{ hour: "2026-07-13T02", turns: 3, voiceTurns: 3, typedTurns: 0 }], keys, emptyInputHour);
-    const b = windowSeries([{ hour: "2026-07-13T09", turns: 7, voiceTurns: 1, typedTurns: 6 }], keys, emptyInputHour);
+    const a = windowSeries([{ hour: "2026-07-13T02", turns: 3, voiceTurns: 3, typedTurns: 0, voiceShare: 1, typedShare: 0 }], keys, emptyInputHour);
+    const b = windowSeries([{ hour: "2026-07-13T09", turns: 7, voiceTurns: 1, typedTurns: 6, voiceShare: 1 / 7, typedShare: 6 / 7 }], keys, emptyInputHour);
     expect(a.map((h) => h.hour)).toEqual(b.map((h) => h.hour)); // identical hour axis -> aligned
   });
 });

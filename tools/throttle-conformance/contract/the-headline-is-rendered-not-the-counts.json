@@ -2,32 +2,106 @@
   "expected": {
     "outcome": "rendered",
     "rendered": {
+      "agents": [
+        {
+          "agentDrivenTurns": 4,
+          "agentName": "Claude Code",
+          "sessionPercent": 33,
+          "sessionShare": 0.3333333333333333,
+          "sessions": 3,
+          "turnPercent": 57,
+          "turnShare": 0.5683090705487122,
+          "turns": 10,
+          "voicePercent": 61,
+          "voiceShare": 0.612
+        }
+      ],
+      "agentsSummary": {
+        "agentCount": 3,
+        "agentDrivenTurns": 4,
+        "hasData": true,
+        "leverage": 0.0022396416573348264,
+        "leverageText": "0.0x",
+        "topAgentName": "Claude Code",
+        "topPercent": 92,
+        "topShare": 0.9182530794,
+        "totalSessions": 129,
+        "totalTurns": 1786,
+        "voicePercent": 57,
+        "voiceShare": 0.5683090705487122,
+        "voiceTurns": 1015
+      },
       "denominator": 1786,
       "hasData": true,
+      "hourly": [
+        {
+          "hour": "2026-08-30T13",
+          "turns": 10,
+          "typedShare": 0.4316909294512878,
+          "typedTurns": 2,
+          "voiceShare": 0.5683090705487122,
+          "voiceTurns": 8
+        }
+      ],
       "phonePercent": 14,
+      "phoneRemainder": 1500,
+      "phoneShare": 0.13885778275475924,
       "phoneTurns": 248,
+      "repos": [
+        {
+          "repoName": "repo-alpha",
+          "sessionPercent": 33,
+          "sessionShare": 0.3333333333333333,
+          "sessions": 3,
+          "turnPercent": 57,
+          "turnShare": 0.5683090705487122,
+          "turns": 10,
+          "voicePercent": 61,
+          "voiceShare": 0.612
+        }
+      ],
+      "reposSummary": {
+        "hasData": true,
+        "repoCount": 4,
+        "topPercent": 74,
+        "topRepoName": "repo-alpha",
+        "topShare": 0.7368421052631579,
+        "totalSessions": 129,
+        "totalTurns": 1786,
+        "voicePercent": 57,
+        "voiceShare": 0.5683090705487122,
+        "voiceTurns": 1015
+      },
       "surfaces": [
         {
           "label": "Desktop",
           "percent": 86,
+          "remainder": 217,
+          "share": 0.8572228443449048,
           "surface": "desktop",
           "turns": 1531
         },
         {
           "label": "Cockpit",
           "percent": 0,
+          "remainder": 1748,
+          "share": 0.0,
           "surface": "cockpit",
           "turns": 0
         },
         {
           "label": "Phone",
           "percent": 14,
+          "remainder": 1500,
+          "share": 0.13885778275475924,
           "surface": "phone",
           "turns": 248
         },
         {
           "label": "Unknown",
           "percent": 0,
+          "remainder": 1741,
+          "share": 0.003919372900335946,
           "surface": "unknown",
           "turns": 7
         }
@@ -35,11 +109,12 @@
       "typedPercent": 43,
       "typedTurns": 771,
       "voicePercent": 57,
+      "voiceShare": 0.5683090705487122,
       "voiceTurns": 1015
     }
   },
   "name": "the-headline-is-rendered-not-the-counts",
-  "why": "The counts and the buckets agree with each other and say 8 of 10 turns were spoken (80 per cent), all 8 from the phone. The headline says 1015 of 1786 (57 per cent), 248 from the phone (14 per cent). A consumer that renders the headline prints 57 and 14; one that divides the counts, or re-totals the buckets, prints 80. Both consumers must print 57 and 14.",
+  "why": "The counts and the buckets agree with each other and say 8 of 10 turns were spoken (80 per cent), all 8 from the phone. The headline says 1015 of 1786 (57 per cent), 248 from the phone (14 per cent), and 1500 everywhere else (not the 1538 that subtracting gives). A consumer that renders the headline prints 57, 14 and 1500 beside 1015 and 248; one that divides the counts, re-totals the buckets, or subtracts for the other side of a ring prints 80, 100 and 1538 or 2. The one agent, repository and hour say 10 turns, 8 spoken, 3 sessions, and carry shares of 57, 33 and 61 per cent; the two summaries describe a week of 1786 turns the rows do not add up to. Both consumers must print every served field.",
   "wire": {
     "agentDrivenTurns": 4,
     "agents": [
@@ -47,12 +122,33 @@
         "agent": "ClaudeCode",
         "agentDrivenTurns": 4,
         "agentName": "Claude Code",
+        "sessionPercent": 33,
+        "sessionShare": 0.3333333333333333,
         "sessions": 3,
+        "turnPercent": 57,
+        "turnShare": 0.5683090705487122,
         "turns": 10,
         "typedTurns": 2,
+        "voicePercent": 61,
+        "voiceShare": 0.612,
         "voiceTurns": 8
       }
     ],
+    "agentsSummary": {
+      "agentCount": 3,
+      "agentDrivenTurns": 4,
+      "hasData": true,
+      "leverage": 0.0022396416573348264,
+      "leverageText": "0.0x",
+      "topAgentName": "Claude Code",
+      "topPercent": 92,
+      "topShare": 0.9182530794,
+      "totalSessions": 129,
+      "totalTurns": 1786,
+      "voicePercent": 57,
+      "voiceShare": 0.5683090705487122,
+      "voiceTurns": 1015
+    },
     "buckets": [
       {
         "modality": "voice",
@@ -77,6 +173,7 @@
       "hasData": true,
       "phone": {
         "percent": 14,
+        "remainder": 1500,
         "share": 0.13885778275475924,
         "turns": 248
       },
@@ -84,6 +181,7 @@
         {
           "label": "Desktop",
           "percent": 86,
+          "remainder": 217,
           "share": 0.8572228443449048,
           "surface": "desktop",
           "turns": 1531
@@ -91,6 +189,7 @@
         {
           "label": "Cockpit",
           "percent": 0,
+          "remainder": 1748,
           "share": 0.0,
           "surface": "cockpit",
           "turns": 0
@@ -98,6 +197,7 @@
         {
           "label": "Phone",
           "percent": 14,
+          "remainder": 1500,
           "share": 0.13885778275475924,
           "surface": "phone",
           "turns": 248
@@ -105,6 +205,7 @@
         {
           "label": "Unknown",
           "percent": 0,
+          "remainder": 1741,
           "share": 0.003919372900335946,
           "surface": "unknown",
           "turns": 7
@@ -123,9 +224,11 @@
     },
     "hourlyTurns": [
       {
-        "hour": "2026-08-24T13",
+        "hour": "2026-08-30T13",
         "turns": 10,
+        "typedShare": 0.4316909294512878,
         "typedTurns": 2,
+        "voiceShare": 0.5683090705487122,
         "voiceTurns": 8
       }
     ],
@@ -140,12 +243,30 @@
         ],
         "repo": "owner/repo-alpha",
         "repoName": "repo-alpha",
+        "sessionPercent": 33,
+        "sessionShare": 0.3333333333333333,
         "sessions": 3,
+        "turnPercent": 57,
+        "turnShare": 0.5683090705487122,
         "turns": 10,
         "typedTurns": 2,
+        "voicePercent": 61,
+        "voiceShare": 0.612,
         "voiceTurns": 8
       }
     ],
+    "reposSummary": {
+      "hasData": true,
+      "repoCount": 4,
+      "topPercent": 74,
+      "topRepoName": "repo-alpha",
+      "topShare": 0.7368421052631579,
+      "totalSessions": 129,
+      "totalTurns": 1786,
+      "voicePercent": 57,
+      "voiceShare": 0.5683090705487122,
+      "voiceTurns": 1015
+    },
     "reposUnattributedTurns": 0,
     "sessions": 3,
     "turns": 10,

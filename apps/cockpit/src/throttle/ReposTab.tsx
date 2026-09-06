@@ -1,7 +1,6 @@
 import { useMemo, useState } from "react";
 import {
-  summarizeRepos,
-  formatShare,
+  formatPercent,
   type ThrottleFigure,
   type RepoStat,
   type RepoSummary,
@@ -50,26 +49,27 @@ function RepoRow({
   repo,
   metric,
   max,
-  total,
 }: {
   rank: number;
   repo: RepoStat;
   metric: Metric;
   max: number;
-  total: number;
 }) {
   const value = metricValue(repo, metric);
+  // The bar's length against the longest bar is layout; every RATIO printed or drawn is the Gateway's own
+  // row share (fix-round finding F-01): the row's share of the metric, and its spoken share.
   const width = max > 0 ? (value / max) * 100 : 0;
-  const share = total > 0 ? Math.round((value / total) * 100) : 0;
-  const voicePct = repo.turns > 0 ? Math.round((repo.voiceTurns / repo.turns) * 100) : 0;
+  const share = formatPercent(metric === "turns" ? repo.turnPercent : repo.sessionPercent);
+  const voicePct = formatPercent(repo.voicePercent);
+  const voiceWidth = repo.voiceShare === null ? 0 : repo.voiceShare;
   const showSplit = metric === "turns" && repo.turns > 0;
 
   // The secondary facts on the meta line depend on which metric is the headline, so the row never just
   // repeats the big number - it shows the other honest measure alongside it.
   const meta =
     metric === "turns"
-      ? `${repo.sessions} session${repo.sessions === 1 ? "" : "s"} - ${voicePct}% voice`
-      : `${repo.turns.toLocaleString()} turns - ${voicePct}% voice`;
+      ? `${repo.sessions} session${repo.sessions === 1 ? "" : "s"} - ${voicePct} voice`
+      : `${repo.turns.toLocaleString()} turns - ${voicePct} voice`;
 
   return (
     <div className="repo-row">
@@ -88,8 +88,8 @@ function RepoRow({
         <div className="repo-bar-track" title={`${value.toLocaleString()} ${METRIC_WORD[metric]}`}>
           {showSplit ? (
             <>
-              <div className="repo-bar-voice" style={{ width: `${(width * voicePct) / 100}%` }} />
-              <div className="repo-bar-typed" style={{ width: `${(width * (100 - voicePct)) / 100}%` }} />
+              <div className="repo-bar-voice" style={{ width: `${width * voiceWidth}%` }} />
+              <div className="repo-bar-typed" style={{ width: `${width * (1 - voiceWidth)}%` }} />
             </>
           ) : (
             <div className="repo-bar-voice" style={{ width: `${width}%` }} />
@@ -98,7 +98,7 @@ function RepoRow({
       </div>
       <div className="repo-val">
         <div className="repo-val-num">{value.toLocaleString()}</div>
-        <div className="repo-val-share">{share}%</div>
+        <div className="repo-val-share">{share}</div>
       </div>
     </div>
   );
@@ -108,7 +108,8 @@ export function ReposTab({ figure }: { figure: ThrottleFigure }) {
   const [metric, setMetric] = useState<Metric>("turns");
 
   const repos = figure.repos;
-  const summary: RepoSummary = summarizeRepos(repos);
+  // The headline cards are the Gateway's (fix-round finding F-01): nothing here totals a row.
+  const summary: RepoSummary = figure.reposSummary;
 
   // Rank by the active metric (the feed arrives ranked by turns; re-sort so switching to sessions
   // re-orders the list honestly).
@@ -117,7 +118,6 @@ export function ReposTab({ figure }: { figure: ThrottleFigure }) {
     [repos, metric],
   );
   const max = ranked.length > 0 ? metricValue(ranked[0], metric) : 0;
-  const total = ranked.reduce((t, r) => t + metricValue(r, metric), 0);
 
   if (!summary.hasData) {
     return (
@@ -154,12 +154,12 @@ export function ReposTab({ figure }: { figure: ThrottleFigure }) {
         />
         <HeadlineCard
           label="Busiest repo"
-          value={formatShare(summary.topShare)}
+          value={formatPercent(summary.topPercent)}
           sub={summary.topRepoName !== null ? `${summary.topRepoName} leads` : "of your turns"}
         />
         <HeadlineCard
           label="Voice-driven"
-          value={formatShare(summary.totalTurns > 0 ? summary.voiceTurns / summary.totalTurns : null)}
+          value={formatPercent(summary.voicePercent)}
           sub="of turns spoken, not typed"
         />
       </div>
@@ -196,7 +196,7 @@ export function ReposTab({ figure }: { figure: ThrottleFigure }) {
         </div>
         <div className="repo-rows">
           {ranked.map((r, i) => (
-            <RepoRow key={r.repo} rank={i + 1} repo={r} metric={metric} max={max} total={total} />
+            <RepoRow key={r.repo} rank={i + 1} repo={r} metric={metric} max={max} />
           ))}
         </div>
       </div>

@@ -224,12 +224,26 @@ public static class ThrottleDefinition
         dto.Headline = Headline(counted, voice, typed, dto.Buckets);
 
         foreach (var kv in hours.OrderBy(k => k.Key, StringComparer.Ordinal))
+        {
+            var total = kv.Value.Voice + kv.Value.Typed;
             dto.HourlyTurns.Add(new ThrottleHourDto
             {
-                Hour = kv.Key, VoiceTurns = kv.Value.Voice, TypedTurns = kv.Value.Typed, Turns = kv.Value.Voice + kv.Value.Typed,
+                Hour = kv.Key, VoiceTurns = kv.Value.Voice, TypedTurns = kv.Value.Typed, Turns = total,
+                VoiceShare = ShareOf(kv.Value.Voice, total).Share,
+                TypedShare = ShareOf(kv.Value.Typed, total).Share,
             });
+        }
 
+        // THE PER-AGENT AND PER-REPOSITORY RATIOS ARE FINISHED HERE TOO (fix-round finding F-01): each row's share of
+        // the turns and of the sessions, its own spoken share, and the two pages' headline cards. The browser used
+        // to total the rows and divide; now it prints these fields.
+        var agentTurns = agents.Values.Sum(a => a.Turns);
+        var agentSessions = agents.Values.Sum(a => a.Sessions.Count);
         foreach (var a in agents.Values.OrderByDescending(a => a.Turns).ThenByDescending(a => a.AgentDrivenTurns).ThenBy(a => a.Key, StringComparer.Ordinal))
+        {
+            var turnShare = ShareOf(a.Turns, agentTurns);
+            var sessionShare = ShareOf(a.Sessions.Count, agentSessions);
+            var voiceShare = ShareOf(a.VoiceTurns, a.Turns);
             dto.Agents.Add(new ThrottleAgentDto
             {
                 Agent = a.Key,
@@ -239,9 +253,20 @@ public static class ThrottleDefinition
                 TypedTurns = a.TypedTurns,
                 Sessions = a.Sessions.Count,
                 AgentDrivenTurns = a.AgentDrivenTurns,
+                TurnShare = turnShare.Share, TurnPercent = turnShare.Percent,
+                SessionShare = sessionShare.Share, SessionPercent = sessionShare.Percent,
+                VoiceShare = voiceShare.Share, VoicePercent = voiceShare.Percent,
             });
+        }
+        dto.AgentsSummary = AgentsSummary(dto.Agents, noOriginAgent);
 
+        var repoTurns = repos.Values.Sum(r => r.Turns);
+        var repoSessions = repos.Values.Sum(r => r.Sessions.Count);
         foreach (var r in repos.Values.OrderByDescending(r => r.Turns).ThenBy(r => r.Key, StringComparer.Ordinal))
+        {
+            var turnShare = ShareOf(r.Turns, repoTurns);
+            var sessionShare = ShareOf(r.Sessions.Count, repoSessions);
+            var voiceShare = ShareOf(r.VoiceTurns, r.Turns);
             dto.Repos.Add(new ThrottleRepoDto
             {
                 Repo = r.Key,
@@ -251,7 +276,12 @@ public static class ThrottleDefinition
                 TypedTurns = r.TypedTurns,
                 Sessions = r.Sessions.Count,
                 Checkouts = r.Checkouts.OrderBy(c => c, StringComparer.Ordinal).ToList(),
+                TurnShare = turnShare.Share, TurnPercent = turnShare.Percent,
+                SessionShare = sessionShare.Share, SessionPercent = sessionShare.Percent,
+                VoiceShare = voiceShare.Share, VoicePercent = voiceShare.Percent,
             });
+        }
+        dto.ReposSummary = ReposSummary(dto.Repos);
 
         return dto;
     }
@@ -303,10 +333,64 @@ public static class ThrottleDefinition
             headline.Surfaces.Add(new ThrottleSurfaceShareDto
             {
                 Surface = surface, Label = label, Turns = entry.Turns, Share = entry.Share, Percent = entry.Percent,
+                Remainder = counted - turns,
             });
-            if (surface == "phone") headline.Phone = entry;
+            if (surface == "phone")
+                headline.Phone = new ThrottleRingDto { Turns = entry.Turns, Share = entry.Share, Percent = entry.Percent, Remainder = counted - turns };
         }
         return headline;
+    }
+
+    /// <summary>The Agents page's headline cards from the finished rows (fix-round finding F-01). The rows arrive
+    /// most-driven first, so the leading agent is the first row with a counted turn.</summary>
+    public static ThrottleAgentsSummaryDto AgentsSummary(IReadOnlyList<ThrottleAgentDto> rows, long agentDrivenTurns)
+    {
+        ArgumentNullException.ThrowIfNull(rows);
+        var total = rows.Sum(a => a.Turns);
+        var voice = rows.Sum(a => a.VoiceTurns);
+        var top = rows.OrderByDescending(a => a.Turns).FirstOrDefault(a => a.Turns > 0);
+        var voiceShare = ShareOf(voice, total);
+        var topShare = ShareOf(top?.Turns ?? 0, total);
+        double? leverage = total > 0 ? (double)agentDrivenTurns / total : null;
+        return new ThrottleAgentsSummaryDto
+        {
+            AgentCount = rows.Count(a => a.Turns > 0),
+            TotalTurns = total,
+            TotalSessions = rows.Sum(a => a.Sessions),
+            VoiceTurns = voice,
+            VoiceShare = voiceShare.Share, VoicePercent = voiceShare.Percent,
+            TopAgentName = top?.AgentName,
+            TopShare = top is null ? null : topShare.Share,
+            TopPercent = top is null ? null : topShare.Percent,
+            AgentDrivenTurns = agentDrivenTurns,
+            Leverage = leverage,
+            LeverageText = leverage is double l ? l.ToString("F1", System.Globalization.CultureInfo.InvariantCulture) + "x" : null,
+            // A fleet driving itself while the person drove nothing is a real state, not an empty one.
+            HasData = total > 0 || agentDrivenTurns > 0,
+        };
+    }
+
+    /// <summary>The Repos page's headline cards from the finished rows (fix-round finding F-01).</summary>
+    public static ThrottleReposSummaryDto ReposSummary(IReadOnlyList<ThrottleRepoDto> rows)
+    {
+        ArgumentNullException.ThrowIfNull(rows);
+        var total = rows.Sum(r => r.Turns);
+        var voice = rows.Sum(r => r.VoiceTurns);
+        var top = rows.OrderByDescending(r => r.Turns).FirstOrDefault();
+        var voiceShare = ShareOf(voice, total);
+        var topShare = ShareOf(top?.Turns ?? 0, total);
+        return new ThrottleReposSummaryDto
+        {
+            RepoCount = rows.Count,
+            TotalTurns = total,
+            TotalSessions = rows.Sum(r => r.Sessions),
+            VoiceTurns = voice,
+            VoiceShare = voiceShare.Share, VoicePercent = voiceShare.Percent,
+            TopRepoName = top?.RepoName,
+            TopShare = top is null ? null : topShare.Share,
+            TopPercent = top is null ? null : topShare.Percent,
+            HasData = total > 0,
+        };
     }
 
     /// <summary>One share of the denominator, with its rounding done: half up to a whole percent, the same
