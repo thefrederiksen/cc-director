@@ -229,6 +229,15 @@ speech, the registry matching any text, the relay sending no identity, and the D
 | conformance command tests (`pytest tools/throttle-conformance/tests`) | 4 passed |
 | EF snapshots | both providers: no pending model changes |
 
+**After the two gaps were closed** (the same day, at the owner's word), the gate and the workspaces were run
+again: nine projects green (206, 3697, 377, 63, 88, 113, 25, 25, 456); four web workspaces green (client-core
+1011, cockpit 297, mobile 33, cc-assistant 106) with typecheck clean; the conformance command tests green;
+and the cross-repository contract runner PASSED over one directory of fixtures, so the browser client, both
+rendered pages and the mentor report agree on every recorded answer. The parked Gateway suite was re-run
+over the chunks this change touches and the parked Core suite over the chunk holding the choke-point pins.
+The only red anywhere is the pre-existing `ContextLessRouteCensusTests` pair, whose difference is the
+session-rules route family - nothing this branch added.
+
 **One source pin was updated, deliberately.** `TerminalPromptInjectionChokepointTests` pins the exact text of
 each submit call, so requiring the door argument turned it red on three tests - which is the pin doing its
 job, and is recorded here as the observation that it is not vacuous. The pinned strings now name the new
