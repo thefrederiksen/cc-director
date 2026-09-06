@@ -1,3 +1,5 @@
+using System.Runtime.InteropServices;
+
 namespace CcDirector.Setup.Engine;
 
 /// <summary>
@@ -121,14 +123,44 @@ public sealed class InstallLayout
     public string LogsDir => Path.Combine(LocalRoot, "logs");
 
     /// <summary>The on-disk file whose presence/version represents the component.</summary>
-    public string PathFor(Component component)
+    public string PathFor(Component component) => PathFor(component, HostPlatform.Current);
+
+    /// <summary>
+    /// Where <paramref name="component"/> is installed on <paramref name="platform"/>.
+    ///
+    /// The platform is a parameter for the same reason it is one on
+    /// <see cref="Component.AssetFor"/>: a method that reads the environment can only ever be tested
+    /// for the platform the test run happens to be on. This one used to read it, and its Linux
+    /// answer - "not Windows", therefore macOS - placed a bare Linux executable at
+    /// ~/Applications/Director.app. A mutation putting that back killed no test, because no test
+    /// could reach the branch.
+    /// </summary>
+    /// <exception cref="PlatformNotSupportedException">
+    /// There is no layout for <paramref name="platform"/>. Deliberately a throw and not the Windows
+    /// paths: falling through to Windows is the shape being removed.
+    /// </exception>
+    public string PathFor(Component component, OSPlatform platform)
     {
         ArgumentNullException.ThrowIfNull(component);
+
+        // Linux: the Director is a single self-contained executable, so it goes beside where the
+        // Windows one goes rather than into a macOS application bundle.
+        if (platform == OSPlatform.Linux)
+        {
+            return component.Kind switch
+            {
+                ComponentKind.Director => Path.Combine(AppDir, "cc-director"),
+                ComponentKind.Tool => Path.Combine(BinDir, component.Id),
+                ComponentKind.Gateway => Path.Combine(GatewayDir, "devthrottle-gateway"),
+                ComponentKind.Launcher => Path.Combine(LauncherDir, "cc-launcher"),
+                _ => throw new ArgumentOutOfRangeException(nameof(component), component.Kind, "Unknown component kind."),
+            };
+        }
 
         // macOS is Workstation-only: the Director is a .app in ~/Applications (matching the manual
         // install + UpdateInstaller.SwapMac); tools carry no .exe extension. Gateway/Launcher are
         // Windows-only roles and are never placed on mac.
-        if (!OperatingSystem.IsWindows())
+        if (platform == OSPlatform.OSX)
         {
             return component.Kind switch
             {
@@ -140,14 +172,21 @@ public sealed class InstallLayout
             };
         }
 
-        return component.Kind switch
+        if (platform == OSPlatform.Windows)
         {
-            ComponentKind.Director => Path.Combine(AppDir, "cc-director.exe"),
-            ComponentKind.Gateway => Path.Combine(GatewayDir, "devthrottle-gateway.exe"),
-            ComponentKind.Tool => Path.Combine(BinDir, $"{component.Id}.exe"),
-            ComponentKind.Launcher => Path.Combine(LauncherDir, "cc-launcher.exe"),
-            _ => throw new ArgumentOutOfRangeException(nameof(component), component.Kind, "Unknown component kind."),
-        };
+            return component.Kind switch
+            {
+                ComponentKind.Director => Path.Combine(AppDir, "cc-director.exe"),
+                ComponentKind.Gateway => Path.Combine(GatewayDir, "devthrottle-gateway.exe"),
+                ComponentKind.Tool => Path.Combine(BinDir, $"{component.Id}.exe"),
+                ComponentKind.Launcher => Path.Combine(LauncherDir, "cc-launcher.exe"),
+                _ => throw new ArgumentOutOfRangeException(nameof(component), component.Kind, "Unknown component kind."),
+            };
+        }
+
+        // No "everything else" branch on purpose. This method used to end with the Windows paths as
+        // the fall-through, which is what silently handed the next platform Windows filenames.
+        throw new PlatformNotSupportedException($"There is no install layout for {platform}.");
     }
 
     /// <summary>
@@ -170,8 +209,10 @@ public sealed class InstallLayout
 
         // The macOS Director bundle was renamed "CC Director.app" -> "Director.app". A host installed
         // before the rename still carries the old bundle in ~/Applications; accept it for detection so
-        // an update refreshes that host instead of orphaning it. Windows/tool names never changed.
-        if (component.Kind == ComponentKind.Director && !OperatingSystem.IsWindows())
+        // an update refreshes that host instead of orphaning it. Windows/tool names never changed,
+        // and Linux has no pre-rename history at all - it had no install before this mission - so the
+        // condition is macOS, not "not Windows".
+        if (component.Kind == ComponentKind.Director && OperatingSystem.IsMacOS())
             return new[] { Path.Combine(MacAppsDir, "CC Director.app") };
 
         return Array.Empty<string>();

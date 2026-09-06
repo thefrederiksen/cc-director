@@ -61,19 +61,11 @@ public sealed class PythonToolsInstaller
         : platform == OSPlatform.Linux ? "cc-tools-pyenv-linux-x64.tar.gz"
         : throw new PlatformNotSupportedException($"There is no Python tools bundle for {platform}.");
 
-    /// <summary>The platform this process is running on.</summary>
-    /// <exception cref="PlatformNotSupportedException">The Director is not built for this operating system.</exception>
-    private static OSPlatform CurrentPlatform =>
-        OperatingSystem.IsWindows() ? OSPlatform.Windows
-        : OperatingSystem.IsMacOS() ? OSPlatform.OSX
-        : OperatingSystem.IsLinux() ? OSPlatform.Linux
-        : throw new PlatformNotSupportedException($"Unsupported operating system: {RuntimeInformation.OSDescription}.");
-
     /// <summary>The bundled-CPython asset for the current OS.</summary>
-    public static string PythonAsset => PythonAssetFor(CurrentPlatform);
+    public static string PythonAsset => PythonAssetFor(HostPlatform.Current);
 
     /// <summary>The tools wheelhouse asset for the current OS.</summary>
-    public static string ToolsAsset => ToolsAssetFor(CurrentPlatform);
+    public static string ToolsAsset => ToolsAssetFor(HostPlatform.Current);
 
     /// <summary>The component id the bundle's version is tracked under in installed.json.</summary>
     public const string ComponentId = "python-tools";
