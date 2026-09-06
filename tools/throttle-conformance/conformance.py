@@ -322,12 +322,17 @@ def compare(library, mentor, raw, predicate_expected, window_expected):
 
         for key in ("voice", "typed", "phone"):
             eq_share("headline." + key, head.get(key), expected[key])
+        # The other side of the phone ring, served rather than subtracted by a consumer (fix-round F-01).
+        if isinstance(head.get("phone"), dict):
+            eq("headline.phone.remainder", head["phone"].get("remainder"), expected["denominator"] - expected["phone"]["turns"])
         served = head.get("surfaces") if isinstance(head.get("surfaces"), list) else []
         eq("headline.surfaces (order)", [s.get("surface") for s in served], list(expected["surfaces"]))
         for entry in served:
             surface = entry.get("surface")
             if surface in expected["surfaces"]:
                 eq_share("headline.surfaces[%s]" % surface, entry, expected["surfaces"][surface])
+                eq("headline.surfaces[%s].remainder" % surface, entry.get("remainder"),
+                   expected["denominator"] - expected["surfaces"][surface]["turns"])
                 if not isinstance(entry.get("label"), str) or not entry["label"]:
                     diffs.append("headline.surfaces[%s].label: the library serves no label" % surface)
 
@@ -360,20 +365,71 @@ def compare(library, mentor, raw, predicate_expected, window_expected):
         eq("excluded." + key, library["excluded"][key], mentor["excluded"][key])
     eq("agentDrivenTurns", library["agentDrivenTurns"], mentor["agentDrivenTurns"])
 
+    # A finished ratio against the independent division: the share to nine places, the percent exactly,
+    # both null exactly when the divisor is zero (fix-round finding F-01: the rows' ratios are the library's).
+    def eq_ratio(name, got_share, got_percent, part, whole):
+        want_share = None if whole == 0 else part / whole
+        want_percent = None if whole == 0 else int(part / whole * 100.0 + 0.5)
+        if (got_share is None) != (want_share is None) or (got_share is not None and round(got_share, 9) != round(want_share, 9)):
+            diffs.append("%s share: library=%s independent=%s" % (name, got_share, want_share))
+        if got_percent != want_percent:
+            diffs.append("%s percent: library=%s independent=%s" % (name, got_percent, want_percent))
+
     lib_agents = {a["agent"]: a for a in library["agents"]}
+    raw_agent_turns = sum(a["turns"] for a in raw["agents"].values())
+    raw_agent_sessions = sum(a["sessions"] for a in raw["agents"].values())
     for key in sorted(set(lib_agents) | set(raw["agents"])):
         la = lib_agents.get(key, {"turns": 0, "voiceTurns": 0, "typedTurns": 0, "sessions": 0, "agentDrivenTurns": 0})
         ra = raw["agents"].get(key, {"turns": 0, "voiceTurns": 0, "typedTurns": 0, "sessions": 0, "agentDrivenTurns": 0})
         for field in ("turns", "voiceTurns", "typedTurns", "sessions", "agentDrivenTurns"):
             if la[field] != ra[field]:
                 diffs.append("agent %s.%s: library=%s raw-extract=%s" % (key or "(unknown)", field, la[field], ra[field]))
+        if key in lib_agents:
+            eq_ratio("agent %s turn" % (key or "(unknown)"), la.get("turnShare"), la.get("turnPercent"), ra["turns"], raw_agent_turns)
+            eq_ratio("agent %s session" % (key or "(unknown)"), la.get("sessionShare"), la.get("sessionPercent"), ra["sessions"], raw_agent_sessions)
+            eq_ratio("agent %s voice" % (key or "(unknown)"), la.get("voiceShare"), la.get("voicePercent"), ra["voiceTurns"], ra["turns"])
+    summary = library.get("agentsSummary") if isinstance(library.get("agentsSummary"), dict) else {}
+    raw_top_agent = max(raw["agents"].items(), key=lambda kv: kv[1]["turns"], default=(None, {"turns": 0}))
+    eq("agentsSummary.agentCount", summary.get("agentCount"), sum(1 for a in raw["agents"].values() if a["turns"] > 0))
+    eq("agentsSummary.totalTurns", summary.get("totalTurns"), raw_agent_turns)
+    eq("agentsSummary.totalSessions", summary.get("totalSessions"), raw_agent_sessions)
+    eq("agentsSummary.voiceTurns", summary.get("voiceTurns"), sum(a["voiceTurns"] for a in raw["agents"].values()))
+    eq_ratio("agentsSummary voice", summary.get("voiceShare"), summary.get("voicePercent"),
+             sum(a["voiceTurns"] for a in raw["agents"].values()), raw_agent_turns)
+    eq_ratio("agentsSummary top", summary.get("topShare"), summary.get("topPercent"),
+             raw_top_agent[1]["turns"], raw_agent_turns if raw_top_agent[1]["turns"] > 0 else 0)
+    eq("agentsSummary.agentDrivenTurns", summary.get("agentDrivenTurns"), mentor["agentDrivenTurns"])
+    want_leverage = None if raw_agent_turns == 0 else mentor["agentDrivenTurns"] / raw_agent_turns
+    got_leverage = summary.get("leverage")
+    if (got_leverage is None) != (want_leverage is None) or (got_leverage is not None and round(got_leverage, 9) != round(want_leverage, 9)):
+        diffs.append("agentsSummary.leverage: library=%s independent=%s" % (got_leverage, want_leverage))
+    eq("agentsSummary.leverageText", summary.get("leverageText"), None if want_leverage is None else "%.1fx" % want_leverage)
+    eq("agentsSummary.hasData", summary.get("hasData"), raw_agent_turns > 0 or mentor["agentDrivenTurns"] > 0)
+
     lib_repos = {r["repo"]: r for r in library["repos"]}
+    raw_repo_turns = sum(r["turns"] for r in raw["repos"].values())
+    raw_repo_sessions = sum(r["sessions"] for r in raw["repos"].values())
     for key in sorted(set(lib_repos) | set(raw["repos"])):
         lr = lib_repos.get(key, {"turns": 0, "voiceTurns": 0, "typedTurns": 0, "sessions": 0, "repoName": "", "checkouts": []})
         rr = raw["repos"].get(key, {"turns": 0, "voiceTurns": 0, "typedTurns": 0, "sessions": 0, "repoName": "", "checkouts": []})
         for field in ("turns", "voiceTurns", "typedTurns", "sessions", "repoName", "checkouts"):
             if lr[field] != rr[field]:
                 diffs.append("repo %s.%s: library=%s raw-extract=%s" % (key, field, lr[field], rr[field]))
+        if key in lib_repos:
+            eq_ratio("repo %s turn" % key, lr.get("turnShare"), lr.get("turnPercent"), rr["turns"], raw_repo_turns)
+            eq_ratio("repo %s session" % key, lr.get("sessionShare"), lr.get("sessionPercent"), rr["sessions"], raw_repo_sessions)
+            eq_ratio("repo %s voice" % key, lr.get("voiceShare"), lr.get("voicePercent"), rr["voiceTurns"], rr["turns"])
+    summary = library.get("reposSummary") if isinstance(library.get("reposSummary"), dict) else {}
+    raw_top_repo = max(raw["repos"].items(), key=lambda kv: kv[1]["turns"], default=(None, {"turns": 0, "repoName": None}))
+    eq("reposSummary.repoCount", summary.get("repoCount"), len(raw["repos"]))
+    eq("reposSummary.totalTurns", summary.get("totalTurns"), raw_repo_turns)
+    eq("reposSummary.totalSessions", summary.get("totalSessions"), raw_repo_sessions)
+    eq("reposSummary.voiceTurns", summary.get("voiceTurns"), sum(r["voiceTurns"] for r in raw["repos"].values()))
+    eq_ratio("reposSummary voice", summary.get("voiceShare"), summary.get("voicePercent"),
+             sum(r["voiceTurns"] for r in raw["repos"].values()), raw_repo_turns)
+    eq_ratio("reposSummary top", summary.get("topShare"), summary.get("topPercent"), raw_top_repo[1]["turns"], raw_repo_turns)
+    eq("reposSummary.topRepoName", summary.get("topRepoName"), raw_top_repo[1].get("repoName") if raw["repos"] else None)
+    eq("reposSummary.hasData", summary.get("hasData"), raw_repo_turns > 0)
     if library["reposUnattributedTurns"] != raw["reposUnattributedTurns"]:
         diffs.append("reposUnattributedTurns: library=%s raw-extract=%s" % (library["reposUnattributedTurns"], raw["reposUnattributedTurns"]))
     lib_hours = {h["hour"]: h["turns"] for h in library["hourlyTurns"]}
@@ -387,6 +443,14 @@ def compare(library, mentor, raw, predicate_expected, window_expected):
         lib_hours_mod[h["hour"] + "/typed"] = h["typedTurns"]
         if h["voiceTurns"] + h["typedTurns"] != h["turns"]:
             diffs.append("hour %s: the library's voice %s + typed %s is not its turns %s" % (h["hour"], h["voiceTurns"], h["typedTurns"], h["turns"]))
+        # The hour's finished split against the raw counts' division (fix-round finding F-01).
+        raw_voice = raw["hourlyByModality"].get(h["hour"] + "/voice", 0)
+        raw_typed = raw["hourlyByModality"].get(h["hour"] + "/typed", 0)
+        raw_total = raw_voice + raw_typed
+        for name, got, part in (("voiceShare", h.get("voiceShare"), raw_voice), ("typedShare", h.get("typedShare"), raw_typed)):
+            want = None if raw_total == 0 else part / raw_total
+            if (got is None) != (want is None) or (got is not None and round(got, 9) != round(want, 9)):
+                diffs.append("hour %s %s: library=%s independent=%s" % (h["hour"], name, got, want))
     for key in sorted(set(lib_hours_mod) | set(raw["hourlyByModality"])):
         if lib_hours_mod.get(key, 0) != raw["hourlyByModality"].get(key, 0):
             diffs.append("hour %s: library=%s raw-extract=%s" % (key, lib_hours_mod.get(key, 0), raw["hourlyByModality"].get(key, 0)))

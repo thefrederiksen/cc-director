@@ -5,7 +5,7 @@
     "an-answer-without-a-headline-is-refused.json": "ae21a8830737ab0223e217cb777cbc5a968442ce8e94b24ef98309212d0216da",
     "the-empty-state-is-the-librarys-ruling.json": "92da110a74caf5d779d38efbcdcb1df9afd353997352394ae3d5346959ce6d6b",
     "the-headline-is-rendered-not-the-counts.json": "b8d0330140caceb48b44a5ac310e40ddcf1ef11bac5630eafc431e0f94da711b",
-    "the-percent-field-is-printed-not-re-rounded.json": "1ec7de00b118c6cf7991d1dfa96920222792d55f7177b5d6d54938d7997fe0e2"
+    "the-percent-field-is-printed-not-re-rounded.json": "4f965156581a82f07a0530f36131e5c6b9556787e34550939bf193ed555dfae0"
   },
   "inventory": "744752ba4d3ca11556b39718d26d14d551434f49cfff8566d5fee161b9dbff64"
 }

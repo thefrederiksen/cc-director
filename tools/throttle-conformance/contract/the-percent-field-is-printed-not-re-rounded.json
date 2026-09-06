@@ -83,11 +83,11 @@
         },
         {
           "label": "Cockpit",
-          "percent": 0,
-          "remainder": 1748,
-          "share": 0.0,
+          "percent": 7,
+          "remainder": 1648,
+          "share": 0.055991041433370664,
           "surface": "cockpit",
-          "turns": 0
+          "turns": 100
         },
         {
           "label": "Phone",
@@ -203,11 +203,11 @@
         },
         {
           "label": "Cockpit",
-          "percent": 0,
-          "remainder": 1748,
-          "share": 0.0,
+          "percent": 7,
+          "remainder": 1648,
+          "share": 0.055991041433370664,
           "surface": "cockpit",
-          "turns": 0
+          "turns": 100
         },
         {
           "label": "Phone",

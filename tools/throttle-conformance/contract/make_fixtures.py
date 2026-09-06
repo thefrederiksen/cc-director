@@ -214,7 +214,11 @@ FIXTURES = [
             "voice": {**W35_HEADLINE["voice"], "percent": 61},
             "typed": {**W35_HEADLINE["typed"], "percent": 39},
             "phone": {**W35_HEADLINE["phone"], "percent": 9},
-            "surfaces": [dict(s, percent=9) if s["surface"] == "phone" else s for s in W35_HEADLINE["surfaces"]],
+            # And a Cockpit surface with turns, so the report draws its third ring: 100 turns is 5.6 per cent, the
+            # percent field says 7, and the other side of that ring is served 38 short of the subtraction.
+            "surfaces": [dict(s, percent=9) if s["surface"] == "phone"
+                         else dict(s, turns=100, share=100 / 1786, percent=7, remainder=remainder(1786, 100)) if s["surface"] == "cockpit"
+                         else s for s in W35_HEADLINE["surfaces"]],
         }),
         "expected": None,
     },
