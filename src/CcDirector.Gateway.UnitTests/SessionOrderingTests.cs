@@ -688,41 +688,66 @@ public sealed class SessionOrderingTests
     }
 
     [Fact]
-    public void EffectiveColor_Architect_Stopped_IsSupervised_NotRed()
+    public void EffectiveColor_Architect_Stopped_IsRed_EvenWithAController()
     {
-        // THIS TEST USED TO ASSERT THE OPPOSITE, AND IT WAS DEFENDING A DIVERGENCE. It read
-        // EffectiveColor_Architect_RedAllowed_EvenWithAController, on the premise "an explicit Architect is
-        // human-facing" - which is the design as it stood BEFORE the owner amended it on 2026-07-09:
+        // THE ARCHITECT IS THE SEAT THE OWNER TALKS TO, so its red reaches him - even when it happens to
+        // carry a controller, because the explicit role wins over derivation and resolves it to Architect
+        // rather than Worker.
         //
-        //   "the Architect does NOT push needs-you or status to the human - that is the Manager's job...
-        //    Like a Worker, the Architect never surfaces to the human. The ONLY difference from a Worker:
-        //    the human may PULL the Architect into a design conversation the HUMAN initiates."
-        //   (docs/new_architecture/session-roles-semantics.md, and the attention routing table in it)
+        // THIS ASSERTION HAS NOW BEEN WRITTEN THREE TIMES, IN TWO DIRECTIONS, AND THE ROUND TRIP IS THE
+        // POINT OF THE COMMENT. It began as EffectiveColor_Architect_RedAllowed_EvenWithAController
+        // asserting "red"; on 2026-09-03 it became EffectiveColor_Architect_Stopped_IsSupervised_NotRed
+        // asserting "supporting", implementing an amendment the owner made on 2026-07-09 - "the Architect
+        // does NOT push needs-you or status to the human... Like a Worker, the Architect never surfaces to
+        // the human". The owner watched that ship and overturned it on 2026-09-06:
         //
-        // The amendment reached the document and never reached the code, and this green test is why nobody
-        // noticed for two months: it stated the superseded rule in the present tense. Recorded here rather
-        // than quietly deleted, because a test that defends a defect is the most expensive kind this
-        // repository has, and this file's own history says so.
-        Assert.Equal("supporting", SessionOrdering.EffectiveColor(
+        //   "parking the architect seat is wrong. the architect is always the session i talk to."
+        //   "no the architect should push to me it is what i talk to."
+        //
+        // What went wrong for two months was NOT that this assertion was written in the wrong direction. It
+        // was that the written rule and the code disagreed and NOTHING COULD SEE IT: every test asserted the
+        // shipped behaviour in the present tense, so a document saying the opposite made nothing go red.
+        // A test of behaviour cannot close that on its own, whichever way it points, and this comment is not
+        // the guard. The guard is SupervisionRuleMatchesTheDesignDocumentTests, which reads the attention
+        // table out of docs/new_architecture/session-roles-semantics.md and fails when the document and
+        // SessionOrdering.IsSupervised disagree about any seat.
+        Assert.Equal("red", SessionOrdering.EffectiveColor(
             Raw("WaitingForInput", controlled: true, controllerId: Guid.NewGuid().ToString(), sessionRole: SessionRoles.Architect)));
     }
 
     [Fact]
     public void EffectiveColor_Architect_Working_IsStillBlue()
     {
-        // The negative control for the test above, and the law: nothing outranks working. Widening the
-        // suppression must not reintroduce the 2026-07-14 defect where ownership erased activity.
+        // The law: nothing outranks working. It held while an Architect was supervised and it holds now that
+        // it is not - this seat's colour is decided by what it is DOING, never by whose it is.
         Assert.Equal("blue", SessionOrdering.EffectiveColor(
             Raw("Working", sessionRole: SessionRoles.Architect)));
+    }
+
+    [Fact]
+    public void Architect_Stopped_IsRed_NeedsYou_AndNotParked()
+    {
+        // ALL THREE FOLD OUTPUTS TOGETHER, and that is deliberate: the colour alone is not what the owner
+        // asked for. "The architect should push to me" means it goes red on the dot, it says it needs him in
+        // words, AND it sits in his queue rather than at the bottom of the roster. Asserting the colour and
+        // letting the bucket drift is exactly how the "blue dot labelled Snoozed" defect happened.
+        //
+        // This is the direct inverse of Supervised_Architect_Stopped_IsSlate_Snoozed_AndParked, which stood
+        // here from 2026-09-03 to 2026-09-06.
+        var s = Raw("WaitingForInput", sessionRole: SessionRoles.Architect);
+        Assert.Equal("red", SessionOrdering.EffectiveColor(s));
+        Assert.Equal("Needs you", SessionOrdering.StateLabel(s));
+        Assert.Equal(SessionOrdering.TriageBucket.NeedsYou, SessionOrdering.Classify(s));
     }
 
     // ===================================================================================================
     // SUPERVISED SESSIONS DO NOT ASK THE OWNER (owner's ruling, 2026-09-02):
     //   "supervised still show up in Director and Cockpit, session should go to onhold when not working"
     //
-    // Three kinds are supervised for three different reasons - a live supervisor, a design seat, a
-    // schedule - so each gets its own case rather than one parameterised sweep that would still pass if
-    // two of the three silently stopped working.
+    // Two kinds are supervised for two different reasons - a live supervisor and a schedule - so each gets
+    // its own case rather than one parameterised sweep that would still pass if one of them silently
+    // stopped working. It was three until 2026-09-06, when the owner took the Architect back out; the
+    // Architect's cases now live above, asserting the opposite.
     //
     // Every case below asserts all THREE fold outputs together. The colour alone is not the behaviour the
     // owner asked for: a slate dot still sitting in the middle of his list is the thing he complained
@@ -735,15 +760,6 @@ public sealed class SessionOrderingTests
     {
         var s = Raw("WaitingForInput", controlled: true, controllerId: Guid.NewGuid().ToString(),
             sessionRole: SessionRoles.Worker);
-        Assert.Equal("supporting", SessionOrdering.EffectiveColor(s));
-        Assert.Equal("Snoozed", SessionOrdering.StateLabel(s));
-        Assert.Equal(SessionOrdering.TriageBucket.OnHold, SessionOrdering.Classify(s));
-    }
-
-    [Fact]
-    public void Supervised_Architect_Stopped_IsSlate_Snoozed_AndParked()
-    {
-        var s = Raw("WaitingForInput", sessionRole: SessionRoles.Architect);
         Assert.Equal("supporting", SessionOrdering.EffectiveColor(s));
         Assert.Equal("Snoozed", SessionOrdering.StateLabel(s));
         Assert.Equal(SessionOrdering.TriageBucket.OnHold, SessionOrdering.Classify(s));
@@ -765,7 +781,6 @@ public sealed class SessionOrderingTests
 
     [Theory]
     [InlineData(SessionRoles.Worker, null)]
-    [InlineData(SessionRoles.Architect, null)]
     [InlineData(SessionRoles.Standalone, "schedule")]
     public void Supervised_Working_IsStillBlue_NothingOutranksWorking(string role, string? origin)
     {
@@ -949,10 +964,29 @@ public sealed class SessionOrderingTests
     [Fact]
     public void SupervisorLost_SaysNothingAboutAnArchitectThatCarriesAController()
     {
-        // An Architect is supervised BY DECLARATION, not by who spawned it, so losing a spawner strands
-        // nothing. Without this arm every Architect spawned by a session that later ended would start
-        // announcing itself as abandoned - the opposite of the ruling that says it never surfaces at all.
+        // THE ARM SURVIVES THE 2026-09-06 RULING, AND ITS REASON DOES NOT. It used to be justified by "an
+        // Architect is supervised BY DECLARATION, so losing a spawner strands nothing" - and an Architect is
+        // not supervised at all any more. It still says nothing, for a reason that never depended on
+        // supervision: this notice explains a session that was QUIET WHILE SUPERVISED and has suddenly
+        // started asking. An Architect never went quiet. It takes its direction from the owner, not from
+        // whoever opened it, so it cannot be stranded by that session ending - and "the session driving this
+        // one has gone, hand it over or stop it" would be false about the seat he is talking to.
         Assert.Null(SessionOrdering.SupervisorLostNotice(Orphan(role: SessionRoles.Architect), supervisor: null));
+    }
+
+    [Fact]
+    public void SupervisorLost_ArchitectStaysSilentEvenThoughItIsRedAndNoLongerSupervised()
+    {
+        // THE CONTROL FOR THE TEST ABOVE, and the one that would have caught it being kept for the wrong
+        // reason. An Architect that carries a dead controller is now RED and in the owner's queue - exactly
+        // the shape the orphan notice was built to explain - so "it is quiet, so there is nothing to say" is
+        // no longer available as the argument. Prove BOTH halves in one place: the row surfaces, and it still
+        // carries no abandonment sentence.
+        var arch = Orphan(role: SessionRoles.Architect);
+
+        Assert.Equal("red", SessionOrdering.EffectiveColor(arch));
+        Assert.False(SessionOrdering.IsSupervised(arch));
+        Assert.Null(SessionOrdering.SupervisorLostNotice(arch, supervisor: null));
     }
 
     [Fact]

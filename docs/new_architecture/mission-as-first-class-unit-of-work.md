@@ -339,7 +339,7 @@ These three rules are the authoritative attention decisions for the Mission/role
 the Architect at Soren's request, 2026-07-09). The role-behavior contract and the Gateway fold
 IMPLEMENT them; this doc is where they are DECIDED.
 
-### Rule 1 (hard invariant): only a Manager or a Standalone ever surfaces to the human
+### Rule 1 (hard invariant): only a Manager, a Standalone or an Architect ever surfaces to the human
 
 A WORKER never surfaces a needs-you to the human - not when blocked, not when done, not when
 orphaned. A worker's attention ALWAYS routes to a Manager: its own while alive, or the fallback Hub
@@ -348,11 +348,26 @@ Managers and Standalone sessions. This is structural (the fold suppresses a work
 human; enforce in the transport, not the prompt), not a request a worker can make. CONFIRMED already
 in the design and built for the alive-manager case.
 
-AMENDMENT (Soren, 2026-07-09): the ARCHITECT likewise does NOT push needs-you or status to the
-human. The human-facing status / attention channel belongs to the MANAGER (and Standalone) ONLY.
-The Architect differs from a Worker only in that the human MAY open a design conversation with it
-(a PULL); it never pages the human (no PUSH). So: Manager and Standalone OWN the human-facing
-status/attention channel; Worker and Architect do NOT push to the human.
+SETTLED (Soren, 2026-09-06): the ARCHITECT IS A HUMAN-FACING SEAT and pushes exactly like a Manager.
+
+> "parking the architect seat is wrong. the architect is always the session i talk to."
+> "no the architect should push to me it is what i talk to."
+
+So the human-facing status / attention channel belongs to the MANAGER, the STANDALONE and the
+ARCHITECT. Only a Worker with a live supervisor - and a run started by a schedule, which has nobody
+at a keyboard to report to - stays out of the human's queue.
+
+SUPERSEDED AMENDMENT (Soren, 2026-07-09), kept because deleting it invites somebody to derive it
+again from the surrounding prose: it said the Architect likewise does NOT push needs-you or status to
+the human, differing from a Worker only in that the human MAY open a design conversation with it (a
+PULL) and it never pages him (no PUSH). That reached this document and `session-roles-semantics.md`
+in July, was built on 2026-09-03 (commit 2a8679007, #2667), and was reversed on 2026-09-06 once the
+owner had watched it running - the seat he addresses cannot be the seat that is silenced.
+
+The machine-checked statement of this rule is the supervision table in
+`docs/new_architecture/session-roles-semantics.md`, which a test parses and compares against
+`SessionOrdering.IsSupervised`. If this prose and that table ever disagree, the table is the one the
+code is held to; fix both in the same pull request.
 
 ### Rule 2 (revised): auto-hold is for Workers; a Manager is never auto-muted
 

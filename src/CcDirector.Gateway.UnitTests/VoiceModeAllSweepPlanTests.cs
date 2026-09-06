@@ -130,8 +130,34 @@ public sealed class VoiceModeAllSweepPlanTests
     }
 
     [Fact]
-    public void Plan_neverSwitchesOnAnArchitectOrAScheduledRun()
+    public void Plan_neverSwitchesOnAScheduledRun()
     {
+        // Nobody is at a keyboard for a cron firing, so there is nobody for the wingman to read it to. This
+        // test named the Architect too until 2026-09-06 - see the test directly below, which now asserts the
+        // opposite for that seat.
+        var cron = new SessionDto
+        {
+            SessionId = "cron", Name = "cron", Status = "WaitingForInput", ActivityState = "WaitingForInput",
+            OriginKind = "schedule",
+        };
+        var roster = new[] { ("d1", cron), Row("d1", "ordinary") };
+
+        var plan = VoiceModeAllSweep.Plan(voiceModeOn: true, roster, On());
+
+        Assert.Equal(new[] { ("d1", "ordinary") }, plan);
+    }
+
+    [Fact]
+    public void Plan_switchesOnAnArchitect_becauseItIsTheSeatTheOwnerTalksTo()
+    {
+        // The owner's ruling, 2026-09-06: "the architect is always the session i talk to", "the architect
+        // should push to me". Being read aloud is one of the three things being human-facing means, and it
+        // is the one that surfaced the defect: an Architect asked to make itself narratable could not,
+        // because its own role was what the wingman was silencing.
+        //
+        // The roster is deliberately MIXED so the assertion is not just "something came back": the cron
+        // firing beside it is still skipped, which proves this is the Architect changing side rather than
+        // the supervised check having stopped working altogether.
         var architect = new SessionDto
         {
             SessionId = "arch", Name = "arch", Status = "WaitingForInput", ActivityState = "WaitingForInput",
@@ -142,11 +168,26 @@ public sealed class VoiceModeAllSweepPlanTests
             SessionId = "cron", Name = "cron", Status = "WaitingForInput", ActivityState = "WaitingForInput",
             OriginKind = "schedule",
         };
-        var roster = new[] { ("d1", architect), ("d1", cron), Row("d1", "ordinary") };
+        var roster = new[] { ("d1", architect), ("d1", cron) };
 
         var plan = VoiceModeAllSweep.Plan(voiceModeOn: true, roster, On());
 
-        Assert.Equal(new[] { ("d1", "ordinary") }, plan);
+        Assert.Equal(new[] { ("d1", "arch") }, plan);
+    }
+
+    [Fact]
+    public void PlanOff_neverSwitchesAnArchitectBackOff_soTheEarlierRuleUnwindsItself()
+    {
+        // The off-direction is what un-enrolled the seats the 2026-09-02 rule silenced, and it must not now
+        // undo the 2026-09-06 ruling by turning an Architect back off the moment the on-direction enrols it.
+        // Without this the two sweeps would fight over the same session on every tick.
+        var architect = new SessionDto
+        {
+            SessionId = "arch", Name = "arch", Status = "WaitingForInput", ActivityState = "WaitingForInput",
+            ExplicitRole = SessionRoles.Architect,
+        };
+
+        Assert.Empty(VoiceModeAllSweep.PlanOff(new[] { ("d1", architect) }, On("arch")));
     }
 
     [Fact]
