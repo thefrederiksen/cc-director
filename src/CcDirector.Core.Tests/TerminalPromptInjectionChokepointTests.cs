@@ -87,14 +87,18 @@ public sealed class TerminalPromptInjectionChokepointTests
         var writeExec = File.ReadAllText(Path.Combine(root, "src", "CcDirector.ControlApi", "SessionWriteExecutor.cs"));
 
         Assert.Contains("gatewayFetch(`/sessions/${sid}/prompt`", client);
-        Assert.Contains("await sendPrompt(sessionId, text, true);", cockpit);
-        Assert.Contains("await sendPrompt(sessionId, text, true);", mobileControls);
+        // The typed Send on both shells: still the prompt route with Enter appended, never raw terminal
+        // input. Since source logging (2026-09-05) it also carries the composer's spoken character ranges -
+        // matched WITHOUT the closing parenthesis, because the CHOKEPOINT is what must not drift and the two
+        // shells word that last argument differently (one keeps the projection in a local).
+        Assert.Contains("await sendPrompt(sessionId, text, true, undefined, undefined,", cockpit);
+        Assert.Contains("await sendPrompt(sessionId, text, true, undefined, undefined,", mobileControls);
         // The dictated send carries the utterance id as its fifth argument since ruling R10 of the "Clean up
         // Your Throttle" mission (2026-09-05), so the same words count as spoken whichever transcription
         // path produced them. The CHOKEPOINT is unchanged and is what this pins: still the prompt route,
         // still with Enter appended (the third argument), never raw terminal input - on both shells.
-        Assert.Contains("await sendPrompt(sessionId, combined, true, undefined, spoken);", cockpit);
-        Assert.Contains("await sendPrompt(sessionId, combined, true, undefined, spoken);", mobileControls);
+        Assert.Contains("await sendPrompt(sessionId, combined, true, undefined, spoken, sent.spans);", cockpit);
+        Assert.Contains("await sendPrompt(sessionId, combined, true, undefined, spoken, sent.spans);", mobileControls);
         // The voice reply moved to sendVoicePrompt (issue #2193). The CHOKEPOINT is unchanged and that is
         // what this pins: it is still the prompt route with Enter appended, never raw terminal input - the
         // only difference is that the Gateway is asked to refuse the send outright when a menu owns the
@@ -108,8 +112,10 @@ public sealed class TerminalPromptInjectionChokepointTests
 
         Assert.Contains("await sendPrompt(this.sessionId, chunk, false);", interactive);
         // Raw browser keystrokes go through the terminal-input verb, which calls SendInput (no submit/Enter),
-        // naming its door: the Gateway's terminal relay, whose credential kind it honestly does not know.
-        Assert.Contains("session.SendInput(bytes, null, SubmissionProvenance.Typed(SubmissionRoutes.GatewayTerminal, SubmissionIdentityKinds.Unknown));", writeExec);
+        // naming its door: the Gateway's terminal relay, with the credential kind the relay verified when the
+        // browser's socket opened. Taken from the wire, never invented here - a relay that sends none is
+        // recorded as the unknown it is.
+        Assert.Contains("session.SendInput(bytes, null, SubmissionProvenance.FromWire(request.Provenance, SubmissionRoutes.GatewayTerminal));", writeExec);
 
         // The Gateway prompt route submits over the tunnel prompt verb, never raw input.
         // Matched WITHOUT the closing parenthesis: the guarded invariant is "the prompt verb carries req through
