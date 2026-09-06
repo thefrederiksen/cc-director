@@ -17,11 +17,18 @@ namespace CcDirector.Gateway.Voice;
 /// what it stood for - the utterance upload is deleted the moment it is transcribed.
 ///
 /// This keeps exactly what the claim needs and nothing else: for one tenant, one upload id produced one
-/// transcript at one time, and the claim has or has not been spent. A prompt carrying the id is spoken
-/// only if all four hold - the tenant matches, the id is known, the claim is unspent and young, and the
-/// submitted words are the transcript - and consuming it spends it. Anything else is a typed turn, which
-/// is what the rule says an edited, mixed, or replayed dictation is; it is never an error, because the
-/// text is still delivered.
+/// transcript at one time, and the claim is free, reserved, or spent. A prompt carrying the id is spoken
+/// only if all four hold - the tenant matches, the id is known, the claim is free and young, and the
+/// submitted words are the transcript. Anything else is a typed turn, which is what the rule says an
+/// edited, mixed, or replayed dictation is; it is never an error, because the text is still delivered.
+///
+/// RESERVED, THEN COMMITTED OR RELEASED (final inspection finding F-07). The claim used to be spent the
+/// moment the route looked at it, before the session was even located, so a prompt that never entered a
+/// session - a stale session, a menu refusal, a dropped tunnel - burned the only proof, and the person's
+/// retry of the same spoken words was filed as typed. Now the route RESERVES the claim, delivers, and
+/// COMMITS it only when the Director accepted the prompt; any other outcome RELEASES it so the retry is
+/// still spoken. A reserved claim refuses a concurrent second prompt exactly as a spent one does, so a
+/// replay in flight cannot be counted twice.
 ///
 /// In memory, on purpose. A claim lives for the seconds between "transcribed" and "sent", so the record
 /// needs to survive that and no longer; a Gateway restart in that window costs one turn its voice label
@@ -47,12 +54,20 @@ public sealed class SpokenClaimRegistry
         TextDiffers,
     }
 
+    private const int Free = 0;
+    private const int Reserved = 1;
+    private const int Spent = 2;
+
     private sealed class Claim
     {
         public required string Transcript { get; init; }
         public required DateTime CreatedUtc { get; init; }
-        public int Spent;
+        public int State;
     }
+
+    /// <summary>A reservation the route holds between delivery and its outcome. Committed on an accepted
+    /// prompt, released on anything else; never both, never neither.</summary>
+    public readonly record struct Reservation(TenantId Tenant, string UploadId);
 
     private readonly ConcurrentDictionary<(string Tenant, string Id), Claim> _claims = new();
     private readonly Func<DateTime> _clock;
@@ -76,21 +91,55 @@ public sealed class SpokenClaimRegistry
     }
 
     /// <summary>
-    /// Spend the claim for <paramref name="uploadId"/> if, and only if, it belongs to <paramref name="tenant"/>,
-    /// is unspent and young, and <paramref name="submittedText"/> is its transcript. True means the prompt is
-    /// a voice turn and the claim is now spent; false means the prompt is typed, with the reason for the log.
+    /// Reserve the claim for <paramref name="uploadId"/> if, and only if, it belongs to <paramref name="tenant"/>,
+    /// is free and young, and <paramref name="submittedText"/> is its transcript. True means the prompt may be
+    /// delivered as a voice turn and the caller now holds <paramref name="reservation"/>, which it MUST either
+    /// <see cref="Commit"/> (the Director accepted the prompt) or <see cref="Release"/> (anything else). False
+    /// means the prompt is typed, with the reason for the log; a claim another prompt holds reserved refuses as
+    /// <see cref="Refusal.AlreadySpent"/>.
     /// </summary>
-    public bool TryConsume(TenantId tenant, string? uploadId, string submittedText, out Refusal refusal)
+    public bool TryReserve(TenantId tenant, string? uploadId, string submittedText, out Refusal refusal, out Reservation reservation)
     {
+        reservation = default;
         if (string.IsNullOrWhiteSpace(uploadId)) { refusal = Refusal.BlankId; return false; }
         if (!tenant.IsValid) { refusal = Refusal.Unknown; return false; }
-        if (!_claims.TryGetValue((tenant.Value, uploadId.Trim()), out var claim)) { refusal = Refusal.Unknown; return false; }
+        var key = (tenant.Value, uploadId.Trim());
+        if (!_claims.TryGetValue(key, out var claim)) { refusal = Refusal.Unknown; return false; }
         if (_clock() - claim.CreatedUtc > ClaimLifetime) { refusal = Refusal.Expired; return false; }
         if (!string.Equals(claim.Transcript, Normalize(submittedText ?? ""), StringComparison.Ordinal)) { refusal = Refusal.TextDiffers; return false; }
-        // Spend it exactly once, even under two concurrent prompts carrying the same id.
-        if (Interlocked.Exchange(ref claim.Spent, 1) != 0) { refusal = Refusal.AlreadySpent; return false; }
+        // Reserve it exactly once, even under two concurrent prompts carrying the same id.
+        if (Interlocked.CompareExchange(ref claim.State, Reserved, Free) != Free) { refusal = Refusal.AlreadySpent; return false; }
         refusal = Refusal.None;
+        reservation = new Reservation(tenant, key.Item2);
         return true;
+    }
+
+    /// <summary>The prompt entered a session: the claim is spent for good. A reservation this registry does
+    /// not hold is a programming error and throws, never a silent no-op.</summary>
+    public void Commit(Reservation reservation)
+    {
+        var claim = Held(reservation);
+        if (Interlocked.CompareExchange(ref claim.State, Spent, Reserved) != Reserved)
+            throw new InvalidOperationException($"The spoken claim {reservation.UploadId} is not reserved, so it cannot be committed.");
+        FileLog.Write($"[SpokenClaimRegistry] Commit: tenant={reservation.Tenant.Value} upload={reservation.UploadId}");
+    }
+
+    /// <summary>No prompt entered a session: the claim is free again, so the person's retry of the same spoken
+    /// words is still spoken (finding F-07). Throws on a claim that is not reserved.</summary>
+    public void Release(Reservation reservation)
+    {
+        var claim = Held(reservation);
+        if (Interlocked.CompareExchange(ref claim.State, Free, Reserved) != Reserved)
+            throw new InvalidOperationException($"The spoken claim {reservation.UploadId} is not reserved, so it cannot be released.");
+        FileLog.Write($"[SpokenClaimRegistry] Release: tenant={reservation.Tenant.Value} upload={reservation.UploadId} - no turn entered a session; the claim is free for the retry");
+    }
+
+    private Claim Held(Reservation reservation)
+    {
+        if (reservation == default) throw new ArgumentException("An empty reservation cannot be committed or released.", nameof(reservation));
+        if (!_claims.TryGetValue((reservation.Tenant.Value, reservation.UploadId), out var claim))
+            throw new InvalidOperationException($"The spoken claim {reservation.UploadId} is not held by this registry (it may have expired and been swept).");
+        return claim;
     }
 
     /// <summary>The words, and nothing else: surrounding whitespace and runs of internal whitespace do not
@@ -100,7 +149,7 @@ public sealed class SpokenClaimRegistry
     private void Sweep(DateTime now)
     {
         foreach (var pair in _claims)
-            if (now - pair.Value.CreatedUtc > ClaimLifetime)
+            if (now - pair.Value.CreatedUtc > ClaimLifetime && pair.Value.State != Reserved)
                 _claims.TryRemove(pair.Key, out _);
     }
 }

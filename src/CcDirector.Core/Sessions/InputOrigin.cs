@@ -39,7 +39,9 @@ public enum InputSurface
 /// </summary>
 public readonly record struct InputOrigin(InputModality Modality, InputSurface Surface)
 {
-    /// <summary>Typed at the desktop app - the by-construction origin of local desktop input.</summary>
+    /// <summary>Typed at the desktop app. NOT the origin of everything the desktop composer sends: a
+    /// transcript inserted into the compose box is spoken, and the box's provenance decides
+    /// (<see cref="SpokenTurnRule.ComposerProvenance"/>, ruling R20).</summary>
     public static InputOrigin DesktopTyped => new(InputModality.Typed, InputSurface.Desktop);
 
     /// <summary>Spoken at the desktop app (desktop dictation / voice mode).</summary>

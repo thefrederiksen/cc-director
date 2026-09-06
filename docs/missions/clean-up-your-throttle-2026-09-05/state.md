@@ -3,7 +3,7 @@
 This is the compact handoff note. A fresh Manager needs THIS FILE, the brief beside it, and
 `cc-devthrottle workflow instructions mission`. Nothing else. Keep it current and short.
 
-**Updated:** 2026-09-05, by the phase four and five Manager, closing both phases.
+**Updated:** 2026-09-05, by the Manager seated to fix the final independent inspection.
 
 ## Where the work lives
 
@@ -14,7 +14,21 @@ This is the compact handoff note. A fresh Manager needs THIS FILE, the brief bes
 
 ## Current phase
 
-**ALL FIVE PHASES DONE AND PUSHED.** What remains is the Architect's: the Codex inspection, landing both
+**THE FINAL INSPECTION'S NINE ITEMS ARE FIXED AND PUSHED, in both repositories.** `inspection-final.md`
+failed the mission with five blockers and three majors (F-01 to F-08); the Architect then added ruling R20
+to the brief. All nine are closed on this branch: the record, with each finding's fix, the mutation that
+was watched red, the suite counts and what is NOT proven, is `inspection-final-fixes.md` beside this file
+(and the report side's own record of the same name in the internal repository). The library now owns the
+headline and both consumers render it; the sender requires the throttle proof; the library is built from
+source with provenance; every window form enforces span and age; R19 reads a confirmed send; each ledger
+observer runs on its own; a spoken claim is reserved and committed only on an accepted prompt; the field
+inventory is held on three sides; and the desktop composer knows which of its words were spoken. What
+remains is the Architect's: a fresh inspection if wanted, landing both branches, and the report. Two
+after-landing steps are new: the harness config key `throttle_library` must point at the main checkout's
+tool (it points at this worktree today), and `run_report.py` will refuse to send until the product checkout
+the library is built from is CLEAN - a dirty tree is recorded and refused by design.
+
+Earlier: **ALL FIVE PHASES DONE AND PUSHED.** What remained then was the Architect's: the Codex inspection, landing both
 branches, and the report to the owner. Read `phase4-5-close.md` for the last two phases, their results, the
 parked-suite table, and the after-landing steps (the harness config key `throttle_library` must move to the
 main checkout's tool; the deployed Gateway runs the old feed until the product branch deploys).

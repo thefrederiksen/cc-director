@@ -3,7 +3,7 @@ import { useSearchParams } from "react-router-dom";
 import {
   getThrottle,
   summarizeThrottle,
-  formatShare,
+  formatPercent,
   last24HourKeys,
   hourlyChartEnd,
   throttleWindowFromSearch,
@@ -14,14 +14,12 @@ import {
   safeTimeZone,
   MODALITY_LABEL,
   SURFACE_LABEL,
-  SURFACE_ORDER,
   type ThrottleData,
   type ThrottleServed,
   type ThrottleFigure,
   type ThrottleSummary,
   type ConcurrencyHour,
   type InputHour,
-  type Surface,
 } from "@devthrottle/client-core/stats/statsClient";
 import { ThrottleWindowSelector } from "@devthrottle/client-core/stats/ThrottleWindowSelector";
 import { gatewayErrorMessage } from "@devthrottle/client-core/api/client";
@@ -243,6 +241,7 @@ function OverviewTab({ summary, data }: { summary: ThrottleSummary; data: Thrott
         <HeroRing
           title="Voice vs typing"
           share={summary.voiceShare}
+          percent={summary.voicePercent}
           accentVar="--thr-voice"
           centerCaption="spoken"
           primary={{ label: "Voice", count: summary.voiceTurns }}
@@ -251,6 +250,7 @@ function OverviewTab({ summary, data }: { summary: ThrottleSummary; data: Thrott
         <HeroRing
           title="Mobile vs desktop"
           share={summary.phoneShare}
+          percent={summary.phonePercent}
           accentVar="--thr-mobile"
           centerCaption="from phone"
           primary={{ label: "Phone", count: summary.turnsBySurface.phone }}
@@ -310,9 +310,13 @@ function ExcludedNote({ figure }: { figure: ThrottleFigure }) {
 // A big donut ring: the share as an arc, the headline percent in the center, the two sides named with
 // their counts below. role="img" + aria-label so the number is announced; the legend carries identity so
 // it is never color-alone.
+// The ring draws the Gateway's share as its arc and prints the Gateway's rounded percent as its number
+// (final inspection finding F-01). It rounds nothing: the number it prints is the number the mentor report
+// prints, because both read the same headline field.
 function HeroRing({
   title,
   share,
+  percent,
   accentVar,
   centerCaption,
   primary,
@@ -321,6 +325,7 @@ function HeroRing({
 }: {
   title: string;
   share: number | null;
+  percent: number | null;
   accentVar: string;
   centerCaption: string;
   primary: { label: string; count: number };
@@ -330,7 +335,7 @@ function HeroRing({
   const R = 42;
   const C = 2 * Math.PI * R;
   const filled = share === null ? 0 : share * C;
-  const pctText = formatShare(share);
+  const pctText = formatPercent(percent);
 
   return (
     <section className="thr-hero">
@@ -379,30 +384,25 @@ function HeroRing({
 // A single horizontal stacked bar of turns by surface, each present segment labeled with its share, plus
 // a legend beneath. One accent hue at descending opacity per surface (a magnitude ramp, not arbitrary
 // categorical colors) so the bar reads as "one measure split by where".
+// Every width, percentage and label here is the Gateway's own headline surface entry (finding F-01).
 function SurfaceSplitBar({ summary }: { summary: ThrottleSummary }) {
-  const total = summary.totalTurns;
   // Largest surface first, so the brightest accent step lands on the surface you drive from most (the
   // magnitude ramp reads big -> small in both width and color).
-  const segments = SURFACE_ORDER.map((s) => ({
-    surface: s,
-    turns: summary.turnsBySurface[s],
-  }))
-    .filter((seg) => seg.turns > 0)
-    .sort((a, b) => b.turns - a.turns);
+  const segments = summary.surfaces.filter((seg) => seg.turns > 0).sort((a, b) => b.turns - a.turns);
 
   return (
     <div className="thr-split">
       <div className="thr-split-bar" role="img" aria-label="Turns by surface">
         {segments.map((seg, i) => {
-          const pct = total > 0 ? (seg.turns / total) * 100 : 0;
+          const width = seg.share === null ? 0 : seg.share * 100;
           return (
             <div
               key={seg.surface}
               className="thr-split-seg"
-              style={{ width: `${pct}%`, background: surfaceFill(i) }}
-              title={`${SURFACE_LABEL[seg.surface]}: ${seg.turns} turns (${Math.round(pct)}%)`}
+              style={{ width: `${width}%`, background: surfaceFill(i) }}
+              title={`${seg.label}: ${seg.turns} turns (${formatPercent(seg.percent)})`}
             >
-              {pct >= 8 && <span className="thr-split-lbl">{Math.round(pct)}%</span>}
+              {width >= 8 && <span className="thr-split-lbl">{formatPercent(seg.percent)}</span>}
             </div>
           );
         })}
@@ -411,7 +411,7 @@ function SurfaceSplitBar({ summary }: { summary: ThrottleSummary }) {
         {segments.map((seg, i) => (
           <span key={seg.surface} className="thr-split-leg">
             <span className="thr-dot" style={{ background: surfaceFill(i) }} />
-            {SURFACE_LABEL[seg.surface]}
+            {seg.label}
             <b>{seg.turns.toLocaleString()}</b>
           </span>
         ))}
@@ -717,10 +717,10 @@ function BreakdownTab({ summary, data }: { summary: ThrottleSummary; data: Throt
                 </tr>
               </thead>
               <tbody>
-                {SURFACE_ORDER.map((s: Surface) => (
-                  <tr key={s}>
-                    <td>{SURFACE_LABEL[s]}</td>
-                    <td className="thr-num">{summary.turnsBySurface[s]}</td>
+                {summary.surfaces.map((s) => (
+                  <tr key={s.surface}>
+                    <td>{s.label}</td>
+                    <td className="thr-num">{s.turns}</td>
                   </tr>
                 ))}
               </tbody>

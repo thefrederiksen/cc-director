@@ -169,6 +169,7 @@ public sealed class StatsPageWindowTests
         Assert.Null(window);
         Assert.Contains("30 days", error);
         Assert.Contains("submission ledger keeps", error);
+        Assert.StartsWith("week " + week + ":", error);
 
         // W33 begins on 10 August and is still held.
         var (held, heldError) = Resolve(week: "2026-W33");
@@ -261,10 +262,115 @@ public sealed class StatsPageWindowTests
         Assert.Contains("30 days", error);
         Assert.Contains("submission ledger keeps", error);
 
-        // Exactly the retention is fine.
-        var (exact, exactError) = Resolve(from: "2026-08-01T00:00:00Z", to: "2026-08-31T00:00:00Z");
+        // Exactly the retention is fine - when it also ENDS now. The old control here ran 1 to 31 August, which
+        // is exactly thirty days long and begins before the ledger's reach on 5 September; it was served, and
+        // that was finding F-04. Span is not age.
+        var (exact, exactError) = Resolve(from: "2026-08-06T16:00:00Z", to: "2026-09-05T16:00:00Z");
         Assert.Null(exactError);
         Assert.NotNull(exact);
+        var (old, oldError) = Resolve(from: "2026-08-01T00:00:00Z", to: "2026-08-31T00:00:00Z");
+        Assert.Null(old);
+        Assert.Contains("begins before the 30 days", oldError);
+    }
+
+    // ---- age, not only span (final inspection finding F-04) -----------------------------------------
+
+    [Fact]
+    public void AShortExplicitWindow_FromBeforeTheLedgersReach_IsRefused_NotServedAsSilentZeroes()
+    {
+        // The inspector's probe: eight days in January 2020, asked in September 2026. Short enough, and gone.
+        var (window, error) = Resolve(from: "2020-01-01T00:00:00Z", to: "2020-01-08T00:00:00Z");
+        Assert.Null(window);
+        Assert.Contains("begins before the 30 days", error);
+        Assert.Contains("oldest instant it can answer is 2026-08-06T16:00:00Z", error);
+    }
+
+    [Fact]
+    public void TheOldestAnswerableStart_IsExactlyRetentionAgo_JustInsideIsServed_JustOutsideIsRefused()
+    {
+        var oldest = Now.AddDays(-30);
+        string At(DateTime t) => t.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'");
+        var to = At(oldest.AddDays(7));
+
+        var (exact, exactError) = Resolve(from: At(oldest), to: to);
+        Assert.Null(exactError);
+        Assert.Equal(oldest, exact!.FromUtc);
+
+        var (inside, insideError) = Resolve(from: At(oldest.AddSeconds(1)), to: to);
+        Assert.Null(insideError);
+        Assert.NotNull(inside);
+
+        var (outside, outsideError) = Resolve(from: At(oldest.AddSeconds(-1)), to: to);
+        Assert.Null(outside);
+        Assert.Contains("begins before the 30 days", outsideError);
+    }
+
+    [Fact]
+    public void AnExplicitWindowThatHasNotBegun_IsRefused()
+    {
+        var (window, error) = Resolve(from: "2026-09-06T00:00:00Z", to: "2026-09-07T00:00:00Z");
+        Assert.Null(window);
+        Assert.Contains("has not begun", error);
+    }
+
+    [Fact]
+    public void TheWeekForm_HasTheSameOldestStartBoundary_JustInsideExactlyAtAndJustOutside()
+    {
+        // Toronto's 2026-W33 begins Monday 10 August 2026 04:00Z. With now set so that thirty days ago is one
+        // second AFTER that Monday, the week is just outside; one second BEFORE, just inside; exactly at, served.
+        var monday = new DateTime(2026, 8, 10, 4, 0, 0, DateTimeKind.Utc);
+
+        var (exact, exactError) = StatsPageEndpoint.ResolveWindow(null, null, null, "2026-W33", Toronto, monday.AddDays(30));
+        Assert.Null(exactError);
+        Assert.Equal(monday, exact!.FromUtc);
+
+        var (inside, insideError) = StatsPageEndpoint.ResolveWindow(null, null, null, "2026-W33", Toronto, monday.AddDays(30).AddSeconds(-1));
+        Assert.Null(insideError);
+        Assert.NotNull(inside);
+
+        var (outside, outsideError) = StatsPageEndpoint.ResolveWindow(null, null, null, "2026-W33", Toronto, monday.AddDays(30).AddSeconds(1));
+        Assert.Null(outside);
+        Assert.Contains("week 2026-W33: the window begins before the 30 days", outsideError);
+    }
+
+    [Fact]
+    public void EveryRollingChoice_IsInsideThePolicy_ByConstruction()
+    {
+        // The choices are at most the retention, and a rolling window ends now, so the policy admits every one.
+        foreach (var days in ThrottleWindowChoices.Days)
+            Assert.Null(ThrottleDefinition.WindowRefusal(Now.AddDays(-days), Now, Now));
+        Assert.Null(ThrottleDefinition.WindowRefusal(Now.AddDays(-ThrottleDefinition.DefaultWindowDays), Now, Now));
+    }
+
+    // ---- the week's bounds across a clock change (the inspector's mutation guard) -------------------
+    //
+    // These pin WHY the week resolver is right: the end of the week is the NEXT LOCAL MONDAY converted to
+    // UTC, not the start plus seven UTC days. Replacing that calculation with fromUtc.AddDays(7) left the
+    // 37 shipped tests green; it does not leave these green.
+
+    [Fact]
+    public void AWeekThatSpansTheAutumnClockChange_Is169HoursLong_NotSevenUtcDays()
+    {
+        // Toronto's clocks go back on Sunday 1 November 2026. 2026-W44 begins Monday 26 October 00:00 EDT
+        // (04:00Z) and ends Monday 2 November 00:00 EST (05:00Z): 169 hours.
+        var (window, error) = StatsPageEndpoint.ResolveWindow(null, null, null, "2026-W44", Toronto, new DateTime(2026, 11, 3, 12, 0, 0, DateTimeKind.Utc));
+        Assert.Null(error);
+        Assert.Equal(new DateTime(2026, 10, 26, 4, 0, 0, DateTimeKind.Utc), window!.FromUtc);
+        Assert.Equal(new DateTime(2026, 11, 2, 5, 0, 0, DateTimeKind.Utc), window.ToUtc);
+        Assert.Equal(TimeSpan.FromHours(169), window.ToUtc - window.FromUtc);
+    }
+
+    [Fact]
+    public void AWeekThatSpansTheSpringClockChange_InAHalfHourZone_Is167HoursLong()
+    {
+        // Adelaide is UTC+9:30 and moves to +10:30 on Sunday 4 October 2026. 2026-W40 begins Monday
+        // 28 September 00:00 ACST (27 September 14:30Z) and ends Monday 5 October 00:00 ACDT (4 October
+        // 13:30Z): 167 hours.
+        var (window, error) = StatsPageEndpoint.ResolveWindow(null, null, null, "2026-W40", "Australia/Adelaide", new DateTime(2026, 10, 6, 12, 0, 0, DateTimeKind.Utc));
+        Assert.Null(error);
+        Assert.Equal(new DateTime(2026, 9, 27, 14, 30, 0, DateTimeKind.Utc), window!.FromUtc);
+        Assert.Equal(new DateTime(2026, 10, 4, 13, 30, 0, DateTimeKind.Utc), window.ToUtc);
+        Assert.Equal(TimeSpan.FromHours(167), window.ToUtc - window.FromUtc);
     }
 
     [Fact]

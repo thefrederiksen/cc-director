@@ -59,6 +59,26 @@ public static class ThrottleDefinition
     public static readonly int RetentionDays = (int)Activity.ActivityRetentionSweep.RetentionPeriod.TotalDays;
 
     /// <summary>
+    /// THE ONE RULE FOR WHAT WINDOW THE LEDGER CAN HONESTLY ANSWER (final inspection finding F-04), applied to
+    /// EVERY window form - the feed's explicit and week forms and the library's command line alike. A window
+    /// must end after it starts, must not be longer than the ledger keeps, must not BEGIN before the oldest
+    /// instant the ledger can still hold (now minus retention), and must have begun. Duration is not age: an
+    /// eight-day window from six years ago is short enough and still unanswerable, and it used to be served
+    /// as silent zeroes. Returns the refusal, in the words the caller shows, or null when the window is
+    /// answerable. The boundary is inclusive: a window beginning exactly at now minus retention is served.
+    /// </summary>
+    public static string? WindowRefusal(DateTime fromUtc, DateTime toUtc, DateTime nowUtc)
+    {
+        if (toUtc <= fromUtc) return "'to' must be later than 'from'";
+        if (toUtc - fromUtc > TimeSpan.FromDays(RetentionDays))
+            return $"the window is longer than the {RetentionDays} days the submission ledger keeps";
+        if (fromUtc < nowUtc.AddDays(-RetentionDays))
+            return $"the window begins before the {RetentionDays} days the submission ledger keeps; the oldest instant it can answer is {nowUtc.AddDays(-RetentionDays):yyyy-MM-dd'T'HH:mm:ss'Z'}";
+        if (fromUtc > nowUtc) return "the window has not begun yet";
+        return null;
+    }
+
+    /// <summary>
     /// The window the feed answers when none is asked for: a ROLLING seven days ending now (ruling R5, landed
     /// directly per R15). Seven because the owner asked for "seven days, so it lines up with the report";
     /// rolling rather than the report's calendar week because Your Throttle is a live dashboard that refreshes
@@ -199,6 +219,10 @@ public static class ThrottleDefinition
         foreach (var kv in buckets.OrderBy(k => k.Key.Modality, StringComparer.Ordinal).ThenBy(k => k.Key.Surface, StringComparer.Ordinal))
             dto.Buckets.Add(new ThrottleBucketDto { Modality = kv.Key.Modality, Surface = kv.Key.Surface, Turns = kv.Value });
 
+        // THE HEADLINE IS FINISHED HERE, from the same tallies the counts above were written from, and served as
+        // fields a consumer prints. Nothing downstream divides (finding F-01).
+        dto.Headline = Headline(counted, voice, typed, dto.Buckets);
+
         foreach (var kv in hours.OrderBy(k => k.Key, StringComparer.Ordinal))
             dto.HourlyTurns.Add(new ThrottleHourDto
             {
@@ -230,6 +254,73 @@ public static class ThrottleDefinition
             });
 
         return dto;
+    }
+
+    /// <summary>The surfaces the headline reports, in the order every page draws them, with the Gateway's own
+    /// display name for each. Every one is served on every answer, zero or not, so no consumer keeps a list.</summary>
+    public static readonly IReadOnlyList<(string Surface, string Label)> Surfaces = new[]
+    {
+        ("desktop", "Desktop"),
+        ("cockpit", "Cockpit"),
+        ("phone", "Phone"),
+        ("unknown", "Unknown"),
+    };
+
+    /// <summary>
+    /// THE ONE COMPUTATION OF THE FINAL RATIOS (finding F-01). The spoken, typed and per-surface shares of the
+    /// counted turns, each with the whole-number percentage the reader is shown, rounded half up - the rounding
+    /// both consumers used to do for themselves, now done once. With nothing counted, <c>HasData</c> is false
+    /// and every share and percent is null: the empty state is decided here, and a consumer renders it rather
+    /// than printing 0%.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">A bucket carries a surface this definition does not know.
+    /// Refused rather than folded into a guessed surface, the same way a malformed origin is refused.</exception>
+    public static ThrottleHeadlineDto Headline(long counted, long voice, long typed, IEnumerable<ThrottleBucketDto> buckets)
+    {
+        ArgumentNullException.ThrowIfNull(buckets);
+        var bySurface = new Dictionary<string, long>(StringComparer.Ordinal);
+        foreach (var b in buckets)
+        {
+            if (!Surfaces.Any(s => string.Equals(s.Surface, b.Surface, StringComparison.Ordinal)))
+                throw new InvalidOperationException(
+                    $"A counted bucket carries the surface '{b.Surface}', which is none of " +
+                    string.Join(", ", Surfaces.Select(s => s.Surface)) + ". The headline is refused rather than " +
+                    "folding an unknown surface into a guessed one; a new surface is a definition change made here on purpose.");
+            bySurface[b.Surface] = bySurface.TryGetValue(b.Surface, out var t) ? t + b.Turns : b.Turns;
+        }
+
+        var headline = new ThrottleHeadlineDto
+        {
+            Denominator = counted,
+            HasData = counted > 0,
+            Voice = ShareOf(voice, counted),
+            Typed = ShareOf(typed, counted),
+        };
+        foreach (var (surface, label) in Surfaces)
+        {
+            var turns = bySurface.TryGetValue(surface, out var t) ? t : 0;
+            var entry = ShareOf(turns, counted);
+            headline.Surfaces.Add(new ThrottleSurfaceShareDto
+            {
+                Surface = surface, Label = label, Turns = entry.Turns, Share = entry.Share, Percent = entry.Percent,
+            });
+            if (surface == "phone") headline.Phone = entry;
+        }
+        return headline;
+    }
+
+    /// <summary>One share of the denominator, with its rounding done: half up to a whole percent, the same
+    /// rule for every share on every consumer. Null share and percent when the denominator is zero.</summary>
+    private static ThrottleShareDto ShareOf(long turns, long denominator)
+    {
+        if (denominator <= 0) return new ThrottleShareDto { Turns = turns, Share = null, Percent = null };
+        var share = (double)turns / denominator;
+        return new ThrottleShareDto
+        {
+            Turns = turns,
+            Share = share,
+            Percent = (int)Math.Floor(share * 100.0 + 0.5),
+        };
     }
 
     /// <summary>"modality/surface" into its two tokens. Malformed is a producer defect and fails loud.</summary>

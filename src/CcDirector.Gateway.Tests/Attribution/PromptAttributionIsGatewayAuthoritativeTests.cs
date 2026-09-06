@@ -150,9 +150,9 @@ public sealed class PromptAttributionIsGatewayAuthoritativeTests : IAsyncLifetim
 
     // ---- helpers ----------------------------------------------------------------------------------
 
-    private async Task<HttpResponseMessage> PostPrompt(object body, string? bearer = null)
+    private async Task<HttpResponseMessage> PostPrompt(object body, string? bearer = null, string? sid = null)
     {
-        var req = new HttpRequestMessage(HttpMethod.Post, $"sessions/{_sid}/prompt") { Content = JsonContent.Create(body) };
+        var req = new HttpRequestMessage(HttpMethod.Post, $"sessions/{sid ?? _sid}/prompt") { Content = JsonContent.Create(body) };
         if (bearer is not null) req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", bearer);
         return await _http.SendAsync(req);
     }
@@ -273,6 +273,38 @@ public sealed class PromptAttributionIsGatewayAuthoritativeTests : IAsyncLifetim
         Assert.Equal(SendSource.UserInput, _ledger[1].Source);
     }
 
+    // ---- final inspection finding F-07: a claim is spent by a DELIVERED turn, not by an attempt -------
+
+    [Fact]
+    public async Task A_spoken_claim_whose_prompt_never_entered_a_session_is_still_spoken_on_the_retry()
+    {
+        // The words are transcribed once. The first send goes to a session id nobody has, so no turn enters
+        // any session - the claim used to be spent right there. The retry, the same words under the same id,
+        // is the person's one real spoken turn and must be filed as spoken.
+        var id = await TranscribeAnUtterance();
+
+        var failed = await PostPrompt(new { text = Transcript, appendEnter = true, deliveryUploadId = id }, sid: Guid.NewGuid().ToString());
+        Assert.NotEqual(HttpStatusCode.OK, failed.StatusCode);
+        lock (_arrived) Assert.Empty(_arrived);
+        Assert.Empty(_ledger);
+
+        var retry = await PostPrompt(new { text = Transcript, appendEnter = true, deliveryUploadId = id });
+        await AssertOk(retry);
+
+        Assert.Equal(id, LastArrived().DeliveryUploadId);
+        Assert.Equal(1, Bucket("voice", "unknown").Turns);
+        Assert.Equal(0, Bucket("typed", "unknown").Turns);
+        var entry = Assert.Single(_ledger);
+        Assert.Equal(SendSource.Delivery, entry.Source);
+        Assert.Equal(InputModality.Voice, entry.Origin!.Value.Modality);
+
+        // And having been delivered once, the claim is spent: a replay after the retry is typed.
+        await AssertOk(await PostPrompt(new { text = Transcript, appendEnter = true, deliveryUploadId = id }));
+        Assert.Null(LastArrived().DeliveryUploadId);
+        Assert.Equal(1, Bucket("voice", "unknown").Turns);
+        Assert.Equal(1, Bucket("typed", "unknown").Turns);
+    }
+
     [Fact]
     public async Task A_real_id_on_different_words_is_typed()
     {
@@ -337,6 +369,37 @@ public sealed class PromptAttributionIsGatewayAuthoritativeTests : IAsyncLifetim
         var entry = Assert.Single(_ledger);
         Assert.Equal(SendSource.UserInput, entry.Source);
         Assert.Equal(InputModality.Typed, entry.Origin!.Value.Modality);
+    }
+
+    /// <summary>
+    /// THE SAME MIXTURES THE DESKTOP IS FED (ruling R20). SpokenTurnRule.Examples is one table; the desktop's
+    /// BackgroundDictationSendTests feed every row through the real background Send and read the origin it
+    /// stamps, and this feeds every row through the REAL durable dictation route and reads the ledger. An
+    /// identical mixture cannot classify differently on the two surfaces without one of the tests going red.
+    /// </summary>
+    [Fact]
+    public async Task Every_example_mixture_is_classified_on_the_phone_exactly_as_the_shared_rule_says()
+    {
+        Assert.True(SpokenTurnRule.Examples.Count >= 6, "the shared table is too short to be a contract");
+        var expectedVoice = 0;
+        var expectedTyped = 0;
+        foreach (var example in SpokenTurnRule.Examples)
+        {
+            // The fixed provider transcribes every clip to Transcript, so the example's own transcript is
+            // what the route composes around; the typed halves and the earlier segment are the example's.
+            var countBefore = _ledger.Count;
+            var id = await DeliverDurableDictation(before: example.Before, prefix: example.Prefix, after: example.After);
+            var arrived = LastArrived();
+            var entry = _ledger[countBefore];
+            Assert.Equal(_ledger.Count, countBefore + 1);
+            var expected = example.Expected == InputModality.Voice ? SendSource.Delivery : SendSource.UserInput;
+            Assert.True(expected == entry.Source && example.Expected == entry.Origin!.Value.Modality,
+                $"'{example.Name}': the phone route recorded {entry.Origin!.Value.Modality} ({entry.Source}), the shared rule says {example.Expected}");
+            if (example.Expected == InputModality.Voice) { Assert.Equal(id, arrived.DeliveryUploadId); expectedVoice++; }
+            else { Assert.Null(arrived.DeliveryUploadId); expectedTyped++; }
+        }
+        Assert.Equal(expectedVoice, Bucket("voice", "unknown").Turns);
+        Assert.Equal(expectedTyped, Bucket("typed", "unknown").Turns);
     }
 
     [Fact]

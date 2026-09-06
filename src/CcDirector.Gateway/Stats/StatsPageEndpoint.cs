@@ -161,7 +161,6 @@ public static class StatsPageEndpoint
     internal static (ThrottleWindowDto? Window, string? Error) ResolveWindow(
         string? from, string? to, string? days, string? week, string timeZone, DateTime nowUtc)
     {
-        var retention = ThrottleDefinition.RetentionDays;
         var choices = ThrottleWindowChoices.Serve();
 
         var forms = new List<string>();
@@ -211,9 +210,10 @@ public static class StatsPageEndpoint
 
         if (!TryParseUtc(from!, out var fromUtc)) return (null, "'from' is not an ISO 8601 instant");
         if (!TryParseUtc(to!, out var toUtc)) return (null, "'to' is not an ISO 8601 instant");
-        if (toUtc <= fromUtc) return (null, "'to' must be later than 'from'");
-        if (toUtc - fromUtc > TimeSpan.FromDays(retention))
-            return (null, $"the window is longer than the {retention} days the submission ledger keeps");
+        // Span AND age, through the one policy every form uses (finding F-04): an explicit window used to be
+        // checked for its length only, so a short window from years ago was served as silent zeroes.
+        if (ThrottleDefinition.WindowRefusal(fromUtc, toUtc, nowUtc) is { } refusal)
+            return (null, refusal);
 
         return (new ThrottleWindowDto
         {
@@ -254,11 +254,9 @@ public static class StatsPageEndpoint
         var fromUtc = Reports.MorningReportWindow.StartOfLocalDayUtc(monday, zone);
         var toUtc = Reports.MorningReportWindow.StartOfLocalDayUtc(monday.AddDays(7), zone);
 
-        var retention = ThrottleDefinition.RetentionDays;
-        if (fromUtc < nowUtc.AddDays(-retention))
-            return (null, $"week {week} begins before the {retention} days the submission ledger keeps");
-        if (fromUtc > nowUtc)
-            return (null, $"week {week} has not begun yet");
+        // The same policy as every other form (finding F-04), worded for the week.
+        if (ThrottleDefinition.WindowRefusal(fromUtc, toUtc, nowUtc) is { } refusal)
+            return (null, $"week {week}: {refusal}");
 
         var sunday = monday.AddDays(6);
         return (new ThrottleWindowDto

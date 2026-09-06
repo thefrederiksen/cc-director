@@ -101,7 +101,7 @@ public sealed class BackgroundDictationSendTests : IDisposable
         await BackgroundDictationSend.RunAsync(
             recorder, prefix: "", NewSession(),
             new FakeTranscriber { Throws = new InvalidOperationException("provider down") },
-            submit: _ => throw new InvalidOperationException("must not submit without a transcript"),
+            submit: (_, _) => throw new InvalidOperationException("must not submit without a transcript"),
             onFailed: (err, composed) => { failedError = err; failedComposed = composed; },
             recordingsDirectory: _dir);
 
@@ -122,7 +122,7 @@ public sealed class BackgroundDictationSendTests : IDisposable
         await BackgroundDictationSend.RunAsync(
             recorder, prefix: "", NewSession(),
             new FakeTranscriber { Text = "the words" },
-            submit: text => { submitted = text; return Task.CompletedTask; },
+            submit: (text, _) => { submitted = text; return Task.CompletedTask; },
             onFailed: (_, _) => throw new InvalidOperationException("delivery must not report failure"),
             recordingsDirectory: _dir);
 
@@ -139,7 +139,7 @@ public sealed class BackgroundDictationSendTests : IDisposable
         await BackgroundDictationSend.RunAsync(
             recorder, prefix: "", NewSession(),
             new FakeTranscriber { Text = "the words" },
-            submit: _ => throw new InvalidOperationException("composer refused"),
+            submit: (_, _) => throw new InvalidOperationException("composer refused"),
             onFailed: (_, composed) => failedComposed = composed,
             recordingsDirectory: _dir);
 
@@ -158,10 +158,74 @@ public sealed class BackgroundDictationSendTests : IDisposable
         await BackgroundDictationSend.RunAsync(
             recorder, prefix: "", NewSession(),
             new FakeTranscriber { Text = "the words" },
-            submit: _ => throw new InvalidOperationException("composer refused"),
+            submit: (_, _) => throw new InvalidOperationException("composer refused"),
             onFailed: null,
             recordingsDirectory: _dir);
 
         Assert.Single(SavedRecordings());
+    }
+
+    // ---- ruling R20: the desktop classifies a mixture exactly as the phone does ------------------------
+
+    /// <summary>
+    /// THE SAME MIXTURES THE PHONE IS FED. SpokenTurnRule.Examples is one table; the phone's durable
+    /// dictation route test feeds every row through the real Gateway and reads the ledger, and this feeds
+    /// every row through the real background Send and reads the origin it stamps. Neither surface can
+    /// classify a row differently from the other without one of the two tests going red.
+    /// </summary>
+    [Fact]
+    public async Task TheBackgroundSend_StampsEveryExampleMixture_ExactlyAsTheSharedRuleSays()
+    {
+        Assert.True(SpokenTurnRule.Examples.Count >= 6, "the shared table is too short to be a contract");
+        Assert.Contains(SpokenTurnRule.Examples, e => e.Expected == InputModality.Voice);
+        Assert.Contains(SpokenTurnRule.Examples, e => e.Expected == InputModality.Typed);
+        foreach (var example in SpokenTurnRule.Examples)
+        {
+            var recorder = await NewRecordingRecorderAsync(new byte[] { 1, 2, 3, 4 });
+            InputOrigin? stamped = null;
+            string? submitted = null;
+            await BackgroundDictationSend.RunAsync(
+                recorder, prefix: example.Prefix, NewSession(),
+                new FakeTranscriber { Text = example.Transcript },
+                submit: (text, origin) => { submitted = text; stamped = origin; return Task.CompletedTask; },
+                before: example.Before,
+                after: example.After,
+                onFailed: (_, _) => throw new InvalidOperationException("delivery must not report failure"),
+                recordingsDirectory: _dir);
+            Assert.NotNull(stamped);
+            Assert.Equal(InputSurface.Desktop, stamped!.Value.Surface);
+            Assert.True(example.Expected == stamped.Value.Modality,
+                $"'{example.Name}': the desktop background Send stamped {stamped.Value.Modality}, the shared rule says {example.Expected}");
+            Assert.Contains(example.Transcript, submitted!);
+        }
+    }
+
+    /// <summary>The compose box path - a transcript INSERTED and sent with the ordinary Send - is held to
+    /// the same table: the text the box would hold for each row is classified by its provenance.</summary>
+    [Fact]
+    public void TheComposeBox_ClassifiesEveryExampleMixture_ExactlyAsTheSharedRuleSays()
+    {
+        foreach (var example in SpokenTurnRule.Examples)
+        {
+            var provenance = new SpokenTurnRule.ComposerProvenance();
+            // What the box holds after the Speak dialog inserted the transcript at the caret between the
+            // typed halves, with any earlier dictated segment inserted first.
+            var text = example.Before;
+            if (example.Prefix.Length > 0)
+            {
+                text = DictationText.InsertAt(text, text.Length, example.Prefix);
+                provenance.Inserted(example.Prefix);
+                provenance.TextChanged(text);
+            }
+            var caret = text.Length;
+            text = DictationText.InsertAt(text + example.After, caret, example.Transcript);
+            provenance.Inserted(example.Transcript);
+            provenance.TextChanged(text);
+
+            var origin = provenance.OriginFor(text);
+            Assert.Equal(InputSurface.Desktop, origin.Surface);
+            Assert.True(example.Expected == origin.Modality,
+                $"'{example.Name}': the compose box classified {origin.Modality}, the shared rule says {example.Expected}");
+        }
     }
 }

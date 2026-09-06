@@ -3289,14 +3289,17 @@ public partial class MainWindow : Window
                 PromptInput.Text = "";
                 EnsureDictationInfra(options);
                 FileLog.Write($"[MainWindow] BtnSpeak_Click: background dictation send to session {target.Id}, composer chars={composerText.Length}, caret={caret}");
+                // Whether a restored composition would still be one untouched transcript (ruling R20): only
+                // then does putting it back in the box register it as dictation for a later Send.
+                var spokenAlone = SpokenTurnRule.IsSpokenAlone(before, dlg.BackgroundPrefix, after);
                 _ = global::CcDirector.Avalonia.Voice.BackgroundDictationSend.RunAsync(
                     recorder, dlg.BackgroundPrefix, target, _dictationTranscriber!,
-                    submit: text => global::Avalonia.Threading.Dispatcher.UIThread.InvokeAsync(
-                        () => SubmitDictatedTextAsync(target, text)),
+                    submit: (text, origin) => global::Avalonia.Threading.Dispatcher.UIThread.InvokeAsync(
+                        () => SubmitDictatedTextAsync(target, text, origin)),
                     before: before,
                     after: after,
                     onFailed: (err, composedText) => global::Avalonia.Threading.Dispatcher.UIThread.Post(
-                        () => OnDictationFailed(target, composerText, composedText, err)));
+                        () => OnDictationFailed(target, composerText, composedText, err, spokenAlone)));
                 return;
             }
 
@@ -3309,7 +3312,7 @@ public partial class MainWindow : Window
                 FileLog.Write("[MainWindow] BtnSpeak_Click: dialog returned no text (cancelled or errored)");
                 return;
             }
-            InsertIntoPromptInputAt(transcript!, caretBefore);
+            InsertTranscriptIntoPromptInputAt(transcript!, caretBefore);
             FileLog.Write($"[MainWindow] BtnSpeak_Click: inserted {transcript!.Length} chars at caret={caretBefore}, shouldSubmit={dlg.ShouldSubmit}");
             if (dlg.ShouldSubmit)
             {
@@ -3349,6 +3352,23 @@ public partial class MainWindow : Window
     }
 
     /// <summary>
+    /// THE COMPOSE BOX'S OWN RECORD OF WHAT CAME FROM A MICROPHONE (ruling R20). PromptInput is a plain
+    /// text box; once a transcript was inserted nothing remembered it, so the ordinary Send stamped the
+    /// turn typed under a comment calling the composer typed "by construction" - false the moment
+    /// dictation was inserted, and the reason 25 of the owner's 655 typed turns in one week carried a
+    /// stored transcript verbatim. Every transcript inserted is registered here; the box's text-changed
+    /// hook forgets one the text no longer holds; Send asks it what the text IS.
+    /// </summary>
+    private readonly SpokenTurnRule.ComposerProvenance _composerProvenance = new();
+
+    /// <summary>Insert a TRANSCRIPT at the caret and remember that these words were spoken.</summary>
+    private void InsertTranscriptIntoPromptInputAt(string transcript, int caret)
+    {
+        InsertIntoPromptInputAt(transcript, caret);
+        _composerProvenance.Inserted(transcript);
+    }
+
+    /// <summary>
     /// Submit a background-dictated message straight into a specific session (fire-and-forget Send,
     /// spec section 10). Unlike <see cref="SendPrompt"/> this does NOT read the compose box - it
     /// targets the session the user dictated into (captured when the Speak dialog opened), so it lands
@@ -3356,20 +3376,22 @@ public partial class MainWindow : Window
     /// the important parts of the normal send: a history snapshot (a rewind point) and the shared
     /// submit path. Runs on the UI thread.
     /// </summary>
-    private async Task SubmitDictatedTextAsync(Session target, string text)
+    private async Task SubmitDictatedTextAsync(Session target, string text, InputOrigin origin)
     {
         if (string.IsNullOrWhiteSpace(text)) return;
         text = text.ReplaceLineEndings(" ").Trim();
         if (string.IsNullOrEmpty(text)) return;
 
-        FileLog.Write($"[MainWindow] SubmitDictatedTextAsync: {text.Length} chars to session {target.Id}");
+        FileLog.Write($"[MainWindow] SubmitDictatedTextAsync: {text.Length} chars to session {target.Id}, origin={origin.Modality}/{origin.Surface}");
 
         // Rewind point, exactly like SendPrompt.
         target.InitializeHistory();
         target.History?.TakeSnapshot();
 
-        // DevThrottle Stats: desktop dictation - spoken input from the local machine.
-        await target.SendTextAsync(text, origin: InputOrigin.DesktopVoice);
+        // DevThrottle Stats: the origin BackgroundDictationSend decided by the one rule (ruling R20) -
+        // DesktopVoice for the transcript alone, DesktopTyped for typed text composed around it. This
+        // used to stamp every background dictation DesktopVoice, mixture or not.
+        await target.SendTextAsync(text, origin: origin);
     }
 
     // ===== Fire-and-forget dictation delivery =====
@@ -3409,7 +3431,7 @@ public partial class MainWindow : Window
     /// submit failed; null when the failure happened before a transcript existed, in which case only the
     /// typed <paramref name="composerText"/> can be restored. Runs on the UI thread.
     /// </summary>
-    private async void OnDictationFailed(Session target, string composerText, string? composedText, string error)
+    private async void OnDictationFailed(Session target, string composerText, string? composedText, string error, bool spokenAlone)
     {
         try
         {
@@ -3417,7 +3439,14 @@ public partial class MainWindow : Window
             if (!string.IsNullOrEmpty(restore))
             {
                 if (_activeSession?.Session == target)
-                    InsertIntoPromptInputAt(restore, 0);
+                {
+                    // A restored composition that is one untouched transcript is still dictation when it is
+                    // sent later from the box (ruling R20); a mixture, or typed text alone, is typed.
+                    if (composedText is not null && spokenAlone)
+                        InsertTranscriptIntoPromptInputAt(restore, 0);
+                    else
+                        InsertIntoPromptInputAt(restore, 0);
+                }
                 else
                     target.PendingPromptText = global::CcDirector.Avalonia.Voice.DictationText.Join(restore, target.PendingPromptText ?? "");
             }
@@ -4734,6 +4763,10 @@ public partial class MainWindow : Window
     private void PromptInput_TextChanged(object? sender, TextChangedEventArgs e)
     {
         var text = PromptInput.Text ?? "";
+        // The box's provenance follows its text (ruling R20): a transcript the text no longer holds -
+        // deleted, replaced by a session switch, overwritten by a slash command - is forgotten here, in
+        // the one place every change to the box passes through.
+        _composerProvenance.TextChanged(text);
 
         // Only trigger when / is the first non-whitespace character
         var trimmed = text.TrimStart();
@@ -5007,8 +5040,14 @@ public partial class MainWindow : Window
         // Backends send Enter (CR/LF) explicitly after the text -- don't append a submit
         // newline here. Appending one used to trip LargeInputHandler's multi-line check
         // and route short single-line prompts through a temp file.
-        // DevThrottle Stats: the desktop composer is typed input from the local machine, by construction.
-        await _activeSession.Session.SendTextAsync(text, origin: InputOrigin.DesktopTyped);
+        // DevThrottle Stats: what the composer holds is what the box's own provenance says it is (ruling
+        // R20) - DesktopVoice when the text is one inserted transcript and nothing else, DesktopTyped
+        // otherwise. It was stamped DesktopTyped unconditionally, under a comment asserting the composer is
+        // typed "by construction"; it is not, the moment a transcript has been inserted into it.
+        var origin = _composerProvenance.OriginFor(text);
+        _composerProvenance.Reset();
+        FileLog.Write($"[MainWindow] SendPrompt: origin={origin.Modality}/{origin.Surface}");
+        await _activeSession.Session.SendTextAsync(text, origin: origin);
 
         if (isInteractiveCommand)
         {

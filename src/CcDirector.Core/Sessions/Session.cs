@@ -2538,8 +2538,19 @@ public sealed class Session : IDisposable
         {
             InputStats.RecordAgentTurn(characters);
         }
-        try { OnTurnSubmitted?.Invoke(source, origin); }
-        catch (Exception ex) { FileLog.Write($"[Session] OnTurnSubmitted handler failed: session={Id}, {ex.Message}"); }
+        // EACH OBSERVER ON ITS OWN (final inspection finding F-06). A multicast delegate invoked once stops at
+        // the first subscriber that throws, and a single try/catch around it hid that loss: a subscriber
+        // registered ahead of the activity producer could keep the submission ledger from ever hearing about
+        // a turn the tally had already counted - the exact split the earlier fix for InputStats.Changed was
+        // meant to close, one subscriber further along. So the invocation list is walked and every subscriber
+        // is called and guarded on its own; a fault in one is logged and the rest still run.
+        var observers = OnTurnSubmitted;
+        if (observers is null) return;
+        foreach (var observer in observers.GetInvocationList())
+        {
+            try { ((Action<SendSource?, InputOrigin?>)observer)(source, origin); }
+            catch (Exception ex) { FileLog.Write($"[Session] OnTurnSubmitted handler failed: session={Id}, handler={observer.Method.DeclaringType?.Name}.{observer.Method.Name}, {ex.Message}"); }
+        }
     }
 
     /// <summary>

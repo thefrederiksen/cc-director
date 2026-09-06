@@ -104,6 +104,66 @@ public sealed class SubmissionObserverFaultTests
         Assert.Equal(InputOrigin.DesktopTyped, entry.Origin);
     }
 
+    // ---- final inspection finding F-06: a sibling subscriber ahead of the ledger producer ------------
+
+    [Fact]
+    public async Task AThrowingSubscriber_RegisteredBeforeTheLedgerObserver_CannotStopTheLedgerEvent_OnTheTextPath()
+    {
+        // The inspector's probe: the throwing subscriber is on OnTurnSubmitted ITSELF, ahead of the ledger
+        // observer in the invocation list. One guarded multicast invoke stopped at the throw and the ledger
+        // heard nothing: expected 1, actual 0. Each subscriber now runs on its own.
+        var backend = new RecordingBackend();
+        var s = NewSession(backend);
+        var ledger = new List<(SendSource? Source, InputOrigin? Origin)>();
+        var faults = 0;
+        s.OnTurnSubmitted += (_, _) => { faults++; throw new InvalidOperationException("an earlier observer is broken"); };
+        s.OnTurnSubmitted += (source, origin) => ledger.Add((source, origin));
+
+        await s.SendTextAsync("hello", SendSource.UserInput, InputOrigin.DesktopTyped);
+
+        Assert.Equal(1, faults);
+        Assert.Single(backend.SentTexts);
+        Assert.Equal(1, Assert.Single(s.InputStats.Snapshot().Buckets).Turns);
+        var entry = Assert.Single(ledger);
+        Assert.Equal(SendSource.UserInput, entry.Source);
+        Assert.Equal(InputOrigin.DesktopTyped, entry.Origin);
+    }
+
+    [Fact]
+    public void AThrowingSubscriber_RegisteredBeforeTheLedgerObserver_CannotStopTheLedgerEvent_OnTheTerminalPath()
+    {
+        var backend = new RecordingBackend();
+        var s = NewSession(backend);
+        var ledger = new List<(SendSource? Source, InputOrigin? Origin)>();
+        s.OnTurnSubmitted += (_, _) => throw new InvalidOperationException("an earlier observer is broken");
+        s.OnTurnSubmitted += (source, origin) => ledger.Add((source, origin));
+
+        foreach (var ch in "typed at the terminal")
+            s.SendInput(System.Text.Encoding.UTF8.GetBytes(ch.ToString()), InputOrigin.DesktopTyped);
+        s.SendInput(new byte[] { 0x0D }, InputOrigin.DesktopTyped);
+
+        Assert.Equal(1, Assert.Single(s.InputStats.Snapshot().Buckets).Turns);
+        var entry = Assert.Single(ledger);
+        Assert.Null(entry.Source);
+        Assert.Equal(InputOrigin.DesktopTyped, entry.Origin);
+    }
+
+    [Fact]
+    public async Task EverySubscriber_RunsEvenWhenTwoOfThemThrow_AndTheCallerSeesNoException()
+    {
+        var backend = new RecordingBackend();
+        var s = NewSession(backend);
+        var heard = new List<string>();
+        s.OnTurnSubmitted += (_, _) => { heard.Add("first"); throw new InvalidOperationException("first is broken"); };
+        s.OnTurnSubmitted += (_, _) => heard.Add("second");
+        s.OnTurnSubmitted += (_, _) => { heard.Add("third"); throw new InvalidOperationException("third is broken"); };
+        s.OnTurnSubmitted += (_, _) => heard.Add("fourth");
+
+        await s.SendTextAsync("hello", SendSource.UserInput, InputOrigin.DesktopTyped);
+
+        Assert.Equal(new[] { "first", "second", "third", "fourth" }, heard);
+    }
+
     [Fact]
     public async Task AThrowingTallyObserver_CannotStopTheLedgerEvent_ForAnAgentDrivenTurn()
     {

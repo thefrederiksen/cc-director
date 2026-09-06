@@ -1,0 +1,11 @@
+{
+  "fixtures": {
+    "a-modality-token-the-consumers-do-not-know-is-refused.json": "52b446e564a8ec877684008089f2fb657bf53856cfe5594798b5898fd9f4bedc",
+    "a-surface-the-consumers-do-not-know-is-refused.json": "6c77948af1989fd4bf501c99bbf4f3a1ed798cfb032a4af5b9c2d687629c31f8",
+    "an-answer-without-a-headline-is-refused.json": "95e861bf5a9d0c71c0f3c55477431b8e715bca86e17a90c5e1e29b9a382584f5",
+    "the-empty-state-is-the-librarys-ruling.json": "2360dd7855dc915d5cc464da07773e43884132cb148a42f28064a451f1147081",
+    "the-headline-is-rendered-not-the-counts.json": "bd8432f19547a7a5cc83af6ea11b80803fdd19bb16df48c4730811b80d51b207",
+    "the-percent-field-is-printed-not-re-rounded.json": "6a03cee811de89694ea6762e6a4a1bbb3d8e329228565d70041b5c12c5ce55f8"
+  },
+  "inventory": "afa8bf062b4e8e09609274f4fb85be0c99e6dfd8de3e0f738af26715e88b0c55"
+}

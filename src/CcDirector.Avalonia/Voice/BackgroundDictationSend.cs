@@ -34,7 +34,9 @@ public static class BackgroundDictationSend
     /// <param name="target">The session the message is being dictated into (marked orange meanwhile).</param>
     /// <param name="transcriber">Transcribes the recorded clip.</param>
     /// <param name="submit">Submits the fully-composed turn text into the session (the dictation has
-    /// already been inserted at the caret inside the typed text).</param>
+    /// already been inserted at the caret inside the typed text) with the origin the turn is stamped
+    /// with: DesktopVoice when the transcript is the whole message, DesktopTyped when typed text or an
+    /// earlier segment was composed around it (ruling R20, the one rule in <see cref="SpokenTurnRule"/>).</param>
     /// <param name="before">Text the user had typed before the caret when Send was pressed.</param>
     /// <param name="after">Text the user had typed after the caret when Send was pressed.</param>
     /// <param name="onFailed">Called on the UI thread when the dictation could not be delivered. The
@@ -49,7 +51,7 @@ public static class BackgroundDictationSend
         string prefix,
         Session target,
         IDictationTranscriber transcriber,
-        Func<string, Task> submit,
+        Func<string, InputOrigin, Task> submit,
         string before = "",
         string after = "",
         Action<string, string?>? onFailed = null,
@@ -101,9 +103,16 @@ public static class BackgroundDictationSend
             //    the words survive as text now, so the WAV safety net is no longer needed either way.
             var dictation = DictationText.Join(prefix, transcript);
             var text = DictationText.InsertAt(before + after, before.Length, dictation).Trim();
+            // WHAT THE TURN IS, decided by the one rule both surfaces use (ruling R20): the transcript alone
+            // is spoken; typed text before or after it, or an earlier segment ahead of it, makes the whole
+            // message one typed turn - exactly as the phone's durable dictation classifies the same mixture.
+            // This used to stamp the whole composition DesktopVoice.
+            var origin = SpokenTurnRule.IsSpokenAlone(before, prefix, after) ? InputOrigin.DesktopVoice : InputOrigin.DesktopTyped;
+            if (origin.Modality == InputModality.Typed)
+                FileLog.Write($"[BackgroundDictationSend] session {target.Id}: typed text or an earlier segment composed around the dictation; delivered as ONE TYPED turn (ruling R20)");
             try
             {
-                await submit(text);
+                await submit(text, origin);
                 FileLog.Write($"[BackgroundDictationSend] delivered to session {target.Id}, chars={text.Length}");
             }
             catch (Exception ex)

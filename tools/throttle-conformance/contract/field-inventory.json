@@ -1,0 +1,219 @@
+{
+  "fields": {
+    "agentDrivenTurns": [
+      "browser",
+      "report"
+    ],
+    "agents[].agent": [
+      "browser"
+    ],
+    "agents[].agentDrivenTurns": [
+      "browser"
+    ],
+    "agents[].agentName": [
+      "browser"
+    ],
+    "agents[].sessions": [
+      "browser"
+    ],
+    "agents[].turns": [
+      "browser"
+    ],
+    "agents[].typedTurns": [
+      "browser"
+    ],
+    "agents[].voiceTurns": [
+      "browser"
+    ],
+    "buckets[].modality": [
+      "browser",
+      "report"
+    ],
+    "buckets[].surface": [
+      "browser",
+      "report"
+    ],
+    "buckets[].turns": [
+      "browser",
+      "report"
+    ],
+    "definition": [
+      "browser",
+      "report"
+    ],
+    "excluded.agentDriven": [
+      "browser",
+      "report"
+    ],
+    "excluded.framework": [
+      "browser",
+      "report"
+    ],
+    "excluded.noInputOrigin": [
+      "browser",
+      "report"
+    ],
+    "excluded.unresolved": [
+      "browser",
+      "report"
+    ],
+    "headline.denominator": [
+      "browser",
+      "report"
+    ],
+    "headline.hasData": [
+      "browser",
+      "report"
+    ],
+    "headline.phone.percent": [
+      "browser",
+      "report"
+    ],
+    "headline.phone.share": [
+      "browser",
+      "report"
+    ],
+    "headline.phone.turns": [
+      "browser",
+      "report"
+    ],
+    "headline.surfaces[].label": [
+      "browser",
+      "report"
+    ],
+    "headline.surfaces[].percent": [
+      "browser",
+      "report"
+    ],
+    "headline.surfaces[].share": [
+      "browser",
+      "report"
+    ],
+    "headline.surfaces[].surface": [
+      "browser",
+      "report"
+    ],
+    "headline.surfaces[].turns": [
+      "browser",
+      "report"
+    ],
+    "headline.typed.percent": [
+      "browser",
+      "report"
+    ],
+    "headline.typed.share": [
+      "browser",
+      "report"
+    ],
+    "headline.typed.turns": [
+      "browser",
+      "report"
+    ],
+    "headline.voice.percent": [
+      "browser",
+      "report"
+    ],
+    "headline.voice.share": [
+      "browser",
+      "report"
+    ],
+    "headline.voice.turns": [
+      "browser",
+      "report"
+    ],
+    "hourlyTurns[].hour": [
+      "browser"
+    ],
+    "hourlyTurns[].turns": [
+      "browser"
+    ],
+    "hourlyTurns[].typedTurns": [
+      "browser"
+    ],
+    "hourlyTurns[].voiceTurns": [
+      "browser"
+    ],
+    "ledger.earliestUtc": [
+      "browser",
+      "report"
+    ],
+    "ledger.retentionDays": [
+      "browser",
+      "report"
+    ],
+    "reposUnattributedTurns": [
+      "browser"
+    ],
+    "repos[].checkouts[]": [
+      "browser"
+    ],
+    "repos[].repo": [
+      "browser"
+    ],
+    "repos[].repoName": [
+      "browser"
+    ],
+    "repos[].sessions": [
+      "browser"
+    ],
+    "repos[].turns": [
+      "browser"
+    ],
+    "repos[].typedTurns": [
+      "browser"
+    ],
+    "repos[].voiceTurns": [
+      "browser"
+    ],
+    "sessions": [
+      "browser",
+      "report"
+    ],
+    "turns": [
+      "browser",
+      "report"
+    ],
+    "typedTurns": [
+      "browser",
+      "report"
+    ],
+    "unit": [
+      "browser",
+      "report"
+    ],
+    "voiceTurns": [
+      "browser",
+      "report"
+    ],
+    "window.choices[].days": [
+      "browser"
+    ],
+    "window.choices[].label": [
+      "browser"
+    ],
+    "window.days": [
+      "browser"
+    ],
+    "window.fromUtc": [
+      "browser",
+      "report"
+    ],
+    "window.isDefault": [
+      "browser"
+    ],
+    "window.kind": [
+      "browser"
+    ],
+    "window.label": [
+      "browser",
+      "report"
+    ],
+    "window.toUtc": [
+      "browser",
+      "report"
+    ],
+    "window.week": [
+      "browser"
+    ]
+  }
+}

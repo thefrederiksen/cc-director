@@ -1,0 +1,162 @@
+{
+  "expected": {
+    "outcome": "refused"
+  },
+  "name": "a-modality-token-the-consumers-do-not-know-is-refused",
+  "why": "A bucket carries the modality 'spoken'. The library only ever writes 'voice' and 'typed'; a consumer that maps every other token to typed (or to voice) is guessing. Both must refuse.",
+  "wire": {
+    "agentDrivenTurns": 4,
+    "agents": [
+      {
+        "agent": "ClaudeCode",
+        "agentDrivenTurns": 4,
+        "agentName": "Claude Code",
+        "sessions": 3,
+        "turns": 1786,
+        "typedTurns": 771,
+        "voiceTurns": 1015
+      }
+    ],
+    "buckets": [
+      {
+        "modality": "typed",
+        "surface": "desktop",
+        "turns": 696
+      },
+      {
+        "modality": "typed",
+        "surface": "phone",
+        "turns": 68
+      },
+      {
+        "modality": "typed",
+        "surface": "unknown",
+        "turns": 7
+      },
+      {
+        "modality": "spoken",
+        "surface": "desktop",
+        "turns": 835
+      },
+      {
+        "modality": "spoken",
+        "surface": "phone",
+        "turns": 180
+      }
+    ],
+    "definition": "The shared figure is computed over activity_events rows where EventType is turn-submitted and InputOrigin is present, grouped by the origin's modality and surface.",
+    "excluded": {
+      "agentDriven": 4,
+      "framework": 160,
+      "noInputOrigin": 662,
+      "unresolved": 498
+    },
+    "headline": {
+      "denominator": 1786,
+      "hasData": true,
+      "phone": {
+        "percent": 14,
+        "share": 0.13885778275475924,
+        "turns": 248
+      },
+      "surfaces": [
+        {
+          "label": "Desktop",
+          "percent": 86,
+          "share": 0.8572228443449048,
+          "surface": "desktop",
+          "turns": 1531
+        },
+        {
+          "label": "Cockpit",
+          "percent": 0,
+          "share": 0.0,
+          "surface": "cockpit",
+          "turns": 0
+        },
+        {
+          "label": "Phone",
+          "percent": 14,
+          "share": 0.13885778275475924,
+          "surface": "phone",
+          "turns": 248
+        },
+        {
+          "label": "Unknown",
+          "percent": 0,
+          "share": 0.003919372900335946,
+          "surface": "unknown",
+          "turns": 7
+        }
+      ],
+      "typed": {
+        "percent": 43,
+        "share": 0.4316909294512878,
+        "turns": 771
+      },
+      "voice": {
+        "percent": 57,
+        "share": 0.5683090705487122,
+        "turns": 1015
+      }
+    },
+    "hourlyTurns": [
+      {
+        "hour": "2026-08-24T13",
+        "turns": 1786,
+        "typedTurns": 771,
+        "voiceTurns": 1015
+      }
+    ],
+    "ledger": {
+      "earliestUtc": "2026-08-06T14:17:15Z",
+      "retentionDays": 30
+    },
+    "repos": [
+      {
+        "checkouts": [
+          "D:/repo-alpha"
+        ],
+        "repo": "owner/repo-alpha",
+        "repoName": "repo-alpha",
+        "sessions": 3,
+        "turns": 1786,
+        "typedTurns": 771,
+        "voiceTurns": 1015
+      }
+    ],
+    "reposUnattributedTurns": 0,
+    "sessions": 3,
+    "turns": 1786,
+    "typedTurns": 771,
+    "unit": "submitted turns",
+    "voiceTurns": 1015,
+    "window": {
+      "choices": [
+        {
+          "days": 1,
+          "label": "Last 24 hours"
+        },
+        {
+          "days": 7,
+          "label": "Last 7 days"
+        },
+        {
+          "days": 14,
+          "label": "Last 14 days"
+        },
+        {
+          "days": 30,
+          "label": "Last 30 days"
+        }
+      ],
+      "days": null,
+      "fromUtc": "2026-08-24T04:00:00Z",
+      "isDefault": false,
+      "kind": "explicit",
+      "label": "2026-08-24 04:00 to 2026-08-31 04:00 UTC",
+      "toUtc": "2026-08-31T04:00:00Z",
+      "week": null
+    }
+  }
+}

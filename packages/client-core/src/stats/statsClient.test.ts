@@ -8,12 +8,16 @@ import {
   summarizeRepos,
   summarizeAgents,
   formatShare,
+  formatPercent,
   last24HourKeys,
   windowSeries,
   emptyInputHour,
   localHourLabel,
   safeTimeZone,
+  type Surface,
   type ThrottleFigure,
+  type ThrottleHeadline,
+  type ThrottleShare,
   type RepoStat,
   type AgentStat,
   type InputHour,
@@ -32,7 +36,32 @@ const CHOICES = [
   { days: 30, label: "Last 30 days" },
 ];
 
-function figure(buckets: ThrottleFigure["buckets"]): ThrottleFigure {
+// A headline built EXPLICITLY, never derived from the buckets: the pages render the Gateway's headline
+// verbatim (final inspection finding F-01), so a test that derived the expected headline from the buckets
+// would be asserting the arithmetic this client no longer does.
+function shareOf(turns: number, denominator: number): ThrottleShare {
+  if (denominator === 0) return { turns, share: null, percent: null };
+  const share = turns / denominator;
+  return { turns, share, percent: Math.floor(share * 100 + 0.5) };
+}
+
+function headline(denominator: number, voice: number, typed: number, bySurface: Partial<Record<Surface, number>>): ThrottleHeadline {
+  const labels: Record<Surface, string> = { desktop: "Desktop", cockpit: "Cockpit", phone: "Phone", unknown: "Unknown" };
+  return {
+    denominator,
+    hasData: denominator > 0,
+    voice: shareOf(voice, denominator),
+    typed: shareOf(typed, denominator),
+    phone: shareOf(bySurface.phone ?? 0, denominator),
+    surfaces: (["desktop", "cockpit", "phone", "unknown"] as Surface[]).map((surface) => ({
+      surface, label: labels[surface], ...shareOf(bySurface[surface] ?? 0, denominator),
+    })),
+  };
+}
+
+function figure(buckets: ThrottleFigure["buckets"], head?: ThrottleHeadline): ThrottleFigure {
+  const bySurface: Partial<Record<Surface, number>> = {};
+  for (const b of buckets) bySurface[b.surface] = (bySurface[b.surface] ?? 0) + b.turns;
   return {
     definition: "The shared figure is computed over activity_events rows where EventType is turn-submitted and InputOrigin is present, grouped by the origin's modality and surface.",
     unit: "submitted turns",
@@ -47,6 +76,12 @@ function figure(buckets: ThrottleFigure["buckets"]): ThrottleFigure {
       choices: CHOICES,
     },
     ledger: { retentionDays: 30, earliestUtc: "2026-08-06T04:00:00Z" },
+    headline: head ?? headline(
+      buckets.reduce((t, b) => t + b.turns, 0),
+      buckets.filter((b) => b.modality === "voice").reduce((t, b) => t + b.turns, 0),
+      buckets.filter((b) => b.modality === "typed").reduce((t, b) => t + b.turns, 0),
+      bySurface,
+    ),
     turns: buckets.reduce((t, b) => t + b.turns, 0),
     voiceTurns: buckets.filter((b) => b.modality === "voice").reduce((t, b) => t + b.turns, 0),
     typedTurns: buckets.filter((b) => b.modality === "typed").reduce((t, b) => t + b.turns, 0),
@@ -71,7 +106,7 @@ function agent(agentToken: string, agentName: string, turns: number, voiceTurns:
 }
 
 describe("summarizeThrottle", () => {
-  it("computes turn totals and shares across modality and surface", () => {
+  it("lays the Gateway's headline out verbatim: every count, share and percent is the headline's", () => {
     const s = summarizeThrottle(
       figure([
         { modality: "voice", surface: "phone", turns: 3 },
@@ -84,25 +119,60 @@ describe("summarizeThrottle", () => {
     expect(s.turnsBySurface.phone).toBe(3);
     expect(s.turnsBySurface.desktop).toBe(1);
     expect(s.voiceShare).toBeCloseTo(0.75);
+    expect(s.voicePercent).toBe(75);
     expect(s.phoneShare).toBeCloseTo(0.75);
+    expect(s.phonePercent).toBe(75);
+    expect(s.surfaces.map((x) => x.label)).toEqual(["Desktop", "Cockpit", "Phone", "Unknown"]);
     expect(s.hasData).toBe(true);
   });
 
-  it("reports null shares (not 0%) when no turns are counted yet", () => {
+  // THE POINT OF F-01. The headline says 57 per cent spoken and 14 from the phone; the buckets say 80 and
+  // 100. The summary is the headline's, and nothing on it can be reached by dividing the buckets.
+  it("renders the headline even when the counts and buckets disagree with it - it never recomputes", () => {
+    const head = headline(1786, 1015, 771, { desktop: 1531, phone: 248, unknown: 7 });
+    const s = summarizeThrottle(
+      figure([
+        { modality: "voice", surface: "phone", turns: 8 },
+        { modality: "typed", surface: "desktop", turns: 2 },
+      ], head),
+    );
+    expect(s.totalTurns).toBe(1786);
+    expect(s.voiceTurns).toBe(1015);
+    expect(s.voicePercent).toBe(57);
+    expect(s.phonePercent).toBe(14);
+    expect(s.turnsBySurface.phone).toBe(248);
+    expect(s.turnsBySurface.desktop).toBe(1531);
+  });
+
+  it("prints the Gateway's percent field, not its own rounding of the share", () => {
+    const head = headline(8, 3, 5, { phone: 3, desktop: 5 });
+    head.voice.percent = 99;
+    const s = summarizeThrottle(figure([], head));
+    expect(s.voiceShare).toBeCloseTo(0.375);
+    expect(s.voicePercent).toBe(99);
+    expect(formatShare(s.voiceShare)).toBe("38%");
+    expect(formatPercent(s.voicePercent)).toBe("99%");
+  });
+
+  it("reports null shares and percents (not 0%) when the Gateway says nothing is counted", () => {
     const s = summarizeThrottle(figure([]));
     expect(s.totalTurns).toBe(0);
     expect(s.voiceShare).toBeNull();
+    expect(s.voicePercent).toBeNull();
     expect(s.phoneShare).toBeNull();
+    expect(s.phonePercent).toBeNull();
     expect(s.hasData).toBe(false);
+    expect(formatPercent(s.voicePercent)).toBe("n/a");
   });
 
-  // The unknown surface is a recorded answer ("typed, somewhere we could not name"), kept as its own bucket
+  // The unknown surface is a recorded answer ("typed, somewhere we could not name"), kept as its own entry
   // rather than folded into a real surface - and it is still a counted turn in the voice share.
-  it("keeps an unknown surface as its own bucket and inside the totals", () => {
+  it("keeps an unknown surface as its own entry and inside the totals", () => {
     const s = summarizeThrottle(figure([{ modality: "typed", surface: "unknown", turns: 7 }]));
     expect(s.totalTurns).toBe(7);
     expect(s.turnsBySurface.unknown).toBe(7);
     expect(s.voiceShare).toBe(0);
+    expect(s.voicePercent).toBe(0);
   });
 });
 
@@ -365,6 +435,26 @@ describe("throttleWindowQuery and getThrottle", () => {
 
     stubFetch(servedBody(servedWindow({ choices: [{ days: 7 }] })));
     await expect(getThrottle(undefined)).rejects.toThrow(/without a length and a label/);
+  });
+
+  it("refuses a served answer without the headline, rather than computing one of its own", async () => {
+    const throttle = { ...figure([]), window: servedWindow() } as Record<string, unknown>;
+    delete throttle.headline;
+    stubFetch({ ...servedBody(servedWindow()), throttle });
+    await expect(getThrottle(undefined)).rejects.toThrow(/without the headline/);
+  });
+
+  it("refuses a headline surface, a bucket modality, or a bucket surface it does not know", async () => {
+    const head = headline(1, 1, 0, { phone: 1 });
+    const badSurface = { ...head, surfaces: [...head.surfaces, { surface: "watch", label: "Watch", turns: 0, share: 0, percent: 0 }] };
+    stubFetch({ ...servedBody(servedWindow()), throttle: { ...figure([], head), window: servedWindow(), headline: badSurface } });
+    await expect(getThrottle(undefined)).rejects.toThrow(/headline surface this client does not know: watch/);
+
+    stubFetch({ ...servedBody(servedWindow()), throttle: { ...figure([], head), window: servedWindow(), buckets: [{ modality: "spoken", surface: "phone", turns: 1 }] } });
+    await expect(getThrottle(undefined)).rejects.toThrow(/bucket modality this client does not know: spoken/);
+
+    stubFetch({ ...servedBody(servedWindow()), throttle: { ...figure([], head), window: servedWindow(), buckets: [{ modality: "voice", surface: "Phone", turns: 1 }] } });
+    await expect(getThrottle(undefined)).rejects.toThrow(/bucket surface this client does not know: Phone/);
   });
 
   it("still passes the self-hosted sentence through untouched", async () => {

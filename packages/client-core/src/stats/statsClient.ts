@@ -5,8 +5,10 @@
 // COMES FROM ONE DEFINITION OVER THE SUBMISSION LEDGER (mission "Clean up Your Throttle", 2026-09-05,
 // ruling R9): the Gateway computes the figure, states the window it covers and the definition it used,
 // and discloses what it left out. This client is DUMB on purpose (CLAUDE.md rule 7): it normalizes the
-// wire shape and does share arithmetic over the counts the Gateway sent. It never decides what a state
-// means - a self-hosted Gateway answers with a sentence, and the pages render that sentence verbatim.
+// wire shape and renders the Gateway's FINISHED headline - the shares, their denominator, the rounded
+// percentages and the empty state all arrive computed (final inspection finding F-01). It never divides a
+// count, never re-totals a bucket, and never decides what a state means - a self-hosted Gateway answers with
+// a sentence, and the pages render that sentence verbatim.
 //
 // No character volume anywhere here (ruling R16): the ledger carries none, and a number the page cannot
 // vouch for is not shown with an apology attached. Read-only; every request is root-relative to the
@@ -156,6 +158,37 @@ export interface ThrottleExcluded {
   unresolved: number;
 }
 
+/** One share of the headline denominator, as the Gateway finished it: the count, the fraction, and the
+ * whole-number percentage the reader is shown (rounded half up, once, on the Gateway). Fraction and percent
+ * are null when nothing was counted. Mirrors the Gateway ThrottleShareDto. */
+export interface ThrottleShare {
+  turns: number;
+  share: number | null;
+  percent: number | null;
+}
+
+/** One surface's share of the headline, with the Gateway's own display name. */
+export interface ThrottleSurfaceShare extends ThrottleShare {
+  surface: Surface;
+  label: string;
+}
+
+/** THE HEADLINE, finished on the Gateway (final inspection finding F-01): the two rings' shares with their
+ * denominator, their rounding and their empty state. The pages print these fields; nothing here divides.
+ * Mirrors the Gateway ThrottleHeadlineDto. */
+export interface ThrottleHeadline {
+  /** The denominator of every share here: the counted turns. */
+  denominator: number;
+  /** False when nothing was counted; then every share and percent is null and the page shows its empty state. */
+  hasData: boolean;
+  voice: ThrottleShare;
+  typed: ThrottleShare;
+  /** The phone entry of `surfaces`, at the top because it is the second ring. */
+  phone: ThrottleShare;
+  /** Every surface, in the Gateway's drawing order, zero or not. */
+  surfaces: ThrottleSurfaceShare[];
+}
+
 /** THE FIGURE: every count of turns the pages show, from one definition over one substrate. Mirrors the
  * Gateway ThrottleFigureDto. */
 export interface ThrottleFigure {
@@ -165,6 +198,8 @@ export interface ThrottleFigure {
   unit: string;
   window: ThrottleWindow;
   ledger: ThrottleLedger;
+  /** The finished headline. Rendered verbatim; never recomputed from the counts below. */
+  headline: ThrottleHeadline;
   /** Turns the definition counted. */
   turns: number;
   voiceTurns: number;
@@ -212,28 +247,48 @@ export interface ThrottleUnavailable {
 /** The GET /stats/data body. */
 export type ThrottleData = ThrottleServed | ThrottleUnavailable;
 
-/** A derived, presentation-ready summary of the figure. Shares are fractions in [0,1], or null when
- * there are no counted turns (an honest empty state - never a fabricated 0%). */
+/** The headline as the pages lay it out - EVERY value here is the Gateway's headline field, read verbatim
+ * (final inspection finding F-01). Shares are fractions in [0,1] for drawing an arc; percents are the
+ * whole numbers the rings print; both are null when there are no counted turns (an honest empty state -
+ * never a fabricated 0%). */
 export interface ThrottleSummary {
+  /** The headline denominator: the counted turns. */
   totalTurns: number;
   voiceTurns: number;
   typedTurns: number;
   /** Voice share of TURNS, or null when no turns are counted. */
   voiceShare: number | null;
+  /** The whole-number percentage the voice ring prints, as the Gateway rounded it; null when no turns. */
+  voicePercent: number | null;
   /** Turns per surface. */
   turnsBySurface: Record<Surface, number>;
+  /** Every surface with its share and percent, in the Gateway's drawing order. */
+  surfaces: ThrottleSurfaceShare[];
   /** Phone share of TURNS, or null when no turns are counted. */
   phoneShare: number | null;
+  /** The whole-number percentage the phone ring prints, as the Gateway rounded it; null when no turns. */
+  phonePercent: number | null;
   hasData: boolean;
 }
 
 const SURFACES: readonly Surface[] = ["desktop", "cockpit", "phone", "unknown"];
 
+const MODALITIES: readonly Modality[] = ["typed", "voice"];
+
+/** One bucket exactly as the Gateway wrote it. REFUSES TO GUESS: the library writes only "typed" and "voice"
+ * and only the four surfaces, so any other token is an answer this client cannot render and is thrown as an
+ * error the page shows. It used to map every non-"voice" token to typed and every unknown surface to
+ * "unknown", which is how a renamed token would have silently become a typed turn (final inspection, F-01). */
 function normalizeBucket(raw: unknown): ThrottleBucket {
   const b = (raw ?? {}) as Partial<Record<keyof ThrottleBucket, unknown>>;
-  const modality: Modality = String(b.modality).toLowerCase() === "voice" ? "voice" : "typed";
-  const s = String(b.surface).toLowerCase();
-  const surface: Surface = s === "desktop" || s === "cockpit" || s === "phone" ? s : "unknown";
+  const modality = MODALITIES.find((m) => m === b.modality);
+  if (modality === undefined) {
+    throw new Error("GET /stats/data answered a bucket modality this client does not know: " + String(b.modality));
+  }
+  const surface = SURFACES.find((s) => s === b.surface);
+  if (surface === undefined) {
+    throw new Error("GET /stats/data answered a bucket surface this client does not know: " + String(b.surface));
+  }
   return { modality, surface, turns: num(b.turns) };
 }
 
@@ -371,6 +426,7 @@ function normalizeFigure(raw: unknown): ThrottleFigure {
       retentionDays: num(l.retentionDays),
       earliestUtc: typeof l.earliestUtc === "string" ? l.earliestUtc : null,
     },
+    headline: normalizeHeadline(f.headline),
     turns: num(f.turns),
     voiceTurns: num(f.voiceTurns),
     typedTurns: num(f.typedTurns),
@@ -388,6 +444,50 @@ function normalizeFigure(raw: unknown): ThrottleFigure {
     },
     agentDrivenTurns: num(f.agentDrivenTurns),
   };
+}
+
+/** The headline as the Gateway finished it. REFUSES TO GUESS: an answer without the headline, or with a
+ * share that is not a number-or-null, or a surface this client does not know, is not a figure this client
+ * can render - it is thrown as an error the page shows. It is never rebuilt from the counts, because
+ * rebuilding it is exactly the second computation finding F-01 removed. */
+function normalizeHeadline(raw: unknown): ThrottleHeadline {
+  if (raw === null || typeof raw !== "object") {
+    throw new Error("GET /stats/data answered without the headline the rings render; this client does not compute one");
+  }
+  const h = raw as Partial<Record<keyof ThrottleHeadline, unknown>>;
+  if (typeof h.denominator !== "number" || typeof h.hasData !== "boolean" || !Array.isArray(h.surfaces)) {
+    throw new Error("GET /stats/data answered a headline without its denominator, empty state, or surfaces");
+  }
+  const surfaces = h.surfaces.map((raw): ThrottleSurfaceShare => {
+    const entry = (raw ?? {}) as Partial<Record<keyof ThrottleSurfaceShare, unknown>>;
+    const surface = SURFACES.find((s) => s === entry.surface);
+    if (surface === undefined || typeof entry.label !== "string") {
+      throw new Error("GET /stats/data answered a headline surface this client does not know: " + String(entry.surface));
+    }
+    return { surface, label: entry.label, ...normalizeShare(entry, "surface " + surface) };
+  });
+  return {
+    denominator: h.denominator,
+    hasData: h.hasData,
+    voice: normalizeShare(h.voice, "voice"),
+    typed: normalizeShare(h.typed, "typed"),
+    phone: normalizeShare(h.phone, "phone"),
+    surfaces,
+  };
+}
+
+function normalizeShare(raw: unknown, what: string): ThrottleShare {
+  if (raw === null || typeof raw !== "object") {
+    throw new Error("GET /stats/data answered a headline without its " + what + " share");
+  }
+  const s = raw as Partial<Record<keyof ThrottleShare, unknown>>;
+  const numberOrNull = (v: unknown, field: string): number | null => {
+    if (v === null || v === undefined) return null;
+    if (typeof v === "number" && Number.isFinite(v)) return v;
+    throw new Error("GET /stats/data answered a headline " + what + " " + field + " that is neither a number nor null");
+  };
+  if (typeof s.turns !== "number") throw new Error("GET /stats/data answered a headline " + what + " share without its turns");
+  return { turns: s.turns, share: numberOrNull(s.share, "share"), percent: numberOrNull(s.percent, "percent") };
 }
 
 function normalizeAgent(raw: unknown): AgentStat {
@@ -463,31 +563,25 @@ function normalizeConcurrency(raw: unknown): ConcurrencyStats | null {
   };
 }
 
-/** Derive the honest headline summary from the figure. Turn shares are over counted turns only; with zero
- * turns the shares are null so the caller renders an empty state rather than "0%". */
+/** Lay the Gateway's headline out for the pages. EVERY value is read from `figure.headline` verbatim: the
+ * denominator, each count, each fraction, each rounded percent, and the empty state (final inspection
+ * finding F-01). The counts and buckets on the figure are not consulted, so a served answer whose counts
+ * disagree with its headline renders the headline - the same headline the mentor report renders. */
 export function summarizeThrottle(figure: ThrottleFigure): ThrottleSummary {
+  const h = figure.headline;
   const turnsBySurface: Record<Surface, number> = { desktop: 0, cockpit: 0, phone: 0, unknown: 0 };
-  let totalTurns = 0;
-  let voiceTurns = 0;
-  let typedTurns = 0;
-
-  for (const b of figure.buckets) {
-    totalTurns += b.turns;
-    if (b.modality === "voice") voiceTurns += b.turns;
-    else typedTurns += b.turns;
-    turnsBySurface[b.surface] += b.turns;
-  }
-
-  const share = (part: number): number | null => (totalTurns > 0 ? part / totalTurns : null);
-
+  for (const s of h.surfaces) turnsBySurface[s.surface] = s.turns;
   return {
-    totalTurns,
-    voiceTurns,
-    typedTurns,
-    voiceShare: share(voiceTurns),
+    totalTurns: h.denominator,
+    voiceTurns: h.voice.turns,
+    typedTurns: h.typed.turns,
+    voiceShare: h.voice.share,
+    voicePercent: h.voice.percent,
     turnsBySurface,
-    phoneShare: share(turnsBySurface.phone),
-    hasData: totalTurns > 0,
+    surfaces: h.surfaces,
+    phoneShare: h.phone.share,
+    phonePercent: h.phone.percent,
+    hasData: h.hasData,
   };
 }
 
@@ -595,6 +689,13 @@ export function summarizeRepos(repos: RepoStat[]): RepoSummary {
 export function formatShare(fraction: number | null): string {
   if (fraction === null) return "n/a";
   return `${Math.round(fraction * 100)}%`;
+}
+
+/** The Gateway's rounded whole-number percentage as the ring prints it, or the ASCII no-data placeholder.
+ * No rounding happens here: the number arrives finished (final inspection finding F-01). */
+export function formatPercent(percent: number | null): string {
+  if (percent === null) return "n/a";
+  return String(percent) + "%";
 }
 
 /** Human labels for the wire tokens (ASCII only). */

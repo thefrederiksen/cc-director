@@ -264,5 +264,96 @@ public sealed class ThrottleDefinitionTests
         Assert.Equal(502, figure.Excluded.Unresolved);
         Assert.Equal(160, figure.Excluded.Framework);
         Assert.Equal(662, figure.Excluded.NoInputOrigin);
+
+        // The headline is the library's, finished: 1015 of 1786 is 56.83 per cent, printed as 57; 180 of 1786
+        // from the phone is 10.08 per cent, printed as 10. Neither consumer divides these for itself (F-01).
+        Assert.True(figure.Headline.HasData);
+        Assert.Equal(1786, figure.Headline.Denominator);
+        Assert.Equal(1015, figure.Headline.Voice.Turns);
+        Assert.Equal(57, figure.Headline.Voice.Percent);
+        Assert.Equal(43, figure.Headline.Typed.Percent);
+        Assert.Equal(248, figure.Headline.Phone.Turns);
+        Assert.Equal(14, figure.Headline.Phone.Percent);
+    }
+
+    // ---- the headline: the final ratios are computed here, once (final inspection finding F-01) ----------
+
+    [Fact]
+    public void TheHeadline_CarriesTheDenominator_EveryShare_AndTheRoundedPercentTheReaderSees()
+    {
+        // 3 voice of 8 counted is 37.5 per cent, which half-up rounding prints as 38; 5 typed is 62.5, printed
+        // as 63. Two consumers rounding a fraction each on their own is how 38 and 37 end up on two pages.
+        var rows = new List<LedgerSubmission>
+        {
+            Row("voice/phone", "Delivery"), Row("voice/phone", "Delivery"), Row("voice/desktop", "UserInput"),
+            Row("typed/desktop", null), Row("typed/desktop", null), Row("typed/desktop", null),
+            Row("typed/cockpit", "UserInput"), Row("typed/unknown", "UserInput"),
+        };
+
+        var h = Fold(rows, From, To, NoSessions).Headline;
+
+        Assert.True(h.HasData);
+        Assert.Equal(8, h.Denominator);
+        Assert.Equal(3, h.Voice.Turns);
+        Assert.Equal(0.375, h.Voice.Share);
+        Assert.Equal(38, h.Voice.Percent);
+        Assert.Equal(5, h.Typed.Turns);
+        Assert.Equal(63, h.Typed.Percent);
+        Assert.Equal(2, h.Phone.Turns);
+        Assert.Equal(25, h.Phone.Percent);
+        // Every surface, in the drawing order, zero or not, with the Gateway's own label.
+        Assert.Equal(new[] { "desktop", "cockpit", "phone", "unknown" }, h.Surfaces.Select(s => s.Surface).ToArray());
+        Assert.Equal(new[] { "Desktop", "Cockpit", "Phone", "Unknown" }, h.Surfaces.Select(s => s.Label).ToArray());
+        Assert.Equal(new long[] { 4, 1, 2, 1 }, h.Surfaces.Select(s => s.Turns).ToArray());
+        Assert.Equal(new int?[] { 50, 13, 25, 13 }, h.Surfaces.Select(s => s.Percent).ToArray());
+        // The phone entry at the top IS the phone entry of the list - one computation, surfaced twice.
+        var phone = Assert.Single(h.Surfaces, s => s.Surface == "phone");
+        Assert.Equal(h.Phone.Percent, phone.Percent);
+        Assert.Equal(h.Phone.Share, phone.Share);
+    }
+
+    [Fact]
+    public void TheHeadline_WithNothingCounted_IsTheEmptyState_NeverAZeroPercent()
+    {
+        // Ten submissions, none with an origin: nothing counted. The library says so, and every share and
+        // percent is null - a consumer that prints 0% here has invented a number.
+        var rows = Enumerable.Range(0, 10).Select(i => Row(null, "UserInput", hoursIn: 1 + i)).ToList();
+
+        var h = Fold(rows, From, To, NoSessions).Headline;
+
+        Assert.False(h.HasData);
+        Assert.Equal(0, h.Denominator);
+        Assert.Null(h.Voice.Share);
+        Assert.Null(h.Voice.Percent);
+        Assert.Null(h.Typed.Percent);
+        Assert.Null(h.Phone.Percent);
+        Assert.Equal(4, h.Surfaces.Count);
+        Assert.All(h.Surfaces, s => { Assert.Null(s.Share); Assert.Null(s.Percent); Assert.Equal(0, s.Turns); });
+    }
+
+    [Fact]
+    public void TheHeadline_RoundsHalfUp_TheOneRuleForEveryConsumer()
+    {
+        // 1 of 200 is exactly 0.5 per cent: half up prints 1, banker's rounding would print 0. The rule is
+        // pinned here because it used to live in two places, each consumer's own.
+        var h = Headline(200, 1, 199, new[]
+        {
+            new ThrottleBucketDto { Modality = "voice", Surface = "phone", Turns = 1 },
+            new ThrottleBucketDto { Modality = "typed", Surface = "desktop", Turns = 199 },
+        });
+        Assert.Equal(1, h.Voice.Percent);
+        Assert.Equal(100, h.Typed.Percent);
+        Assert.Equal(1, h.Phone.Percent);
+    }
+
+    [Fact]
+    public void TheHeadline_RefusesASurfaceItDoesNotKnow_RatherThanFoldingItIntoAGuess()
+    {
+        var ex = Assert.Throws<InvalidOperationException>(() => Headline(1, 0, 1, new[]
+        {
+            new ThrottleBucketDto { Modality = "typed", Surface = "watch", Turns = 1 },
+        }));
+        Assert.Contains("watch", ex.Message);
+        Assert.Contains("refused", ex.Message);
     }
 }

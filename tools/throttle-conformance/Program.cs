@@ -128,9 +128,13 @@ static Arguments? Parse(string[] argv)
         Console.Error.WriteLine("--from and --to must be ISO 8601 instants.");
         return null;
     }
-    if (toUtc <= fromUtc)
+    // The library's own window policy (final inspection finding F-04): the command line is the library's face
+    // and refuses exactly what GET /stats/data refuses - a window longer than the ledger keeps, one that begins
+    // before the oldest instant the ledger can still hold, or one that has not begun - rather than answering
+    // silent zeroes and leaving the caller to notice earliestUtc.
+    if (ThrottleDefinition.WindowRefusal(fromUtc, toUtc, DateTime.UtcNow) is { } refusal)
     {
-        Console.Error.WriteLine("--to must be later than --from.");
+        Console.Error.WriteLine("Refused: " + refusal + ".");
         return null;
     }
     return new Arguments(tenant!, fromUtc, toUtc, connection, outPath);

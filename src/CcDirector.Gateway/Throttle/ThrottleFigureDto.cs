@@ -22,6 +22,16 @@ public sealed class ThrottleFigureDto
     /// <summary>What the ledger holds for this tenant, so the page can say where the record begins.</summary>
     public ThrottleLedgerDto Ledger { get; set; } = new();
 
+    /// <summary>
+    /// THE HEADLINE, FINISHED HERE (final inspection finding F-01). The two shares the reader is shown - spoken
+    /// against typed, and from the phone - with their denominator, their rounded whole-number percentages and
+    /// the empty state, computed ONCE in the library. A consumer renders these fields verbatim; it never divides
+    /// the counts below or re-totals the buckets. Before this block existed the browser summed the buckets and
+    /// divided, the mentor report divided the top-level counts, and a served answer whose counts and buckets
+    /// disagreed would have printed two different headlines about one week.
+    /// </summary>
+    public ThrottleHeadlineDto Headline { get; set; } = new();
+
     /// <summary>Turns the predicate counted: every turn-submitted row in the window carrying an input origin.</summary>
     public long Turns { get; set; }
 
@@ -179,4 +189,56 @@ public sealed class ThrottleRepoDto
 
     /// <summary>The checkout paths those sessions ran in, sorted.</summary>
     public List<string> Checkouts { get; set; } = new();
+}
+
+/// <summary>
+/// The library's finished headline (finding F-01). Every ratio a page or a report prints as THE figure is here,
+/// with its denominator and its rounding done: a consumer reads <see cref="Voice"/>.<c>Percent</c> and prints it.
+/// <see cref="HasData"/> is the empty state - false when nothing was counted, and then every share and percent
+/// is null so no consumer can print a fabricated 0%. <see cref="Surfaces"/> is every surface the figure knows,
+/// in one fixed order, each with its own share; <see cref="Phone"/> is the same phone entry surfaced at the top
+/// because it is the second ring.
+/// </summary>
+public sealed class ThrottleHeadlineDto
+{
+    /// <summary>The denominator of every share here: the counted turns (<see cref="ThrottleFigureDto.Turns"/>).</summary>
+    public long Denominator { get; set; }
+
+    /// <summary>False when nothing was counted. Then every share and percent below is null: the empty state is
+    /// the library's ruling, and a consumer renders it rather than a number.</summary>
+    public bool HasData { get; set; }
+
+    public ThrottleShareDto Voice { get; set; } = new();
+
+    public ThrottleShareDto Typed { get; set; } = new();
+
+    /// <summary>The phone's entry of <see cref="Surfaces"/>, at the top because it is the second ring.</summary>
+    public ThrottleShareDto Phone { get; set; } = new();
+
+    /// <summary>Every surface, in the order the pages draw them, each with its turns and its share of the
+    /// denominator. Always all four known surfaces, zero or not, so a consumer never keeps a list of its own.</summary>
+    public List<ThrottleSurfaceShareDto> Surfaces { get; set; } = new();
+}
+
+/// <summary>One share of the headline denominator: the count, the fraction, and the whole-number percentage
+/// the reader sees, rounded half up. Fraction and percent are null when the denominator is zero.</summary>
+public class ThrottleShareDto
+{
+    public long Turns { get; set; }
+
+    /// <summary>Turns over the denominator, in [0, 1]; null when nothing was counted.</summary>
+    public double? Share { get; set; }
+
+    /// <summary>The percentage the reader is shown, rounded half up to a whole number; null when nothing was
+    /// counted. THIS is the number a ring prints - never a consumer's own rounding of <see cref="Share"/>.</summary>
+    public int? Percent { get; set; }
+}
+
+public sealed class ThrottleSurfaceShareDto : ThrottleShareDto
+{
+    /// <summary>The surface token the ledger recorded: desktop, cockpit, phone or unknown.</summary>
+    public string Surface { get; set; } = "";
+
+    /// <summary>The Gateway's own display name for the surface, rendered verbatim (the dumb-client rule).</summary>
+    public string Label { get; set; } = "";
 }

@@ -2,6 +2,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
+import { loadContractFixtures, servedBodyFor } from "@devthrottle/client-core/stats/throttleContractFixtures";
 
 // The Cockpit's Your Throttle page inside a real router, at the URL the mentor report's link carries
 // (mission "Clean up Your Throttle", rulings R4 and R5). What is asserted is the CONTRACT between the two
@@ -54,6 +55,19 @@ function bodyFor(url: string) {
       unit: "submitted turns",
       window: windowFor(url),
       ledger: { retentionDays: 30, earliestUtc: "2026-08-06T04:00:00Z" },
+      headline: {
+        denominator: 4,
+        hasData: true,
+        voice: { turns: 3, share: 0.75, percent: 75 },
+        typed: { turns: 1, share: 0.25, percent: 25 },
+        phone: { turns: 3, share: 0.75, percent: 75 },
+        surfaces: [
+          { surface: "desktop", label: "Desktop", turns: 1, share: 0.25, percent: 25 },
+          { surface: "cockpit", label: "Cockpit", turns: 0, share: 0, percent: 0 },
+          { surface: "phone", label: "Phone", turns: 3, share: 0.75, percent: 75 },
+          { surface: "unknown", label: "Unknown", turns: 0, share: 0, percent: 0 },
+        ],
+      },
       turns: 4,
       voiceTurns: 3,
       typedTurns: 1,
@@ -150,4 +164,35 @@ describe("YourThrottleView at the mentor report's link", () => {
     expect((await screen.findByTestId("thr-window")).textContent).toContain("Last 7 days");
     await screen.findByRole("button", { name: "Last 7 days", pressed: true });
   });
+});
+
+// THE CONTRACT ON THE RENDERED PAGE (final inspection finding F-01). Every fixture in the product's
+// tools/throttle-conformance/contract directory is served to the REAL page over the real client, and the
+// number each ring PRINTS is read off the DOM and compared with the answer the fixture records - the same
+// answer the mentor report's suite compares its rendered ring row against. A page that divided a count or
+// rounded a share for itself prints a different number here and fails.
+describe("the Your Throttle contract, on the rendered Cockpit page", () => {
+  for (const fixture of loadContractFixtures()) {
+    it(fixture.name.replace(/-/g, " "), async () => {
+      vi.stubGlobal("fetch", vi.fn(async () =>
+        new Response(JSON.stringify(servedBodyFor(fixture.wire)), { status: 200, headers: { "Content-Type": "application/json" } }),
+      ));
+      const { container } = renderAt("/your-throttle?week=2026-W35");
+      if (fixture.expected.outcome === "refused") {
+        const banner = await screen.findByRole("alert");
+        expect(banner.textContent).toMatch(/GET \/stats\/data answered/);
+        expect(container.querySelectorAll(".thr-ring-pct")).toHaveLength(0);
+        return;
+      }
+      if (fixture.expected.outcome === "empty") {
+        await screen.findByText(/No turn counted in this window/);
+        expect(container.querySelectorAll(".thr-ring-pct")).toHaveLength(0);
+        return;
+      }
+      await waitFor(() => expect(container.querySelectorAll(".thr-ring-pct")).toHaveLength(2));
+      const printed = Array.from(container.querySelectorAll(".thr-ring-pct")).map((el) => el.textContent);
+      const expected = fixture.expected.rendered!;
+      expect(printed).toEqual([`${expected.voicePercent}%`, `${expected.phonePercent}%`]);
+    });
+  }
 });

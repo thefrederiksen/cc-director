@@ -1,0 +1,183 @@
+{
+  "expected": {
+    "outcome": "empty",
+    "rendered": {
+      "denominator": 0,
+      "hasData": false,
+      "phonePercent": null,
+      "phoneTurns": 0,
+      "surfaces": [
+        {
+          "label": "Desktop",
+          "percent": null,
+          "surface": "desktop",
+          "turns": 0
+        },
+        {
+          "label": "Cockpit",
+          "percent": null,
+          "surface": "cockpit",
+          "turns": 0
+        },
+        {
+          "label": "Phone",
+          "percent": null,
+          "surface": "phone",
+          "turns": 0
+        },
+        {
+          "label": "Unknown",
+          "percent": null,
+          "surface": "unknown",
+          "turns": 0
+        }
+      ],
+      "typedPercent": null,
+      "typedTurns": 0,
+      "voicePercent": null,
+      "voiceTurns": 0
+    }
+  },
+  "name": "the-empty-state-is-the-librarys-ruling",
+  "why": "Nothing counted: the headline says hasData false with every share and percent null, while the counts below happen to say 10 turns. Both consumers must show NO number - the browser its empty state, the report a refusal to draw a ring - and neither may print 0% or 100%.",
+  "wire": {
+    "agentDrivenTurns": 4,
+    "agents": [
+      {
+        "agent": "ClaudeCode",
+        "agentDrivenTurns": 4,
+        "agentName": "Claude Code",
+        "sessions": 3,
+        "turns": 10,
+        "typedTurns": 2,
+        "voiceTurns": 8
+      }
+    ],
+    "buckets": [
+      {
+        "modality": "voice",
+        "surface": "phone",
+        "turns": 8
+      },
+      {
+        "modality": "typed",
+        "surface": "desktop",
+        "turns": 2
+      }
+    ],
+    "definition": "The shared figure is computed over activity_events rows where EventType is turn-submitted and InputOrigin is present, grouped by the origin's modality and surface.",
+    "excluded": {
+      "agentDriven": 4,
+      "framework": 160,
+      "noInputOrigin": 662,
+      "unresolved": 498
+    },
+    "headline": {
+      "denominator": 0,
+      "hasData": false,
+      "phone": {
+        "percent": null,
+        "share": null,
+        "turns": 0
+      },
+      "surfaces": [
+        {
+          "label": "Desktop",
+          "percent": null,
+          "share": null,
+          "surface": "desktop",
+          "turns": 0
+        },
+        {
+          "label": "Cockpit",
+          "percent": null,
+          "share": null,
+          "surface": "cockpit",
+          "turns": 0
+        },
+        {
+          "label": "Phone",
+          "percent": null,
+          "share": null,
+          "surface": "phone",
+          "turns": 0
+        },
+        {
+          "label": "Unknown",
+          "percent": null,
+          "share": null,
+          "surface": "unknown",
+          "turns": 0
+        }
+      ],
+      "typed": {
+        "percent": null,
+        "share": null,
+        "turns": 0
+      },
+      "voice": {
+        "percent": null,
+        "share": null,
+        "turns": 0
+      }
+    },
+    "hourlyTurns": [
+      {
+        "hour": "2026-08-24T13",
+        "turns": 10,
+        "typedTurns": 2,
+        "voiceTurns": 8
+      }
+    ],
+    "ledger": {
+      "earliestUtc": "2026-08-06T14:17:15Z",
+      "retentionDays": 30
+    },
+    "repos": [
+      {
+        "checkouts": [
+          "D:/repo-alpha"
+        ],
+        "repo": "owner/repo-alpha",
+        "repoName": "repo-alpha",
+        "sessions": 3,
+        "turns": 10,
+        "typedTurns": 2,
+        "voiceTurns": 8
+      }
+    ],
+    "reposUnattributedTurns": 0,
+    "sessions": 3,
+    "turns": 10,
+    "typedTurns": 2,
+    "unit": "submitted turns",
+    "voiceTurns": 8,
+    "window": {
+      "choices": [
+        {
+          "days": 1,
+          "label": "Last 24 hours"
+        },
+        {
+          "days": 7,
+          "label": "Last 7 days"
+        },
+        {
+          "days": 14,
+          "label": "Last 14 days"
+        },
+        {
+          "days": 30,
+          "label": "Last 30 days"
+        }
+      ],
+      "days": null,
+      "fromUtc": "2026-08-24T04:00:00Z",
+      "isDefault": false,
+      "kind": "explicit",
+      "label": "2026-08-24 04:00 to 2026-08-31 04:00 UTC",
+      "toUtc": "2026-08-31T04:00:00Z",
+      "week": null
+    }
+  }
+}

@@ -2539,7 +2539,10 @@ internal static class GatewayEndpoints
         // phase 2 so the new POST /sessions/{sid}/message shares ONE delivery path with it: a message is a
         // framed prompt, and two copies of "send it and wait" would be two behaviours to keep equal. The
         // caller has already located the session and decided what the text is.
-        async Task<IResult> DeliverPromptAsync(DirectorDto director, SessionDto session, string sid, PromptRequest req)
+        // `outcome`, when given, is told exactly once whether the Director ACCEPTED the prompt - true only on a
+        // 200 whose body says Accepted; false on a dropped tunnel, a Director failure, or a Director refusal.
+        // The spoken-claim reservation is committed or released on that answer (finding F-07).
+        async Task<IResult> DeliverPromptAsync(DirectorDto director, SessionDto session, string sid, PromptRequest req, Action<bool>? outcome = null)
         {
             // Post-cut: tunnel-only. A null result means the Director is not connected -> 502. The WaitForIdle
             // poll below is unchanged - it observes the session regardless of how the prompt was delivered.
@@ -2558,12 +2561,16 @@ internal static class GatewayEndpoints
                 err = streamResult.Ok ? null : DirectorCommandRouter.DescribeFailure(streamResult);
             }
             if (!ok || body is null)
+            {
+                outcome?.Invoke(false);
                 return Results.Json(new PromptResponse
                 {
                     Accepted = false,
                     Error = err,
                     ActivityState = session.ActivityState,
                 }, statusCode: StatusCodes.Status502BadGateway);
+            }
+            outcome?.Invoke(body.Accepted);
 
             if (!req.WaitForIdle)
                 return Results.Json(body);
@@ -2827,14 +2834,21 @@ internal static class GatewayEndpoints
             req.AgentDriven = callingSessionForAttribution is not null;
             var claimedUploadId = req.DeliveryUploadId;
             req.DeliveryUploadId = null;
+            // RESERVED HERE, COMMITTED OR RELEASED BELOW (final inspection finding F-07). The claim used to be spent
+            // at this line, before the session was located or the menu guard ran, so a prompt that never entered a
+            // session burned the only proof and the person's retry of the same words was filed as typed. Now the
+            // claim is held until the Director answers: accepted commits it, anything else releases it.
+            Voice.SpokenClaimRegistry.Reservation? spokenReservation = null;
             if (!string.IsNullOrWhiteSpace(claimedUploadId) && callingSessionForAttribution is null)
             {
                 var claimTenant = ResolveReadTenant(httpCtx, tenantBoundary);
                 var refusal = Voice.SpokenClaimRegistry.Refusal.None;
-                if (spokenClaims is not null && claimTenant is { } ct && spokenClaims.TryConsume(ct, claimedUploadId, req.Text, out refusal))
+                if (spokenClaims is not null && claimTenant is { } ct
+                    && spokenClaims.TryReserve(ct, claimedUploadId, req.Text, out refusal, out var reserved))
                 {
                     req.DeliveryUploadId = claimedUploadId;
-                    FileLog.Write($"[GatewayEndpoints] POST prompt: sid={sid} spoken claim honoured (upload={claimedUploadId})");
+                    spokenReservation = reserved;
+                    FileLog.Write($"[GatewayEndpoints] POST prompt: sid={sid} spoken claim reserved (upload={claimedUploadId})");
                 }
                 else
                 {
@@ -2847,6 +2861,22 @@ internal static class GatewayEndpoints
                 FileLog.Write($"[GatewayEndpoints] POST prompt: sid={sid} spoken claim ignored - the caller is a session, and a session did not speak");
             }
 
+            var accepted = false;
+            try
+            {
+                return await PromptAfterAttributionAsync();
+            }
+            finally
+            {
+                if (spokenReservation is { } held && spokenClaims is not null)
+                {
+                    if (accepted) spokenClaims.Commit(held);
+                    else spokenClaims.Release(held);
+                }
+            }
+
+            async Task<IResult> PromptAfterAttributionAsync()
+            {
             var (director, session) = await LocateSessionForRequestAsync(httpCtx, tenantBoundary, registry, sid, pushedSessions, streamStaleResolved, owners);
             if (session is null || director is null)
                 return SessionUnavailable(httpCtx, tenantBoundary, pushedSessions, sid);
@@ -2901,7 +2931,8 @@ internal static class GatewayEndpoints
                 }
             }
 
-            return await DeliverPromptAsync(director, session, sid, req);
+            return await DeliverPromptAsync(director, session, sid, req, wasAccepted => accepted = wasAccepted);
+            }
         });
 
         app.MapPost("/sessions/{sid}/interrupt", async (HttpContext ctx, string sid) =>

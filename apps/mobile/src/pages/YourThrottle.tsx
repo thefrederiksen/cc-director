@@ -3,11 +3,9 @@ import { Link, useSearchParams } from "react-router-dom";
 import {
   getThrottle,
   summarizeThrottle,
-  formatShare,
+  formatPercent,
   safeTimeZone,
   throttleWindowFromSearch,
-  SURFACE_LABEL,
-  SURFACE_ORDER,
   type ThrottleData,
   type ThrottleFigure,
   type ThrottleSummary,
@@ -115,6 +113,7 @@ export function YourThrottle() {
             <MetricRing
               title="Voice vs typing"
               share={summary.voiceShare}
+              percent={summary.voicePercent}
               color={RING_VOICE}
               primary={{ label: "Voice", count: summary.voiceTurns }}
               secondary={{ label: "Typed", count: summary.typedTurns }}
@@ -122,6 +121,7 @@ export function YourThrottle() {
             <MetricRing
               title="Mobile vs desktop"
               share={summary.phoneShare}
+              percent={summary.phonePercent}
               color={RING_MOBILE}
               primary={{ label: "Phone", count: summary.turnsBySurface.phone }}
               secondary={{ label: "Desk + Cockpit", count: summary.totalTurns - summary.turnsBySurface.phone }}
@@ -200,9 +200,13 @@ function ExcludedNote({ figure }: { figure: ThrottleFigure }) {
 // One metric as a compact card: a donut ring (the share) on the left, the title and the two named counts
 // on the right. role="img" + aria-label so the number is announced; the counts carry identity so it is
 // never color-alone.
+// The ring draws the Gateway's share as its arc and prints the Gateway's rounded percent as its number
+// (final inspection finding F-01). It rounds nothing: the number it prints is the number the Cockpit and the
+// mentor report print, because all three read the same headline field.
 function MetricRing({
   title,
   share,
+  percent,
   color,
   primary,
   secondary,
@@ -210,6 +214,7 @@ function MetricRing({
 }: {
   title: string;
   share: number | null;
+  percent: number | null;
   color: string;
   primary: { label: string; count: number };
   secondary: { label: string; count: number };
@@ -218,7 +223,7 @@ function MetricRing({
   const R = 42;
   const C = 2 * Math.PI * R;
   const filled = share === null ? 0 : share * C;
-  const pctText = formatShare(share);
+  const pctText = formatPercent(percent);
 
   return (
     <section className="mthr-metric">
@@ -253,11 +258,9 @@ function MetricRing({
 
 // A single horizontal stacked bar of turns by surface (largest first, brightest first), plus a legend -
 // the compact "where you drive from" the phone version keeps.
+// Every width, percentage and label here is the Gateway's own headline surface entry (finding F-01).
 function SurfaceSplitBar({ summary }: { summary: ThrottleSummary }) {
-  const total = summary.totalTurns;
-  const segments = SURFACE_ORDER.map((s) => ({ surface: s, turns: summary.turnsBySurface[s] }))
-    .filter((seg) => seg.turns > 0)
-    .sort((a, b) => b.turns - a.turns);
+  const segments = summary.surfaces.filter((seg) => seg.turns > 0).sort((a, b) => b.turns - a.turns);
   const fill = (i: number) => {
     const o = [100, 66, 42, 26][Math.min(i, 3)];
     return `color-mix(in srgb, var(--accent) ${o}%, transparent)`;
@@ -268,13 +271,13 @@ function SurfaceSplitBar({ summary }: { summary: ThrottleSummary }) {
       <div className="mthr-split-title">Where you drive from</div>
       <div className="mthr-split-bar">
         {segments.map((seg, i) => {
-          const pct = total > 0 ? (seg.turns / total) * 100 : 0;
+          const width = seg.share === null ? 0 : seg.share * 100;
           return (
             <div
               key={seg.surface}
               className="mthr-split-seg"
-              style={{ width: `${pct}%`, background: fill(i) }}
-              title={`${SURFACE_LABEL[seg.surface]}: ${seg.turns} (${Math.round(pct)}%)`}
+              style={{ width: `${width}%`, background: fill(i) }}
+              title={`${seg.label}: ${seg.turns} (${formatPercent(seg.percent)})`}
             />
           );
         })}
@@ -283,7 +286,7 @@ function SurfaceSplitBar({ summary }: { summary: ThrottleSummary }) {
         {segments.map((seg, i) => (
           <span key={seg.surface} className="mthr-leg">
             <span className="mthr-dot" style={{ background: fill(i) }} />
-            {SURFACE_LABEL[seg.surface]} <b>{seg.turns.toLocaleString()}</b>
+            {seg.label} <b>{seg.turns.toLocaleString()}</b>
           </span>
         ))}
       </div>

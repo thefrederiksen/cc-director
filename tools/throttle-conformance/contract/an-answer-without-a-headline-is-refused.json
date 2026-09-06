@@ -1,0 +1,113 @@
+{
+  "expected": {
+    "outcome": "refused"
+  },
+  "name": "an-answer-without-a-headline-is-refused",
+  "why": "The headline block is absent and the counts are the real 2026-W35. A consumer that rebuilds the headline from the counts prints 57 - and has just become the second computation ruling R3 forbids. Both consumers must refuse the answer.",
+  "wire": {
+    "agentDrivenTurns": 4,
+    "agents": [
+      {
+        "agent": "ClaudeCode",
+        "agentDrivenTurns": 4,
+        "agentName": "Claude Code",
+        "sessions": 3,
+        "turns": 1786,
+        "typedTurns": 771,
+        "voiceTurns": 1015
+      }
+    ],
+    "buckets": [
+      {
+        "modality": "typed",
+        "surface": "desktop",
+        "turns": 696
+      },
+      {
+        "modality": "typed",
+        "surface": "phone",
+        "turns": 68
+      },
+      {
+        "modality": "typed",
+        "surface": "unknown",
+        "turns": 7
+      },
+      {
+        "modality": "voice",
+        "surface": "desktop",
+        "turns": 835
+      },
+      {
+        "modality": "voice",
+        "surface": "phone",
+        "turns": 180
+      }
+    ],
+    "definition": "The shared figure is computed over activity_events rows where EventType is turn-submitted and InputOrigin is present, grouped by the origin's modality and surface.",
+    "excluded": {
+      "agentDriven": 4,
+      "framework": 160,
+      "noInputOrigin": 662,
+      "unresolved": 498
+    },
+    "hourlyTurns": [
+      {
+        "hour": "2026-08-24T13",
+        "turns": 1786,
+        "typedTurns": 771,
+        "voiceTurns": 1015
+      }
+    ],
+    "ledger": {
+      "earliestUtc": "2026-08-06T14:17:15Z",
+      "retentionDays": 30
+    },
+    "repos": [
+      {
+        "checkouts": [
+          "D:/repo-alpha"
+        ],
+        "repo": "owner/repo-alpha",
+        "repoName": "repo-alpha",
+        "sessions": 3,
+        "turns": 1786,
+        "typedTurns": 771,
+        "voiceTurns": 1015
+      }
+    ],
+    "reposUnattributedTurns": 0,
+    "sessions": 3,
+    "turns": 1786,
+    "typedTurns": 771,
+    "unit": "submitted turns",
+    "voiceTurns": 1015,
+    "window": {
+      "choices": [
+        {
+          "days": 1,
+          "label": "Last 24 hours"
+        },
+        {
+          "days": 7,
+          "label": "Last 7 days"
+        },
+        {
+          "days": 14,
+          "label": "Last 14 days"
+        },
+        {
+          "days": 30,
+          "label": "Last 30 days"
+        }
+      ],
+      "days": null,
+      "fromUtc": "2026-08-24T04:00:00Z",
+      "isDefault": false,
+      "kind": "explicit",
+      "label": "2026-08-24 04:00 to 2026-08-31 04:00 UTC",
+      "toUtc": "2026-08-31T04:00:00Z",
+      "week": null
+    }
+  }
+}

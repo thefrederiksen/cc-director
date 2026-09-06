@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using CcDirector.Core.HostedAi;
 using CcDirector.Core.Storage;
+using CcDirector.Core.Sessions;
 using CcDirector.Core.Tenancy;
 using CcDirector.Core.Utilities;
 using CcDirector.Gateway.Contracts;
@@ -613,7 +614,9 @@ internal static class GatewayDictationEndpoint
             // The rule the page discloses is applied here, at the one place the message is composed: the id
             // rides only when before, prefix and after are all empty. A mixed message is delivered exactly the
             // same, as one typed turn from the same surface. The upload's own durable record is untouched.
-            var spokenAlone = string.IsNullOrWhiteSpace(req.Before) && string.IsNullOrWhiteSpace(req.Prefix) && string.IsNullOrWhiteSpace(req.After);
+            // THE RULE IS THE ONE THE DESKTOP APPLIES TOO (ruling R20): SpokenTurnRule, in Core, and its
+            // Examples table is what both surfaces' tests feed through their real paths.
+            var spokenAlone = SpokenTurnRule.IsSpokenAlone(req.Before, req.Prefix, req.After);
             if (!spokenAlone)
                 FileLog.Write($"[GatewayDictation] complete sid={sid} uploadId={uploadId}: composed with typed text around the transcript; delivered as ONE TYPED turn (ruling R10)");
             var (ok, _, err) = await route.PostPromptAsync(sid, new PromptRequest

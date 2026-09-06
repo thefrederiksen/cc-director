@@ -15,7 +15,21 @@ what the mentor's reader does not carry - the per-agent split and the per-reposi
 session_history - so those are checked too.
 
 The predicate is stated once, in the Gateway (ThrottleDefinition.Predicate), and the check ALSO asserts
-the library reports that exact sentence. Nothing here paraphrases it.
+the library reports that exact sentence - read out of ThrottleDefinition.cs at run time, never restated
+here (final inspection finding F-08: a Python copy of the sentence was a second authority to maintain).
+
+THE LIBRARY IS BUILT FROM SOURCE ON EVERY RUN (final inspection finding F-03). A dll that happens to exist
+is not provenance: it can predate the source beside it, and then the library, this check and the mentor
+report all agree with an implementation the deployed Gateway no longer runs. `dotnet build` is incremental,
+so an unchanged tree costs seconds; a changed one is rebuilt, which is the point. The check records the
+library's provenance - the commit and dirtiness of the product checkout and the dll's own digest - in its
+report.
+
+WHAT IS COMPARED (finding F-08): not only the counts and the buckets, but the library's FINISHED HEADLINE -
+the denominator, every share and every rounded percent the two consumers print - the unit, the window's
+kind, label and choices, the ledger's retention and earliest instant, the hourly voice and typed values, and
+the repository display names and checkouts. Every field the field inventory names as read by the report is
+compared here against the independent reading.
 
 Usage:
   python tools/throttle-conformance/conformance.py --account soren --week 2026-W35
@@ -81,14 +95,38 @@ def read_connection(args, cfg):
     fail("key " + key + " not found in " + str(env_path))
 
 
-def run_library(tenant, start, end, connection, out_path):
-    """Run the Gateway's own definition through tools/throttle-conformance. Returns the figure dict."""
+def library_provenance():
+    """Where the library's code came from: the product checkout's commit and whether it is dirty, read with
+    git at the moment of use. A dirty checkout is reported, not hidden - the number then comes from code no
+    commit names."""
+    def git(*args):
+        run = subprocess.run(["git", "-C", str(REPO)] + list(args), capture_output=True, text=True)
+        if run.returncode != 0:
+            fail("git " + " ".join(args) + " failed in " + str(REPO) + ": " + run.stderr.strip())
+        return run.stdout.strip()
+    commit = git("rev-parse", "HEAD")
+    dirty = git("status", "--porcelain", "--", "src/CcDirector.Gateway", "src/CcDirector.Core", "tools/throttle-conformance") != ""
+    return {"commit": commit, "dirty": dirty}
+
+
+def build_library():
+    """Build the library tool from the pinned source, EVERY run (finding F-03), and return its dll and digest."""
+    project = HERE / "ThrottleConformance.csproj"
+    print("building the library tool from " + str(project))
+    build = subprocess.run(["dotnet", "build", str(project), "-nologo", "-v", "q"], capture_output=True, text=True)
+    if build.returncode != 0:
+        fail("building the library tool failed:\n" + build.stdout + build.stderr)
     dll = HERE / "bin" / "Debug" / "net10.0" / "throttle-conformance.dll"
     if not dll.exists():
-        build = subprocess.run(["dotnet", "build", str(HERE / "ThrottleConformance.csproj"), "-nologo", "-v", "q"],
-                               capture_output=True, text=True)
-        if build.returncode != 0:
-            fail("building the library tool failed:\n" + build.stdout + build.stderr)
+        fail("the build reported success but " + str(dll) + " is not there")
+    import hashlib
+    return dll, hashlib.sha256(dll.read_bytes()).hexdigest()
+
+
+def run_library(tenant, start, end, connection, out_path):
+    """Run the Gateway's own definition through tools/throttle-conformance, built from source first. Returns
+    the figure dict."""
+    dll, _ = build_library()
     cmd = ["dotnet", str(dll), "--tenant", tenant, "--from", start.isoformat(), "--to", end.isoformat(),
            "--connection", connection, "--out", str(out_path)]
     run = subprocess.run(cmd, capture_output=True, text=True)
@@ -132,7 +170,9 @@ def mentor_side(metrics, origin, account, tz, extract, start, end, break_predica
         if any(start <= r["ts"] < end and r["origin"] is not None and not (break_predicate and r["source"] is None)
                for r in srows)
     }
+    earliest_in_window = min((r["ts"] for r in rows), default=None)
     return {
+        "earliestInWindow": earliest_in_window.astimezone(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ") if earliest_in_window else None,
         "turns": sum(buckets.values()),
         "voiceTurns": sum(v for (m, _), v in buckets.items() if m == "voice"),
         "typedTurns": sum(v for (m, _), v in buckets.items() if m == "typed"),
@@ -141,6 +181,39 @@ def mentor_side(metrics, origin, account, tz, extract, start, end, break_predica
         "excluded": {k: excluded.get(k, 0) for k in ("noInputOrigin", "agentDriven", "framework", "unresolved")},
         "agentDrivenTurns": excluded.get("agentDriven", 0),
         "rowsInWindow": len(rows),
+    }
+
+
+def predicate_from_source():
+    """The R17 predicate as ThrottleDefinition.cs states it - the ONE place it is written (finding F-08)."""
+    source = (REPO / "src" / "CcDirector.Gateway" / "Throttle" / "ThrottleDefinition.cs").read_text(encoding="utf-8")
+    import re
+    match = re.search(r'public const string Predicate =\s*((?:"[^"]*"\s*\+?\s*)+);', source)
+    if match is None:
+        fail("ThrottleDefinition.cs no longer states the Predicate constant in the shape this check reads")
+    return "".join(re.findall(r'"([^"]*)"', match.group(1)))
+
+
+def headline_side(mentor):
+    """The finished headline the independent reading implies - the check's own division, which is what it is
+    for: an independent reader that agrees with the library's finished answer."""
+    counted = mentor["turns"]
+    by_surface = collections.Counter()
+    for key, turns in mentor["buckets"].items():
+        by_surface[key.split("/", 1)[1]] += turns
+
+    def share(part):
+        if counted == 0:
+            return {"turns": part, "share": None, "percent": None}
+        return {"turns": part, "share": part / counted, "percent": int(part / counted * 100.0 + 0.5)}
+
+    return {
+        "denominator": counted,
+        "hasData": counted > 0,
+        "voice": share(mentor["voiceTurns"]),
+        "typed": share(mentor["typedTurns"]),
+        "phone": share(by_surface.get("phone", 0)),
+        "surfaces": {surface: share(by_surface.get(surface, 0)) for surface in ("desktop", "cockpit", "phone", "unknown")},
     }
 
 
@@ -154,9 +227,11 @@ def raw_side(extract_events, extract_sessions, start, end):
             row = json.loads(line)
             history[row["SessionId"]] = (row.get("RepoName") or None, row.get("RepoPath") or None)
     agents = collections.defaultdict(lambda: {"turns": 0, "voiceTurns": 0, "typedTurns": 0, "sessions": set(), "agentDrivenTurns": 0})
-    repos = collections.defaultdict(lambda: {"turns": 0, "voiceTurns": 0, "typedTurns": 0, "sessions": set()})
+    repos = collections.defaultdict(lambda: {"turns": 0, "voiceTurns": 0, "typedTurns": 0, "sessions": set(),
+                                             "repoName": "", "checkouts": set()})
     unattributed = 0
     hours = collections.Counter()
+    hours_by_modality = collections.Counter()
     with open(extract_events, encoding="utf-8") as f:
         for line in f:
             row = json.loads(line)
@@ -176,12 +251,16 @@ def raw_side(extract_events, extract_sessions, start, end):
             a["turns"] += 1
             a["voiceTurns" if modality == "voice" else "typedTurns"] += 1
             a["sessions"].add(row["SessionId"])
-            hours[ts.astimezone(dt.timezone.utc).strftime("%Y-%m-%dT%H")] += 1
+            hour_key = ts.astimezone(dt.timezone.utc).strftime("%Y-%m-%dT%H")
+            hours[hour_key] += 1
+            hours_by_modality[(hour_key, modality)] += 1
             name, path = history.get(row["SessionId"], (None, None))
             if name:
                 key = name
+                leaf = name.rstrip("/").split("/")[-1]
             elif path:
                 key = path.rstrip("/\\").replace("\\", "/").split("/")[-1]
+                leaf = key
             else:
                 unattributed += 1
                 continue
@@ -189,18 +268,23 @@ def raw_side(extract_events, extract_sessions, start, end):
             r["turns"] += 1
             r["voiceTurns" if modality == "voice" else "typedTurns"] += 1
             r["sessions"].add(row["SessionId"])
+            r["repoName"] = leaf
+            if path:
+                r["checkouts"].add(path)
     return {
         "agents": {k: {"turns": v["turns"], "voiceTurns": v["voiceTurns"], "typedTurns": v["typedTurns"],
                        "sessions": len(v["sessions"]), "agentDrivenTurns": v["agentDrivenTurns"]}
                    for k, v in agents.items()},
         "repos": {k: {"turns": v["turns"], "voiceTurns": v["voiceTurns"], "typedTurns": v["typedTurns"],
-                      "sessions": len(v["sessions"])} for k, v in repos.items()},
+                      "sessions": len(v["sessions"]), "repoName": v["repoName"],
+                      "checkouts": sorted(v["checkouts"])} for k, v in repos.items()},
         "reposUnattributedTurns": unattributed,
         "hourlyTurns": dict(hours),
+        "hourlyByModality": {"%s/%s" % key: value for key, value in hours_by_modality.items()},
     }
 
 
-def compare(library, mentor, raw, predicate_expected):
+def compare(library, mentor, raw, predicate_expected, window_expected):
     """Every difference, as a list of one-line strings. Empty means the consumers agree."""
     diffs = []
 
@@ -210,6 +294,57 @@ def compare(library, mentor, raw, predicate_expected):
 
     if library.get("definition") != predicate_expected:
         diffs.append("definition: the library does not report the R17 predicate verbatim: %r" % library.get("definition"))
+    eq("unit", library.get("unit"), "submitted turns")
+
+    # THE FINISHED HEADLINE (finding F-08): what both consumers print, against the independent reading's
+    # own division. A share is compared to nine decimal places; a percent exactly.
+    head = library.get("headline")
+    if not isinstance(head, dict):
+        diffs.append("headline: the library serves no headline block")
+    else:
+        expected = headline_side(mentor)
+        eq("headline.denominator", head.get("denominator"), expected["denominator"])
+        eq("headline.hasData", head.get("hasData"), expected["hasData"])
+
+        def eq_share(name, got, want):
+            if not isinstance(got, dict):
+                diffs.append("%s: the library serves no share block" % name)
+                return
+            eq(name + ".turns", got.get("turns"), want["turns"])
+            eq(name + ".percent", got.get("percent"), want["percent"])
+            a, b = got.get("share"), want["share"]
+            if (a is None) != (b is None) or (a is not None and round(a, 9) != round(b, 9)):
+                diffs.append("%s.share: library=%s mentor-side=%s" % (name, a, b))
+
+        for key in ("voice", "typed", "phone"):
+            eq_share("headline." + key, head.get(key), expected[key])
+        served = head.get("surfaces") if isinstance(head.get("surfaces"), list) else []
+        eq("headline.surfaces (order)", [s.get("surface") for s in served], list(expected["surfaces"]))
+        for entry in served:
+            surface = entry.get("surface")
+            if surface in expected["surfaces"]:
+                eq_share("headline.surfaces[%s]" % surface, entry, expected["surfaces"][surface])
+                if not isinstance(entry.get("label"), str) or not entry["label"]:
+                    diffs.append("headline.surfaces[%s].label: the library serves no label" % surface)
+
+    # The window statement, the selector's choices and the ledger's reach - every field the report reads.
+    window = library.get("window") if isinstance(library.get("window"), dict) else {}
+    eq("window.fromUtc", window.get("fromUtc"), window_expected[0])
+    eq("window.toUtc", window.get("toUtc"), window_expected[1])
+    eq("window.kind", window.get("kind"), "explicit")
+    eq("window.isDefault", window.get("isDefault"), False)
+    if not isinstance(window.get("label"), str) or not window["label"]:
+        diffs.append("window.label: the library serves no label")
+    choices = window.get("choices")
+    if not isinstance(choices, list) or [c.get("days") for c in choices] != [1, 7, 14, 30]:
+        diffs.append("window.choices: library=%r, the selector's four lengths expected" % (choices,))
+    ledger = library.get("ledger") if isinstance(library.get("ledger"), dict) else {}
+    eq("ledger.retentionDays", ledger.get("retentionDays"), 30)
+    earliest = ledger.get("earliestUtc")
+    if earliest is not None and not isinstance(earliest, str):
+        diffs.append("ledger.earliestUtc: library=%r, an instant or null expected" % (earliest,))
+    if earliest is not None and mentor["rowsInWindow"] > 0 and mentor.get("earliestInWindow") and earliest > mentor["earliestInWindow"]:
+        diffs.append("ledger.earliestUtc: library=%s is later than a row the extract holds in the window (%s)" % (earliest, mentor["earliestInWindow"]))
     eq("turns", library["turns"], mentor["turns"])
     eq("voiceTurns", library["voiceTurns"], mentor["voiceTurns"])
     eq("typedTurns", library["typedTurns"], mentor["typedTurns"])
@@ -230,9 +365,9 @@ def compare(library, mentor, raw, predicate_expected):
                 diffs.append("agent %s.%s: library=%s raw-extract=%s" % (key or "(unknown)", field, la[field], ra[field]))
     lib_repos = {r["repo"]: r for r in library["repos"]}
     for key in sorted(set(lib_repos) | set(raw["repos"])):
-        lr = lib_repos.get(key, {"turns": 0, "voiceTurns": 0, "typedTurns": 0, "sessions": 0})
-        rr = raw["repos"].get(key, {"turns": 0, "voiceTurns": 0, "typedTurns": 0, "sessions": 0})
-        for field in ("turns", "voiceTurns", "typedTurns", "sessions"):
+        lr = lib_repos.get(key, {"turns": 0, "voiceTurns": 0, "typedTurns": 0, "sessions": 0, "repoName": "", "checkouts": []})
+        rr = raw["repos"].get(key, {"turns": 0, "voiceTurns": 0, "typedTurns": 0, "sessions": 0, "repoName": "", "checkouts": []})
+        for field in ("turns", "voiceTurns", "typedTurns", "sessions", "repoName", "checkouts"):
             if lr[field] != rr[field]:
                 diffs.append("repo %s.%s: library=%s raw-extract=%s" % (key, field, lr[field], rr[field]))
     if library["reposUnattributedTurns"] != raw["reposUnattributedTurns"]:
@@ -241,6 +376,16 @@ def compare(library, mentor, raw, predicate_expected):
     for key in sorted(set(lib_hours) | set(raw["hourlyTurns"])):
         if lib_hours.get(key, 0) != raw["hourlyTurns"].get(key, 0):
             diffs.append("hour %s: library=%s raw-extract=%s" % (key, lib_hours.get(key, 0), raw["hourlyTurns"].get(key, 0)))
+    # The hourly VOICE and TYPED values, not only the totals (finding F-08).
+    lib_hours_mod = {}
+    for h in library["hourlyTurns"]:
+        lib_hours_mod[h["hour"] + "/voice"] = h["voiceTurns"]
+        lib_hours_mod[h["hour"] + "/typed"] = h["typedTurns"]
+        if h["voiceTurns"] + h["typedTurns"] != h["turns"]:
+            diffs.append("hour %s: the library's voice %s + typed %s is not its turns %s" % (h["hour"], h["voiceTurns"], h["typedTurns"], h["turns"]))
+    for key in sorted(set(lib_hours_mod) | set(raw["hourlyByModality"])):
+        if lib_hours_mod.get(key, 0) != raw["hourlyByModality"].get(key, 0):
+            diffs.append("hour %s: library=%s raw-extract=%s" % (key, lib_hours_mod.get(key, 0), raw["hourlyByModality"].get(key, 0)))
     return diffs
 
 
@@ -282,30 +427,42 @@ def main():
     print("account %s (tenant %s, %s)  week %s = %s .. %s" % (account["label"], tenant, tz, args.week,
                                                              start_utc.isoformat(), end_utc.isoformat()))
 
+    provenance = library_provenance()
     if args.library_json:
         library = json.loads(Path(args.library_json).read_text(encoding="utf-8"))
+        provenance["dll_sha256"] = None
+        provenance["note"] = "read from --library-json; the dll was not run for this check"
     else:
         connection = read_connection(args, cfg)
         out_path = Path(os.environ.get("TEMP", ".")) / ("throttle-library-%s-%s.json" % (account["label"], args.week))
         library = run_library(tenant, start_utc, end_utc, connection, out_path)
+        provenance["dll_sha256"] = build_library()[1]
 
     mentor = mentor_side(metrics, origin, account, tz, extract_events, start, end, args.break_predicate)
     raw = raw_side(extract_events, extract_sessions, start, end)
 
-    predicate = ("The shared figure is computed over activity_events rows where EventType is turn-submitted "
-                 "and InputOrigin is present, grouped by the origin's modality and surface.")
-    diffs = compare(library, mentor, raw, predicate)
+    predicate = predicate_from_source()
+    window_expected = (start_utc.strftime("%Y-%m-%dT%H:%M:%SZ"), end_utc.strftime("%Y-%m-%dT%H:%M:%SZ"))
+    diffs = compare(library, mentor, raw, predicate, window_expected)
 
     lines = []
     lines.append("# Your Throttle conformance - %s, %s" % (account["label"], args.week))
     lines.append("")
     lines.append("Window: %s to %s (%s, Monday to Monday)." % (start_utc.isoformat(), end_utc.isoformat(), tz))
     lines.append("")
+    lines.append("Library provenance: built from source this run; product checkout commit %s%s; dll sha256 %s."
+                 % (provenance["commit"], " (DIRTY - uncommitted changes under the library's source)" if provenance["dirty"] else "",
+                    provenance.get("dll_sha256")))
+    lines.append("")
     lines.append("| figure | library (Gateway code over the hosted database) | mentor side (harness reader over its extract) |")
     lines.append("|---|---:|---:|")
     for name in ("turns", "voiceTurns", "typedTurns", "sessions"):
         lines.append("| %s | %s | %s |" % (name, library[name], mentor[name]))
-    lines.append("| spoken share | %s | %s |" % (share(library["voiceTurns"], library["turns"]), share(mentor["voiceTurns"], mentor["turns"])))
+    head = library.get("headline") or {}
+    lines.append("| spoken share (the library's headline percent against the independent division) | %s%% | %s |"
+                 % ((head.get("voice") or {}).get("percent"), share(mentor["voiceTurns"], mentor["turns"])))
+    lines.append("| phone share (the library's headline percent against the independent division) | %s%% | %s |"
+                 % ((head.get("phone") or {}).get("percent"), share(headline_side(mentor)["phone"]["turns"], mentor["turns"])))
     lib_buckets = {b["modality"] + "/" + b["surface"]: b["turns"] for b in library["buckets"]}
     for key in sorted(set(lib_buckets) | set(mentor["buckets"])):
         lines.append("| bucket %s | %s | %s |" % (key, lib_buckets.get(key, 0), mentor["buckets"].get(key, 0)))

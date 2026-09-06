@@ -221,7 +221,12 @@ public sealed class TerminalTypingIsATurnTests
         var body = MethodBody(session, "private void StampSubmission(");
         Assert.Contains("InputStats.RecordTurn(o, characters);", body);
         Assert.Contains("InputStats.RecordAgentTurn(characters);", body);
-        Assert.Contains("OnTurnSubmitted?.Invoke(source, origin);", body);
+        // The ledger observers are raised HERE and only here - each subscriber on its own, so one that
+        // throws cannot keep the activity producer from hearing the turn (final inspection finding F-06).
+        Assert.Contains("OnTurnSubmitted", body);
+        Assert.Contains("GetInvocationList()", body);
+        Assert.DoesNotContain("OnTurnSubmitted?.Invoke(", session);
+        Assert.Single(Regex.Matches(session, @"OnTurnSubmitted\.GetInvocationList\(\)|observers\.GetInvocationList\(\)"));
 
         // And the method that recorded characters WITHOUT a turn - the only caller of which was terminal
         // typing, and the mechanism of the defect - is gone rather than merely unused.

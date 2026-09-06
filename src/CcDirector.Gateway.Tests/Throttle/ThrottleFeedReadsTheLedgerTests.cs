@@ -208,6 +208,23 @@ public sealed class ThrottleFeedReadsTheLedgerTests : IAsyncLifetime
         Assert.Equal(2, buckets["voice/phone"]);
         Assert.Equal(1, buckets["voice/desktop"]);
 
+        // THE HEADLINE IS SERVED FINISHED (final inspection finding F-01): 3 of 6 spoken is 50 per cent, 2 of 6
+        // from the phone is 33 per cent, and both consumers print these fields rather than dividing.
+        var headline = figure.GetProperty("headline");
+        Assert.True(headline.GetProperty("hasData").GetBoolean());
+        Assert.Equal(6, headline.GetProperty("denominator").GetInt64());
+        Assert.Equal(3, headline.GetProperty("voice").GetProperty("turns").GetInt64());
+        Assert.Equal(50, headline.GetProperty("voice").GetProperty("percent").GetInt32());
+        Assert.Equal(0.5, headline.GetProperty("voice").GetProperty("share").GetDouble());
+        Assert.Equal(50, headline.GetProperty("typed").GetProperty("percent").GetInt32());
+        Assert.Equal(2, headline.GetProperty("phone").GetProperty("turns").GetInt64());
+        Assert.Equal(33, headline.GetProperty("phone").GetProperty("percent").GetInt32());
+        var surfaces = headline.GetProperty("surfaces").EnumerateArray().ToList();
+        Assert.Equal(new[] { "desktop", "cockpit", "phone", "unknown" }, surfaces.Select(s => s.GetProperty("surface").GetString()).ToArray());
+        Assert.Equal(new[] { "Desktop", "Cockpit", "Phone", "Unknown" }, surfaces.Select(s => s.GetProperty("label").GetString()).ToArray());
+        Assert.Equal(4, surfaces[0].GetProperty("turns").GetInt64());
+        Assert.Equal(67, surfaces[0].GetProperty("percent").GetInt32());
+
         var excluded = figure.GetProperty("excluded");
         Assert.Equal(10, excluded.GetProperty("noInputOrigin").GetInt64());
         Assert.Equal(4, excluded.GetProperty("agentDriven").GetInt64());
@@ -245,6 +262,7 @@ public sealed class ThrottleFeedReadsTheLedgerTests : IAsyncLifetime
         var (b, _) = await FeedBody(_keyB);
         var figureB = b.GetProperty("throttle");
         Assert.Equal(7, figureB.GetProperty("turns").GetInt64());
+        Assert.Equal(100, figureB.GetProperty("headline").GetProperty("phone").GetProperty("percent").GetInt32());
         var bucketB = Assert.Single(figureB.GetProperty("buckets").EnumerateArray());
         Assert.Equal("phone", bucketB.GetProperty("surface").GetString());
         Assert.Equal(0, figureB.GetProperty("excluded").GetProperty("noInputOrigin").GetInt64());
