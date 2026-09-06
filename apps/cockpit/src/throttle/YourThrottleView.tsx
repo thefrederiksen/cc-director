@@ -254,10 +254,12 @@ function OverviewTab({ summary, data }: { summary: ThrottleSummary; data: Thrott
           accentVar="--thr-mobile"
           centerCaption="from phone"
           primary={{ label: "Phone", count: summary.turnsBySurface.phone }}
-          secondary={{
-            label: "Desktop + Cockpit",
-            count: summary.phoneRemainder,
-          }}
+          // The other side of this ring, BROKEN OUT (owner's ask, 2026-09-06). It used to read
+          // "Desktop + Cockpit 257", which answers the ring's question and hides the one underneath it:
+          // how much of the desk is the Cockpit. Every surface that has a turn is named on its own, so
+          // the parts still add to the ring's other side and nothing is folded away.
+          rest={summary.surfaces.filter((s) => s.surface !== "phone" && s.turns > 0)
+            .map((s) => ({ label: s.label, count: s.turns }))}
         />
       </div>
 
@@ -321,6 +323,7 @@ function HeroRing({
   centerCaption,
   primary,
   secondary,
+  rest,
   note,
 }: {
   title: string;
@@ -329,13 +332,20 @@ function HeroRing({
   accentVar: string;
   centerCaption: string;
   primary: { label: string; count: number };
-  secondary: { label: string; count: number };
+  /** The single remainder, for a ring whose other side is one thing ("Typed"). */
+  secondary?: { label: string; count: number };
+  /** The remainder BROKEN OUT, for a ring whose other side is several things - each named with its own
+   *  count so the reader sees what the ring's one number is hiding. Exactly one of these two is given. */
+  rest?: { label: string; count: number }[];
   note?: string;
 }) {
   const R = 42;
   const C = 2 * Math.PI * R;
   const filled = share === null ? 0 : share * C;
   const pctText = formatPercent(percent);
+  // The ring's other side, as the label a screen reader hears: one thing, or the parts named.
+  const others = rest ?? (secondary === undefined ? [] : [secondary]);
+  const othersTotal = others.reduce((t, e) => t + e.count, 0);
 
   return (
     <section className="thr-hero">
@@ -343,7 +353,7 @@ function HeroRing({
       <div
         className="thr-ring"
         role="img"
-        aria-label={`${title}: ${primary.label} ${pctText} (${primary.count} of ${primary.count + secondary.count} turns)`}
+        aria-label={`${title}: ${primary.label} ${pctText} (${primary.count} of ${primary.count + othersTotal} turns)`}
       >
         <svg
           viewBox="0 0 100 100"
@@ -370,11 +380,13 @@ function HeroRing({
           {primary.label}
           <b>{primary.count.toLocaleString()}</b>
         </span>
-        <span className="thr-hero-leg">
-          <span className="thr-dot thr-dot-muted" />
-          {secondary.label}
-          <b>{secondary.count.toLocaleString()}</b>
-        </span>
+        {(rest ?? (secondary === undefined ? [] : [secondary])).map((entry) => (
+          <span key={entry.label} className="thr-hero-leg">
+            <span className="thr-dot thr-dot-muted" />
+            {entry.label}
+            <b>{entry.count.toLocaleString()}</b>
+          </span>
+        ))}
       </div>
       {note !== undefined && <div className="thr-hero-note">{note}</div>}
     </section>

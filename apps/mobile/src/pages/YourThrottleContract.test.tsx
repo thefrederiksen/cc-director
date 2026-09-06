@@ -77,7 +77,8 @@ function pageFromDom(container: HTMLElement) {
   const [voiceRing, phoneRing] = metrics;
   const legend = (ring: Element) => Array.from(ring.querySelectorAll(".mthr-leg b")).map((b) => count(b.textContent));
   const [voiceTurns, typedTurns] = legend(voiceRing);
-  const [phoneTurns, phoneRemainder] = legend(phoneRing);
+  // Broken out surface by surface, exactly as on the Cockpit (owner's ask, 2026-09-06).
+  const [phoneTurns, ...restOfPhoneRing] = legend(phoneRing);
   const segments = Array.from(container.querySelectorAll(".mthr-split-seg")).map((seg) => {
     const title = /^(.+): (\d+) \((.+)\)$/.exec(seg.getAttribute("title") ?? "");
     return { label: title?.[1], turns: count(title?.[2]), percent: percent(title?.[3]), share: round10(pct(seg) / 100) };
@@ -88,7 +89,8 @@ function pageFromDom(container: HTMLElement) {
   }));
   return {
     denominator: count(container.querySelector(".mthr-stat-value")!.textContent),
-    voiceTurns, typedTurns, phoneTurns, phoneRemainder,
+    voiceTurns, typedTurns, phoneTurns,
+    restOfPhoneRing,
     voiceShare: arcShare(voiceRing), phoneShare: arcShare(phoneRing),
     voicePercent: percent(voiceRing.querySelector(".mthr-ring-pct")!.textContent),
     phonePercent: percent(phoneRing.querySelector(".mthr-ring-pct")!.textContent),
@@ -119,7 +121,8 @@ describe("the Your Throttle contract, on the rendered phone page - the whole ans
       expect(pageFromDom(container)).toEqual({
         denominator: expected.denominator,
         voiceTurns: expected.voiceTurns, typedTurns: expected.typedTurns,
-        phoneTurns: expected.phoneTurns, phoneRemainder: expected.phoneRemainder,
+        phoneTurns: expected.phoneTurns,
+        restOfPhoneRing: expected.surfaces.filter((s) => s.surface !== "phone" && s.turns > 0).map((s) => s.turns),
         voiceShare: expected.voiceShare, phoneShare: expected.phoneShare,
         voicePercent: expected.voicePercent, phonePercent: expected.phonePercent,
         segments: expected.segments.map((s) => ({ label: s.label, turns: s.turns, percent: s.percent, share: s.share })),
